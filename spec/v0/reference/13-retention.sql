@@ -12,11 +12,6 @@ begin
                                        min_snapshots = excluded.min_snapshots;
 end $$;
 
--- When a commit was committed: committed_at, or the transaction's commit timestamp until it is filled.
-create function committed_time(seq bigint) returns timestamptz language sql stable as $$
-  select coalesce(committed_at, pg_xact_commit_timestamp(xid::text::xid)) from commit where commit_seq = seq;
-$$;
-
 -- RET-1: the snapshots ref r keeps.
 create function kept_snapshots(r int) returns setof bigint language sql stable as $$
   with snaps as (select distinct snapshot_id as s from snapshot where ref_id = r),

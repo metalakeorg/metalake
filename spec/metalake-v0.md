@@ -517,3 +517,27 @@ blob type `deletion-vector-v1`.
   row refers to it. Orphans are found from `intent` alone, without listing storage: a collector deletes the
   object, then the `intent` row. A commit that adds a file whose `intent` has expired is refused (CMT-9), so a
   writer that missed its deadline never commits a path that a collector may have deleted.
+
+## 14. Time and changes
+
+- **TT-1.** Implementations MUST run with `track_commit_timestamp = on`. A commit's time is its transaction's
+  commit timestamp. `commit.committed_at` is `NULL` until a filler copies that timestamp into it, after the
+  commit; until then readers take it from `pg_xact_commit_timestamp` of the commit's `xid`.
+- **TT-2.** The order of commits in a catalog is `(committed_at, commit_seq)`. `commit_seq` alone is not that
+  order: a commit may draw a lower `commit_seq` and commit later. Within one `(ref, table)`, both orders agree
+  (CMT-4).
+- **TT-3.** A read of table `t` on ref `r` as of time `T` reads `(r, s)`, where `s` is:
+  - the greatest snapshot of `t` on `r` committed at or before `T`, among those since the `ref_base` row that
+    was in force at `T` (the row whose `begin_seq` committed at or before `T` and whose `end_seq` had not
+    committed by `T`);
+  - if there is none, the `begin_seq` of that row, so that `r` reads its parent as of its fork;
+  - nothing, if `r` was created after `T`.
+
+  The sequence is found per table, because one sequence cannot describe the catalog at a time (TT-2). The
+  answer is stable once every commit with a timestamp up to `T` is visible: implementations MUST refuse a `T`
+  later than one second before the current time.
+- **CHG-1.** The change feed delivers commits in the order of TT-2 from a cursor `(committed_at, commit_seq)`,
+  the last commit delivered, and only those committed more than one second ago. Postgres takes a commit's
+  timestamp just before making it visible, so a commit not yet visible will carry a timestamp later than that
+  horizon: every commit is delivered once, in order, with no gaps.
+  Commits removed by collection (RET-3) are no longer delivered: a consumer keeps up within the retention.
