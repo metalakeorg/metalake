@@ -1,8 +1,11 @@
 # MetaLake specification
 
-The specification describes the MetaLake table format independently of any implementation: the tables
-and columns in the catalog database, what each column means, the invariants every implementation must
-keep, and the rules for commits, branches, merges, retention and the Iceberg projection.
+- [`metalake-v0.md`](metalake-v0.md): the normative text of version 0 (draft, written step by step).
+- [`v0/schema.sql`](v0/schema.sql): the reference DDL.
+- [`v0/reference.sql`](v0/reference.sql): the reference behaviour, in SQL.
+- [`v0/conformance/`](v0/conformance/): the conformance cases. Each names the rules it checks.
 
-It is written when the preliminary study of work package P1 closes (see
-[ADR 0001](../docs/adr/0001-metalake.md) §9.1). Until then, the design and its evidence live in the ADR.
+Run the suite with `spec/v0/run.sh` (needs Docker). It prints one line per case and fails on any failing case,
+any rule of the text without a passing case, and any rule a case names that the text lacks.
+
+The design behind version 0 is [ADR 0002](../docs/adr/0002-specification-v0.md).

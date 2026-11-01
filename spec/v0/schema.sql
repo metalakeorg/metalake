@@ -1,0 +1,95 @@
+-- MetaLake v0 · reference DDL.
+--
+-- Run inside an empty schema: the schema becomes one catalog (LAY-1). 9223372036854775807 is OPEN (LAY-4).
+
+create table meta (
+  key text primary key,
+  value text not null);
+
+create sequence commit_seq_gen as bigint start 1 no cycle;
+create sequence ref_id_gen as int start 2 no cycle;
+create sequence file_id_gen as bigint start 1 no cycle;
+
+-- §4.1 · refs and commits
+
+create table ref (
+  ref_id int primary key,
+  name text not null unique,
+  kind text not null check (kind in ('branch', 'tag')),
+  created_seq bigint not null,
+  protected boolean not null default false,
+  deleted boolean not null default false);
+
+create table ref_base (
+  ref_id int not null references ref,
+  begin_seq bigint not null,
+  end_seq bigint not null default 9223372036854775807,
+  parent_ref_id int not null references ref,
+  fork_seq bigint not null,
+  primary key (ref_id, begin_seq),
+  check (begin_seq < end_seq),
+  check (fork_seq <= begin_seq),
+  check (parent_ref_id <> ref_id));
+create unique index ref_base_live on ref_base (ref_id) where end_seq = 9223372036854775807;
+
+create table commit (
+  commit_seq bigint primary key,
+  ref_id int not null references ref,
+  xid xid8 not null,
+  committed_at timestamptz,
+  author text not null,
+  actor text not null,
+  operation text not null,
+  app_id text,
+  app_version bigint,
+  definition text,
+  message text);
+
+-- §4.2 · tables
+
+create table tbl (
+  table_id uuid primary key,
+  location text not null,
+  created_seq bigint not null);
+
+create table table_counter (
+  table_id uuid primary key references tbl,
+  last_field_id int not null default 0,
+  last_spec_id int not null default 0,
+  last_sort_order_id int not null default 0);
+
+-- §4.3 · data
+
+create table data_file (
+  table_id uuid not null references tbl,
+  file_id bigint not null,
+  ref_id int not null references ref,
+  begin_seq bigint not null,
+  end_seq bigint not null default 9223372036854775807,
+  path text,
+  format text not null default 'parquet' check (format = 'parquet'),
+  record_count bigint not null,
+  file_size bigint not null,
+  primary key (table_id, file_id, begin_seq),
+  check (begin_seq < end_seq));
+-- VIS-7: one live row per file.
+create unique index data_file_live on data_file (table_id, file_id) where end_seq = 9223372036854775807;
+create index data_file_ref on data_file (table_id, ref_id, begin_seq);
+
+create table tombstone (
+  table_id uuid not null references tbl,
+  file_id bigint not null,
+  ref_id int not null references ref,
+  begin_seq bigint not null,
+  end_seq bigint not null default 9223372036854775807,
+  primary key (table_id, file_id, ref_id, begin_seq),
+  check (begin_seq < end_seq));
+create unique index tombstone_live on tombstone (table_id, file_id, ref_id) where end_seq = 9223372036854775807;
+create index tombstone_ref on tombstone (table_id, ref_id, begin_seq);
+
+-- The catalog starts with its identity and `main` (LAY-2, ID-2).
+insert into meta values
+  ('format_version', '0'),
+  ('catalog_uuid', gen_random_uuid()::text),
+  ('created_at', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'));
+insert into ref (ref_id, name, kind, created_seq) values (1, 'main', 'branch', 0);
