@@ -37,8 +37,8 @@ select expect((select column_default from information_schema.columns
    where table_schema = current_schema() and table_name = 'data_file' and column_name = 'end_seq')
   = '''9223372036854775807''::bigint', 'end_seq defaults to OPEN');
 select new_table('gs://lake/t', 0) \gset
-select expect_error(format('insert into data_file (table_id, file_id, ref_id, begin_seq, end_seq, record_count, file_size)
-  values (%L, 1, 1, 5, 5, 1, 1)', :'new_table'), '23514', 'an empty range');
+select expect_error(format('insert into data_file (table_id, file_id, ref_id, begin_seq, end_seq, spec_id, partition,
+  record_count, file_size, footer_size) values (%L, 1, 1, 5, 5, 0, ''[]'', 1, 1, 1)', :'new_table'), '23514', 'an empty range');
 
 -- case: commit_seq is drawn from a sequence that starts at 1 and never cycles, and identifies one commit
 -- rules: ID-1

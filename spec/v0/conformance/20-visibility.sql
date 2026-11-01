@@ -2,8 +2,9 @@
 
 select new_table('gs://lake/t', 0) as t \gset
 create function f(id bigint, r int, b bigint, e bigint default 9223372036854775807) returns void language sql as $$
-  insert into data_file (table_id, file_id, ref_id, begin_seq, end_seq, path, record_count, file_size)
-  select table_id, id, r, b, e, 'gs://lake/t/' || id || '.parquet', 1000, 1 << 20 from tbl;
+  insert into data_file (table_id, file_id, ref_id, begin_seq, end_seq, path, spec_id, partition, record_count,
+                         file_size, footer_size)
+  select table_id, id, r, b, e, 'gs://lake/t/' || id || '.parquet', 0, '[]', 1000, 1 << 20, 4096 from tbl;
 $$;
 create function tomb(id bigint, r int, b bigint, e bigint default 9223372036854775807) returns void language sql as $$
   insert into tombstone select table_id, id, r, b, e from tbl;

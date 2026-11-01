@@ -82,7 +82,7 @@ and its rows follow §5.4.
 
 | Table | Columns | Notes |
 |---|---|---|
-| `data_file` | `table_id uuid`, `file_id bigint`, `ref_id int`, `begin_seq bigint`, `end_seq bigint`, `path text` null, `format text`, `record_count bigint`, `file_size bigint`; pk `(table_id, file_id, begin_seq)` | One row per ref that has owned the file (§5). Immutable apart from closing `end_seq`. |
+| `data_file` | `table_id uuid`, `file_id bigint`, `ref_id int`, `begin_seq bigint`, `end_seq bigint`, `path text` null, `format text`, `spec_id int`, `partition jsonb`, `sort_order_id int` null, `record_count bigint`, `file_size bigint`, `footer_size int`, `first_row_id bigint` null, `stat_field_ids int[]`, `lower bytea[]`, `upper bytea[]`, `null_count bigint[]`, `nan_count bigint[]`, `value_count bigint[]` null; pk `(table_id, file_id, begin_seq)` | One row per ref that has owned the file (§5). Immutable apart from closing `end_seq`. Statistics follow §8. |
 | `tombstone` | `table_id uuid`, `file_id bigint`, `ref_id int`, `begin_seq bigint`, `end_seq bigint`; pk `(table_id, file_id, ref_id, begin_seq)` | A ref hides a file it inherits. |
 
 ## 5. Visibility
@@ -201,3 +201,70 @@ with Apache Iceberg 1.10.0
   ordered by `position` at every level, with `id`, `name`, `required`, `type`, and `doc`, `initial-default`
   and `write-default` when they are not null. `list` and `map` render with `element-id`, `element-required`
   and `element`, or `key-id`, `key`, `value-id`, `value-required` and `value`.
+
+## 8. Statistics
+
+### 8.1 What a file carries
+
+- **STA-1.** Every `data_file` row has `record_count`, `file_size` and `footer_size`, exact and non-negative.
+  `footer_size` is the length of the Parquet footer (`FileMetaData`), so a reader can fetch it in one request.
+- **STA-2.** Column statistics are parallel arrays: `lower`, `upper`, `null_count`, `nan_count` and, when
+  present, `value_count` have one element per field of `stat_field_ids`, in the same order. The field ids are
+  distinct. A `NULL` element means unknown. `nan_count` is `NULL` for fields that are not `float` or `double`;
+  `value_count` counts nulls and NaNs, as in Iceberg.
+- **STA-3.** Readers find a field's statistics by its position in `stat_field_ids`, never by a fixed position.
+  Writers MUST give bounds for every field of the table's cluster key at commit time and SHOULD place them
+  first, in key order, so that indexes on the first positions serve pruning. Writers SHOULD give bounds for
+  every primitive field.
+- **STA-4.** `partition` is a JSON array with one element per field of the file's partition spec `spec_id`, in
+  order, each in Iceberg's JSON single-value serialization. `spec_id` is a spec of the table, and
+  `sort_order_id`, when not `NULL`, is 0 or a sort order of the table.
+
+### 8.2 Bound encoding
+
+Bounds are `bytea` in an **order-preserving encoding**: for two values `a` and `b` of one field,
+`encode(a) < encode(b)` exactly when `a < b`, comparing `bytea` as Postgres does (unsigned bytes, a prefix
+first). Pruning is then plain SQL over the catalog.
+
+- **STA-5.** The encoding of each type:
+
+  | Type | Encoding |
+  |---|---|
+  | `boolean` | 1 byte: `0x00` false, `0x01` true |
+  | `int`, `long` | the value as a 64-bit two's complement integer, big-endian, sign bit flipped (8 bytes) |
+  | `date` | days from 1970-01-01 as a 32-bit two's complement integer, big-endian, sign bit flipped (4 bytes) |
+  | `time` | microseconds from midnight, as `long` (8 bytes) |
+  | `timestamp`, `timestamptz` | microseconds from 1970-01-01 00:00:00 UTC, as `long` (8 bytes) |
+  | `timestamp_ns`, `timestamptz_ns` | nanoseconds from 1970-01-01 00:00:00 UTC, as `long` (8 bytes) |
+  | `float`, `double` | the value as an IEEE 754 double, big-endian; if the sign bit is 0, flip it; if it is 1, flip every bit (8 bytes) |
+  | `decimal(P,S)` | the unscaled value as a 128-bit two's complement integer, big-endian, sign bit flipped (16 bytes) |
+  | `string` | the UTF-8 bytes |
+  | `uuid` | the 16 bytes, big-endian |
+  | `fixed[L]`, `binary` | the bytes |
+
+  `string` bounds therefore order by Unicode code point, and `float` and `double` bounds by IEEE 754
+  `totalOrder`: `-0.0` precedes `+0.0`, as Iceberg requires.
+- **STA-6.** NaN is never a bound. A bound is the least or greatest of the non-null, non-NaN values of the
+  field in the file; a file whose values are all null or NaN has `NULL` bounds for that field.
+- **STA-7.** The encoding does not change under the promotions of TYP-3: `int` and `long` share one encoding,
+  a `float` is encoded as the double it promotes to, and a decimal's unscaled value keeps its scale. The
+  exception is `date` to `timestamp` or `timestamp_ns`: bounds written before the promotion keep their 4 bytes,
+  and a reader converts a 4-byte bound of a timestamp field from days to the field's unit.
+- **STA-8.** `string` and `binary` bounds MAY be truncated: a `string` to its first 16 code points, a `binary`
+  to its first 16 bytes. A truncated `lower` is the prefix. A truncated `upper` is the prefix with its last code
+  point (or byte) incremented, after dropping trailing code points that are U+10FFFF (or bytes that are
+  `0xFF`); the increment skips the surrogate range U+D800 to U+DFFF. If nothing is left to increment, the
+  `upper` bound is `NULL`.
+- **STA-9.** `variant` bounds are `NULL` in v0. `geometry` and `geography` bounds are the corners of the
+  bounding box, as in Iceberg: `lower` holds the minimum and `upper` the maximum of each coordinate, as the
+  concatenation `x:y`, `x:y:z`, or `x:y:z:m` (with `z` NaN when only `m` is set), each coordinate encoded as a
+  `double` above. For `geography`, `x` of `lower` MAY be greater than `x` of `upper`: the box crosses the
+  antimeridian.
+
+### 8.3 Pruning
+
+- **STA-10.** A visible file is a candidate for a predicate `lo <= field <= hi` (either end MAY be open)
+  unless its bounds prove that no value of the field in the file is in that range: `upper < lo` or
+  `lower > hi`, comparing bounds as STA-7 reads them. A file with no bounds for the field is always a
+  candidate, and so is every file for a `geometry`, `geography` or `variant` field, whose bounds are not
+  ordered values. The reference function `prune(r, t, s, field_id, lo, hi)` returns exactly the candidates.
