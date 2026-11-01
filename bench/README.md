@@ -181,3 +181,10 @@ The last argument is the number of files per manifest (default 10000). Expect `c
 ```bash
 docker run --rm -v "$PWD":/b:ro python:3.12-slim bash -c 'pip install -q pyarrow && python /b/commit_payload.py'
 ```
+
+## Added after the move
+
+| Prototype | What it shows | How to run |
+|---|---|---|
+| `iceberg_ingest.py` | 2.7 · a minimal Iceberg REST catalog (config, `loadTable`, `updateTable`) over the o1 schema; a real PyIceberg client appends, retries a stale append (409 → rebase) and deletes; Postgres and PyIceberg must plan the same files after every step | postgres:17 + python:3.12-slim on one network; `pip install "pyiceberg[pyarrow]==0.12.0" "psycopg[binary]"`; load `schema.sql` + `merge.sql`, `select seed(2000, 20, 0, 0, 0, 0, false); call build_indexes();`, then `python iceberg_ingest.py "host=<pg> user=postgres"` |
+| `tenancy_bench.sh` | 2.8 · many catalogs in one Postgres: schema per catalog against database per catalog | `docker run --rm -u postgres -e CATALOGS=1000 -e DBS=20 -v $PWD:/b:ro postgres:17 bash /b/tenancy_bench.sh` |
