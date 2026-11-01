@@ -13,6 +13,7 @@
 - **Validity range:** the pair `begin_seq`, `end_seq` of a row. A row is valid at `s` when
   `begin_seq <= s < end_seq`.
 - **`OPEN`** is the `bigint` value `9223372036854775807`. A row whose `end_seq` is `OPEN` is **live**.
+- **`LATEST`** is `OPEN - 1`: a read at `LATEST` sees the current state.
 - **Reference:** `v0/schema.sql` and `v0/reference.sql`. Where this text and the reference disagree, the text
   is wrong and is corrected.
 
@@ -78,7 +79,16 @@ reference DDL are recommendations.
 Tables marked (V) are **versioned**: each also has `ref_id int`, `begin_seq bigint` and `end_seq bigint`,
 and its rows follow §5.4.
 
-### 4.4 Data
+### 4.4 Snapshots and writes
+
+| Table | Columns | Notes |
+|---|---|---|
+| `snapshot` | `table_id uuid`, `snapshot_id bigint`, `ref_id int`, `parent_snapshot_id bigint` null, `schema_seq bigint`, `spec_id int`, `sort_order_id int`, `summary jsonb`; pk `(table_id, snapshot_id)` | One row per table per commit (§9). |
+| `head` | `ref_id int`, `table_id uuid`, `snapshot_id bigint`; pk `(ref_id, table_id)` | The lock row of a `(ref, table)` (§9). |
+| `idempotency` | `ref_id int`, `app_id text`, `version bigint`, `commit_seq bigint`; pk `(ref_id, app_id)` | Idempotent commits (CMT-5). |
+| `intent` | `path text` pk, `table_id uuid`, `ref_id int`, `expires_at timestamptz` | Files that may have been uploaded without being committed (CMT-10). |
+
+### 4.5 Data
 
 | Table | Columns | Notes |
 |---|---|---|
@@ -268,3 +278,67 @@ first). Pruning is then plain SQL over the catalog.
   `lower > hi`, comparing bounds as STA-7 reads them. A file with no bounds for the field is always a
   candidate, and so is every file for a `geometry`, `geography` or `variant` field, whose bounds are not
   ordered values. The reference function `prune(r, t, s, field_id, lo, hi)` returns exactly the candidates.
+
+## 9. Commits
+
+A commit changes one or more tables of one ref. Its operations are: add files, remove files, create, rename
+and drop a table, add, change and drop fields, set or remove properties, and set the partition spec, the sort
+order and the cluster key.
+
+### 9.1 Snapshots
+
+- **CMT-1.** Every table a commit touches gets one `snapshot` row with `snapshot_id = commit_seq`, the ref,
+  `parent_snapshot_id` (the table's current snapshot on the ref before the commit, `NULL` for a new table),
+  `schema_seq` (the `commit_seq` of the latest commit that changed the table's fields, as seen by this
+  snapshot), the default `spec_id` and `sort_order_id` (0 when unsorted) after the commit, and a `summary`
+  with `operation`, `added-data-files`, `deleted-data-files`, `added-records` and `deleted-records`.
+- **CMT-2.** The snapshot of table `t` at `(r, s)` is found through the chain: at the lowest level i that has
+  one, the greatest `snapshot_id` of `ref_i` that is at most `s_i` and at least the `begin_seq` of the
+  `ref_base` row that level reads through (0 for a ref without one). The **current** snapshot is the one at
+  `LATEST`. `head.snapshot_id` is always the current snapshot of a ref that has committed to the table.
+
+### 9.2 Protocol
+
+- **CMT-3.** A commit is one transaction. It writes everything or nothing. Its `commit` row records the ref,
+  the author and actor, the operation, the optional `app_id`, `app_version`, `definition` and `message`, and
+  `xid = pg_current_xact_id()`. Sequence numbers of failed commits are lost; `commit_seq` may have gaps.
+- **CMT-4.** Before drawing its `commit_seq`, a commit locks:
+  1. its ref's row: `FOR KEY SHARE`, or `FOR UPDATE` if it creates, renames or drops a table;
+  2. the `head` rows of the existing tables it touches, `FOR UPDATE`, in `table_id` order. A missing head is
+     first inserted with the table's current snapshot.
+
+  So commits of one `(ref, table)` serialise, their snapshots form one chain of increasing ids, and no commit
+  is lost. Tags and deleted refs receive no commits.
+- **CMT-5.** With an `app_id`, a commit is idempotent: it inserts `(ref, app_id, 0, 0)` into `idempotency`
+  if absent and locks that row first. If its `app_version` is at most the stored `version`, it changes nothing
+  and returns the stored `commit_seq`. Otherwise it stores its own `app_version` and `commit_seq`.
+  `app_version` is positive.
+- **CMT-6.** A table entry MAY carry `expected_snapshot`. If the current snapshot differs, the commit fails
+  with a conflict. This is how an Iceberg `assert-ref-snapshot-id` requirement is honoured.
+- **CMT-7.** Checked under the locks, against the current state, a commit fails with a conflict when it:
+
+  | The commit… | Conflicts when… |
+  |---|---|
+  | removes a file | the file is not visible on the ref |
+  | adds a field named `n` under a parent | a visible sibling is already named `n` |
+  | changes or drops field `f` | `f` is not visible, or the type change is not allowed (TYP-3, TYP-4) |
+  | creates a table, or renames one, to `(namespace, name)` | another visible table has that name |
+  | renames, drops or otherwise changes a table | the table is not visible on the ref |
+  | only adds files | never |
+
+  A conflict raises SQLSTATE `40001` with the message prefix `metalake conflict:`. The writer MAY retry with
+  a refreshed view.
+- **CMT-8.** A commit writes, with `begin_seq = commit_seq`:
+  - its added files, owned by the ref;
+  - for a removed file the ref owns, the closing of its row (`end_seq = commit_seq`); for one it inherits, a
+    tombstone;
+  - for a changed versioned object, the closing of the ref's own live row of that key, if any, and a new row;
+  - its snapshots (CMT-1), and `head.snapshot_id = commit_seq` for every touched table.
+- **CMT-9.** A commit is refused, with SQLSTATE `22023` and the message prefix `metalake invalid:`, if the
+  current state of a touched table would break a rule of §6, §7 or §8, if an added file lacks statistics for
+  a field of the cluster key (STA-3), or if a new field id was not drawn from the table's counter. A created
+  table takes its field, spec and partition field ids from the commit, and its counters start after them; its
+  default spec is spec 0, unpartitioned unless the commit gives one.
+- **CMT-10.** Writers SHOULD register an `intent` row (path, table, ref, expiry) in its own transaction before
+  uploading a file. A commit deletes the intents of the files it adds. After committing, it sends
+  `NOTIFY metalake` with the payload `<schema>:<commit_seq>`.

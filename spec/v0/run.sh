@@ -21,6 +21,7 @@ fi
 export PGDATA=/tmp/pg PGHOST=/tmp PGUSER=postgres PGDATABASE=postgres
 initdb -A trust >/dev/null
 pg_ctl -w -l /tmp/pg.log -o "-k /tmp -c listen_addresses='' -c track_commit_timestamp=on -c fsync=off" start >/dev/null
+psql -X -q -c "create extension dblink" >/dev/null
 
 # Split every case file at its `-- case:` lines. What precedes the first case is a fixture shared by all of them.
 cases=/tmp/cases; mkdir -p "$cases"
