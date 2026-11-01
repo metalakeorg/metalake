@@ -541,3 +541,34 @@ blob type `deletion-vector-v1`.
   timestamp just before making it visible, so a commit not yet visible will carry a timestamp later than that
   horizon: every commit is delivered once, in order, with no gaps.
   Commits removed by collection (RET-3) are no longer delivered: a consumer keeps up within the retention.
+
+## 15. Partition values
+
+The rules of this section follow the Iceberg table specification, format version 3 (Apache Iceberg 1.10.0):
+partition transforms, the truncate details and Appendix B.
+
+- **PAR-1.** Each transform maps a value to a partition value; a null value maps to null:
+  - `identity`: the value itself;
+  - `bucket[N]`: `(h & 2147483647) mod N`, where `h` is the 32-bit Murmur3 hash, x86 variant, seed 0, as a
+    signed integer, of the value's hash serialization: `int`, `long`, `time` (microseconds from midnight) and
+    timestamps (microseconds from the epoch, nanoseconds divided by 1000 rounding down) as the 8-byte
+    little-endian `long`; `date` as the 8-byte little-endian `long` of its days from 1970-01-01; `decimal` as
+    the unscaled value in the fewest bytes of two's complement, big-endian; `string` as UTF-8; `uuid` as its 16
+    bytes, big-endian; `fixed` and `binary` as the bytes;
+  - `truncate[W]`: for `int` and `long`, `v - (((v mod W) + W) mod W)`; for `decimal`, the same over the unscaled
+    value, so `W` counts in units of the scale; for `string`, the first `W` code points; for `binary`, the first
+    `W` bytes;
+  - `year`, `month`, `day`, `hour`: the number of whole years, months, days or hours from 1970-01-01T00:00 UTC to
+    the value, rounding down; a timestamp counts in UTC;
+  - `void`: null.
+- **PAR-2.** Every row of a file has the same partition value for each field of the file's spec, and
+  `data_file.partition` holds it, in Iceberg's JSON single-value serialization of the transform's result type:
+  the source type for `identity` and `truncate`, `int` for the others.
+- **PAR-3.** A commit refuses a file whose partition values contradict its statistics. For a field with
+  transform `T` over source field `f`, where the file has statistics for `f` (STA-7 reading them):
+  - if the partition value is null, the file has no non-null value of `f`: its bounds are `NULL`;
+  - if it is not null, `null_count` of `f` is 0 where known;
+  - for `identity`, `truncate`, `year`, `month`, `day` and `hour`, which keep order, `T(lower)` and `T(upper)`
+    equal the partition value; for `string` and `binary`, whose bounds may be truncated (STA-8),
+    `T(lower) <= value <= T(upper)`;
+  - for `bucket[N]`, when `lower = upper` and `f` is neither `string` nor `binary`, `T(lower)` equals the value.

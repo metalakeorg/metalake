@@ -308,6 +308,7 @@ begin
       union all select file_errors(r, t, latest, seq)
       union all select dv_errors(r, t, latest, seq)
       union all select inline_errors(r, t, latest, seq)
+      union all select partition_errors(r, t, latest, seq)
       union all select format('RET-7: the intent of %s expired at %s', i.path, i.expires_at)
         from intent i join data_file d on d.path = i.path
        where d.table_id = t and d.ref_id = r and d.begin_seq = seq and i.expires_at < now()
