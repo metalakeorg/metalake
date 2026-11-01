@@ -38,9 +38,11 @@
 - **ID-3.** `table_id` is a UUID assigned when the table is created and never reused.
 - **ID-4.** `file_id` values are drawn from `file_id_gen`. A `file_id` is unique in the catalog, across
   tables.
-- **ID-5.** Field ids, partition spec ids and sort order ids are unique per table. They are drawn from the
-  table's row in `table_counter`, which only increases, under a lock on that row. They are never drawn per
-  ref, so two branches never assign the same id to different things.
+- **ID-5.** Field ids, partition spec ids, partition field ids and sort order ids are unique per table. They
+  are drawn from the table's row in `table_counter`, which only increases, under a lock on that row. They are
+  never drawn per ref, so two branches never assign the same id to different things. The first field id is 1,
+  the first spec id 0, the first partition field id 1000 and the first sort order id 1; sort order id 0 is
+  the unsorted order and has no row.
 
 ## 4. Tables
 
@@ -60,9 +62,23 @@ reference DDL are recommendations.
 | Table | Columns | Notes |
 |---|---|---|
 | `tbl` | `table_id uuid` pk, `location text`, `created_seq bigint` | Immutable. `location` is the prefix new files are written under. |
-| `table_counter` | `table_id uuid` pk, `last_field_id int`, `last_spec_id int`, `last_sort_order_id int` | The per-table id counters (ID-5). |
+| `table_counter` | `table_id uuid` pk, `last_field_id int`, `last_spec_id int`, `last_partition_field_id int`, `last_sort_order_id int` | The per-table id counters (ID-5). |
+| `table_name` (V) | `table_id uuid`, `namespace text[]`, `name text`, `dropped bool` | The name of a table, and whether it is dropped (§6). |
+| `table_property` (V) | `table_id uuid`, `key text`, `value text` null, `dropped bool` | Table properties, as in Iceberg. |
 
-### 4.3 Data
+### 4.3 Schema, partitioning and ordering
+
+| Table | Columns | Notes |
+|---|---|---|
+| `field` (V) | `table_id uuid`, `field_id int`, `parent_field_id int` null, `position int`, `name text`, `type text`, `required bool`, `initial_default jsonb` null, `write_default jsonb` null, `doc text` null, `dropped bool` | One row per version of a field, nested fields included (§7). |
+| `partition_spec` (V) | `table_id uuid`, `spec_id int`, `fields jsonb` | The default partition spec (§6). |
+| `sort_order` (V) | `table_id uuid`, `sort_order_id int`, `fields jsonb` | The default sort order (§6). |
+| `cluster_key` (V) | `table_id uuid`, `field_ids int[]` | The fields whose statistics are indexed for pruning (§6). |
+
+Tables marked (V) are **versioned**: each also has `ref_id int`, `begin_seq bigint` and `end_seq bigint`,
+and its rows follow §5.4.
+
+### 4.4 Data
 
 | Table | Columns | Notes |
 |---|---|---|
@@ -105,3 +121,83 @@ Every read goes through this section.
 - **VIS-8.** Reads at a sequence are stable. A commit only adds rows that begin at its own `commit_seq` and
   closes live rows at it, so any read at a sequence below that `commit_seq` returns what it returned before
   the commit.
+
+### 5.4 Versioned objects
+
+- **VIS-9.** For a versioned table, the **key** of a row is:
+
+  | Table | Key |
+  |---|---|
+  | `table_name` | `table_id` |
+  | `table_property` | `(table_id, key)` |
+  | `field` | `(table_id, field_id)` |
+  | `partition_spec`, `sort_order`, `cluster_key` | `table_id` |
+
+  At `(r, s)`, the visible version of a key is its row valid at the lowest level of the chain. If that row is
+  `dropped`, the key is not visible. A ref changes an object by closing its own live row, if it has one, and
+  adding a new row; it never changes rows of other refs.
+- **VIS-10.** A ref has at most one live row per key.
+
+## 6. Tables
+
+The rules of this section and of §7 follow the Iceberg table specification, format version 3, as published
+with Apache Iceberg 1.10.0
+([`format/spec.md`](https://github.com/apache/iceberg/blob/apache-iceberg-1.10.0/format/spec.md)).
+
+- **TBL-1.** A table exists at `(r, s)` when its `table_name` key is visible (VIS-9). Its name is the pair
+  `(namespace, name)` of that version. A rename adds a version with the new name and keeps the `table_id`; a
+  drop adds a version with `dropped = true`. Both are seen only by the ref that made them and the refs that
+  inherit from it.
+- **TBL-2.** The properties of a table at `(r, s)` are its visible `table_property` keys. A property is
+  removed with a `dropped` version.
+- **TBL-3.** The visible `partition_spec` version is the table's default spec. A `spec_id` denotes one list
+  of fields forever: every row with the same `table_id` and `spec_id` has the same `fields`, and a file
+  written with a spec that is no longer the default is read with it. `fields` is a JSON array of
+  `{"source_ids": [int], "field_id": int, "name": text, "transform": text}`.
+  - Transforms are `identity`, `bucket[N]`, `truncate[W]`, `year`, `month`, `day`, `hour` and `void`, with
+    `N` and `W` positive, applied only to the source types Iceberg allows for them. A catalog never holds
+    another transform.
+  - A source field is a primitive field that is not contained in a list or a map.
+- **TBL-4.** The visible `sort_order` version is the table's default sort order. With none, the default is
+  the unsorted order, id 0. A `sort_order_id` denotes one list of fields forever. `fields` is a JSON array of
+  `{"source_ids": [int], "transform": text, "direction": "asc" | "desc", "null_order": "nulls-first" | "nulls-last"}`,
+  with the transforms and sources of TBL-3.
+- **TBL-5.** The visible `cluster_key` version names between one and four distinct fields of the table, each
+  a visible primitive field not contained in a list or a map.
+
+## 7. Types and schemas
+
+- **TYP-1.** `field.type` is one of Iceberg's type strings in canonical form: `unknown`, `boolean`, `int`,
+  `long`, `float`, `double`, `decimal(P,S)` with `1 <= P <= 38` and no spaces, `date`, `time`, `timestamp`,
+  `timestamptz`, `timestamp_ns`, `timestamptz_ns`, `string`, `uuid`, `fixed[L]` with `L >= 1`, `binary`,
+  `variant`, `geometry(C)`, `geography(C,A)`, and `struct`, `list` and `map` for nested fields. A geospatial
+  type whose parameters are the defaults (`OGC:CRS84`, and `spherical` for `geography`) is written `geometry`
+  or `geography`. `A` is one of `spherical`, `vincenty`, `thomas`, `andoyer` and `karney`.
+- **TYP-2.** The visible fields of a table form one tree:
+  - a field with no parent is a column of the table; a field with a parent belongs to that parent, which is
+    visible and is a `struct`, `list` or `map`;
+  - a `list` has exactly one child, named `element`; a `map` has exactly two, `key` and `value`, and `key` is
+    required; a primitive has none;
+  - siblings have distinct names and distinct positions; `position` orders them;
+  - field ids are between 1 and 2147483447.
+- **TYP-3.** A field's type changes only as Iceberg v3 allows: `unknown` to any type, `int` to `long`,
+  `float` to `double`, `date` to `timestamp` or `timestamp_ns`, and `decimal(P,S)` to `decimal(P',S)` with
+  `P' > P`. Any other change is a new field with a new id.
+- **TYP-4.** `date` does not change to `timestamp` or `timestamp_ns` while it is the source of a partition
+  field, in any spec of the table, whose transform is `identity` or `bucket[N]`: those would produce different
+  partition values.
+- **TYP-5.** Defaults follow Iceberg:
+  - only fields of a struct (top-level columns included) have defaults; the children of lists and maps have
+    none;
+  - `initial_default` never changes across the versions of a field;
+  - a required field added after the table was created has a non-null `initial_default` and `write_default`;
+  - fields of type `unknown`, `variant`, `geometry` or `geography` have null defaults, and `unknown` fields are
+    optional;
+  - the default of a `struct` field is null or the empty object `{}`;
+  - defaults use Iceberg's JSON single-value serialization: a JSON boolean for `boolean`, a JSON integer for
+    `int` and `long`, a JSON number for `float` and `double`, a JSON string for the other primitives, a JSON
+    array for a `list`, and a JSON object with `keys` and `values` arrays for a `map`.
+- **TYP-6.** The schema of a table at `(r, s)` is its visible fields rendered as an Iceberg JSON `struct` type,
+  ordered by `position` at every level, with `id`, `name`, `required`, `type`, and `doc`, `initial-default`
+  and `write-default` when they are not null. `list` and `map` render with `element-id`, `element-required`
+  and `element`, or `key-id`, `key`, `value-id`, `value-required` and `value`.

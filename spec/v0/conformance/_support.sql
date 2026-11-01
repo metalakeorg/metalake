@@ -24,3 +24,28 @@ begin
     raise exception '%: expected files %, got %', what, expected, got;
   end if;
 end $$;
+
+-- Fixtures for cases that write rows directly. They act on the catalog's only table.
+
+create function branch(r int, name text, b bigint, parent int, fork bigint) returns void language sql as $$
+  insert into ref (ref_id, name, kind, created_seq) values (r, name, 'branch', b);
+  insert into ref_base (ref_id, begin_seq, parent_ref_id, fork_seq) values (r, b, parent, fork);
+$$;
+
+-- A field version of the only table, live unless `e` is given.
+create function fld(id int, name text, type text, r int, b bigint, parent int default null, pos int default null,
+    req boolean default false, e bigint default 9223372036854775807, dropped boolean default false,
+    init jsonb default null, wdef jsonb default null) returns void language sql as $$
+  insert into field (table_id, field_id, parent_field_id, position, name, type, required, initial_default,
+                     write_default, dropped, ref_id, begin_seq, end_seq)
+  select table_id, id, parent, coalesce(pos, id), name, type, req, init, wdef, dropped, r, b, e from tbl;
+$$;
+create function names(r int, s bigint) returns text language sql as $$
+  select string_agg(array_to_string(namespace || name, '.'), ' ' order by name) from visible_table_names(r, s);
+$$;
+create function columns(r int, s bigint) returns text language sql as $$
+  select string_agg(field_id || ':' || name || ':' || type, ' ' order by field_id) from visible_fields(r, (select table_id from tbl), s);
+$$;
+create function errors(r int, s bigint) returns text[] language sql as $$
+  select coalesce(array_agg(distinct split_part(e, ':', 1)), '{}') from table_errors(r, (select table_id from tbl), s) e;
+$$;

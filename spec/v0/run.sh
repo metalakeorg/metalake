@@ -37,7 +37,7 @@ for c in "$cases"/*.sql; do
   i=$((i + 1))
   title=$(sed -n 's/^-- case: //p' "$c")
   rules=$(sed -n 's/^-- rules: //p' "$c" | tr ',' ' ')
-  if out=$(psql -X -q -v ON_ERROR_STOP=1 2>&1 <<SQL
+  if out=$(psql -X -q -o /dev/null -v ON_ERROR_STOP=1 2>&1 <<SQL
 create schema c$i;
 set search_path = c$i;
 set client_min_messages = warning;

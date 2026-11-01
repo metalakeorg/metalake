@@ -5,7 +5,8 @@
 select expect(
   (select array_agg(table_name::text order by table_name) from information_schema.tables
     where table_schema = current_schema()) =
-  array['commit', 'data_file', 'meta', 'ref', 'ref_base', 'table_counter', 'tbl', 'tombstone'],
+  array['cluster_key', 'commit', 'data_file', 'field', 'meta', 'partition_spec', 'ref', 'ref_base', 'sort_order',
+        'table_counter', 'table_name', 'table_property', 'tbl', 'tombstone'],
   'the tables of §4');
 select expect(not exists (
   select 1 from information_schema.columns where table_schema = current_schema() and column_name ~ 'tenant'),
@@ -69,12 +70,14 @@ select expect((select count(distinct nextval('file_id_gen')) = 1000 from generat
 select expect((select data_type = 'bigint'::regtype and not cycle
   from pg_sequences where schemaname = current_schema() and sequencename = 'file_id_gen'), 'file_id_gen');
 
--- case: field, spec and sort order ids increase per table and per kind, and are independent across tables
+-- case: field, spec, partition field and sort order ids increase per table and per kind from their first values
 -- rules: ID-5
 select new_table('gs://lake/a', 0) as a, new_table('gs://lake/b', 0) as b \gset
 select expect(next_id(:'a', 'field') = 1, 'a field 1');
 select expect(next_id(:'a', 'field') = 2, 'a field 2');
+select expect(next_id(:'a', 'spec') = 0, 'a spec 0');
 select expect(next_id(:'a', 'spec') = 1, 'a spec 1');
+select expect(next_id(:'a', 'partition_field') = 1000, 'a partition field 1000');
 select expect(next_id(:'b', 'field') = 1, 'b field 1');
 select expect(next_id(:'a', 'sort_order') = 1, 'a sort order 1');
 select expect(next_id(:'a', 'field') = 3, 'a field 3');

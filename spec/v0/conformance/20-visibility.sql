@@ -8,10 +8,6 @@ $$;
 create function tomb(id bigint, r int, b bigint, e bigint default 9223372036854775807) returns void language sql as $$
   insert into tombstone select table_id, id, r, b, e from tbl;
 $$;
-create function branch(r int, name text, b bigint, parent int, fork bigint) returns void language sql as $$
-  insert into ref (ref_id, name, kind, created_seq) values (r, name, 'branch', b);
-  insert into ref_base (ref_id, begin_seq, parent_ref_id, fork_seq) values (r, b, parent, fork);
-$$;
 
 -- case: three refs: what each sees, at the head and in the past
 -- rules: VIS-3, VIS-4, VIS-5, VIS-6
