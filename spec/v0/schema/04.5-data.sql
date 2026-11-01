@@ -44,3 +44,35 @@ create table tombstone (
   check (begin_seq < end_seq));
 create unique index tombstone_live on tombstone (table_id, file_id, ref_id) where end_seq = 9223372036854775807;
 create index tombstone_ref on tombstone (table_id, ref_id, begin_seq);
+
+-- §10 · deletion vectors: versioned by (table_id, file_id); one live row per key and ref (VIS-10); DV-3.
+create table deletion_vector (
+  table_id uuid not null references tbl,
+  file_id bigint not null,
+  path text,
+  content_offset bigint,
+  content_size bigint not null check (content_size > 0),
+  cardinality bigint not null check (cardinality >= 0),
+  inline bytea,
+  ref_id int not null references ref,
+  begin_seq bigint not null,
+  end_seq bigint not null default 9223372036854775807,
+  primary key (table_id, file_id, ref_id, begin_seq),
+  check (begin_seq < end_seq),
+  check ((path is not null and content_offset is not null and inline is null)
+      or (path is null and content_offset is null and inline is not null and content_size = length(inline))));
+create unique index deletion_vector_live on deletion_vector (table_id, file_id, ref_id)
+  where end_seq = 9223372036854775807;
+
+-- §11 · inline files and footers
+create table inline_file (
+  table_id uuid not null references tbl,
+  file_id bigint not null,
+  content bytea not null,
+  primary key (table_id, file_id));
+
+create table file_footer (
+  table_id uuid not null references tbl,
+  file_id bigint not null,
+  footer bytea not null,
+  primary key (table_id, file_id));

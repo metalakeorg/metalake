@@ -95,6 +95,9 @@ and its rows follow §5.5.
 |---|---|---|
 | `data_file` | `table_id uuid`, `file_id bigint`, `ref_id int`, `begin_seq bigint`, `end_seq bigint`, `path text` null, `format text`, `spec_id int`, `partition jsonb`, `sort_order_id int` null, `record_count bigint`, `file_size bigint`, `footer_size int`, `first_row_id bigint` null, `stat_field_ids int[]`, `lower bytea[]`, `upper bytea[]`, `null_count bigint[]`, `nan_count bigint[]`, `value_count bigint[]` null; pk `(table_id, file_id, begin_seq)` | One row per ref that has owned the file (§5). Immutable apart from closing `end_seq`. Statistics follow §8. |
 | `tombstone` | `table_id uuid`, `file_id bigint`, `ref_id int`, `begin_seq bigint`, `end_seq bigint`; pk `(table_id, file_id, ref_id, begin_seq)` | A ref hides a file it inherits. |
+| `deletion_vector` (V) | `table_id uuid`, `file_id bigint`, `path text` null, `content_offset bigint` null, `content_size bigint`, `cardinality bigint`, `inline bytea` null | The deleted rows of a file (§10). |
+| `inline_file` | `table_id uuid`, `file_id bigint`, `content bytea`; pk `(table_id, file_id)` | The bytes of an inline file (§11). |
+| `file_footer` | `table_id uuid`, `file_id bigint`, `footer bytea`; pk `(table_id, file_id)` | OPTIONAL: a file's Parquet footer (§11). |
 
 ## 5. Visibility
 
@@ -151,6 +154,7 @@ Every read goes through this section.
   | `table_name` | `table_id` |
   | `table_property` | `(table_id, key)` |
   | `field` | `(table_id, field_id)` |
+  | `deletion_vector` | `(table_id, file_id)` |
   | `partition_spec`, `sort_order`, `cluster_key` | `table_id` |
 
   At `(r, s)`, the visible version of a key is its row valid at the lowest level of the chain. If that row is
@@ -335,6 +339,7 @@ order and the cluster key.
   | The commit… | Conflicts when… |
   |---|---|
   | removes a file | the file is not visible on the ref |
+  | sets the deletion vector of a file | the file is not visible, or its visible vector is not the one the commit started from (DV-4) |
   | adds a field named `n` under a parent | a visible sibling is already named `n` |
   | changes or drops field `f` | `f` is not visible, or the type change is not allowed (TYP-3, TYP-4) |
   | creates a table, or renames one, to `(namespace, name)` | another visible table has that name |
@@ -359,3 +364,47 @@ order and the cluster key.
 - **CMT-10.** Writers SHOULD register an `intent` row (path, table, ref, expiry) in its own transaction before
   uploading a file. A commit deletes the intents of the files it adds. After committing, it sends
   `NOTIFY metalake` with the payload `<schema>:<commit_seq>`.
+- **CMT-11.** A commit whose `operation` is `replace` (a compaction or a flush) only removes and adds files.
+  The live rows of the files it removes (DV-5) equal the rows of the files it adds, which carry no vectors.
+
+## 10. Deletion vectors
+
+The rules of this section follow the Puffin specification published with Apache Iceberg 1.10.0
+([`format/puffin-spec.md`](https://github.com/apache/iceberg/blob/apache-iceberg-1.10.0/format/puffin-spec.md)),
+blob type `deletion-vector-v1`.
+
+- **DV-1.** A `deletion_vector` row deletes the rows of its data file whose positions, counted from 0, its
+  bitmap holds. It is a versioned object keyed by `(table_id, file_id)` (§5.5). At `(r, s)` a file's vector is
+  its visible version, and it applies only while the file is visible; a file has at most one vector.
+- **DV-2.** The vector is a `deletion-vector-v1` blob: the length of what follows up to the checksum as 4
+  bytes big-endian, the magic `D1 D3 39 64`, the positions as a 64-bit Roaring bitmap in its portable
+  serialization (the number of 32-bit bitmaps as 8 bytes little-endian, then for each, by increasing key, the
+  key as 4 bytes little-endian and the 32-bit Roaring bitmap in its standard serialization), and a CRC-32 of the
+  magic and the bitmap as 4 bytes big-endian. Positions are below 2⁶³ and below the file's `record_count`.
+  `cardinality` is the number of positions.
+- **DV-3.** The blob is stored in one of two ways:
+  - in a Puffin file at `path`, with `content_offset` and `content_size` exactly the blob's offset and length in
+    that file's footer, and `inline` `NULL`;
+  - in `inline`, holding the blob's bytes, with `path` and `content_offset` `NULL` and
+    `content_size = length(inline)`.
+- **DV-4.** A commit that sets a file's vector names `base_seq`, the `begin_seq` of the visible vector it
+  started from, or none if the file had none. If the file's visible vector is another one, the commit fails
+  with a conflict (CMT-7). The new vector holds every position of the one it replaces, so `cardinality` never
+  decreases. The reference checks the positions themselves only for inline vectors, whose bytes it has.
+- **DV-5.** The live rows of a file at `(r, s)` are its `record_count` minus the `cardinality` of its vector.
+
+## 11. Inline files and footers
+
+- **INL-1.** An inline file is a `data_file` row with `path = NULL`; its complete Parquet bytes are the
+  `content` of its `inline_file` row, and `file_size = length(content)`. A `data_file` has `path = NULL`
+  exactly when it has an `inline_file` row. It follows every other rule of a file. Its size is at most the table
+  property `inline.max-bytes`, 65536 when the property is absent.
+- **INL-2.** Inline files are flushed by a `replace` commit (CMT-11) that removes them and adds stored files.
+  Implementations MUST flush a table on a ref when its live inline files exceed the property
+  `inline.flush-bytes` in total (1048576 when absent) or the oldest of them was committed more than
+  `inline.flush-age-seconds` ago (3600 when absent). The reference function `inline_flush_due(r, t)` says
+  whether that is the case.
+- **FTR-1.** A `file_footer` row is OPTIONAL. When present, `footer` is the file's Parquet footer
+  (`FileMetaData`) byte for byte, so its length is the file's `footer_size`. A file ends with its footer, the
+  footer's length as 4 bytes little-endian and the magic `PAR1`: a reader with `footer_size` fetches the last
+  `footer_size + 8` bytes in one request, and a reader with the `file_footer` row fetches none.

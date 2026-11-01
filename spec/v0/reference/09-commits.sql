@@ -46,8 +46,10 @@ $$;
 --                "add": [{"file_id": null, "path": "...", "spec_id": 0, "partition": [], "sort_order_id": null,
 --                         "record_count": 0, "file_size": 0, "footer_size": 0, "first_row_id": null,
 --                         "stat_field_ids": [], "lower": ["<hex>"], "upper": ["<hex>"], "null_count": [],
---                         "nan_count": [], "value_count": null}],
+--                         "nan_count": [], "value_count": null, "inline": "<hex>", "footer": "<hex>"}],
 --                "remove": [<file_id>],
+--                "dvs": [{"file_id": 1, "base_seq": null, "path": "...", "content_offset": 4, "content_size": 0,
+--                         "cardinality": 0, "inline": "<hex>"}],
 --                "fields": [{"field_id": 1, "new": true, "parent_field_id": null, "position": 1, "name": "id",
 --                            "type": "long", "required": true, "initial_default": null, "write_default": null,
 --                            "doc": null}],
@@ -76,6 +78,7 @@ declare
   fid bigint;
   n bigint;
   problems text;
+  removed_rows bigint;
 begin
   -- CMT-5: idempotency.
   if app is not null then
@@ -132,6 +135,19 @@ begin
         perform conflict(format('file %s is not visible', fid));
       end if;
     end loop;
+    for x in select * from jsonb_array_elements(coalesce(e -> 'dvs', '[]')) loop
+      if not exists (select 1 from visible_files(r, t, latest) v where v.file_id = (x ->> 'file_id')::bigint) then
+        perform conflict(format('file %s is not visible', x ->> 'file_id'));
+      end if;
+      if (select d.begin_seq from visible_dvs(r, t, latest) d where d.file_id = (x ->> 'file_id')::bigint)
+         is distinct from (x ->> 'base_seq')::bigint then
+        perform conflict(format('the deletion vector of file %s is not the one at %s', x ->> 'file_id', x ->> 'base_seq'));
+      end if;
+    end loop;
+    if c ->> 'operation' = 'replace'
+       and exists (select 1 from jsonb_object_keys(e) k where k not in ('table_id', 'expected_snapshot', 'add', 'remove')) then
+      perform invalid('a replace commit only removes and adds files');
+    end if;
     for x in select * from jsonb_array_elements(coalesce(e -> 'fields', '[]')) loop
       if coalesce((x ->> 'new')::boolean, false) then
         if exists (select 1 from visible_fields(r, t, latest) v
@@ -164,6 +180,8 @@ begin
   for e in select * from jsonb_array_elements(entries) loop
     t := (e ->> 'table_id')::uuid;
     cur := (select h.snapshot_id from head h where h.ref_id = r and h.table_id = t);
+    removed_rows := (select coalesce(sum(l.rows), 0) from live_rows(r, t, latest) l
+                      where l.file_id in (select jsonb_array_elements_text(coalesce(e -> 'remove', '[]'))::bigint));
 
     if e ? 'create' then
       insert into tbl values (t, e -> 'create' ->> 'location', seq);
@@ -189,10 +207,11 @@ begin
     end if;
 
     for x in select * from jsonb_array_elements(coalesce(e -> 'add', '[]')) loop
+      fid := coalesce((x ->> 'file_id')::bigint, nextval('file_id_gen'));
       insert into data_file (table_id, file_id, ref_id, begin_seq, path, spec_id, partition, sort_order_id,
                              record_count, file_size, footer_size, first_row_id, stat_field_ids, lower, upper,
                              null_count, nan_count, value_count)
-      values (t, coalesce((x ->> 'file_id')::bigint, nextval('file_id_gen')), r, seq, x ->> 'path',
+      values (t, fid, r, seq, x ->> 'path',
               coalesce((x ->> 'spec_id')::int, 0), coalesce(x -> 'partition', '[]'), (x ->> 'sort_order_id')::int,
               (x ->> 'record_count')::bigint, (x ->> 'file_size')::bigint, (x ->> 'footer_size')::int,
               (x ->> 'first_row_id')::bigint,
@@ -200,6 +219,12 @@ begin
               hex_array(coalesce(x -> 'lower', '[]')), hex_array(coalesce(x -> 'upper', '[]')),
               bigint_array(coalesce(x -> 'null_count', '[]')), bigint_array(coalesce(x -> 'nan_count', '[]')),
               case when jsonb_typeof(x -> 'value_count') = 'array' then bigint_array(x -> 'value_count') end);
+      if x ? 'inline' then
+        insert into inline_file values (t, fid, decode(x ->> 'inline', 'hex'));
+      end if;
+      if x ? 'footer' then
+        insert into file_footer values (t, fid, decode(x ->> 'footer', 'hex'));
+      end if;
     end loop;
 
     for fid in select jsonb_array_elements_text(coalesce(e -> 'remove', '[]'))::bigint loop
@@ -209,6 +234,21 @@ begin
         insert into tombstone values (t, fid, r, seq);
       end if;
     end loop;
+
+    for x in select * from jsonb_array_elements(coalesce(e -> 'dvs', '[]')) loop
+      update deletion_vector set end_seq = seq
+       where table_id = t and file_id = (x ->> 'file_id')::bigint and ref_id = r and end_seq = 9223372036854775807;
+      insert into deletion_vector values (t, (x ->> 'file_id')::bigint, x ->> 'path', (x ->> 'content_offset')::bigint,
+        coalesce((x ->> 'content_size')::bigint, length(decode(x ->> 'inline', 'hex'))), (x ->> 'cardinality')::bigint,
+        decode(x ->> 'inline', 'hex'), r, seq);
+    end loop;
+
+    -- CMT-11: a replace keeps the live rows.
+    if c ->> 'operation' = 'replace' and removed_rows <>
+       coalesce((select sum((y ->> 'record_count')::bigint) from jsonb_array_elements(e -> 'add') y), 0) then
+      perform invalid(format('a replace removes %s live rows and adds %s', removed_rows,
+        coalesce((select sum((y ->> 'record_count')::bigint) from jsonb_array_elements(e -> 'add') y), 0)));
+    end if;
 
     for x in select * from jsonb_array_elements(coalesce(e -> 'fields', '[]')) loop
       if coalesce((x ->> 'new')::boolean, false) and not e ? 'create' and (
@@ -261,6 +301,8 @@ begin
     problems := (select string_agg(p, '; ') from (
       select table_errors(r, t, latest) as p
       union all select file_errors(r, t, latest, seq)
+      union all select dv_errors(r, t, latest, seq)
+      union all select inline_errors(r, t, latest, seq)
       union all select format('STA-3: file %s has no statistics for cluster key field %s', d.file_id, k)
         from data_file d, visible_cluster_key(r, t, latest) ck, unnest(ck.field_ids) k
        where d.table_id = t and d.ref_id = r and d.begin_seq = seq and not k = any (d.stat_field_ids)) z);
