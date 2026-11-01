@@ -391,6 +391,7 @@ blob type `deletion-vector-v1`.
   started from, or none if the file had none. If the file's visible vector is another one, the commit fails
   with a conflict (CMT-7). The new vector holds every position of the one it replaces, so `cardinality` never
   decreases. The reference checks the positions themselves only for inline vectors, whose bytes it has.
+  A vector MAY delete rows of a file the same commit adds; it then names no base.
 - **DV-5.** The live rows of a file at `(r, s)` are its `record_count` minus the `cardinality` of its vector.
 
 ## 11. Inline files and footers
@@ -408,3 +409,62 @@ blob type `deletion-vector-v1`.
   (`FileMetaData`) byte for byte, so its length is the file's `footer_size`. A file ends with its footer, the
   footer's length as 4 bytes little-endian and the magic `PAR1`: a reader with `footer_size` fetches the last
   `footer_size + 8` bytes in one request, and a reader with the `file_footer` row fetches none.
+
+## 12. Branches and merges
+
+### 12.1 Branch operations
+
+- **BR-1.** Creating a branch `b` from ref `p` is one transaction. It locks `p`'s `ref` row `FOR UPDATE`, which
+  waits for every commit in flight on `p` (CMT-4). It takes `fork_seq`, the last value drawn from
+  `commit_seq_gen`, or an earlier sequence the caller names. It then draws a `commit_seq` `c` and writes the
+  `ref` row with `created_seq = c`, a `ref_base` row `(b, begin_seq = c, parent_ref_id = p, fork_seq)` and a
+  `commit` row of `b` with operation `branch`. Nothing else is written: `b` sees `p` as it was at `fork_seq`.
+- **BR-2.** A tag is created the same way, with `kind = tag`. It never takes commits (CMT-4) and is never
+  merged.
+- **BR-3.** Deleting a ref sets `deleted = true`. `main` and protected refs are not deleted. A ref's name is
+  never reused, so a name always denotes one ref, past or present.
+
+### 12.2 Merge
+
+- **MRG-1.** A branch `b` merges into the ref its live `ref_base` row points at, its parent `p`; merging
+  into any other ref is not in v0. The merge is one transaction: it locks `p`'s `ref` row and then `b`'s
+  `FOR UPDATE`, then `p`'s heads of the tables `b` changed, in `table_id` order, then draws `commit_seq` `m`
+  and writes a `commit` row of `p` with operation `merge`. A branch with nothing to merge is left as it is.
+- **MRG-2.** What the merge compares:
+  - **`b`'s changes** are its live rows: its files, tombstones, vectors and object versions. They are all it
+    changed since its base, because a merge closes them (MRG-4).
+  - **`p`'s changes** since the fork are the differences between what `p` sees at `fork_seq` and what it sees
+    at `LATEST`, for the files and keys `b` changed: whether a file is visible, a file's vector, a key's
+    visible version. They do not depend on how `p` got there, whether by its own commits or by merges into
+    it.
+- **MRG-3.** The outcome, file by file and key by key. Any conflict fails the merge with SQLSTATE `40001`
+  and changes nothing.
+
+  | `b` | `p` since the fork | Outcome |
+  |---|---|---|
+  | adds files | anything | `b`'s files join `p` |
+  | removes file `f` | leaves `f` visible and its vector unchanged | `f` leaves `p` |
+  | removes `f` | removes `f`, or changes its vector | conflict |
+  | sets the vector of `f` | leaves `f` visible and its vector unchanged | `b`'s vector |
+  | sets the vector of `f` | changes the vector of `f` | the union of both vectors (MRG-5) |
+  | sets the vector of `f` | removes `f` | conflict |
+  | changes key `k` | leaves `k` as it was | `b`'s version |
+  | changes `k` | changes `k` to the same content | that version |
+  | changes `k` | changes `k` otherwise, drops it, or drops the table | conflict |
+  | changes a table `p` no longer has | | conflict |
+
+  A key is a field, a table name, a property, the partition spec, the sort order or the cluster key (VIS-9).
+  After applying, every touched table MUST satisfy §6–§8 and table names MUST stay unique on `p`; otherwise the
+  merge is a conflict, for instance when `b` and `p` gave two different fields one name.
+- **MRG-4.** Applying, at `m`:
+  - each of `b`'s live rows is closed at `m`, and a copy of it opens on `p` at `m`; a copy of a vector or a
+    version first closes `p`'s own live row of the same key;
+  - a tombstone of `b` closes `p`'s own live row of the file, or, if `p` inherits the file, opens a tombstone
+    of `p`;
+  - `p` gets a snapshot (CMT-1, operation `merge`) and its head for every table that changed;
+  - `b`'s live `ref_base` row closes at `m` and a new one opens: `(b, m, p, fork_seq = m)`. `b` is now an empty
+    child of `p`, and its reads below `m` are unchanged (VIS-8). Its heads become its current snapshots.
+- **MRG-5.** When both sides changed the vector of a file, the merged vector holds every position of both. If
+  both are inline, the merge writes their union inline. Otherwise the caller MUST supply the merged vector,
+  stored as any vector (DV-3); without it the merge is a conflict. A supplied vector has at least the
+  cardinality of each side, and, where the bytes are inline, every position of both.

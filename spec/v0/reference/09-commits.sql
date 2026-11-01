@@ -136,6 +136,9 @@ begin
       end if;
     end loop;
     for x in select * from jsonb_array_elements(coalesce(e -> 'dvs', '[]')) loop
+      -- A vector may also delete rows of a file this commit adds.
+      continue when x ->> 'base_seq' is null and (x ->> 'file_id')::bigint in (
+        select (y ->> 'file_id')::bigint from jsonb_array_elements(coalesce(e -> 'add', '[]')) y);
       if not exists (select 1 from visible_files(r, t, latest) v where v.file_id = (x ->> 'file_id')::bigint) then
         perform conflict(format('file %s is not visible', x ->> 'file_id'));
       end if;
