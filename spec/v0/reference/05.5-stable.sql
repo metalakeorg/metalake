@@ -1,4 +1,4 @@
--- MetaLake v0 · reference behaviour · stable sequences (§5.4).
+-- MetaLake v0 · reference behaviour · stable sequences (§5.5).
 --
 -- It defines the right answer, not the fast one.
 

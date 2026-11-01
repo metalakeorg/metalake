@@ -1,6 +1,6 @@
 # MetaLake table format · version 0
 
-**Status: draft.** Sections are added as the reference and the conformance suite that check them are built.
+**Status:** complete. The text becomes final with the tag `spec-v0`; later changes follow §17.
 
 ## 1. Conventions
 
@@ -16,8 +16,8 @@
   `begin_seq <= s < end_seq`.
 - **`OPEN`** is the `bigint` value `9223372036854775807`. A row whose `end_seq` is `OPEN` is **live**.
 - **`LATEST`** is `OPEN - 1`: a read at `LATEST` sees the current state.
-- **Reference:** `v0/schema.sql` and `v0/reference.sql`. Where this text and the reference disagree, the text
-  is wrong and is corrected.
+- **Reference:** the DDL in `v0/schema/` and the behaviour in `v0/reference/`, both SQL, loaded in file-name
+  order. Where this text and the reference disagree, the text is wrong and is corrected.
 
 ## 2. Catalog layout
 
@@ -79,7 +79,7 @@ reference DDL are recommendations.
 | `cluster_key` (V) | `table_id uuid`, `field_ids int[]` | The fields whose statistics are indexed for pruning (§6). |
 
 Tables marked (V) are **versioned**: each also has `ref_id int`, `begin_seq bigint` and `end_seq bigint`,
-and its rows follow §5.5.
+and its rows follow §5.4.
 
 ### 4.4 Snapshots and writes
 
@@ -130,24 +130,15 @@ Every read goes through this section.
 - **VIS-5.** A `tombstone` row **applies at level j** when its `ref_id` is `ref_j` and it is valid at `s_j`.
 - **VIS-6.** The files of table `t` visible at `(r, s)` are the rows of `t` valid at some level i for which no
   tombstone of the same file applies at a level `j < i`. The result is a set: no file appears twice.
-- **VIS-7.** A file has at most one live row. When a file changes owner, as when a merge moves a branch's files
-  to its parent, the old owner's row is closed at the commit that moves it and the new owner's
-  row begins there. A ref removes a file it owns by closing the row, and a file it inherits with a tombstone; it never has a live
+- **VIS-7.** A file has at most one live row. When a file changes owner, as when a merge hands a branch's files
+  to its parent (MRG-4), the old owner's row is closed at that commit and the new owner's row begins there. A
+  ref removes a file it owns by closing its row, and a file it inherits with a tombstone; it never has a live
   tombstone of a file it owns.
 - **VIS-8.** Reads at a sequence are stable. A commit only adds rows that begin at its own `commit_seq` and
   closes live rows at it, so any read at a sequence below that `commit_seq` returns what it returned before
   the commit.
 
-### 5.4 Stable sequences
-
-- **VIS-11.** A sequence `s` is **stable** when no commit with `commit_seq <= s` can still commit. A read that
-  must be repeatable, across transactions or readers, uses a stable sequence; a read at `LATEST` is consistent
-  within one transaction but not repeatable. To obtain one, a reader takes `L`, the last value drawn from
-  `commit_seq_gen`, and then `X = pg_snapshot_xmax(pg_current_snapshot())`. `L` is stable once a later
-  snapshot has `pg_snapshot_xmin >= X`. This holds because a commit has a transaction id, from locking its ref
-  row, before it draws its `commit_seq` (CMT-4).
-
-### 5.5 Versioned objects
+### 5.4 Versioned objects
 
 - **VIS-9.** For a versioned table, the **key** of a row is:
 
@@ -163,6 +154,15 @@ Every read goes through this section.
   `dropped`, the key is not visible. A ref changes an object by closing its own live row, if it has one, and
   adding a new row; it never changes rows of other refs.
 - **VIS-10.** A ref has at most one live row per key.
+
+### 5.5 Stable sequences
+
+- **VIS-11.** A sequence `s` is **stable** when no commit with `commit_seq <= s` can still commit. A read that
+  must be repeatable, across transactions or readers, uses a stable sequence; a read at `LATEST` is consistent
+  within one transaction but not repeatable. To obtain one, a reader takes `L`, the last value drawn from
+  `commit_seq_gen`, and then `X = pg_snapshot_xmax(pg_current_snapshot())`. `L` is stable once a later
+  snapshot has `pg_snapshot_xmin >= X`. This holds because a commit has a transaction id, from locking its ref
+  row, before it draws its `commit_seq` (CMT-4).
 
 ## 6. Tables
 
@@ -234,6 +234,9 @@ with Apache Iceberg 1.10.0
   and `element`, or `key-id`, `key`, `value-id`, `value-required` and `value`.
 
 ## 8. Statistics
+
+Counts, NaN handling, truncation and geospatial bounds follow the Iceberg table specification, format version 3
+(Apache Iceberg 1.10.0); the bound encoding of §8.2 is MetaLake's own.
 
 ### 8.1 What a file carries
 
@@ -359,10 +362,10 @@ order and the cluster key.
 - **CMT-9.** A commit is refused, with SQLSTATE `22023` and the message prefix `metalake invalid:`, if the
   current state of a touched table would break a rule of §6, §7 or §8, if an added file lacks statistics for
   a field of the cluster key (STA-3), if a new field id was not drawn from the table's counter, or if it adds a
-  file whose `intent` has expired (RET-7). A created
-  table takes its field, spec and partition field ids from the commit, and its counters start after them; its
-  default spec is spec 0, unpartitioned unless the commit gives one. Only what the commit changes is checked: the
-  definitions of the tables it touches and the files it adds. Files committed earlier are not checked again, so
+  file whose `intent` has expired (RET-7). A created table takes its field, spec and partition field ids from
+  the commit, and its counters start after them; its default spec is spec 0, unpartitioned unless the commit
+  gives one. Only what the commit changes is checked: the definitions of the tables it touches and the files it
+  adds. Files committed earlier are not checked again, so
   the cost of a commit does not grow with the number of files in the table.
 - **CMT-10.** Writers SHOULD register an `intent` row (path, table, ref, expiry) in its own transaction before
   uploading a file. A commit deletes the intents of the files it adds. After committing, it sends
@@ -377,7 +380,7 @@ The rules of this section follow the Puffin specification published with Apache 
 blob type `deletion-vector-v1`.
 
 - **DV-1.** A `deletion_vector` row deletes the rows of its data file whose positions, counted from 0, its
-  bitmap holds. It is a versioned object keyed by `(table_id, file_id)` (§5.5). At `(r, s)` a file's vector is
+  bitmap holds. It is a versioned object keyed by `(table_id, file_id)` (§5.4). At `(r, s)` a file's vector is
   its visible version, and it applies only while the file is visible; a file has at most one vector. A ref
   that removes a file closes its own live vector of that file, if any, at the same commit.
 - **DV-2.** The vector is a `deletion-vector-v1` blob: the length of what follows up to the checksum as 4
@@ -420,9 +423,10 @@ blob type `deletion-vector-v1`.
 
 - **BR-1.** Creating a branch `b` from ref `p` is one transaction. It locks `p`'s `ref` row `FOR UPDATE`, which
   waits for every commit in flight on `p` (CMT-4). It takes `fork_seq`, the last value drawn from
-  `commit_seq_gen`, or an earlier retained read of `p` the caller names (RET-6). It then draws a `commit_seq` `c` and writes the
-  `ref` row with `created_seq = c`, a `ref_base` row `(b, begin_seq = c, parent_ref_id = p, fork_seq)` and a
-  `commit` row of `b` with operation `branch`. Nothing else is written: `b` sees `p` as it was at `fork_seq`.
+  `commit_seq_gen`, or an earlier retained read of `p` the caller names (RET-6). It then draws a `commit_seq` `c`
+  and writes the `ref` row with `created_seq = c`, a `ref_base` row `(b, begin_seq = c, parent_ref_id = p,
+  fork_seq)` and a `commit` row of `b` with operation `branch`. Nothing else is written: `b` sees `p` as it was
+  at `fork_seq`.
 - **BR-2.** A tag is created the same way, with `kind = tag`. It never takes commits (CMT-4) and is never
   merged.
 - **BR-3.** Deleting a ref sets `deleted = true`. `main` and protected refs are not deleted. A ref's name is
@@ -578,8 +582,11 @@ partition transforms, the truncate details and Appendix B.
 
 A MetaLake table is served to Iceberg clients as an Iceberg table: metadata, manifest lists and manifests derived
 from the catalog, and an Iceberg REST `updateTable` turned into a MetaLake commit. The projection is a mapping,
-not a copy: nothing in it is a source of truth. Server-side scan planning (`planTableScan`) is not in v0. Rules
-prefixed `ICE` are checked by the Iceberg harness (`v0/conformance/iceberg/`), with PyIceberg.
+not a copy: nothing in it is a source of truth. It follows the Iceberg table specification, format version 2,
+and the REST catalog API
+([`open-api/rest-catalog-open-api.yaml`](https://github.com/apache/iceberg/blob/apache-iceberg-1.10.0/open-api/rest-catalog-open-api.yaml)),
+as published with Apache Iceberg 1.10.0. Server-side scan planning (`planTableScan`) is not in v0. Rules prefixed
+`ICE` are checked by the Iceberg harness (`v0/conformance/iceberg/`), with PyIceberg.
 
 ### 16.1 Outbound
 
@@ -624,3 +631,40 @@ prefixed `ICE` are checked by the Iceberg harness (`v0/conformance/iceberg/`), w
     from Iceberg's serialization to MetaLake's (STA-5); its `DELETED` entries become removed files;
   - other updates are refused in v0;
   - the answer is the projection after the commit, in which the snapshot carries MetaLake's id.
+
+## 17. Conformance
+
+An implementation conforms to version 0 when:
+
+- every catalog it writes satisfies §2 to §15;
+- every read it serves of a catalog equals the reference's read of that catalog at the same ref and sequence;
+- its Iceberg projection, if it serves one, satisfies §16.
+
+The SQL suite (`v0/run.sh`) checks every rule except those prefixed `ENG` and `ICE`; the Iceberg harness
+(`v0/conformance/iceberg/run.sh`) checks those prefixed `ICE`. Both run against the reference. An implementation
+shows conformance by running them with its own operations in place of the reference's.
+
+## 18. Versioning
+
+- `format_version` (LAY-2) is an integer. This text defines version 0.
+- An additive change, one that a reader of the previous text can ignore without misreading the catalog (an
+  optional column, a table, a property), keeps the version. LAY-1 then names the added tables, and readers
+  ignore columns and tables they do not know.
+- Any other change increments the version, and the text of the new version states how a catalog migrates from
+  the previous one. A reader refuses a version it does not know (LAY-3).
+- Rule ids are never reused or renumbered.
+
+## 19. Not in v0
+
+- **Row lineage.** `data_file.first_row_id` has no meaning in v0: writers MAY leave it `NULL` and readers ignore
+  it. Without it there is no projection to Iceberg format 3 and no native v3 deletion vector (§16).
+- **Equality deletes**, in the catalog or from Iceberg writers: an inbound Iceberg delete file is refused.
+- **Server-side scan planning** in the projection (`planTableScan`).
+- **Inbound Iceberg updates** other than files (ICE-6): schema, spec, sort order and properties change through
+  MetaLake commits only.
+- **Merges** into a ref other than the parent, and merges that check rows or predicates rather than files and
+  keys (§12).
+- **`variant` bounds** (STA-9).
+- **Catalog objects other than tables**, such as views, functions and models.
+- **Table constraints**, **encryption**, **catalog databases other than Postgres**, and **transactions across
+  catalogs**.

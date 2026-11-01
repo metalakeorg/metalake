@@ -12,7 +12,7 @@ create table table_counter (
   last_partition_field_id int not null default 999,
   last_sort_order_id int not null default 0);
 
--- Versioned tables (§5.5): the key, then ref_id, begin_seq and end_seq; one live row per key and ref (VIS-10).
+-- Versioned tables (§5.4): the key, then ref_id, begin_seq and end_seq; one live row per key and ref (VIS-10).
 
 create table table_name (
   table_id uuid not null references tbl,

@@ -1,4 +1,4 @@
--- MetaLake v0 · reference behaviour · versioned objects (§5.5).
+-- MetaLake v0 · reference behaviour · versioned objects (§5.4).
 --
 -- It defines the right answer, not the fast one.
 
