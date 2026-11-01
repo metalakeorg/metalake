@@ -88,6 +88,7 @@ and its rows follow §5.5.
 | `head` | `ref_id int`, `table_id uuid`, `snapshot_id bigint`; pk `(ref_id, table_id)` | The lock row of a `(ref, table)` (§9). |
 | `idempotency` | `ref_id int`, `app_id text`, `version bigint`, `commit_seq bigint`; pk `(ref_id, app_id)` | Idempotent commits (CMT-5). |
 | `intent` | `path text` pk, `table_id uuid`, `ref_id int`, `expires_at timestamptz` | Files that may have been uploaded without being committed (CMT-10). |
+| `retention` | `ref_id int` pk, `min_seq bigint` null, `max_age interval` null, `min_snapshots int` null | What a ref keeps (§13). |
 
 ### 4.5 Data
 
@@ -356,7 +357,8 @@ order and the cluster key.
   - its snapshots (CMT-1), and `head.snapshot_id = commit_seq` for every touched table.
 - **CMT-9.** A commit is refused, with SQLSTATE `22023` and the message prefix `metalake invalid:`, if the
   current state of a touched table would break a rule of §6, §7 or §8, if an added file lacks statistics for
-  a field of the cluster key (STA-3), or if a new field id was not drawn from the table's counter. A created
+  a field of the cluster key (STA-3), if a new field id was not drawn from the table's counter, or if it adds a
+  file whose `intent` has expired (RET-7). A created
   table takes its field, spec and partition field ids from the commit, and its counters start after them; its
   default spec is spec 0, unpartitioned unless the commit gives one. Only what the commit changes is checked: the
   definitions of the tables it touches and the files it adds. Files committed earlier are not checked again, so
@@ -375,7 +377,8 @@ blob type `deletion-vector-v1`.
 
 - **DV-1.** A `deletion_vector` row deletes the rows of its data file whose positions, counted from 0, its
   bitmap holds. It is a versioned object keyed by `(table_id, file_id)` (§5.5). At `(r, s)` a file's vector is
-  its visible version, and it applies only while the file is visible; a file has at most one vector.
+  its visible version, and it applies only while the file is visible; a file has at most one vector. A ref
+  that removes a file closes its own live vector of that file, if any, at the same commit.
 - **DV-2.** The vector is a `deletion-vector-v1` blob: the length of what follows up to the checksum as 4
   bytes big-endian, the magic `D1 D3 39 64`, the positions as a 64-bit Roaring bitmap in its portable
   serialization (the number of 32-bit bitmaps as 8 bytes little-endian, then for each, by increasing key, the
@@ -416,7 +419,7 @@ blob type `deletion-vector-v1`.
 
 - **BR-1.** Creating a branch `b` from ref `p` is one transaction. It locks `p`'s `ref` row `FOR UPDATE`, which
   waits for every commit in flight on `p` (CMT-4). It takes `fork_seq`, the last value drawn from
-  `commit_seq_gen`, or an earlier sequence the caller names. It then draws a `commit_seq` `c` and writes the
+  `commit_seq_gen`, or an earlier retained read of `p` the caller names (RET-6). It then draws a `commit_seq` `c` and writes the
   `ref` row with `created_seq = c`, a `ref_base` row `(b, begin_seq = c, parent_ref_id = p, fork_seq)` and a
   `commit` row of `b` with operation `branch`. Nothing else is written: `b` sees `p` as it was at `fork_seq`.
 - **BR-2.** A tag is created the same way, with `kind = tag`. It never takes commits (CMT-4) and is never
@@ -468,3 +471,49 @@ blob type `deletion-vector-v1`.
   both are inline, the merge writes their union inline. Otherwise the caller MUST supply the merged vector,
   stored as any vector (DV-3); without it the merge is a conflict. A supplied vector has at least the
   cardinality of each side, and, where the bytes are inline, every position of both.
+
+## 13. Retention and collection
+
+### 13.1 What is kept
+
+- **RET-1.** A ref's `retention` row, if any, keeps a snapshot of the ref when at least one of its set
+  criteria holds:
+  - `min_seq`: the snapshot's id is at least `min_seq`;
+  - `max_age`: its commit was committed at most `max_age` ago;
+  - `min_snapshots`: it is among the ref's `min_snapshots` latest snapshots.
+
+  A ref without a `retention` row, or whose row sets no criterion, keeps every snapshot. A ref's snapshots
+  are the distinct `snapshot_id` values of its `snapshot` rows.
+- **RET-2.** A ref is **live** when it is not deleted. The **retained reads** are, for every live ref `r`,
+  `(r, LATEST)` and `(r, s)` for every snapshot `s` that `r` keeps. The **reach points** are the levels of the
+  chains of the retained reads (VIS-3). A deleted ref that a reach point still reaches is **hidden**: its rows
+  stay, because a live ref reads through them. A live ref keeps what it reads alive: a branch keeps its
+  parent's state at its fork, and a merged branch, an empty child at the merge (MRG-4), keeps the parent's state
+  at the merge until it is deleted.
+- **RET-3.** A row of `data_file`, `tombstone`, `deletion_vector`, `ref_base` or a versioned table is
+  **collectable** when no reach point `(R, s)` has `R` equal to the row's ref and the row valid at `s`. A
+  `snapshot` row is collectable when no retained read uses it as its snapshot of the table (CMT-2). A `commit`
+  row is collectable when its `commit_seq` is not the id of a remaining snapshot, the `created_seq` of a ref,
+  or a commit recorded in `idempotency`. Collecting never changes the result of a retained read.
+
+### 13.2 Collecting
+
+- **RET-4.** An object in storage is deleted only when nothing that remains refers to it:
+  - a data file's object (its `path`, or its `inline_file` row), with its `file_footer`, when every
+    `data_file` row of the file is collectable;
+  - a Puffin file when no remaining `deletion_vector` row has its `path`.
+- **RET-5.** A collector locks the `ref` row of every ref `FOR SHARE`, computes what is collectable, deletes
+  the objects, then deletes the rows, all while holding the locks. Objects go first, so a failure leaves rows
+  that no retained read reaches, never objects that nothing refers to. Changing a ref's retention locks its
+  `ref` row `FOR NO KEY UPDATE`, and creating a ref locks its parent's `FOR UPDATE` (BR-1), so neither runs
+  during a collection; commits are not blocked.
+- **RET-6.** A ref created at an earlier sequence (BR-1) is created at a retained read of its parent: one of
+  the snapshots the parent keeps. Together with RET-5, nothing a collector decided to delete can become
+  reachable again.
+
+### 13.3 Orphans
+
+- **RET-7.** A path is an **orphan** when its `intent` has expired and no `data_file` or `deletion_vector`
+  row refers to it. Orphans are found from `intent` alone, without listing storage: a collector deletes the
+  object, then the `intent` row. A commit that adds a file whose `intent` has expired is refused (CMT-9), so a
+  writer that missed its deadline never commits a path that a collector may have deleted.

@@ -30,3 +30,9 @@ create table intent (
   table_id uuid not null,
   ref_id int not null,
   expires_at timestamptz not null);
+
+create table retention (
+  ref_id int primary key references ref,
+  min_seq bigint,
+  max_age interval,
+  min_snapshots int check (min_snapshots >= 0));

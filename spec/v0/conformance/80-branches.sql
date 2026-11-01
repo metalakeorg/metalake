@@ -143,6 +143,16 @@ select cm(tj(:'t', jsonb_build_object('remove', '[4]'::jsonb)), :b3, 'delete');
 select cm(tj(:'t', jsonb_build_object('dvs', jsonb_build_array(dvj(4, '{6}')))), 1, 'delete');
 select expect_error(format('select merge(%s)', :b3), '40001', 'file removed on b3, rows deleted on main');
 
+-- case: a file the branch removes takes the parent's own vector of it out with it
+-- rules: MRG-4, DV-1
+select mk('t') as t \gset
+select cm(tj(:'t', jsonb_build_object('add', jsonb_build_array(fj(1)))));
+select cm(tj(:'t', jsonb_build_object('dvs', jsonb_build_array(dvj(1, '{0}')))), 1, 'delete');
+select create_ref('b', 1) as b \gset
+select cm(tj(:'t', '{"remove": [1]}'::jsonb), :b, 'delete');
+select merge(:b) as m \gset
+select expect((select end_seq from deletion_vector where ref_id = 1 and file_id = 1) = :m, 'main''s vector of 1 closes at the merge');
+
 -- case: when a vector in a Puffin file changed on both sides, the caller supplies the merged one
 -- rules: MRG-5
 select mk('t') as t \gset

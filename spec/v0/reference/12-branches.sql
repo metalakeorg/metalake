@@ -2,8 +2,8 @@
 --
 -- It defines the right answer, not the fast one.
 
--- BR-1 and BR-2: a branch or a tag `name` of ref `p`, seeing `p` at `at` (default: the last commit_seq drawn,
--- read under the lock). Returns its ref_id.
+-- BR-1 and BR-2: a branch or a tag `name` of ref `p`, seeing `p` at `at`, a snapshot `p` keeps (RET-6), or by
+-- default at the last commit_seq drawn, read under the lock. Returns its ref_id.
 create function create_ref(name text, p int, kind text default 'branch', at bigint default null,
     author text default 'metalake') returns int language plpgsql as $$
 declare
@@ -18,8 +18,8 @@ begin
   end if;
   fork := (select last_value from commit_seq_gen);
   if at is not null then
-    if at > fork or at < 0 then
-      perform invalid(format('%s is not a sequence of ref %s yet', at, p));
+    if at not in (select kept_snapshots(p)) then
+      perform invalid(format('%s is not a snapshot ref %s keeps (RET-6)', at, p));
     end if;
     fork := at;
   end if;
@@ -156,6 +156,7 @@ begin
       if not found then
         insert into tombstone values (t, fid, p, m);
       end if;
+      update deletion_vector set end_seq = m where table_id = t and file_id = fid and ref_id = p and end_seq = open;
       update tombstone set end_seq = m where table_id = t and file_id = fid and ref_id = b and end_seq = open;
     end loop;
 

@@ -236,6 +236,8 @@ begin
       if not found then
         insert into tombstone values (t, fid, r, seq);
       end if;
+      update deletion_vector set end_seq = seq
+       where table_id = t and file_id = fid and ref_id = r and end_seq = 9223372036854775807;
     end loop;
 
     for x in select * from jsonb_array_elements(coalesce(e -> 'dvs', '[]')) loop
@@ -306,6 +308,9 @@ begin
       union all select file_errors(r, t, latest, seq)
       union all select dv_errors(r, t, latest, seq)
       union all select inline_errors(r, t, latest, seq)
+      union all select format('RET-7: the intent of %s expired at %s', i.path, i.expires_at)
+        from intent i join data_file d on d.path = i.path
+       where d.table_id = t and d.ref_id = r and d.begin_seq = seq and i.expires_at < now()
       union all select format('STA-3: file %s has no statistics for cluster key field %s', d.file_id, k)
         from data_file d, visible_cluster_key(r, t, latest) ck, unnest(ck.field_ids) k
        where d.table_id = t and d.ref_id = r and d.begin_seq = seq and not k = any (d.stat_field_ids)) z);
