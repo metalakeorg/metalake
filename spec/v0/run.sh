@@ -56,8 +56,8 @@ SQL
   fi
 done
 
-# ENG rules bind engines, not the catalog: this suite does not check them.
-text=$(grep -o '\*\*[A-Z]\+-[0-9]\+\.\*\*' "$here/../metalake-v0.md" | tr -d '*.' | grep -v '^ENG-' | sort -u || true)
+# ENG rules bind engines, not the catalog, and ICE rules are checked by the Iceberg harness: not here.
+text=$(grep -o '\*\*[A-Z]\+-[0-9]\+\.\*\*' "$here/../metalake-v0.md" | tr -d '*.' | grep -v '^ENG-\|^ICE-' | sort -u || true)
 named=$(tr ' ' '\n' <<<"$covered" | grep . | sort -u || true)
 uncovered=$(comm -23 <(printf '%s\n' "$text" | grep .) <(printf '%s\n' "$named" | grep .) || true)
 unknown=$(comm -13 <(printf '%s\n' "$text" | grep .) <(printf '%s\n' "$named" | grep .) || true)

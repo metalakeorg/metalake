@@ -6,7 +6,8 @@
   answer, not the fast one, and its functions are not an API: the protocols are the text.
 - [`v0/conformance/`](v0/conformance/): the conformance cases. Each names the rules it checks.
 
-Run the suite with `spec/v0/run.sh` (needs Docker). It prints one line per case and fails on any failing case,
+Run the suite with `spec/v0/run.sh` (needs Docker). The Iceberg projection (§16) is checked separately with
+PyIceberg by `spec/v0/conformance/iceberg/run.sh`, which builds a pinned harness image the first time. It prints one line per case and fails on any failing case,
 any rule of the text without a passing case, and any rule a case names that the text lacks.
 
 The design behind version 0 is [ADR 0002](../docs/adr/0002-specification-v0.md).

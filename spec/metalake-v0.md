@@ -7,6 +7,7 @@
 - The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be read as described in RFC 2119.
 - Every normative rule has an id, such as **VIS-3**. The conformance suite names the rules each case checks.
   Rules prefixed `ENG` bind the engines that read a catalog, not the catalog; the suite does not check them.
+  Rules prefixed `ICE` are checked by the Iceberg harness rather than by the SQL suite (§16).
 - **Catalog:** the set of tables of §4 in one Postgres schema.
 - **Ref:** a branch or a tag. `main` is the ref every catalog starts with.
 - **Sequence:** a `commit_seq` value (§3). "At sequence `s`" means the state that includes every commit whose
@@ -572,3 +573,54 @@ partition transforms, the truncate details and Appendix B.
     equal the partition value; for `string` and `binary`, whose bounds may be truncated (STA-8),
     `T(lower) <= value <= T(upper)`;
   - for `bucket[N]`, when `lower = upper` and `f` is neither `string` nor `binary`, `T(lower)` equals the value.
+
+## 16. Iceberg projection
+
+A MetaLake table is served to Iceberg clients as an Iceberg table: metadata, manifest lists and manifests derived
+from the catalog, and an Iceberg REST `updateTable` turned into a MetaLake commit. The projection is a mapping,
+not a copy: nothing in it is a source of truth. Server-side scan planning (`planTableScan`) is not in v0. Rules
+prefixed `ICE` are checked by the Iceberg harness (`v0/conformance/iceberg/`), with PyIceberg.
+
+### 16.1 Outbound
+
+- **ICE-1.** The table metadata of table `t`:
+  - `format-version` 2: format 3 requires row lineage, which is not in v0; `table-uuid` is `table_id`;
+    `location` is `tbl.location`; `last-column-id`, `last-partition-id` are the table's counters;
+  - one schema per distinct `schema_seq` of the snapshots served, with `schema-id = schema_seq`, rendered as
+    TYP-6 at a snapshot that has it; `current-schema-id` is that of `main`'s current snapshot;
+  - every partition spec of the table (`source-id` for the single source), every sort order plus the unsorted
+    order 0, and `main`'s defaults; `main`'s visible properties;
+  - the snapshots served (ICE-2), with `sequence-number` equal to `snapshot-id`, `timestamp-ms` from the commit
+    time (TT-1), `parent-snapshot-id`, `schema-id` and the summary, whose `operation` is mapped to Iceberg's:
+    `merge` becomes `overwrite`;
+  - a `refs` entry for every live ref that sees the table, of its kind, pointing at its current snapshot (CMT-2);
+    `current-snapshot-id` is `main`'s.
+
+  Schema ids are `schema_seq` values: a catalog projects while its `commit_seq` stays below 2³¹.
+- **ICE-2.** Every remaining snapshot of the table is served, so that a client can rebase on any of them after a
+  conflict. The manifests of snapshot `S`, owned by ref `R`, list exactly the files visible at `(R, S)`: status
+  `ADDED` for the files `S`'s commit added on `R`, `EXISTING` for the rest, each with its data sequence number
+  equal to its row's `begin_seq`, its spec, partition, record count, size and statistics (ICE-3).
+- **ICE-3.** Statistics are served in Iceberg's single-value serialization of the field's current type: each
+  MetaLake bound is decoded (§8, STA-7) and serialized as Iceberg writes it: `int`, `date` as 4 bytes
+  little-endian, `long`, `time` and timestamps as 8, `float` and `double` as 4 and 8 bytes of IEEE 754
+  little-endian, `decimal` as the unscaled value in the fewest bytes of two's complement big-endian, `uuid` as 16
+  bytes big-endian, and the rest as their bytes. Counts are served as they are.
+- **ICE-4.** A deletion vector is served as an Iceberg v2 position delete file that the projection materializes
+  from the vector's positions, read inline or from its Puffin file: a Parquet file at
+  `<location>/metalake-deletes/<file_id>-<begin_seq>.parquet` with one row per position, sorted, in the columns
+  `file_path` (field id 2147483546, the data file's served path) and `pos` (2147483545). It is listed in a delete
+  manifest with `record_count` its cardinality, `referenced_data_file` its data file, and the vector's
+  `begin_seq` as data sequence number, so it applies to its data file (whose sequence number is not greater).
+- **ICE-5.** Inline files are never served as catalog rows: the projection materializes an inline file at
+  `<location>/metalake-inline/<file_id>.parquet` with its exact bytes.
+
+### 16.2 Inbound
+
+- **ICE-6.** An Iceberg REST `updateTable` becomes one MetaLake commit on the ref its `set-snapshot-ref` names:
+  - an `assert-ref-snapshot-id` requirement becomes `expected_snapshot` (CMT-6), and a mismatch answers
+    409 `CommitFailedException`;
+  - the `ADDED` entries of the manifests the new snapshot added become added files, their bounds converted back
+    from Iceberg's serialization to MetaLake's (STA-5); its `DELETED` entries become removed files;
+  - other updates are refused in v0;
+  - the answer is the projection after the commit, in which the snapshot carries MetaLake's id.
