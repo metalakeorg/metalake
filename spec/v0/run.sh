@@ -4,7 +4,7 @@
 #   spec/v0/run.sh             every case, in a pinned postgres:17
 #   spec/v0/run.sh visibility  only the case files whose name contains the filter
 #
-# Each case runs in a fresh schema holding schema.sql and reference.sql. A case passes when it runs without error.
+# Each case runs in a fresh schema holding schema/ and reference/, each in file-name order. A case passes when it runs without error.
 # The runner then checks rule coverage: every rule id of metalake-v0.md must be named by a passing case, and every
 # rule a case names must exist in the text.
 set -euo pipefail
@@ -34,6 +34,7 @@ for f in "$here"/conformance/[0-9]*.sql; do
 done
 
 pass=0; fail=0; covered=""; i=0
+includes=$(for f in "$here"/schema/*.sql "$here"/reference/*.sql; do echo "\\i $f"; done)
 for c in "$cases"/*.sql; do
   i=$((i + 1))
   title=$(sed -n 's/^-- case: //p' "$c")
@@ -42,8 +43,7 @@ for c in "$cases"/*.sql; do
 create schema c$i;
 set search_path = c$i;
 set client_min_messages = warning;
-\i $here/schema.sql
-\i $here/reference.sql
+$includes
 \i $here/conformance/_support.sql
 \i $c
 SQL
@@ -56,7 +56,8 @@ SQL
   fi
 done
 
-text=$(grep -o '\*\*[A-Z]\+-[0-9]\+\.\*\*' "$here/../metalake-v0.md" | tr -d '*.' | sort -u || true)
+# ENG rules bind engines, not the catalog: this suite does not check them.
+text=$(grep -o '\*\*[A-Z]\+-[0-9]\+\.\*\*' "$here/../metalake-v0.md" | tr -d '*.' | grep -v '^ENG-' | sort -u || true)
 named=$(tr ' ' '\n' <<<"$covered" | grep . | sort -u || true)
 uncovered=$(comm -23 <(printf '%s\n' "$text" | grep .) <(printf '%s\n' "$named" | grep .) || true)
 unknown=$(comm -13 <(printf '%s\n' "$text" | grep .) <(printf '%s\n' "$named" | grep .) || true)

@@ -6,6 +6,7 @@
 
 - The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be read as described in RFC 2119.
 - Every normative rule has an id, such as **VIS-3**. The conformance suite names the rules each case checks.
+  Rules prefixed `ENG` bind the engines that read a catalog, not the catalog; the suite does not check them.
 - **Catalog:** the set of tables of §4 in one Postgres schema.
 - **Ref:** a branch or a tag. `main` is the ref every catalog starts with.
 - **Sequence:** a `commit_seq` value (§3). "At sequence `s`" means the state that includes every commit whose
@@ -77,7 +78,7 @@ reference DDL are recommendations.
 | `cluster_key` (V) | `table_id uuid`, `field_ids int[]` | The fields whose statistics are indexed for pruning (§6). |
 
 Tables marked (V) are **versioned**: each also has `ref_id int`, `begin_seq bigint` and `end_seq bigint`,
-and its rows follow §5.4.
+and its rows follow §5.5.
 
 ### 4.4 Snapshots and writes
 
@@ -132,7 +133,16 @@ Every read goes through this section.
   closes live rows at it, so any read at a sequence below that `commit_seq` returns what it returned before
   the commit.
 
-### 5.4 Versioned objects
+### 5.4 Stable sequences
+
+- **VIS-11.** A sequence `s` is **stable** when no commit with `commit_seq <= s` can still commit. A read that
+  must be repeatable, across transactions or readers, uses a stable sequence; a read at `LATEST` is consistent
+  within one transaction but not repeatable. To obtain one, a reader takes `L`, the last value drawn from
+  `commit_seq_gen`, and then `X = pg_snapshot_xmax(pg_current_snapshot())`. `L` is stable once a later
+  snapshot has `pg_snapshot_xmin >= X`. This holds because a commit has a transaction id, from locking its ref
+  row, before it draws its `commit_seq` (CMT-4).
+
+### 5.5 Versioned objects
 
 - **VIS-9.** For a versioned table, the **key** of a row is:
 
@@ -174,6 +184,11 @@ with Apache Iceberg 1.10.0
   with the transforms and sources of TBL-3.
 - **TBL-5.** The visible `cluster_key` version names between one and four distinct fields of the table, each
   a visible primitive field not contained in a list or a map.
+- **ENG-1.** A file's `sort_order_id` declares that the file is sorted by that order. An engine MAY trust it; a
+  writer MUST NOT declare an order the file does not have.
+- **ENG-2.** A `bucket[N]` field in a file's partition spec declares that the file holds only rows of its
+  bucket. An engine MUST NOT treat two tables as co-partitioned unless both use Iceberg's `bucket` hash with the
+  same `N` over the same source type; an engine that cannot verify it treats them as not co-partitioned.
 
 ## 7. Types and schemas
 
@@ -338,7 +353,9 @@ order and the cluster key.
   current state of a touched table would break a rule of §6, §7 or §8, if an added file lacks statistics for
   a field of the cluster key (STA-3), or if a new field id was not drawn from the table's counter. A created
   table takes its field, spec and partition field ids from the commit, and its counters start after them; its
-  default spec is spec 0, unpartitioned unless the commit gives one.
+  default spec is spec 0, unpartitioned unless the commit gives one. Only what the commit changes is checked: the
+  definitions of the tables it touches and the files it adds. Files committed earlier are not checked again, so
+  the cost of a commit does not grow with the number of files in the table.
 - **CMT-10.** Writers SHOULD register an `intent` row (path, table, ref, expiry) in its own transaction before
   uploading a file. A commit deletes the intents of the files it adds. After committing, it sends
   `NOTIFY metalake` with the payload `<schema>:<commit_seq>`.

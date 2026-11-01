@@ -1,4 +1,4 @@
--- Versioned objects and tables (§5.4, §6). Rows are written directly, as in 20-visibility.
+-- Versioned objects and tables (§5.5, §6). Rows are written directly, as in 20-visibility.
 
 select new_table('gs://lake/t', 1) as t \gset
 -- case: a field version is visible from the lowest level of the chain, and a dropped version hides it

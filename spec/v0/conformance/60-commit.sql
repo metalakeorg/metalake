@@ -227,6 +227,11 @@ select expect_error(format($$select cm('[{"table_id": "%s", "add": [{"path": "p"
 select expect(cm(format('[{"table_id": "%s", "add": [%s]}]', :'t', fj(1))::jsonb) > 0, 'with them');
 select expect_error(format($$select cm('[{"table_id": "%s", "add": [{"path": "p", "spec_id": 3, "record_count": 1, "file_size": 1, "footer_size": 1, "stat_field_ids": [1], "lower": [null], "upper": [null], "null_count": [1], "nan_count": [null]}]}]')$$, :'t'),
   '22023', 'a spec the table does not have');
+-- A file committed earlier is not checked again: one written directly with a partition of the wrong arity.
+insert into data_file (table_id, file_id, ref_id, begin_seq, path, spec_id, partition, record_count, file_size,
+                       footer_size, stat_field_ids, lower, upper, null_count, nan_count)
+  values (:'t', 500, 1, 1, 'p', 0, '[7, 8]', 1, 1, 1, '{1}', '{null}', '{null}', '{0}', '{null}');
+select expect(cm(format('[{"table_id": "%s", "add": [%s]}]', :'t', fj(2))::jsonb) > 0, 'an earlier invalid file does not block a commit');
 select cm(format('[{"table_id": "%s", "partition_spec": [{"source_ids": [1], "field_id": %s, "name": "b", "transform": "bucket[8]"}]}]',
   :'t', next_id(:'t', 'partition_field'))::jsonb);
 select expect((select spec_id = 1 from default_spec(1, :'t', 9223372036854775806)), 'a new spec takes the next id');
@@ -241,3 +246,21 @@ select cm(format('[{"table_id": "%s", "add": [%s]}]', :'t', fj(1))::jsonb) as s 
 select expect((select array_agg(path) from intent) = '{gs://lake/t/other.parquet}', 'its intent is gone, the other stays');
 select expect((select bool_or(notify_name = 'metalake' and extra = current_schema() || ':' || :s)
                  from public.dblink_get_notify('listener')), 'NOTIFY metalake, <schema>:<commit_seq>');
+
+-- case: a sequence becomes stable once every commit that could hold a lower commit_seq has finished
+-- rules: VIS-11
+select mk('t1') as t1, mk('t2') as t2 \gset
+-- A commit on t1 draws its commit_seq and stays open.
+select conn('slow');
+select public.dblink_exec('slow', 'begin');
+select a from public.dblink('slow', format($$select cm('[{"table_id": "%s", "add": [%s]}]')$$, :'t1', fj(1))) as x(a bigint) \gset
+-- A later commit on t2 finishes first.
+select cm(format('[{"table_id": "%s", "add": [%s]}]', :'t2', fj(2))::jsonb) as b \gset
+select expect(:b > :a, 'the later commit has the greater commit_seq');
+select seq as l, horizon as x from stable_point() \gset
+select expect(:l >= :b, 'the candidate covers both');
+select expect(files(1, :'t1') = '{}' and not is_stable(:'x'), 'not stable while the commit on t1 is open');
+select public.dblink_exec('slow', 'commit');
+select expect(is_stable(:'x'), 'stable once it has finished');
+select expect((select coalesce(array_agg(file_id), '{}') from visible_files(1, :'t1', :l)) = '{1}',
+  'and a read at it now sees the earlier commit, which it would not have before');
