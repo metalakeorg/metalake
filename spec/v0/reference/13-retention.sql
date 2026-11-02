@@ -37,7 +37,7 @@ $$;
 -- The tables whose rows carry a ref and a validity range (RET-3).
 create function ranged_tables() returns setof text language sql immutable as $$
   values ('data_file'), ('tombstone'), ('deletion_vector'), ('ref_base'), ('table_name'), ('table_property'),
-         ('field'), ('partition_spec'), ('sort_order'), ('cluster_key');
+         ('field'), ('partition_spec'), ('sort_order'), ('cluster_key'), ('namespace'), ('namespace_property');
 $$;
 
 -- RET-3: the collectable rows of a ranged table, as JSON.

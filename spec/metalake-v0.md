@@ -1,6 +1,7 @@
 # MetaLake table format · version 0
 
-**Status:** final, tagged `spec-v0` on 2026-11-02. Later changes follow §18.
+**Status:** final, tagged `spec-v0` on 2026-11-02. Later changes follow §18. Revision 0.1 (namespaces as
+objects, `writer_version`) is in progress: its rules are marked *0.1*.
 
 ## 1. Conventions
 
@@ -26,11 +27,15 @@
 - **LAY-2.** The table `meta(key text primary key, value text not null)` holds at least:
   - `format_version`, which is `0` for this specification;
   - `catalog_uuid`, a UUID assigned when the catalog is created;
-  - `created_at`, the creation time in ISO 8601 with a time zone.
+  - `created_at`, the creation time in ISO 8601 with a time zone;
+  - *0.1:* `writer_version`, `1` for this revision (LAY-5).
 - **LAY-3.** A reader MUST refuse a catalog whose `format_version` it does not know, or that has none. The
   reference raises SQLSTATE `0A000` with the message prefix `metalake unsupported:`.
 - **LAY-4.** Every sequence number is a `bigint`. The end of a validity range is never `NULL`: an open end is
   `OPEN`. Every validity range satisfies `begin_seq < end_seq`.
+- **LAY-5.** *0.1.* A writer MUST refuse to commit to a catalog whose `writer_version` it does not know; a
+  missing `writer_version` is `0`. A writer of revision 0.1 commits only to `writer_version` `1`, after migrating a
+  catalog of version 0 (§18). The reference raises SQLSTATE `0A000`. Readers do not read `writer_version`.
 
 ## 3. Identity
 
@@ -68,6 +73,8 @@ reference DDL are recommendations.
 | `table_counter` | `table_id uuid` pk, `last_field_id int`, `last_spec_id int`, `last_partition_field_id int`, `last_sort_order_id int` | The per-table id counters (ID-5). |
 | `table_name` (V) | `table_id uuid`, `namespace text[]`, `name text`, `dropped bool` | The name of a table, and whether it is dropped (§6). |
 | `table_property` (V) | `table_id uuid`, `key text`, `value text` null, `dropped bool` | Table properties, as in Iceberg. |
+| `namespace` (V) | `namespace text[]`, `dropped bool` | *0.1.* A namespace (NS-1). |
+| `namespace_property` (V) | `namespace text[]`, `key text`, `value text` null, `dropped bool` | *0.1.* Namespace properties (NS-4). |
 
 ### 4.3 Schema, partitioning and ordering
 
@@ -149,6 +156,8 @@ Every read goes through this section.
   | `field` | `(table_id, field_id)` |
   | `deletion_vector` | `(table_id, file_id)` |
   | `partition_spec`, `sort_order`, `cluster_key` | `table_id` |
+  | `namespace` | `namespace` (*0.1*) |
+  | `namespace_property` | `(namespace, key)` (*0.1*) |
 
   At `(r, s)`, the visible version of a key is its row valid at the lowest level of the chain. If that row is
   `dropped`, the key is not visible. A ref changes an object by closing its own live row, if it has one, and
@@ -190,6 +199,24 @@ with Apache Iceberg 1.10.0
   with the transforms and sources of TBL-3.
 - **TBL-5.** The visible `cluster_key` version names between one and four distinct fields of the table, each
   a visible primitive field not contained in a list or a map.
+*0.1.* A table lives in a namespace, an object of its own:
+
+- **NS-1.** A namespace is a non-empty array of non-empty strings, compared exactly. It exists at `(r, s)` when its
+  `namespace` key is visible (VIS-9). A namespace of more than one level has a parent: the array without its last
+  element.
+- **NS-2.** A commit that creates a table, or renames one, leaves the table's namespace existing on the ref; a
+  commit that creates a namespace leaves its parent existing. A namespace that never existed on the ref makes the
+  commit invalid (`22023`); one whose visible version is `dropped`, by a commit that won the race, is a conflict
+  (`40001`).
+- **NS-3.** A namespace is dropped with a `dropped` version, and only when, once the commit is applied, no table
+  and no namespace under it exist on the ref; otherwise the commit is a conflict. A dropped namespace MAY be
+  created again. Namespaces are not renamed.
+- **NS-4.** The properties of a namespace at `(r, s)` are its visible `namespace_property` keys; a property is
+  removed with a `dropped` version. Three keys are reserved and informative to clients: `location`, the prefix
+  under which tables of the namespace are created by default; `comment`; and `kind`, where `foreign` marks a
+  namespace whose tables live in another system. The format gives them no other meaning.
+- **NS-5.** NS-2 and NS-3 are checked by commits and merges. History written before a catalog was migrated
+  (§18) need not satisfy them, and readers do not check them.
 - **ENG-1.** A file's `sort_order_id` declares that the file is sorted by that order. An engine MAY trust it; a
   writer MUST NOT declare an order the file does not have.
 - **ENG-2.** A `bucket[N]` field in a file's partition spec declares that the file holds only rows of its
@@ -326,10 +353,15 @@ order and the cluster key.
 - **CMT-3.** A commit is one transaction. It writes everything or nothing. Its `commit` row records the ref,
   the author and actor, the operation, the optional `app_id`, `app_version`, `definition` and `message`, and
   `xid = pg_current_xact_id()`. Sequence numbers of failed commits are lost; `commit_seq` may have gaps.
-- **CMT-4.** Before drawing its `commit_seq`, a commit locks:
-  1. its ref's row: `FOR KEY SHARE`, or `FOR UPDATE` if it creates, renames or drops a table;
-  2. the `head` rows of the existing tables it touches, `FOR UPDATE`, in `table_id` order. A missing head is
-     first inserted with the table's current snapshot.
+- **CMT-4.** Before drawing its `commit_seq`, a commit is ordered:
+  1. against its ref: commits of a ref are serialised against a merge into it, `create_ref` from it and
+     `delete_ref` of it, as by a reader-writer lock that grants in order of arrival, and not against each other.
+     The reference locks the ref's row `FOR KEY SHARE`, or `FOR UPDATE` when the commit gives a table a name; an
+     implementation MAY use any mechanism with this order, and every writer of a catalog uses the same one;
+  2. against commits that give the same name: a commit that creates or renames a table holds that name on the
+     ref until it ends;
+  3. against commits of the same tables: it locks the `head` rows of the existing tables it touches,
+     `FOR UPDATE`, in `table_id` order. A missing head is first inserted with the table's current snapshot.
 
   So commits of one `(ref, table)` serialise, their snapshots form one chain of increasing ids, and no commit
   is lost. Tags and deleted refs receive no commits.
@@ -348,6 +380,10 @@ order and the cluster key.
   | adds a field named `n` under a parent | a visible sibling is already named `n` |
   | changes or drops field `f` | `f` is not visible, or the type change is not allowed (TYP-3, TYP-4) |
   | creates a table, or renames one, to `(namespace, name)` | another visible table has that name |
+  | *0.1:* creates a table in, or renames one into, a namespace | the namespace's visible version is dropped (NS-2) |
+  | *0.1:* creates a namespace | it exists on the ref |
+  | *0.1:* drops a namespace, or sets its properties | its visible version is dropped |
+  | *0.1:* drops a namespace | a table or a namespace under it exists once the commit is applied (NS-3) |
   | renames, drops or otherwise changes a table | the table is not visible on the ref |
   | only adds files | never |
 
@@ -361,8 +397,9 @@ order and the cluster key.
   - its snapshots (CMT-1), and `head.snapshot_id = commit_seq` for every touched table.
 - **CMT-9.** A commit is refused, with SQLSTATE `22023` and the message prefix `metalake invalid:`, if the
   current state of a touched table would break a rule of §6, §7 or §8, if an added file lacks statistics for
-  a field of the cluster key (STA-3), if a new field id was not drawn from the table's counter, or if it adds a
-  file whose `intent` has expired (RET-7). A created table takes its field, spec and partition field ids from
+  a field of the cluster key (STA-3), if a new field id was not drawn from the table's counter, if it adds a
+  file whose `intent` has expired (RET-7), or, *0.1*, if it names a namespace that never existed on the ref, or one
+  that is not a namespace (NS-1, NS-2). A commit MAY change namespaces only; it then writes no snapshot. A created table takes its field, spec and partition field ids from
   the commit, and its counters start after them; its default spec is spec 0, unpartitioned unless the commit
   gives one. Only what the commit changes is checked: the definitions of the tables it touches and the files it
   adds. Files committed earlier are not checked again, so
@@ -461,9 +498,11 @@ blob type `deletion-vector-v1`.
   | changes `k` | changes `k` otherwise, drops it, or drops the table | conflict |
   | changes a table `p` no longer has | | conflict |
 
-  A key is a field, a table name, a property, the partition spec, the sort order or the cluster key (VIS-9).
-  After applying, every touched table MUST satisfy §6–§8 and table names MUST stay unique on `p`; otherwise the
-  merge is a conflict, for instance when `b` and `p` gave two different fields one name.
+  A key is a field, a table name, a property, the partition spec, the sort order, the cluster key or, *0.1*, a
+  namespace or a namespace property (VIS-9). After applying, every touched table MUST satisfy §6–§8, table names
+  MUST stay unique on `p`, and, *0.1*, every table and namespace the merge brought or touched MUST satisfy NS-2 and
+  NS-3 on `p`; otherwise the merge is a conflict, for instance when `b` and `p` gave two different fields one name,
+  or `b` created a table in a namespace `p` dropped.
 - **MRG-4.** Applying, at `m`:
   - each of `b`'s live rows is closed at `m`, and a copy of it opens on `p` at `m`; a copy of a vector or a
     version first closes `p`'s own live row of the same key;
@@ -622,6 +661,12 @@ as published with Apache Iceberg 1.10.0. Server-side scan planning (`planTableSc
 - **ICE-5.** Inline files are never served as catalog rows: the projection materializes an inline file at
   `<location>/metalake-inline/<file_id>.parquet` with its exact bytes.
 
+- **ICE-7.** *0.1.* The projection serves the namespaces that exist on the ref it projects (NS-1). Listing the
+  namespaces under a parent returns those whose parent it is; loading one returns its properties (NS-4).
+  Creating a namespace, updating its properties and dropping it are commits under NS-2 and NS-3. Dropping a
+  namespace that is not empty answers Iceberg's `NamespaceNotEmptyException` (HTTP 409). Namespaces are not
+  renamed, as in the Iceberg REST specification.
+
 ### 16.2 Inbound
 
 - **ICE-6.** An Iceberg REST `updateTable` becomes one MetaLake commit on the ref its `set-snapshot-ref` names:
@@ -653,6 +698,14 @@ shows conformance by running them with its own operations in place of the refere
 - Any other change increments the version, and the text of the new version states how a catalog migrates from
   the previous one. A reader refuses a version it does not know (LAY-3).
 - Rule ids are never reused or renumbered.
+- *0.1.* `writer_version` (LAY-5) is an integer too. A change that readers of the previous text can ignore without
+  misreading the catalog, but that its writers could break, keeps `format_version` and increments
+  `writer_version`. Revision 0.1 is `format_version` 0, `writer_version` 1.
+- *0.1.* **Migrating from version 0.** A writer of revision 0.1 migrates a catalog of version 0 in one
+  transaction: it draws a `commit_seq` with operation `migrate` on `main`; creates on `main` every namespace, and
+  every parent of one, in which a table exists on `main` at `LATEST`; on each other live branch, the namespaces of its
+  tables that it does not see; and sets `writer_version` to `1`. A catalog created by revision 0.1 starts with
+  `writer_version` `1` and no namespace.
 
 ## 19. Not in v0
 
@@ -665,6 +718,7 @@ shows conformance by running them with its own operations in place of the refere
 - **Merges** into a ref other than the parent, and merges that check rows or predicates rather than files and
   keys (§12).
 - **`variant` bounds** (STA-9).
-- **Catalog objects other than tables**, such as views, functions and models.
+- **Catalog objects other than tables and namespaces**, such as views, functions and models; **renaming a
+  namespace**, and dropping one together with its tables.
 - **Table constraints**, **encryption**, **catalog databases other than Postgres**, and **transactions across
   catalogs**.

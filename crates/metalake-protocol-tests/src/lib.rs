@@ -89,6 +89,11 @@ async fn install(client: &Client, schema: &str, files: Vec<(PathBuf, String)>) -
             return Err(format!("{}: {e:?}", path.display()).into());
         }
     }
+    // Revision 0.1 (NS-2): the tests put their tables in namespace db, which every catalog starts with.
+    if let Err(e) = client.batch_execute("insert into namespace values ('{db}', false, 1, 0)").await {
+        client.batch_execute("rollback").await?;
+        return Err(e.into());
+    }
     client.batch_execute("commit").await?;
     Ok(())
 }

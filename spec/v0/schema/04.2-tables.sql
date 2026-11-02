@@ -39,3 +39,28 @@ create table table_property (
   check (begin_seq < end_seq));
 create unique index table_property_live on table_property (table_id, key, ref_id)
   where end_seq = 9223372036854775807;
+
+-- Revision 0.1 · NS-1 to NS-4: namespaces and their properties, versioned objects keyed by their path.
+create table namespace (
+  namespace text[] not null,
+  dropped boolean not null default false,
+  ref_id int not null references ref,
+  begin_seq bigint not null,
+  end_seq bigint not null default 9223372036854775807,
+  primary key (namespace, ref_id, begin_seq),
+  check (begin_seq < end_seq),
+  check (cardinality(namespace) > 0 and array_position(namespace, null) is null and array_position(namespace, '') is null));
+create unique index namespace_live on namespace (namespace, ref_id) where end_seq = 9223372036854775807;
+
+create table namespace_property (
+  namespace text[] not null,
+  key text not null,
+  value text,
+  dropped boolean not null default false,
+  ref_id int not null references ref,
+  begin_seq bigint not null,
+  end_seq bigint not null default 9223372036854775807,
+  primary key (namespace, key, ref_id, begin_seq),
+  check (begin_seq < end_seq));
+create unique index namespace_property_live on namespace_property (namespace, key, ref_id)
+  where end_seq = 9223372036854775807;

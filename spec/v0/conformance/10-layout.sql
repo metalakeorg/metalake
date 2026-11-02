@@ -6,7 +6,8 @@ select expect(
   (select array_agg(table_name::text order by table_name) from information_schema.tables
     where table_schema = current_schema()) =
   array['cluster_key', 'commit', 'data_file', 'deletion_vector', 'field', 'file_footer', 'head', 'idempotency',
-        'inline_file', 'intent', 'meta', 'partition_spec', 'ref', 'ref_base', 'retention', 'snapshot', 'sort_order', 'table_counter',
+        'inline_file', 'intent', 'meta', 'namespace', 'namespace_property', 'partition_spec', 'ref', 'ref_base',
+        'retention', 'snapshot', 'sort_order', 'table_counter',
         'table_name', 'table_property', 'tbl', 'tombstone'],
   'the tables of §4');
 select expect(not exists (

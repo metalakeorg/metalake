@@ -1,5 +1,8 @@
 -- Assertions for the conformance cases. Not part of the reference.
 
+-- Every case starts with namespace db on main (revision 0.1, NS-2), where the cases of version 0 put their tables.
+insert into namespace values ('{db}', false, 1, 0);
+
 create function expect(ok boolean, what text) returns void language plpgsql as $$
 begin
   if ok is not true then raise exception 'expected: %', what; end if;

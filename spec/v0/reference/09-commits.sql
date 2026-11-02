@@ -55,9 +55,12 @@ $$;
 --                            "doc": null}],
 --                "drop_fields": [<field_id>],
 --                "properties": {"key": "value or null to remove"},
---                "partition_spec": [<partition field>], "sort_order": [<sort field>], "cluster_key": [<field_id>]}]}
+--                "partition_spec": [<partition field>], "sort_order": [<sort field>], "cluster_key": [<field_id>]}],
+--    "namespaces": [{"namespace": ["db"], "create": true, "drop": true,
+--                    "properties": {"key": "value or null to remove"}}]}
 --
--- Every key but "ref", "author", "actor", "operation" and "tables" is optional. New field ids are drawn with
+-- Every key but "ref", "author", "actor", "operation" and "tables" is optional; "namespaces" is revision 0.1.
+-- A commit MAY carry namespaces only, and then writes no snapshot. New field ids are drawn with
 -- next_id() beforehand, except in a created table. Returns the commit_seq, or the stored one if an idempotent
 -- commit was already applied.
 create function commit(c jsonb) returns bigint language plpgsql as $$
@@ -79,7 +82,12 @@ declare
   n bigint;
   problems text;
   removed_rows bigint;
+  spaces jsonb := coalesce(c -> 'namespaces', '[]');
+  ns text[];
+  nv namespace;
+  st text;
 begin
+  perform writable();
   -- CMT-5: idempotency.
   if app is not null then
     if ver is null or ver < 1 then
@@ -93,7 +101,7 @@ begin
   end if;
 
   -- CMT-4: the ref, then the heads of the existing tables, in table_id order.
-  if exists (select 1 from jsonb_array_elements(entries) y
+  if jsonb_array_length(spaces) > 0 or exists (select 1 from jsonb_array_elements(entries) y
               where y ? 'create' or y ? 'rename' or coalesce((y ->> 'drop')::boolean, false)) then
     select * into rf from ref where ref_id = r for update;
   else
@@ -174,10 +182,42 @@ begin
     end loop;
   end loop;
 
+  -- NS-1 to NS-3 (revision 0.1): the namespaces the commit changes, against the current state.
+  for x in select * from jsonb_array_elements(spaces) loop
+    ns := array(select jsonb_array_elements_text(x -> 'namespace'));
+    if cardinality(ns) = 0 or array_position(ns, '') is not null then
+      perform invalid(format('NS-1: %s is not a namespace', x -> 'namespace'));
+    end if;
+    nv := namespace_version(r, ns, latest);
+    if coalesce((x ->> 'create')::boolean, false) then
+      if nv.namespace is not null and not nv.dropped then
+        perform conflict(format('namespace %s exists', ns));
+      end if;
+    elsif nv.namespace is null then
+      perform invalid(format('NS-2: namespace %s does not exist', ns));
+    elsif nv.dropped then
+      perform conflict(format('namespace %s is dropped', ns));
+    end if;
+  end loop;
+
   -- CMT-3: the commit.
   seq := nextval('commit_seq_gen');
   insert into commit values (seq, r, pg_current_xact_id(), null, c ->> 'author', c ->> 'actor', c ->> 'operation',
                              app, ver, c ->> 'definition', c ->> 'message');
+
+  -- CMT-8: the namespaces first, so that tables of the same commit may go into them.
+  for x in select * from jsonb_array_elements(spaces) loop
+    ns := array(select jsonb_array_elements_text(x -> 'namespace'));
+    if coalesce((x ->> 'create')::boolean, false) or coalesce((x ->> 'drop')::boolean, false) then
+      update namespace set end_seq = seq where namespace = ns and ref_id = r and end_seq = 9223372036854775807;
+      insert into namespace values (ns, coalesce((x ->> 'drop')::boolean, false), r, seq);
+    end if;
+    for e in select jsonb_build_object('k', k, 'v', v) from jsonb_each(coalesce(x -> 'properties', '{}')) p(k, v) loop
+      update namespace_property set end_seq = seq
+       where namespace = ns and key = e ->> 'k' and ref_id = r and end_seq = 9223372036854775807;
+      insert into namespace_property values (ns, e ->> 'k', e ->> 'v', jsonb_typeof(e -> 'v') = 'null', r, seq);
+    end loop;
+  end loop;
 
   -- CMT-8: the rows.
   for e in select * from jsonb_array_elements(entries) loop
@@ -337,6 +377,15 @@ begin
                                         and d.ref_id in (select ch.ref_id from chain(r, seq - 1) ch)), 0)));
     insert into head values (r, t, seq) on conflict (ref_id, table_id) do update set snapshot_id = seq;
   end loop;
+
+  -- NS-2 and NS-3: tables the commit created or renamed, and namespaces it changed, once everything is applied.
+  select z.state, z.problem into st, problems from namespace_errors(r, latest,
+    array(select (y ->> 'table_id')::uuid from jsonb_array_elements(entries) y where y ? 'create' or y ? 'rename'),
+    (select coalesce(jsonb_agg(y -> 'namespace'), '[]') from jsonb_array_elements(spaces) y)) z
+   order by z.state desc limit 1;
+  if problems is not null then
+    if st = '40001' then perform conflict(problems); else perform invalid(problems); end if;
+  end if;
 
   -- CMT-10 and CMT-5: intents, idempotency, notification.
   delete from intent where path in (

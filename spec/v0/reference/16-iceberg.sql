@@ -216,3 +216,19 @@ begin
   return commit(jsonb_build_object('ref', r, 'author', 'iceberg', 'actor', 'iceberg-rest', 'operation', operation,
                                    'tables', jsonb_build_array(entry)));
 end $$;
+
+-- ICE-7 (revision 0.1): the namespaces under `parent` (an empty array for the top level) on ref r, as JSON arrays.
+create function iceberg_namespaces(r int, parent text[]) returns setof jsonb language sql stable as $$
+  select to_jsonb(x.namespace) from visible_namespaces(r, 9223372036854775806) x
+   where cardinality(x.namespace) = cardinality(parent) + 1
+     and (cardinality(parent) = 0 or x.namespace[1:cardinality(parent)] = parent)
+   order by x.namespace;
+$$;
+
+-- ICE-7: a namespace and its properties, as loadNamespaceMetadata answers, or NULL if it does not exist.
+create function iceberg_namespace(r int, ns text[]) returns jsonb language sql stable as $$
+  select jsonb_build_object('namespace', to_jsonb(ns), 'properties', coalesce(
+           (select jsonb_object_agg(p.key, p.value) from visible_namespace_properties(r, ns, 9223372036854775806) p),
+           '{}'))
+   where namespace_exists(r, ns, 9223372036854775806);
+$$;

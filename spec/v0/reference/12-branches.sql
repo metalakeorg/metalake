@@ -12,6 +12,7 @@ declare
   c bigint;
   id int := nextval('ref_id_gen');
 begin
+  perform writable();
   select * into parent from ref x where x.ref_id = p for update;
   if parent.ref_id is null or parent.deleted then
     perform invalid(format('ref %s cannot be forked', p));
@@ -84,6 +85,9 @@ declare
   m bigint;
   t uuid;
   tables uuid[];
+  named uuid[];
+  spaces jsonb;
+  ns text[];
   vt record;
   row jsonb;
   k jsonb;
@@ -95,6 +99,7 @@ declare
   problems text;
   cur bigint;
 begin
+  perform writable();
   select * into base from ref_base where ref_id = b and end_seq = open;
   if base.ref_id is null then
     perform invalid(format('ref %s has no parent to merge into', b));
@@ -122,7 +127,12 @@ begin
     union select table_id from sort_order where ref_id = b and end_seq = open
     union select table_id from cluster_key where ref_id = b and end_seq = open
     order by 1);
-  if cardinality(tables) = 0 then
+  -- Revision 0.1: the namespaces the branch changed, and the tables it named.
+  spaces := (select coalesce(jsonb_agg(distinct to_jsonb(y.namespace)), '[]') from (
+               select x.namespace from namespace x where x.ref_id = b and x.end_seq = open
+               union select x.namespace from namespace_property x where x.ref_id = b and x.end_seq = open) y);
+  named := array(select x.table_id from table_name x where x.ref_id = b and x.end_seq = open);
+  if cardinality(tables) = 0 and jsonb_array_length(spaces) = 0 then
     return null;
   end if;
 
@@ -241,6 +251,40 @@ begin
     insert into head values (p, t, m) on conflict (ref_id, table_id) do update set snapshot_id = m;
   end loop;
 
+  -- Revision 0.1: namespaces and their properties, as versioned keys (VIS-9, MRG-3), compared by exact path.
+  for row in select to_jsonb(x) from namespace x where x.ref_id = b and x.end_seq = open loop
+    ns := array(select jsonb_array_elements_text(row -> 'namespace'));
+    mine := row - 'ref_id' - 'begin_seq' - 'end_seq';
+    at_fork := (select to_jsonb(v) - 'ref_id' - 'begin_seq' - 'end_seq' from namespace_version(p, ns, f) v
+                 where v.namespace is not null);
+    now_ := (select to_jsonb(v) - 'ref_id' - 'begin_seq' - 'end_seq' from namespace_version(p, ns, latest) v
+              where v.namespace is not null);
+    if at_fork is distinct from now_ and now_ is distinct from mine then
+      perform conflict(format('namespace %s changed on both sides', ns));
+    end if;
+    update namespace x set end_seq = m where x.namespace = ns and x.ref_id in (p, b) and x.end_seq = open;
+    insert into namespace values (ns, (row ->> 'dropped')::boolean, p, m);
+  end loop;
+  for row in select to_jsonb(x) from namespace_property x where x.ref_id = b and x.end_seq = open loop
+    ns := array(select jsonb_array_elements_text(row -> 'namespace'));
+    mine := row - 'ref_id' - 'begin_seq' - 'end_seq';
+    at_fork := (select to_jsonb(v) - 'ref_id' - 'begin_seq' - 'end_seq'
+                  from namespace_property_version(p, ns, row ->> 'key', f) v where v.namespace is not null);
+    now_ := (select to_jsonb(v) - 'ref_id' - 'begin_seq' - 'end_seq'
+               from namespace_property_version(p, ns, row ->> 'key', latest) v where v.namespace is not null);
+    if at_fork is distinct from now_ and now_ is distinct from mine then
+      perform conflict(format('property %s of namespace %s changed on both sides', row ->> 'key', ns));
+    end if;
+    update namespace_property x set end_seq = m
+     where x.namespace = ns and x.key = row ->> 'key' and x.ref_id in (p, b) and x.end_seq = open;
+    insert into namespace_property values (ns, row ->> 'key', row ->> 'value', (row ->> 'dropped')::boolean, p, m);
+  end loop;
+  -- NS-2 and NS-3 on the parent, for the tables the merge named and the namespaces it brought.
+  select z.problem into problems from namespace_errors(p, latest, named, spaces) z limit 1;
+  if problems is not null then
+    perform conflict(format('the merge breaks a namespace rule: %s', problems));
+  end if;
+
   if exists (select 1 from visible_table_names(p, latest) group by namespace, name having count(*) > 1) then
     perform conflict('the merge gives two tables one name');
   end if;
@@ -252,3 +296,4 @@ begin
   perform pg_notify('metalake', current_schema() || ':' || m);
   return m;
 end $$;
+

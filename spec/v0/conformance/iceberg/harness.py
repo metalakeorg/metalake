@@ -11,6 +11,7 @@ import struct
 import sys
 import threading
 import traceback
+import urllib.parse
 from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -20,6 +21,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pyiceberg.catalog import load_catalog
 from pyiceberg.conversions import from_bytes
+from pyiceberg.exceptions import NamespaceAlreadyExistsError, NamespaceNotEmptyError
 from pyiceberg.expressions import And, GreaterThanOrEqual, LessThanOrEqual
 from pyiceberg.io.pyarrow import PyArrowFileIO
 from pyiceberg.manifest import (
@@ -66,6 +68,8 @@ def setup(cur):
     cur.execute("set search_path = cat")
     for f in sorted((SPEC / "v0" / "schema").glob("*.sql")) + sorted((SPEC / "v0" / "reference").glob("*.sql")):
         cur.execute(f.read_text())
+    # Revision 0.1 (NS-2): the tables of the harness live in namespace db.
+    cur.execute("insert into namespace values ('{db}', false, 1, 0)")
 
 
 def sql(cur, q, *args):
@@ -418,13 +422,79 @@ class Rest:
             return 400, {"error": {"message": str(e), "type": "BadRequestException", "code": 400}}
 
 
+class Namespaces:
+    """ICE-7: the namespace endpoints of the REST catalog, over the reference's iceberg_namespaces, iceberg_namespace
+    and commit, on main."""
+
+    def __init__(self):
+        self.con = psycopg.connect(DSN)
+
+    @staticmethod
+    def path(segment):
+        return urllib.parse.unquote(segment).split("\x1f")
+
+    def query(self, q, *args):
+        with self.con.cursor() as cur:
+            row = cur.execute(q, args).fetchone()
+        self.con.commit()
+        return row[0] if row else None
+
+    def commit(self, spaces):
+        """The SQLSTATE of the commit's refusal, or None."""
+        c = {"ref": 1, "author": "rest", "actor": "rest", "operation": "update", "namespaces": spaces, "tables": []}
+        try:
+            with self.con.cursor() as cur:
+                cur.execute("select commit(%s::jsonb)", (json.dumps(c),))
+            self.con.commit()
+            return None
+        except psycopg.Error as e:
+            self.con.rollback()
+            return e.sqlstate
+
+    def get(self, url):
+        parts = urllib.parse.urlparse(url)
+        segments = parts.path.split("/")[3:]
+        if not segments:
+            parent = urllib.parse.parse_qs(parts.query).get("parent", [""])[0]
+            listed = self.query("select coalesce(jsonb_agg(x), '[]') from iceberg_namespaces(1, %s) x",
+                                parent.split("\x1f") if parent else [])
+            return 200, {"namespaces": listed}
+        found = self.query("select iceberg_namespace(1, %s)", self.path(segments[0]))
+        if found is None:
+            return 404, {"error": {"message": url, "type": "NoSuchNamespaceException", "code": 404}}
+        return 200, found
+
+    def post(self, url, body):
+        segments = urllib.parse.urlparse(url).path.split("/")[3:]
+        if not segments:
+            state = self.commit([{"namespace": body["namespace"], "create": True,
+                                  "properties": body.get("properties", {})}])
+            if state == "40001":
+                return 409, {"error": {"message": "exists", "type": "AlreadyExistsException", "code": 409}}
+            return 200, {"namespace": body["namespace"], "properties": body.get("properties", {})}
+        ns = self.path(segments[0])
+        props = {**{k: None for k in body.get("removals", [])}, **body.get("updates", {})}
+        if self.commit([{"namespace": ns, "properties": props}]):
+            return 404, {"error": {"message": url, "type": "NoSuchNamespaceException", "code": 404}}
+        return 200, {"updated": list(body.get("updates", {})), "removed": body.get("removals", []), "missing": []}
+
+    def delete(self, url):
+        ns = self.path(urllib.parse.urlparse(url).path.split("/")[3])
+        state = self.commit([{"namespace": ns, "drop": True}])
+        if state == "40001":
+            return 409, {"error": {"message": "not empty", "type": "NamespaceNotEmptyException", "code": 409}}
+        if state:
+            return 404, {"error": {"message": url, "type": "NoSuchNamespaceException", "code": 404}}
+        return 204, None
+
+
 def serve(rest):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
 
         def send(self, status, obj):
-            b = json.dumps(obj).encode()
+            b = b"" if obj is None else json.dumps(obj).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(b)))
@@ -436,12 +506,20 @@ def serve(rest):
                 return self.send(200, {"defaults": {}, "overrides": {}})
             if self.path.startswith("/v1/namespaces/db/tables/w"):
                 return self.send(200, rest.load())
+            if self.path.startswith("/v1/namespaces") and "/tables" not in self.path:
+                return self.send(*spaces.get(self.path))
             self.send(404, {"error": {"message": self.path, "type": "NoSuchTableException", "code": 404}})
 
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if self.path.startswith("/v1/namespaces") and "/tables" not in self.path:
+                return self.send(*spaces.post(self.path, body))
             self.send(*rest.update(body))
 
+        def do_DELETE(self):
+            self.send(*spaces.delete(self.path))
+
+    spaces = Namespaces()
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
@@ -496,7 +574,34 @@ def inbound(cur):
         check(["ICE-6"], len(files("wb")) == 1 and len(files()) == 2, "an append to a branch lands on that ref only")
     except TypeError:
         print("note  ICE-6  PyIceberg 0.12 cannot append to a branch")
+    namespaces(catalog)
     server.shutdown()
+
+
+def namespaces(catalog):
+    """ICE-7, through PyIceberg's namespace calls against the minimal server."""
+    catalog.create_namespace("ns7", {"comment": "seven"})
+    catalog.create_namespace(("ns7", "child"))
+    check(["ICE-7"], set(catalog.list_namespaces()) == {("db",), ("ns7",)}
+          and catalog.list_namespaces("ns7") == [("ns7", "child")], "namespaces listed by level")
+    check(["ICE-7"], catalog.load_namespace_properties("ns7") == {"comment": "seven"}, "a namespace's properties")
+    catalog.update_namespace_properties("ns7", removals={"comment"}, updates={"owner": "x"})
+    check(["ICE-7"], catalog.load_namespace_properties("ns7") == {"owner": "x"}, "properties updated and removed")
+    try:
+        catalog.create_namespace("ns7")
+        exists = False
+    except NamespaceAlreadyExistsError:
+        exists = True
+    check(["ICE-7"], exists, "a namespace created twice is refused")
+    try:
+        catalog.drop_namespace("ns7")
+        not_empty = False
+    except NamespaceNotEmptyError:
+        not_empty = True
+    catalog.drop_namespace(("ns7", "child"))
+    catalog.drop_namespace("ns7")
+    check(["ICE-7"], not_empty and set(catalog.list_namespaces()) == {("db",)},
+          "a namespace that is not empty is not dropped (409); empty, it is")
 
 
 def main():
