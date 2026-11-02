@@ -1,17 +1,5 @@
 -- MetaLake v0 · protocol · branches and merges (ADR 0003 §2.4).
 
--- RET-1: the snapshots ref r keeps.
-create function @schema@.kept_snapshots(r int) returns setof bigint language sql stable
-set search_path = @schema@, pg_catalog, pg_temp as $$
-  with snaps as (select distinct snapshot_id as s from snapshot where ref_id = r),
-  pol as (select * from retention where ref_id = r and (min_seq is not null or max_age is not null or min_snapshots is not null))
-  select s from snaps
-   where not exists (select 1 from pol)
-      or s >= (select min_seq from pol)
-      or committed_time(s) >= now() - (select max_age from pol)
-      or s in (select s from snaps order by s desc limit coalesce((select min_snapshots from pol), 0));
-$$;
-
 -- BR-1, BR-2: a branch or a tag `name` of ref `parent`, seeing it at `at`, a snapshot the parent keeps (RET-6), or
 -- by default at the last commit_seq drawn, read under the lock. Returns its ref_id.
 create function @schema@.create_ref(name text, parent int, kind text default 'branch', at bigint default null,

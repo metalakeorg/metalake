@@ -49,7 +49,10 @@ async fn the_feed_and_reads_as_of_a_time_match_the_reference() -> Result<(), Err
     for t in 0..2 {
         commit(&on, &protocol, 1, t, 0, true).await?;
     }
-    let b: i64 = on.query_one(&format!("select {p}.create_ref(name => 'b', parent => 1)::bigint"), &[]).await?.get(0);
+    let b: i64 = on
+        .query_one(&format!("select {p}.create_ref(name => 'b', parent => 1)::bigint"), &[])
+        .await?
+        .get(0);
     let b = b as i32;
     commit(&on, &protocol, b, 2, 0, true).await?;
     // The slow commit draws its sequence now and commits after the others.
@@ -106,7 +109,10 @@ async fn the_feed_and_reads_as_of_a_time_match_the_reference() -> Result<(), Err
             }
         }
     }
-    let total: i64 = on.query_one(&format!("select count(*) from {p}.commit"), &[]).await?.get(0);
+    let total: i64 = on
+        .query_one(&format!("select count(*) from {p}.commit"), &[])
+        .await?
+        .get(0);
     if all.len() as i64 != total {
         return Err(format!("the feed delivered {} of {total} commits", all.len()).into());
     }
@@ -131,12 +137,17 @@ async fn the_feed_and_reads_as_of_a_time_match_the_reference() -> Result<(), Err
     // Too recent a time is refused by both.
     let now = "select {s}.as_of_time(1, $1, now())";
     for s in [&r, &p] {
-        let refused = on.query_one(&now.replace("{s}", s), &[&Uuid::from_u128(TABLES[0])]).await;
+        let refused = on
+            .query_one(&now.replace("{s}", s), &[&Uuid::from_u128(TABLES[0])])
+            .await;
         if refused.as_ref().err().and_then(|e| e.code()).map(|c| c.code()) != Some("22023") {
             return Err(format!("{s} did not refuse a time less than one second ago: {refused:?}").into());
         }
     }
-    on.batch_execute(&format!("reset search_path; drop schema {p} cascade; drop schema {r} cascade")).await?;
+    on.batch_execute(&format!(
+        "reset search_path; drop schema {p} cascade; drop schema {r} cascade"
+    ))
+    .await?;
     Ok(())
 }
 
@@ -164,7 +175,10 @@ async fn the_feed_reads_through_its_indexes() -> Result<(), Error> {
     ))
     .await?;
     let delivered: i64 = on
-        .query_one(&format!("select count(*) from {p}.changes('-infinity', 0, 1000000)"), &[])
+        .query_one(
+            &format!("select count(*) from {p}.changes('-infinity', 0, 1000000)"),
+            &[],
+        )
         .await?
         .get(0);
     if delivered != 99899 {

@@ -67,6 +67,12 @@ enum Step {
         change: Change,
         supply: u8,
     },
+    /// R7: what a ref keeps (RET-1), and a collection (RET-3, RET-4) by both.
+    Retain {
+        r: u8,
+        min_snapshots: u8,
+    },
+    Collect,
 }
 
 fn change() -> impl Strategy<Value = Change> {
@@ -90,6 +96,8 @@ fn step() -> impl Strategy<Value = Step> {
         1 => any::<u8>().prop_map(|r| Step::Delete { r }),
         3 => (any::<u8>(), any::<u16>(), change(), 0u8..3)
             .prop_map(|(r, table, change, supply)| Step::Both { r, table, change, supply }),
+        1 => (any::<u8>(), 0u8..3).prop_map(|(r, min_snapshots)| Step::Retain { r, min_snapshots }),
+        2 => Just(Step::Collect),
     ]
 }
 
@@ -227,6 +235,42 @@ impl Run {
         Ok(by_reference)
     }
 
+    /// Both collect: the reference in two calls, the protocol between collect_begin and collect_end in one
+    /// transaction. They must delete the same objects and rows.
+    async fn collect(&self) -> Result<Vec<String>, Error> {
+        let reference: Vec<String> = self
+            .pair
+            .on_reference
+            .query_one("select array(select x from collectable_objects() x order by 1)", &[])
+            .await?
+            .get(0);
+        let rows: i64 = self.pair.on_reference.query_one("select collect()", &[]).await?.get(0);
+        let p = quote_ident(&self.pair.protocol);
+        let on = &self.pair.on_protocol;
+        on.batch_execute("begin").await?;
+        let protocol: Vec<String> = on
+            .query_one(
+                &format!("select array(select x from {p}.collect_begin() x order by 1)"),
+                &[],
+            )
+            .await?
+            .get(0);
+        let deleted: i64 = on.query_one(&format!("select {p}.collect_end()"), &[]).await?.get(0);
+        on.batch_execute("commit").await?;
+        if reference != protocol || rows != deleted {
+            return Err(format!(
+                "collection: the reference deletes {reference:?} and {rows} rows, the protocol {protocol:?} and {deleted}"
+            )
+            .into());
+        }
+        count(format!("collect: {}", if rows > 0 { "rows" } else { "nothing" }));
+        if !reference.is_empty() {
+            count("collect: objects".into());
+        }
+        self.pair.same_rows().await?;
+        Ok(reference)
+    }
+
     async fn apply(&mut self, s: &Step) -> Result<(), Error> {
         let refs = self.refs().await?;
         let pick = |x: &u8| refs[*x as usize % refs.len()];
@@ -345,6 +389,20 @@ impl Run {
                     .await?;
                 Ok(())
             }
+            Step::Retain { r, min_snapshots } => {
+                let r = pick(r);
+                let k = i32::from(*min_snapshots);
+                let _ = self
+                    .call(
+                        "select null::bigint from set_retention($1, null, null, $2)",
+                        "select null::bigint from @p.set_retention(r => $1, min_snapshots => $2)",
+                        &[&r, &k],
+                        &[],
+                    )
+                    .await?;
+                Ok(())
+            }
+            Step::Collect => self.collect().await.map(|_| ()),
             Step::Branch { from, tag, at } => {
                 let from = pick(from);
                 let at: Option<i64> = match at {
@@ -542,4 +600,32 @@ fn branches_and_merges_match_the_reference() {
     ] {
         assert!(tally.contains_key(what), "no {what}");
     }
+}
+
+/// RET-4: a file removed on a ref that keeps no snapshot is an object both collect, and once.
+#[tokio::test]
+async fn a_removed_file_is_collected() -> Result<(), Error> {
+    let mut run = Run::new().await?;
+    for s in [
+        Step::Commit {
+            r: 0,
+            table: 0,
+            change: Change::Append(1),
+        },
+        Step::Commit {
+            r: 0,
+            table: 0,
+            change: Change::Remove(0),
+        },
+        Step::Retain { r: 0, min_snapshots: 0 },
+    ] {
+        run.apply(&s).await?;
+    }
+    let first = run.collect().await?;
+    let second = run.collect().await?;
+    run.pair.drop().await?;
+    if first.len() != 1 || !second.is_empty() {
+        return Err(format!("collected {first:?}, then {second:?}").into());
+    }
+    Ok(())
 }

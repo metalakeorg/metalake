@@ -115,20 +115,40 @@ async fn install(client: &Client, schema: &str, files: Vec<(PathBuf, String)>) -
 /// A catalog with the protocol: the tables of the specification and the protocol rendered for `schema`.
 pub async fn install_protocol(client: &Client, schema: &str) -> Result<(), Error> {
     let mut files = sources("spec/v0/schema")?;
-    files.extend(reused()?);
-    files.extend(sources("sql/v0")?.into_iter().map(|(p, s)| (p, render(&s, schema))));
+    let reused = reused()?;
+    files.extend(
+        reused
+            .iter()
+            .filter(|(_, before, _)| before.is_none())
+            .map(|(p, _, s)| (p.clone(), s.clone())),
+    );
+    for (path, sql) in sources("sql/v0")? {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+        for (p, _, s) in reused
+            .iter()
+            .filter(|(_, before, _)| before.as_deref() == Some(name.as_str()))
+        {
+            files.push((p.clone(), s.clone()));
+        }
+        files.push((path, render(&sql, schema)));
+    }
     install(client, schema, files).await
 }
 
-/// The files of the reference the protocol installs as they are (`sql/v0/reference-reused.txt`).
-fn reused() -> Result<Vec<(PathBuf, String)>, Error> {
+/// The files of the reference the protocol installs as they are (`sql/v0/reference-reused.txt`): before all of its
+/// own, or, for `name before file`, just before that file of its own.
+fn reused() -> Result<Vec<(PathBuf, Option<String>, String)>, Error> {
     let list = std::fs::read_to_string(repository().join("sql/v0/reference-reused.txt"))?;
     list.lines()
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(|name| {
+        .map(|line| {
+            let (name, before) = match line.split_once(" before ") {
+                Some((n, b)) => (n, Some(b.trim().to_string())),
+                None => (line, None),
+            };
             let path = repository().join("spec/v0/reference").join(name);
-            Ok((path.clone(), std::fs::read_to_string(&path)?))
+            Ok((path.clone(), before, std::fs::read_to_string(&path)?))
         })
         .collect()
 }
