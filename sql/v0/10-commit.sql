@@ -140,7 +140,10 @@ begin
   select format('%s', e) into problem from unnest(defined) t, table_errors(r, t, latest) e limit 1;
   if problem is not null then return problem; end if;
 
-  with a as (select f, fid from (select adds[n] as f, ids[n] as fid from generate_subscripts(adds, 1) n) u)
+  with a as (select f, fid from (select adds[n] as f, ids[n] as fid from generate_subscripts(adds, 1) n) u),
+  -- Each table's cluster key, once.
+  ck as (select t, k.field_ids from (select distinct (f).table_id as t from a) x,
+                lateral visible_cluster_key(r, x.t, latest) k)
   select p into problem from (
     -- STA-2: distinct statistics fields, NaN counts only for float and double.
     select format('STA-2: file %s repeats a statistics field', a.fid) as p from a
@@ -164,8 +167,8 @@ begin
                         where o.table_id = (a.f).table_id and o.sort_order_id = (a.f).sort_order_id)
     -- STA-3: bounds for every field of the cluster key.
     union all
-    select format('STA-3: file %s has no statistics for cluster key field %s', a.fid, k) from a,
-           visible_cluster_key(r, (a.f).table_id, latest) ck, unnest(ck.field_ids) k
+    select format('STA-3: file %s has no statistics for cluster key field %s', a.fid, k) from a
+      join ck on ck.t = (a.f).table_id, unnest(ck.field_ids) k
      where not k = any (coalesce((a.f).stat_field_ids, '{}'))
     -- INL-1: a path or inline bytes, of the declared size, under the table's limit.
     union all
@@ -283,8 +286,12 @@ begin
     if not table_visible(r, t, latest) then
       perform refuse_conflict('CMT-7', format('table %s is not visible on ref %s', t, r));
     end if;
-    insert into head values (r, t, snapshot_at(r, t, latest)) on conflict do nothing;
+    -- A ref's first commit to a table it inherits starts its head from what it sees.
     perform 1 from head h where h.ref_id = r and h.table_id = t for update;
+    if not found then
+      insert into head values (r, t, snapshot_at(r, t, latest)) on conflict do nothing;
+      perform 1 from head h where h.ref_id = r and h.table_id = t for update;
+    end if;
   end loop;
 
   -- CMT-6, CMT-7, DV-4: requirements and conflicts, against the current state under the locks.
@@ -377,19 +384,24 @@ begin
   select t, seq, r, h.snapshot_id,
          case when t = any (defined) and (defs -> t::text ? 'fields' or defs -> t::text ? 'drop_fields'
                                           or defs -> t::text ? 'create') then seq
-              else (select s.schema_seq from snapshot s where s.table_id = t and s.snapshot_id = h.snapshot_id) end,
-         (select spec_id from default_spec(r, t, latest)),
-         coalesce((select sort_order_id from default_sort_order(r, t, latest)), 0),
+              else ps.schema_seq end,
+         -- The defaults change only with the definition: otherwise they are the previous snapshot's.
+         case when t = any (defined) or ps.snapshot_id is null then (select spec_id from default_spec(r, t, latest))
+              else ps.spec_id end,
+         case when t = any (defined) or ps.snapshot_id is null
+              then coalesce((select sort_order_id from default_sort_order(r, t, latest)), 0)
+              else ps.sort_order_id end,
          jsonb_build_object('operation', op,
            'added-data-files', (select count(*) from unnest(adds) f where (f).table_id = t),
            'deleted-data-files', (select count(*) from unnest(rems) x where (x).table_id = t),
            'added-records', coalesce((select sum((f).record_count) from unnest(adds) f where (f).table_id = t), 0),
-           'deleted-records', coalesce((select sum(d.record_count) from data_file d
+           'deleted-records', case when cardinality(rems) = 0 then 0 else coalesce((select sum(d.record_count) from data_file d
                                          where d.table_id = t
                                            and d.file_id in (select (x).file_id from unnest(rems) x where (x).table_id = t)
                                            and d.begin_seq < seq and d.end_seq >= seq
-                                           and d.ref_id in (select ch.ref_id from chain(r, seq - 1) ch)), 0))
-    from unnest(tables) t left join head h on h.ref_id = r and h.table_id = t;
+                                           and d.ref_id in (select ch.ref_id from chain(r, seq - 1) ch)), 0) end)
+    from unnest(tables) t left join head h on h.ref_id = r and h.table_id = t
+    left join snapshot ps on ps.table_id = t and ps.snapshot_id = h.snapshot_id;
   insert into head select r, t, seq from unnest(tables) t
     on conflict (ref_id, table_id) do update set snapshot_id = excluded.snapshot_id;
 

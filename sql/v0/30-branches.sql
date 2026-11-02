@@ -97,6 +97,8 @@ declare
   t uuid;
   tables uuid[];
   named uuid[];
+  redefined uuid[];
+  revectored uuid[];
   vt record;
   cond text;
   bad boolean;
@@ -139,6 +141,15 @@ begin
     return row(null, false)::commit_result;
   end if;
   named := array(select x.table_id from table_name x where x.ref_id = b and x.end_seq = open);
+  -- The tables whose definition, or whose vectors, the merge brings: only those can become invalid (MRG-3).
+  redefined := array(
+    select x.table_id from field x where x.ref_id = b and x.end_seq = open
+    union select x.table_id from table_name x where x.ref_id = b and x.end_seq = open
+    union select x.table_id from table_property x where x.ref_id = b and x.end_seq = open
+    union select x.table_id from partition_spec x where x.ref_id = b and x.end_seq = open
+    union select x.table_id from sort_order x where x.ref_id = b and x.end_seq = open
+    union select x.table_id from cluster_key x where x.ref_id = b and x.end_seq = open);
+  revectored := array(select x.table_id from deletion_vector x where x.ref_id = b and x.end_seq = open);
 
   -- MRG-1: the parent's heads of the tables the branch changed that it has, in table order.
   foreach t in array tables loop
@@ -184,15 +195,23 @@ begin
   with c as (update data_file x set end_seq = m where x.table_id = any (tables) and x.ref_id = b and x.end_seq = open
              returning x.*)
   select array_agg(c) into moved from c;
-  insert into data_file
-  select (jsonb_populate_record(null::data_file,
-            to_jsonb(x) || jsonb_build_object('ref_id', p, 'begin_seq', m, 'end_seq', open))).*
+  insert into data_file (table_id, file_id, ref_id, begin_seq, path, format, spec_id, partition, sort_order_id,
+                         record_count, file_size, footer_size, first_row_id, stat_field_ids, lower, upper, null_count,
+                         nan_count, value_count)
+  select x.table_id, x.file_id, p, m, x.path, x.format, x.spec_id, x.partition, x.sort_order_id, x.record_count,
+         x.file_size, x.footer_size, x.first_row_id, x.stat_field_ids, x.lower, x.upper, x.null_count, x.nan_count,
+         x.value_count
     from unnest(coalesce(moved, '{}')) x;
 
   -- Versions of definitions (VIS-9): a key both sides changed to different versions conflicts (MRG-3).
   for vt in select * from (values ('table_name', '{table_id}'::text[]), ('table_property', '{table_id,key}'),
                                   ('field', '{table_id,field_id}'), ('partition_spec', '{table_id}'),
                                   ('sort_order', '{table_id}'), ('cluster_key', '{table_id}')) v(name, keys) loop
+    -- Nothing to compare or move where the branch has no live version.
+    execute format('select exists (select 1 from %I x where x.table_id = any ($3) and x.ref_id = $1 and x.end_seq = $2)',
+                   vt.name)
+      into bad using b, open, tables;
+    continue when not bad;
     cond := (select string_agg(format('y.%1$I = x.%1$I', k), ' and ') from unnest(vt.keys) k);
     execute format($q$
       select exists (
@@ -269,7 +288,8 @@ begin
   -- MRG-3: each table is valid; CMT-1: its snapshot and head.
   foreach t in array tables loop
     problems := (select string_agg(x, '; ') from (
-      select table_errors(p, t, latest) as x union all select dv_errors(p, t, latest, m)) z);
+      select table_errors(p, t, latest) as x where t = any (redefined)
+      union all select dv_errors(p, t, latest, m) where t = any (revectored)) z);
     if problems is not null then
       perform refuse_conflict('MRG-3', format('the merge leaves table %s invalid: %s', t, problems));
     end if;
@@ -293,7 +313,7 @@ begin
   end loop;
 
   -- TBL-1: only a name the merge brought can collide.
-  if exists (select 1 from visible_table_names(p, latest) v
+  if cardinality(named) > 0 and exists (select 1 from visible_table_names(p, latest) v
               where (v.namespace, v.name) in (select w.namespace, w.name from visible_table_names(p, latest) w
                                                where w.table_id = any (named))
               group by v.namespace, v.name having count(*) > 1) then

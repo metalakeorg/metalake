@@ -13,7 +13,7 @@
 set -euo pipefail
 export LC_ALL=C
 D=$(cd "$(dirname "$0")" && pwd)
-DUR=${DUR:-30}; TABLES=${TABLES:-1000}; CLIENTS=${CLIENTS:-8}; RATE=${RATE:-10}
+DUR=${DUR:-30}; TABLES=${TABLES:-1000}; CLIENTS=${CLIENTS:-8}; RATE=${RATE:-10}  # PHASES selects phases
 export PGDATA=${PGDATA:-/tmp/pg} PGUSER=postgres PGHOST=/tmp PGDATABASE=postgres
 r() { printf 'result\t%s\n' "$*"; }
 q() { psql -X -q -At -v ON_ERROR_STOP=1 "$@"; }
@@ -60,10 +60,15 @@ phase() {
   line+=" data_failed=$(failed data.out)"
   r "$line"
 }
-phase alone
-phase merges merge
-phase ddl ddl
-phase branches ref
-phase all merge ddl ref
+PHASES=${PHASES:-alone merges ddl branches all}
+for name in $PHASES; do
+  case $name in
+    alone) phase alone ;;
+    merges) phase merges merge ;;
+    ddl) phase ddl ddl ;;
+    branches) phase branches ref ;;
+    all) phase all merge ddl ref ;;
+  esac
+done
 r "checked" "$(q -c "select 'refs=' || count(*) || ' commits=' || (select count(*) from commit) from ref")" \
   "errors=$(q -c "select count(*) from generate_series(1, $TABLES) n, lateral table_errors(1, bench_id(n), 9223372036854775806) e")"
