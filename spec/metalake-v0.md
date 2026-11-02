@@ -515,6 +515,30 @@ blob type `deletion-vector-v1`.
   both are inline, the merge writes their union inline. Otherwise the caller MUST supply the merged vector,
   stored as any vector (DV-3); without it the merge is a conflict. A supplied vector has at least the
   cardinality of each side, and, where the bytes are inline, every position of both.
+- **MRG-6.** *0.1.* A merge MAY name a **selection**: tables, by `table_id`, and namespaces. A namespace selects
+  every table whose name on the branch at `LATEST` lies under it, with the namespaces and namespace properties
+  under it. A selected table brings the branch's versions of its namespace and of that namespace's parents, but
+  not their properties. A selection that names nothing the branch changed makes the merge invalid. Without a
+  selection, a merge takes the whole branch. The selected part is compared and applied by MRG-2 to MRG-5; the
+  tables and namespaces the branch changed outside it are the **rest**.
+- **MRG-7.** *0.1.* A commit of the branch since its current base that changed a selected table and a table of
+  the rest makes the merge a conflict, unless the caller allows it to be split. A split applies the selected part
+  of such a commit only.
+- **MRG-8.** *0.1.* The rest is **rebased** onto the merge:
+  - it is compared as if merged, by MRG-3's matrix, against what the parent changed since the fork, and any
+    conflict fails the whole merge. Where both sides changed the vector of a file of the rest, the union is
+    written on the branch at `m` by MRG-5's rules, or the merge is a conflict;
+  - the selected live rows of the branch move to the parent as MRG-4 states; the rest's live rows stay open on the
+    branch; the branch's `ref_base` closes at `m` and `(b, m, p, fork_seq = m)` opens, as in MRG-4;
+  - every table of the rest gets a snapshot of the branch at `m` (CMT-1), operation `rebase`, whose parent is the
+    parent's snapshot of the table at `m`, or the branch's own if the parent has no such table; its `schema_seq`
+    is `m` if the branch has its own field versions of the table, and its parent's otherwise; the branch's head of
+    the table becomes `m`;
+  - afterwards the tables of the rest MUST satisfy §6–§8 on the branch, its table names MUST be unique and its
+    tables and namespaces MUST satisfy NS-2 and NS-3; otherwise the merge is a conflict.
+
+  The branch then sees the parent at `m` with the rest on top, and its reads below `m` are unchanged (VIS-8). A
+  merge without a selection has no rest, and MRG-8 reduces to MRG-4.
 
 ## 13. Retention and collection
 
@@ -638,7 +662,7 @@ as published with Apache Iceberg 1.10.0. Server-side scan planning (`planTableSc
     order 0, and `main`'s defaults; `main`'s visible properties;
   - the snapshots served (ICE-2), with `sequence-number` equal to `snapshot-id`, `timestamp-ms` from the commit
     time (TT-1), `parent-snapshot-id`, `schema-id` and the summary, whose `operation` is mapped to Iceberg's:
-    `merge` becomes `overwrite`;
+    `merge` and, *0.1*, `rebase` become `overwrite`;
   - a `refs` entry for every live ref that sees the table, of its kind, pointing at its current snapshot (CMT-2);
     `current-snapshot-id` is `main`'s.
 
