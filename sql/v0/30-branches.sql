@@ -23,7 +23,8 @@ declare
   c bigint;
   id int := nextval('ref_id_gen');
 begin
-  select * into p from ref x where x.ref_id = parent for update;
+  perform lock_ref(parent);
+  select * into p from ref x where x.ref_id = parent;
   if p.ref_id is null or p.deleted then
     perform refuse_invalid('BR-1', format('ref %s cannot be forked', parent));
   end if;
@@ -49,7 +50,8 @@ declare
   r constant int := $1;
   x ref;
 begin
-  select * into x from ref where ref.ref_id = r for update;
+  perform lock_ref(r);
+  select * into x from ref where ref.ref_id = r;
   if x.ref_id is null or x.ref_id = 1 or x.protected then
     perform refuse_invalid('BR-3', format('ref %s cannot be deleted', r));
   end if;
@@ -109,11 +111,13 @@ begin
     perform refuse_invalid('MRG-1', format('ref %s has no parent to merge into', b));
   end if;
   p := base.parent_ref_id;
-  perform 1 from ref x where x.ref_id = p and x.kind = 'branch' and not x.deleted for update;
+  perform lock_ref(p);
+  perform 1 from ref x where x.ref_id = p and x.kind = 'branch' and not x.deleted;
   if not found then
     perform refuse_invalid('MRG-1', format('ref %s does not take merges', p));
   end if;
-  select * into rb from ref x where x.ref_id = b for update;
+  perform lock_ref(b);
+  select * into rb from ref x where x.ref_id = b;
   select * into base from ref_base x where x.ref_id = b and x.end_seq = open;
   if rb.kind <> 'branch' or rb.deleted or base.parent_ref_id <> p then
     perform refuse_invalid('MRG-1', format('ref %s cannot be merged into %s', b, p));

@@ -266,12 +266,15 @@ begin
   created := array(select k::uuid from jsonb_each(defs) d(k, e) where e ? 'create');
   defined := array(select k::uuid from jsonb_object_keys(defs) k);
 
-  -- CMT-4: the ref, then the heads of the existing tables, in table_id order.
-  if exists (select 1 from jsonb_each(defs) d(k, e) where e ? 'create' or e ? 'rename' or coalesce((e ->> 'drop')::boolean, false)) then
-    select * into rf from ref x where x.ref_id = r for update;
-  else
-    select * into rf from ref x where x.ref_id = r for key share;
-  end if;
+  -- CMT-4: the ref, shared; the names the commit gives, in their lock's order; then the heads of the existing tables,
+  -- in table_id order.
+  perform lock_ref_shared(r);
+  perform lock_name(r, x.ns, x.name)
+     from (select array(select jsonb_array_elements_text(n -> 'namespace')) as ns, n ->> 'name' as name
+             from jsonb_each(defs) d(k, e), lateral (select coalesce(e -> 'create', e -> 'rename') as n) y
+            where n is not null) x
+    order by hashtext(r || ' ' || array_to_string(x.ns, '.') || ' ' || x.name);
+  select * into rf from ref x where x.ref_id = r;
   if rf.ref_id is null or rf.deleted or rf.kind <> 'branch' then
     perform refuse_invalid('CMT-4', format('ref %s does not take commits', r));
   end if;

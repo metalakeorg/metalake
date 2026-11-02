@@ -28,3 +28,21 @@ create function @schema@.snapshot_at(r int, t uuid, s bigint) returns bigint lan
    where x.id is not null
    order by c.level limit 1;
 $$;
+
+-- The locks of a ref (ADR 0002 §21.4). Commits hold their ref shared; a merge, create_ref and delete_ref hold it
+-- exclusively. They are advisory locks, which Postgres queues in order: an exclusive request waits for the commits
+-- in flight, and commits that arrive after it wait behind it. A row lock would not: new shared row locks pass a
+-- waiting exclusive one, which then waits for as long as commits keep arriving. The first key is the catalog's, so
+-- that catalogs in one database do not share locks. Held until the transaction ends.
+create function @schema@.lock_ref_shared(r int) returns void language sql as $$
+  select pg_advisory_xact_lock_shared(hashtext('@schema@'), r);
+$$;
+
+create function @schema@.lock_ref(r int) returns void language sql as $$
+  select pg_advisory_xact_lock(hashtext('@schema@'), r);
+$$;
+
+-- TBL-1: a commit that gives a table a name on ref r holds that name exclusively, instead of the whole ref.
+create function @schema@.lock_name(r int, ns text[], name text) returns void language sql as $$
+  select pg_advisory_xact_lock(hashtext('@schema@ names'), hashtext(r || ' ' || array_to_string(ns, '.') || ' ' || name));
+$$;
