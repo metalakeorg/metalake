@@ -118,3 +118,123 @@ async fn migrating_changes_nothing_and_refuses_what_it_does_not_know() -> Result
     .await?;
     Ok(())
 }
+
+/// §2.8: on two refs, after a rename into another namespace, a drop, a new field and a namespace's property, each
+/// view answers what the visibility functions do, for a client whose search_path is elsewhere.
+#[tokio::test]
+async fn the_views_answer_what_visibility_does() -> Result<(), Error> {
+    let schema = fresh_schema("p");
+    let on = connect().await?;
+    install_protocol(&on, &schema).await?;
+    let p = quote_ident(&schema);
+    create_table(&on, &schema, 1, 0xe001).await?;
+    create_table(&on, &schema, 1, 0xe002).await?;
+    on.query_one(&format!("select {p}.create_ref(name => 'b', parent => 1)"), &[])
+        .await?;
+    let t1 = Uuid::from_u128(0xe001);
+    // ID-3: a new field's id is drawn first.
+    let field: i32 = on
+        .query_one(&format!("select {p}.next_id($1, 'field')"), &[&t1])
+        .await?
+        .get(0);
+    let rename = Commit {
+        ref_id: 2,
+        operation: "update".into(),
+        tables: vec![TableChange {
+            table_id: t1,
+            definition: Some(json!({
+                "rename": {"namespace": ["a"], "name": "x"},
+                "fields": [{"field_id": field, "new": true, "position": 2, "name": "v", "type": "int"}],
+            })),
+            ..TableChange::default()
+        }],
+        app: None,
+        namespaces: Some(json!([{"namespace": ["a"], "create": true, "properties": {"comment": "ours"}}])),
+    };
+    let drop = Commit {
+        ref_id: 1,
+        operation: "update".into(),
+        tables: vec![TableChange {
+            table_id: Uuid::from_u128(0xe002),
+            definition: Some(json!({"drop": true})),
+            ..TableChange::default()
+        }],
+        app: None,
+        namespaces: None,
+    };
+    for c in [&rename, &drop] {
+        if !matches!(commit_protocol(&on, &schema, c).await?.outcome, Outcome::Committed(_)) {
+            return Err(format!("{:?}", commit_protocol(&on, &schema, c).await?).into());
+        }
+    }
+    on.batch_execute("set search_path = public").await?;
+    // Each pair: the view, and the same rows from the visibility functions, as text in one order.
+    let latest = 9223372036854775806i64;
+    let pairs = [
+        (
+            format!("select ref, namespace::text, name, table_id::text from {p}.tables order by 1, 2, 3"),
+            format!(
+                "select r.name, t.namespace::text, t.name, t.table_id::text from {p}.ref r,
+                        {p}.latest_tables() t where t.ref_id = r.ref_id order by 1, 2, 3"
+            ),
+        ),
+        (
+            format!("select ref, table_id::text, field_id::text, name, type from {p}.columns order by 1, 2, 3"),
+            format!(
+                "select r.name, f.table_id::text, f.field_id::text, f.name, f.type from {p}.ref r, {p}.latest_columns() f
+                  where f.ref_id = r.ref_id order by 1, 2, 3"
+            ),
+        ),
+        (
+            format!("select ref, namespace::text, properties::text from {p}.namespaces order by 1, 2"),
+            "select * from (values ('b', '{a}', '{\"comment\": \"ours\"}'), ('b', '{db}', '{}'),
+                                   ('main', '{db}', '{}')) v order by 1, 2"
+                .to_string(),
+        ),
+        (
+            format!("select name, coalesce(parent, '') from {p}.refs order by 1"),
+            "select * from (values ('b', 'main'), ('main', '')) v order by 1".to_string(),
+        ),
+        (
+            format!("select count(*)::text from {p}.history"),
+            format!("select count(*)::text from {p}.commit"),
+        ),
+        (
+            format!("select count(*)::text from {p}.files('b', '{t1}')"),
+            format!("select count(*)::text from {p}.plan(2, '{t1}', {latest})"),
+        ),
+    ];
+    for (view, want) in pairs {
+        let read = |sql: String| {
+            let on = &on;
+            async move {
+                let rows = on.query(&sql, &[]).await?;
+                let text: Vec<Vec<String>> = rows
+                    .iter()
+                    .map(|r| (0..r.len()).map(|i| r.get::<_, String>(i)).collect())
+                    .collect();
+                Ok::<_, Error>(text)
+            }
+        };
+        let (got, expected) = (read(view.clone()).await?, read(want).await?);
+        if got != expected || got.is_empty() {
+            return Err(format!("{view}: {got:?}, expected {expected:?}").into());
+        }
+    }
+    // The renamed table is a.x on b with its new field, and db.t on main; the dropped one only on b.
+    let tables: Vec<String> = on
+        .query(
+            &format!("select ref || ':' || array_to_string(namespace, '.') || '.' || name from {p}.tables order by 1"),
+            &[],
+        )
+        .await?
+        .iter()
+        .map(|r| r.get(0))
+        .collect();
+    on.batch_execute(&format!("reset search_path; drop schema {p} cascade"))
+        .await?;
+    if tables != ["b:a.x", "b:db.t57346", "main:db.t57345"] {
+        return Err(format!("tables {tables:?}").into());
+    }
+    Ok(())
+}
