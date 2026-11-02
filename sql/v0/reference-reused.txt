@@ -1,10 +1,11 @@
 # The files of spec/v0/reference/ the protocol installs as they are, before its own, in this order. They serve the
 # paths that are rare or already fast: visibility one file at a time, versioned objects, the checks of a table's
-# definition (§6, §7 of the text), bound encoding and deletion vectors. The fast paths are the protocol's own.
+# definition (§6, §7 of the text), bound encoding, commit times and deletion vectors. The fast paths are the protocol's own.
 03-identity.sql
 05.1-visibility.sql
 05.4-versioned.sql
 07-types.sql
 08-statistics.sql
+09.5-time.sql
 10-deletion-vectors.sql
 11-inline-files.sql

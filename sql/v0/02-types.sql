@@ -46,3 +46,23 @@ create type @schema@.table_expect as (
 create type @schema@.commit_result as (
   commit_seq bigint,
   applied boolean);
+
+-- A file a read opens (plan): where it is, what it holds, its inline bytes or stored footer, and the vector that
+-- applies to it, if any (DV-1).
+create type @schema@.planned_file as (
+  file_id bigint,
+  path text,
+  spec_id int,
+  partition jsonb,
+  record_count bigint,
+  file_size bigint,
+  footer_size int,
+  first_row_id bigint,
+  content bytea,
+  footer bytea,
+  vector_begin_seq bigint,
+  vector_path text,
+  vector_offset bigint,
+  vector_size bigint,
+  vector_cardinality bigint,
+  vector_inline bytea);
