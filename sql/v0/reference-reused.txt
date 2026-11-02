@@ -2,7 +2,7 @@
 # this order. They serve the
 # paths that are rare or already fast: visibility one file at a time, versioned objects, the checks of a table's
 # definition (§6, §7 of the text), bound encoding, commit times, stable sequences, deletion vectors and what
-# collection removes. The fast paths are the protocol's own; it replaces the locks of a few (sql/v0/50-retention.sql).
+# collection removes, the migration of the format (17-migration.sql). The fast paths are the protocol's own; it replaces the locks of a few (sql/v0/50-retention.sql).
 03-identity.sql
 05.1-visibility.sql
 05.4-versioned.sql
@@ -13,3 +13,4 @@
 10-deletion-vectors.sql
 11-inline-files.sql
 13-retention.sql before 50-retention.sql
+17-migration.sql

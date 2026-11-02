@@ -4,8 +4,8 @@
 -- (TT-1). The feed reads the filled commits through an index in catalog order, from the cursor on, and the commits
 -- not yet filled through one of their own: the filler keeps those few.
 
-create index commit_by_time on @schema@.commit (committed_at, commit_seq) where committed_at is not null;
-create index commit_unfilled on @schema@.commit (commit_seq) where committed_at is null;
+create index if not exists commit_by_time on @schema@.commit (committed_at, commit_seq) where committed_at is not null;
+create index if not exists commit_unfilled on @schema@.commit (commit_seq) where committed_at is null;
 
 -- TT-1: copies the commit timestamp into the commits that lack it. Returns how many it filled.
 create function @schema@.fill_committed_at() returns bigint language plpgsql

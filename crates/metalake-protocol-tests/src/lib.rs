@@ -115,6 +115,14 @@ async fn install(client: &Client, schema: &str, files: Vec<(PathBuf, String)>) -
 /// A catalog with the protocol: the tables of the specification and the protocol rendered for `schema`.
 pub async fn install_protocol(client: &Client, schema: &str) -> Result<(), Error> {
     let mut files = sources("spec/v0/schema")?;
+    files.extend(protocol_files(schema)?);
+    install(client, schema, files).await
+}
+
+/// The protocol's files for the catalog in `schema`, in the order they install: the reference's it reuses, and its
+/// own, rendered.
+fn protocol_files(schema: &str) -> Result<Vec<(PathBuf, String)>, Error> {
+    let mut files = Vec::new();
     let reused = reused()?;
     files.extend(
         reused
@@ -132,7 +140,104 @@ pub async fn install_protocol(client: &Client, schema: &str) -> Result<(), Error
         }
         files.push((path, render(&sql, schema)));
     }
-    install(client, schema, files).await
+    Ok(files)
+}
+
+/// The protocol version these files install.
+pub const PROTOCOL_VERSION: i64 = 0;
+
+/// `metalake migrate` (ADR 0003 §2.1): in one transaction, with every ref of the catalog held exclusively, refuses a
+/// format it does not know or a protocol newer than its own (0A000); drops what the protocol installed (views,
+/// functions, composite types), never a table or a row; installs the protocol again; and migrates the format where
+/// the text says so (§18). Migrating twice changes nothing. Returns the sequence of the format's migration, if any.
+pub async fn migrate_protocol(client: &Client, schema: &str) -> Result<Option<i64>, Error> {
+    let q = quote_ident(schema);
+    client.batch_execute("begin").await?;
+    let result = async {
+        client
+            .batch_execute(&format!(
+                "select {q}.lock_ref(r.ref_id) from {q}.ref r order by r.ref_id"
+            ))
+            .await?;
+        let versions: Vec<(String, Option<String>)> = client
+            .query(
+                &format!("select key, value from {q}.meta where key in ('format_version', 'protocol_version')"),
+                &[],
+            )
+            .await?
+            .iter()
+            .map(|r| (r.get(0), r.get(1)))
+            .collect();
+        let get = |k: &str| versions.iter().find(|(key, _)| key == k).and_then(|(_, v)| v.clone());
+        if get("format_version").as_deref() != Some("0") {
+            return Err(unsupported(format!("format_version {:?}", get("format_version"))));
+        }
+        let protocol = get("protocol_version").map(|v| v.parse::<i64>().unwrap_or(i64::MAX));
+        if protocol.is_some_and(|v| v > PROTOCOL_VERSION) {
+            return Err(unsupported(format!("protocol_version {protocol:?}")));
+        }
+        // What the protocol's own files create, by name: the format's functions (bound_range, under an index) stay.
+        let files = protocol_files(schema)?;
+        let mut drops = String::new();
+        for (kind, name) in files.iter().flat_map(|(_, sql)| created(sql)) {
+            let name = name.trim_start_matches(&format!("{q}.")).to_string();
+            drops += &match kind {
+                "function" => format!(
+                    "select format('drop function if exists %s cascade', p.oid::regprocedure) from pg_proc p
+                      where p.pronamespace = '{q}'::regnamespace and p.proname = '{name}' union all "
+                ),
+                k => format!("select 'drop {k} if exists {q}.{name} cascade' union all "),
+            };
+        }
+        let statements: Vec<String> = client
+            .query(&format!("{drops}select 'select 1'"), &[])
+            .await?
+            .iter()
+            .map(|r| r.get(0))
+            .collect();
+        client.batch_execute(&statements.join(";")).await?;
+        client.batch_execute(&format!("set local search_path = {q}")).await?;
+        for (path, sql) in files {
+            client
+                .batch_execute(&sql)
+                .await
+                .map_err(|e| format!("{}: {e:?}", path.display()))?;
+        }
+        let migrated: Option<i64> = client.query_one("select migrate()", &[]).await?.get(0);
+        Ok(migrated)
+    }
+    .await;
+    match result {
+        Ok(m) => {
+            client.batch_execute("commit").await?;
+            Ok(m)
+        }
+        Err(e) => {
+            client.batch_execute("rollback").await?;
+            Err(e)
+        }
+    }
+}
+
+/// The views, functions and types a file of the protocol creates: (kind, name as written).
+fn created(sql: &str) -> Vec<(&'static str, &str)> {
+    sql.lines()
+        .filter_map(|l| {
+            let l = l.trim_start();
+            let rest = l
+                .strip_prefix("create or replace ")
+                .or_else(|| l.strip_prefix("create "))?;
+            let (kind, rest) = [("function", "function "), ("type", "type "), ("view", "view ")]
+                .into_iter()
+                .find_map(|(k, p)| rest.strip_prefix(p).map(|r| (k, r)))?;
+            let name = rest.split(|c: char| c == '(' || c.is_whitespace()).next()?;
+            Some((kind, name))
+        })
+        .collect()
+}
+
+fn unsupported(what: String) -> Error {
+    format!("0A000 metalake unsupported: {what}").into()
 }
 
 /// The files of the reference the protocol installs as they are (`sql/v0/reference-reused.txt`): before all of its
