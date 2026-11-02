@@ -182,7 +182,10 @@ begin
     end loop;
   end loop;
 
-  -- NS-1 to NS-3 (revision 0.1): the namespaces the commit changes, against the current state.
+  -- NS-1 to NS-3 (revision 0.1): the namespaces the commit changes, each once, against the current state.
+  if jsonb_array_length(spaces) <> (select count(distinct y -> 'namespace') from jsonb_array_elements(spaces) y) then
+    perform invalid('NS-1: a commit names a namespace twice');
+  end if;
   for x in select * from jsonb_array_elements(spaces) loop
     ns := array(select jsonb_array_elements_text(x -> 'namespace'));
     if cardinality(ns) = 0 or array_position(ns, '') is not null then

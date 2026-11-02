@@ -203,7 +203,7 @@ with Apache Iceberg 1.10.0
 
 - **NS-1.** A namespace is a non-empty array of non-empty strings, compared exactly. It exists at `(r, s)` when its
   `namespace` key is visible (VIS-9). A namespace of more than one level has a parent: the array without its last
-  element.
+  element. A commit names a namespace at most once.
 - **NS-2.** A commit that creates a table, or renames one, leaves the table's namespace existing on the ref; a
   commit that creates a namespace leaves its parent existing. A namespace that never existed on the ref makes the
   commit invalid (`22023`); one whose visible version is `dropped`, by a commit that won the race, is a conflict

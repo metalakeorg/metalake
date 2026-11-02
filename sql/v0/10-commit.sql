@@ -221,7 +221,8 @@ create function @schema@.commit(
   app_id text default null,
   app_version bigint default null,
   message text default null,
-  definition text default null)
+  definition text default null,
+  namespaces jsonb default null)
 returns @schema@.commit_result language plpgsql
 set search_path = @schema@, pg_catalog, pg_temp as $$
 #variable_conflict use_column
@@ -240,6 +241,11 @@ declare
   via text := coalesce($9, coalesce($8, session_user));
   app text := $10;
   ver bigint := $11;
+  spaces jsonb := coalesce($14, '[]');
+  sp jsonb;
+  ns text[];
+  nv namespace;
+  st text;
   tables uuid[];
   created uuid[];
   defined uuid[];
@@ -250,7 +256,13 @@ declare
   t uuid;
   problem text;
 begin
-  -- CMT-5: idempotency, first.
+  -- LAY-5: a writer of revision 0.1 commits to writer_version 1 only.
+  if coalesce((select m.value from meta m where m.key = 'writer_version'), '0') <> '1' then
+    raise exception 'metalake unsupported: writer_version %',
+      coalesce((select m.value from meta m where m.key = 'writer_version'), '0') using errcode = '0A000';
+  end if;
+
+  -- CMT-5: idempotency.
   if app is not null then
     if ver is null or ver < 1 then
       perform refuse_invalid('CMT-5', 'app_version must be positive');
@@ -272,6 +284,23 @@ begin
   -- CMT-4: the ref, shared; the names the commit gives, in their lock's order; then the heads of the existing tables,
   -- in table_id order.
   perform lock_ref_shared(r);
+  -- NS-2, NS-3: the namespaces the commit changes, exclusively; those its new names and new namespaces live in,
+  -- shared; in one order, exclusive first where both.
+  perform lock_namespace(r, y.ns, y.exclusive)
+     from (select z.ns, bool_or(z.exclusive) as exclusive from (
+             select array(select jsonb_array_elements_text(e -> 'namespace')) as ns, true as exclusive
+               from jsonb_array_elements(spaces) e
+             union all
+             select array(select jsonb_array_elements_text(n -> 'namespace')), false
+               from jsonb_each(defs) d(k, e), lateral (select coalesce(e -> 'create', e -> 'rename') as n) w
+              where n is not null
+             union all
+             select a.ns[1:cardinality(a.ns) - 1], false
+               from (select array(select jsonb_array_elements_text(e -> 'namespace')) as ns
+                       from jsonb_array_elements(spaces) e) a
+              where cardinality(a.ns) > 1) z
+            group by z.ns) y
+    order by hashtext(r || ' ' || array_to_string(y.ns, '.'));
   perform lock_name(r, x.ns, x.name)
      from (select array(select jsonb_array_elements_text(n -> 'namespace')) as ns, n ->> 'name' as name
              from jsonb_each(defs) d(k, e), lateral (select coalesce(e -> 'create', e -> 'rename') as n) y
@@ -334,9 +363,45 @@ begin
     end if;
   end if;
 
+  -- NS-1 to NS-3: the namespaces the commit changes, each once, against the current state under their locks.
+  if jsonb_array_length(spaces) <> (select count(distinct y -> 'namespace') from jsonb_array_elements(spaces) y) then
+    perform refuse_invalid('NS-1', 'a commit names a namespace twice');
+  end if;
+  for sp in select * from jsonb_array_elements(spaces) loop
+    ns := array(select jsonb_array_elements_text(sp -> 'namespace'));
+    if cardinality(ns) = 0 or array_position(ns, '') is not null then
+      perform refuse_invalid('NS-1', format('%s is not a namespace', sp -> 'namespace'));
+    end if;
+    nv := namespace_version(r, ns, latest);
+    if coalesce((sp ->> 'create')::boolean, false) then
+      if nv.namespace is not null and not nv.dropped then
+        perform refuse_conflict('NS-2', format('namespace %s exists', ns));
+      end if;
+    elsif nv.namespace is null then
+      perform refuse_invalid('NS-2', format('namespace %s does not exist', ns));
+    elsif nv.dropped then
+      perform refuse_conflict('NS-2', format('namespace %s is dropped', ns));
+    end if;
+  end loop;
+
   -- CMT-3: the commit.
   seq := nextval('commit_seq_gen');
   insert into commit values (seq, r, pg_current_xact_id(), null, who, via, op, app, ver, $13, $12);
+
+  -- CMT-8: namespaces first, so that tables of the same commit may go into them.
+  for sp in select * from jsonb_array_elements(spaces) loop
+    ns := array(select jsonb_array_elements_text(sp -> 'namespace'));
+    if coalesce((sp ->> 'create')::boolean, false) or coalesce((sp ->> 'drop')::boolean, false) then
+      update namespace n set end_seq = seq where n.namespace = ns and n.ref_id = r and n.end_seq = open;
+      insert into namespace values (ns, coalesce((sp ->> 'drop')::boolean, false), r, seq);
+    end if;
+    update namespace_property n set end_seq = seq
+      from jsonb_each(coalesce(sp -> 'properties', '{}')) p(k, v)
+     where n.namespace = ns and n.key = p.k and n.ref_id = r and n.end_seq = open;
+    insert into namespace_property
+    select ns, p.k, p.v #>> '{}', jsonb_typeof(p.v) = 'null', r, seq
+      from jsonb_each(coalesce(sp -> 'properties', '{}')) p(k, v);
+  end loop;
 
   -- CMT-8: the rows. Definitions first, so that the tables they create exist for their files.
   foreach t in array defined loop
@@ -377,6 +442,21 @@ begin
   problem := commit_problem(r, seq, adds, ids, vecs, defined);
   if problem is not null then
     perform refuse_invalid(split_part(problem, ':', 1), problem);
+  end if;
+  -- NS-2, NS-3: the tables it created or renamed, and the namespaces it changed, once applied.
+  if cardinality(created) > 0 or jsonb_array_length(spaces) > 0
+     or exists (select 1 from jsonb_each(defs) d(k, e) where e ? 'rename') then
+    select z.state, z.problem into st, problem from namespace_errors(r, latest,
+      array(select k::uuid from jsonb_each(defs) d(k, e) where e ? 'create' or e ? 'rename'),
+      (select coalesce(jsonb_agg(e -> 'namespace'), '[]') from jsonb_array_elements(spaces) e)) z
+     order by z.state desc limit 1;
+    if problem is not null then
+      if st = '40001' then
+        perform refuse_conflict(split_part(problem, ':', 1), problem);
+      else
+        perform refuse_invalid(split_part(problem, ':', 1), problem);
+      end if;
+    end if;
   end if;
 
   -- CMT-1: a snapshot per table, and its head.

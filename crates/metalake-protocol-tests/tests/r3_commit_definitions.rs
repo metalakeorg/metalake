@@ -318,6 +318,7 @@ impl Run {
             operation: "update".into(),
             tables: vec![change],
             app: None,
+            namespaces: None,
         }))
     }
 }
@@ -349,6 +350,7 @@ async fn fresh() -> Result<Pair, Error> {
             operation: "update".into(),
             tables: vec![seed],
             app: None,
+            namespaces: None,
         },
     )
     .await?;

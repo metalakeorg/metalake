@@ -165,6 +165,7 @@ impl Run {
                 operation: "update".into(),
                 tables: vec![change],
                 app: None,
+                namespaces: None,
             })
             .await?;
         Ok(())
@@ -339,6 +340,7 @@ impl Run {
                         operation: "update".into(),
                         tables: vec![c],
                         app: None,
+                        namespaces: None,
                     })
                     .await?;
                 Ok(())

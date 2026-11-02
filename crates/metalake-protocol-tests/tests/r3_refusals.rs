@@ -21,6 +21,7 @@ fn commit(t: u128, definition: Value) -> Commit {
         operation: "update".into(),
         tables: vec![change],
         app: None,
+        namespaces: None,
     }
 }
 

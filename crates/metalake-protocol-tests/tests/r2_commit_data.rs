@@ -383,6 +383,7 @@ impl Run {
             operation,
             tables: changes,
             app,
+            namespaces: None,
         })
     }
 
@@ -455,6 +456,7 @@ async fn scene() -> Result<Pair, Error> {
                 ..Default::default()
             }],
             app: None,
+            namespaces: None,
         };
         metalake_protocol_tests::differential::commit_reference(&run.pair.on_reference, &commit).await?;
     }

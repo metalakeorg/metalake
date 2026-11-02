@@ -34,6 +34,8 @@ select ns_commit(1, '[]', jsonb_build_array(create_in('00000000-0000-0000-0000-0
 select expect(names(1, 9223372036854775806) like '%sales.orders%', 'a table in sales');
 select expect_error($$select ns_commit(1, '[{"namespace": [], "create": true}]')$$, '22023', 'the empty array');
 select expect_error($$select ns_commit(1, '[{"namespace": ["a", ""], "create": true}]')$$, '22023', 'an empty level');
+select expect_error($$select ns_commit(1, '[{"namespace": ["n2"], "create": true}, {"namespace": ["n2"], "properties": {"k": "v"}}]')$$,
+                    '22023', 'one namespace named twice in a commit');
 select expect_error($$select ns_commit(1, '[{"namespace": ["Sales"], "properties": {"k": "v"}}]')$$, '22023',
                     'names compare exactly: Sales is not sales');
 

@@ -27,6 +27,8 @@ pub struct Commit {
     pub operation: String,
     pub tables: Vec<TableChange>,
     pub app: Option<(String, i64)>,
+    /// Revision 0.1: namespace changes, in the reference's shape (`[{"namespace": [...], "create": true}]`).
+    pub namespaces: Option<Value>,
 }
 
 /// How a catalog answered: the sequence of the commit, or the SQLSTATE of its refusal. Two answers are alike when
@@ -117,6 +119,9 @@ impl Commit {
             .collect();
         let mut c = json!({"ref": self.ref_id, "author": "test", "actor": "test", "operation": self.operation,
                            "tables": tables});
+        if let Some(namespaces) = &self.namespaces {
+            c["namespaces"] = namespaces.clone();
+        }
         if let Some((app, version)) = &self.app {
             c["app_id"] = json!(app);
             c["app_version"] = json!(version);
@@ -183,7 +188,8 @@ pub async fn commit_protocol(client: &Client, schema: &str, commit: &Commit) -> 
     let (app, version) = commit.app.clone().unzip();
     let sql = format!(
         "select commit_seq from {}.commit(ref_id => $1, operation => $2, files => $3, removed => $4, vectors => $5, \
-         expected => $6, changes => $7, author => 'test', actor => 'test', app_id => $8, app_version => $9)",
+         expected => $6, changes => $7, author => 'test', actor => 'test', app_id => $8, app_version => $9, \
+         namespaces => $10)",
         quote_ident(schema)
     );
     let result = client
@@ -199,6 +205,7 @@ pub async fn commit_protocol(client: &Client, schema: &str, commit: &Commit) -> 
                 &changes,
                 &app,
                 &version,
+                &commit.namespaces,
             ],
         )
         .await

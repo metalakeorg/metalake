@@ -18,6 +18,7 @@ async fn commit(pair: &Pair, r: i32, change: TableChange) -> Result<(), Error> {
         operation: "update".into(),
         tables: vec![change],
         app: None,
+        namespaces: None,
     };
     match pair.commit(&c).await? {
         Outcome::Committed(_) => Ok(()),

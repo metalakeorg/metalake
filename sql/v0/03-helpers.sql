@@ -46,3 +46,13 @@ $$;
 create function @schema@.lock_name(r int, ns text[], name text) returns void language sql as $$
   select pg_advisory_xact_lock(hashtext('@schema@ names'), hashtext(r || ' ' || array_to_string(ns, '.') || ' ' || name));
 $$;
+
+-- NS-2, NS-3: a commit holds a namespace it changes exclusively, and one it puts a table or a namespace in, shared.
+create function @schema@.lock_namespace(r int, ns text[], exclusive boolean) returns void language plpgsql as $$
+begin
+  if exclusive then
+    perform pg_advisory_xact_lock(hashtext('@schema@ namespaces'), hashtext(r || ' ' || array_to_string(ns, '.')));
+  else
+    perform pg_advisory_xact_lock_shared(hashtext('@schema@ namespaces'), hashtext(r || ' ' || array_to_string(ns, '.')));
+  end if;
+end $$;

@@ -148,6 +148,7 @@ impl Scene {
             operation: "update".into(),
             tables: vec![change],
             app: None,
+            namespaces: None,
         };
         if let Outcome::Committed(seq) = commit_reference(&self.on_reference, &c).await?.outcome {
             self.seqs.push(seq);
