@@ -4,6 +4,9 @@
 //! and a catalog with the reference of the specification (`spec/v0/schema/` and `spec/v0/reference/`), and compares
 //! their rows. The reference is the oracle: whatever both are asked to do, they must end with the same rows.
 
+pub mod differential;
+pub mod records;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -93,8 +96,22 @@ async fn install(client: &Client, schema: &str, files: Vec<(PathBuf, String)>) -
 /// A catalog with the protocol: the tables of the specification and the protocol rendered for `schema`.
 pub async fn install_protocol(client: &Client, schema: &str) -> Result<(), Error> {
     let mut files = sources("spec/v0/schema")?;
+    files.extend(reused()?);
     files.extend(sources("sql/v0")?.into_iter().map(|(p, s)| (p, render(&s, schema))));
     install(client, schema, files).await
+}
+
+/// The files of the reference the protocol installs as they are (`sql/v0/reference-reused.txt`).
+fn reused() -> Result<Vec<(PathBuf, String)>, Error> {
+    let list = std::fs::read_to_string(repository().join("sql/v0/reference-reused.txt"))?;
+    list.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|name| {
+            let path = repository().join("spec/v0/reference").join(name);
+            Ok((path.clone(), std::fs::read_to_string(&path)?))
+        })
+        .collect()
 }
 
 /// A catalog with the reference of the specification.
