@@ -6,7 +6,7 @@
 #   bash sql/test.sh --test r0_skeleton
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-image=postgres:17@sha256:3b0cda93be7c8dba2ed484d19393d93845dc3dafb88973e248ba8e6d99d784e1
+image=${IMAGE:-postgres:17@sha256:3b0cda93be7c8dba2ed484d19393d93845dc3dafb88973e248ba8e6d99d784e1}
 name=metalake-protocol-pg; port=${PORT:-55433}
 docker rm -f "$name" >/dev/null 2>&1 || true
 # On Windows, WSL relays every port Docker publishes on 127.0.0.1 and ::1, and a connection to localhost can reach

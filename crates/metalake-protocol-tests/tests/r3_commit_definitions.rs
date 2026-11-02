@@ -411,6 +411,10 @@ fn commits_of_definitions_match_the_reference() {
     let mut kinds: Vec<_> = tally.iter().collect();
     kinds.sort();
     eprintln!("{kinds:?}");
+    // At the default number of cases only: a shorter run, as for mutants, need not reach every answer.
+    if std::env::var("CASES").is_ok() {
+        return;
+    }
     for kind in [
         "Create",
         "Rename",

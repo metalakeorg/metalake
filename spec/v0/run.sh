@@ -9,7 +9,7 @@
 # rule a case names must exist in the text.
 set -euo pipefail
 shopt -s nullglob
-IMAGE=postgres:17@sha256:3b0cda93be7c8dba2ed484d19393d93845dc3dafb88973e248ba8e6d99d784e1
+IMAGE=${IMAGE:-postgres:17@sha256:3b0cda93be7c8dba2ed484d19393d93845dc3dafb88973e248ba8e6d99d784e1}
 here=$(cd "$(dirname "$0")" && pwd)
 
 if [ -z "${METALAKE_IN_CONTAINER:-}" ]; then

@@ -48,6 +48,7 @@ returns table (commit_seq bigint, ref_id int, committed_at timestamptz, operatio
              from @schema@.commit c
             where c.committed_at is not null and (c.committed_at, c.commit_seq) > (after_at, after_seq)
               and c.committed_at < now() - interval '1 second'
+            order by c.committed_at, c.commit_seq
             limit lim)
           union all
           select c.commit_seq, c.ref_id, y.at, c.operation

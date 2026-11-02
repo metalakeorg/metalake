@@ -1,7 +1,8 @@
 # MetaLake table format · version 0
 
 **Status:** final, tagged `spec-v0` on 2026-11-02. Later changes follow §18. Revision 0.1 (namespaces as
-objects, `writer_version`) is in progress: its rules are marked *0.1*.
+objects, `writer_version`) is in progress: its rules are marked *0.1*. Revision 0.2 (retention in two phases, time
+and changes complete) follows it: its rules are marked *0.2*.
 
 ## 1. Conventions
 
@@ -28,7 +29,8 @@ objects, `writer_version`) is in progress: its rules are marked *0.1*.
   - `format_version`, which is `0` for this specification;
   - `catalog_uuid`, a UUID assigned when the catalog is created;
   - `created_at`, the creation time in ISO 8601 with a time zone;
-  - *0.1:* `writer_version`, `1` for this revision (LAY-5).
+  - *0.1:* `writer_version`, `1` for revision 0.1 and, *0.2*, `2` for revision 0.2 (LAY-5);
+  - *0.2:* `collect_grace`, an interval, `1 day` unless set (RET-9).
 - **LAY-3.** A reader MUST refuse a catalog whose `format_version` it does not know, or that has none. The
   reference raises SQLSTATE `0A000` with the message prefix `metalake unsupported:`.
 - **LAY-4.** Every sequence number is a `bigint`. The end of a validity range is never `NULL`: an open end is
@@ -97,6 +99,7 @@ and its rows follow §5.4.
 | `idempotency` | `ref_id int`, `app_id text`, `version bigint`, `commit_seq bigint`; pk `(ref_id, app_id)` | Idempotent commits (CMT-5). |
 | `intent` | `path text` pk, `table_id uuid`, `ref_id int`, `expires_at timestamptz` | Files that may have been uploaded without being committed (CMT-10). |
 | `retention` | `ref_id int` pk, `min_seq bigint` null, `max_age interval` null, `min_snapshots int` null | What a ref keeps (§13). |
+| `deletion_queue` | `path text` pk, `kind text` (`data` or `puffin`), `expired_at timestamptz` | *0.2.* Objects nothing refers to any more, waiting for the grace to pass (RET-4, RET-9). |
 
 ### 4.5 Data
 
@@ -399,7 +402,8 @@ order and the cluster key.
   current state of a touched table would break a rule of §6, §7 or §8, if an added file lacks statistics for
   a field of the cluster key (STA-3), if a new field id was not drawn from the table's counter, if it adds a
   file whose `intent` has expired (RET-7), or, *0.1*, if it names a namespace that never existed on the ref, or one
-  that is not a namespace (NS-1, NS-2). A commit MAY change namespaces only; it then writes no snapshot. A created table takes its field, spec and partition field ids from
+  that is not a namespace (NS-1, NS-2), or, *0.2*, if it adds a file or a Puffin whose `path` is in
+  `deletion_queue` (RET-8). A commit MAY change namespaces only; it then writes no snapshot. A created table takes its field, spec and partition field ids from
   the commit, and its counters start after them; its default spec is spec 0, unpartitioned unless the commit
   gives one. Only what the commit changes is checked: the definitions of the tables it touches and the files it
   adds. Files committed earlier are not checked again, so
@@ -542,16 +546,19 @@ blob type `deletion-vector-v1`.
 
 ## 13. Retention and collection
 
+*Collection* removes what no read can reach any more: rows that later commits closed, and the objects only they
+referred to. Retention says how much history each ref keeps.
+
 ### 13.1 What is kept
 
-- **RET-1.** A ref's `retention` row, if any, keeps a snapshot of the ref when at least one of its set
-  criteria holds:
-  - `min_seq`: the snapshot's id is at least `min_seq`;
-  - `max_age`: its commit was committed at most `max_age` ago;
-  - `min_snapshots`: it is among the ref's `min_snapshots` latest snapshots.
+- **RET-1.** *0.2.* A ref's **retention floor** is the least of the criteria its `retention` row sets:
+  - `min_seq`;
+  - for `max_age`, the least `snapshot_id` of the ref whose commit was committed at most `max_age` ago;
+  - for `min_snapshots`, the id of the ref's `min_snapshots`-th latest snapshot.
 
-  A ref without a `retention` row, or whose row sets no criterion, keeps every snapshot. A ref's snapshots
-  are the distinct `snapshot_id` values of its `snapshot` rows.
+  A ref keeps every snapshot whose id is at least its floor. Without a `retention` row, or with no criterion set,
+  the floor is `0` and the ref keeps every snapshot. A ref's snapshots are the distinct `snapshot_id` values of its
+  `snapshot` rows. *Each criterion keeps what it kept in v0 and possibly more: the kept set is now closed upwards.*
 - **RET-2.** A ref is **live** when it is not deleted. The **retained reads** are, for every live ref `r`,
   `(r, LATEST)` and `(r, s)` for every snapshot `s` that `r` keeps. The **reach points** are the levels of the
   chains of the retained reads (VIS-3). A deleted ref that a reach point still reaches is **hidden**: its rows
@@ -564,20 +571,35 @@ blob type `deletion-vector-v1`.
   row is collectable when its `commit_seq` is not the id of a remaining snapshot, the `created_seq` of a ref,
   or a commit recorded in `idempotency`. Collecting never changes the result of a retained read.
 
+  *0.2. Note.* By RET-1, the reach points on a live ref `r` are every sequence from its floor up, and isolated
+  points below it, where the chains of other refs reach `r`; a hidden ref has isolated points only. So a row of
+  `r` valid over `[begin, end)` is collectable exactly when `end` is at most the floor (or `r` is deleted) and no
+  isolated point lies in `[begin, end)`. Live rows of a live ref never are, and the closed rows are the only
+  candidates.
+
 ### 13.2 Collecting
 
-- **RET-4.** An object in storage is deleted only when nothing that remains refers to it:
-  - a data file's object (its `path`, or its `inline_file` row), with its `file_footer`, when every
-    `data_file` row of the file is collectable;
-  - a Puffin file when no remaining `deletion_vector` row has its `path`.
-- **RET-5.** A collector locks the `ref` row of every ref `FOR SHARE`, computes what is collectable, deletes
-  the objects, then deletes the rows, all while holding the locks. Objects go first, so a failure leaves rows
-  that no retained read reaches, never objects that nothing refers to. Changing a ref's retention locks its
-  `ref` row `FOR NO KEY UPDATE`, and creating a ref locks its parent's `FOR UPDATE` (BR-1), so neither runs
-  during a collection; commits are not blocked.
+- **RET-4.** *0.2.* **Expiring** deletes collectable rows. Any set of collectable rows may be deleted in one
+  transaction, so expiring may proceed in batches. In the transaction that deletes them:
+  - a data file's `path` enters `deletion_queue`, kind `data`, when the last `data_file` row of the file goes;
+    its `inline_file` and `file_footer` rows go with it, and an inline file has no object to queue;
+  - a Puffin file's `path` enters `deletion_queue`, kind `puffin`, when no remaining `deletion_vector` row has
+    that `path`.
+
+  Rows go before objects: an object nothing refers to is always queued or already deleted.
+- **RET-5.** *0.2.* Expiring excludes, for as long as one batch lasts, creating a ref at an earlier sequence,
+  changing a retention and deleting a ref; commits are not excluded. Sweeping excludes nothing. Expiring and a
+  commit that adds a `path` exclude each other on that `path`, so that a path is never queued while a commit
+  adds it.
 - **RET-6.** A ref created at an earlier sequence (BR-1) is created at a retained read of its parent: one of
   the snapshots the parent keeps. Together with RET-5, nothing a collector decided to delete can become
   reachable again.
+- **RET-8.** *0.2.* A commit that adds a file or a Puffin whose `path` is in `deletion_queue` is refused
+  (CMT-9). Writers SHOULD never reuse a path: this rule is the guard, not the means.
+- **RET-9.** *0.2.* **Sweeping** deletes a queued object from storage only once it has been queued longer than
+  `collect_grace` (LAY-2), then removes its row from the queue. Sweeping again after a failure is harmless. A
+  read SHOULD end within the grace: its plan read the rows in one statement, but it still opens the objects
+  after.
 
 ### 13.3 Orphans
 
@@ -591,6 +613,10 @@ blob type `deletion-vector-v1`.
 - **TT-1.** Implementations MUST run with `track_commit_timestamp = on`. A commit's time is its transaction's
   commit timestamp. `commit.committed_at` is `NULL` until a filler copies that timestamp into it, after the
   commit; until then readers take it from `pg_xact_commit_timestamp` of the commit's `xid`.
+  *0.2.* Postgres discards commit timestamps as it freezes transactions, so the filler MUST copy them before:
+  it runs continuously, in batches, oldest first. A visible commit with neither `committed_at` nor a timestamp
+  of its `xid` is a damaged catalog: a read that meets one is refused with SQLSTATE `0A000`; a time is never
+  invented.
 - **TT-2.** The order of commits in a catalog is `(committed_at, commit_seq)`. `commit_seq` alone is not that
   order: a commit may draw a lower `commit_seq` and commit later. Within one `(ref, table)`, both orders agree
   (CMT-4).
@@ -603,12 +629,19 @@ blob type `deletion-vector-v1`.
 
   The sequence is found per table, because one sequence cannot describe the catalog at a time (TT-2). The
   answer is stable once every commit with a timestamp up to `T` is visible: implementations MUST refuse a `T`
-  later than one second before the current time.
+  later than one second before the current time. *0.2.* They MUST also refuse, with SQLSTATE `22023`, a `T`
+  whose sequence is not a retained read of `r` (RET-2): its files may be gone.
 - **CHG-1.** The change feed delivers commits in the order of TT-2 from a cursor `(committed_at, commit_seq)`,
   the last commit delivered, and only those committed more than one second ago. Postgres takes a commit's
   timestamp just before making it visible, so a commit not yet visible will carry a timestamp later than that
   horizon: every commit is delivered once, in order, with no gaps.
   Commits removed by collection (RET-3) are no longer delivered: a consumer keeps up within the retention.
+  *0.2.* The feed MAY be asked for one table: it then delivers only the commits that made a snapshot of it.
+- **CHG-2.** *0.2.* The **changes** of table `t` on ref `r` between two retained reads `(r, a)` and `(r, b)`,
+  `a < b`, are: the files visible at `b` and not at `a` (added); the files visible at `a` and not at `b`
+  (removed); and the files visible at both whose deletion vector differs, with the vector at each. Files are told
+  apart by `file_id`. A read that is not retained is refused with SQLSTATE `22023`. An engine turns the changes
+  into rows inserted and deleted.
 
 ## 15. Partition values
 
@@ -730,6 +763,10 @@ shows conformance by running them with its own operations in place of the refere
   every parent of one, in which a table exists on `main` at `LATEST`; on each other live branch, the namespaces of its
   tables that it does not see; and sets `writer_version` to `1`. A catalog created by revision 0.1 starts with
   `writer_version` `1` and no namespace.
+- *0.2.* Revision 0.2 is `format_version` 0, `writer_version` 2: readers of 0.1 read its catalogs, but its rules
+  of retention and of paths (RET-4, RET-5, RET-8) bind writers. **Migrating from 0.1** creates `deletion_queue` and
+  the indexes of `v0/schema/`, and sets `writer_version` to `2`; it changes no row, since RET-1 keeps at least what
+  0.1 kept. A writer of 0.2 migrates a catalog of version 0 to 0.1 first.
 
 ## 19. Not in v0
 

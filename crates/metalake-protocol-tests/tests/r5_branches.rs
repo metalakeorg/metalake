@@ -588,6 +588,10 @@ fn branches_and_merges_match_the_reference() {
     let mut lines: Vec<_> = tally.iter().collect();
     lines.sort();
     eprintln!("{lines:#?}");
+    // At the default number of cases only: a shorter run, as for mutants, need not reach every answer.
+    if std::env::var("CASES").is_ok() {
+        return;
+    }
     for what in [
         "create_ref: ok",
         "create_ref: 22023",
