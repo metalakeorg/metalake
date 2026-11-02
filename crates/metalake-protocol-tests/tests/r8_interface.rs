@@ -238,3 +238,105 @@ async fn the_views_answer_what_visibility_does() -> Result<(), Error> {
     }
     Ok(())
 }
+
+/// The SQLSTATE a statement answers, or "ok".
+async fn answer(client: &Client, sql: &str) -> String {
+    match client.batch_execute(sql).await {
+        Ok(()) => "ok".into(),
+        Err(e) => {
+            if std::env::var("SHOW").is_ok() {
+                eprintln!("{sql}: {e:?}");
+            }
+            e.code().map_or("?".into(), |c| c.code().to_string())
+        }
+    }
+}
+
+/// §2.7: a reader reads and cannot write; a writer writes only through the functions; every function that runs as
+/// the owner pins its search_path; and migrating keeps the rights.
+#[tokio::test]
+async fn roles_allow_what_they_should_and_nothing_else() -> Result<(), Error> {
+    let schema = fresh_schema("p");
+    let on = connect().await?;
+    install_protocol(&on, &schema).await?;
+    let p = quote_ident(&schema);
+    create_table(&on, &schema, 1, 0xf001).await?;
+    let (owner, writer, reader) = (format!("{schema}_o"), format!("{schema}_w"), format!("{schema}_r"));
+    on.batch_execute(&format!(
+        "create role {owner} nologin; create role {writer} nologin; create role {reader} nologin;
+         select {p}.grant_roles('{owner}', '{writer}', '{reader}')"
+    ))
+    .await?;
+
+    for round in ["installed", "migrated"] {
+        let t = Uuid::from_u128(0xf001);
+        let mut seen = Vec::new();
+        on.batch_execute(&format!("set role {reader}")).await?;
+        for sql in [
+            format!("select * from {p}.tables"),
+            format!("select * from {p}.plan(1, '{t}')"),
+            format!("select * from {p}.data_file"),
+            format!("insert into {p}.intent values ('x', '{t}', 1, now())"),
+            format!("select {p}.register_intents(1, '{t}', array['y'], '1 hour')"),
+            format!("select {p}.collect_end()"),
+        ] {
+            seen.push(answer(&on, &sql).await);
+        }
+        let by_reader = commit_protocol(&on, &schema, &probe_commit(round)).await?.outcome;
+        on.batch_execute(&format!("reset role; set role {writer}")).await?;
+        for sql in [
+            format!("select {p}.register_intents(1, '{t}', array['y'], '1 hour')"),
+            format!("insert into {p}.intent values ('x', '{t}', 1, now())"),
+            format!("update {p}.meta set value = '9' where key = 'format_version'"),
+            format!("delete from {p}.snapshot"),
+            format!("select * from {p}.history"),
+        ] {
+            seen.push(answer(&on, &sql).await);
+        }
+        let by_writer = commit_protocol(&on, &schema, &probe_commit(round)).await?.outcome;
+        on.batch_execute("reset role").await?;
+        let want = [
+            "ok", "ok", "ok", "42501", "42501", "42501", "ok", "42501", "42501", "42501", "ok",
+        ];
+        if seen != want || by_reader != Outcome::Refused("42501".into()) || !matches!(by_writer, Outcome::Committed(_))
+        {
+            return Err(format!("{round}: {seen:?}, reader {by_reader:?}, writer {by_writer:?}").into());
+        }
+        let unpinned: i64 = on
+            .query_one(
+                "select count(*) from pg_proc p where p.pronamespace = $1::text::regnamespace and p.prosecdef
+                   and not exists (select 1 from unnest(p.proconfig) c where c like 'search_path=%')",
+                &[&p],
+            )
+            .await?
+            .get(0);
+        if unpinned != 0 {
+            return Err(format!("{round}: {unpinned} functions run as the owner without a pinned search_path").into());
+        }
+        migrate_protocol(&on, &schema).await?;
+    }
+    on.batch_execute(&format!(
+        "drop schema {p} cascade; drop role {writer}; drop role {reader}; drop role {owner}"
+    ))
+    .await?;
+    Ok(())
+}
+
+fn probe_commit(round: &str) -> Commit {
+    let t = Uuid::from_u128(if round == "installed" { 0xf002 } else { 0xf003 });
+    Commit {
+        ref_id: 1,
+        operation: "create".into(),
+        tables: vec![TableChange {
+            table_id: t,
+            definition: Some(json!({
+                "create": {"namespace": ["db"], "name": format!("t{round}"), "location": "gs://lake"},
+                "fields": [{"field_id": 1, "new": true, "position": 1, "name": "k", "type": "long", "required": true}],
+                "cluster_key": [1],
+            })),
+            ..TableChange::default()
+        }],
+        app: None,
+        namespaces: None,
+    }
+}

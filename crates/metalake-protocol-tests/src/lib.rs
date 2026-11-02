@@ -204,6 +204,22 @@ pub async fn migrate_protocol(client: &Client, schema: &str) -> Result<Option<i6
                 .map_err(|e| format!("{}: {e:?}", path.display()))?;
         }
         let migrated: Option<i64> = client.query_one("select migrate()", &[]).await?.get(0);
+        // Replacing the functions dropped their rights: the roles of the catalog, if it has any, get them again.
+        let roles = client
+            .query_opt(
+                &format!(
+                    "select o.value, w.value, r.value from {q}.meta o, {q}.meta w, {q}.meta r
+                      where o.key = 'owner_role' and w.key = 'writer_role' and r.key = 'reader_role'"
+                ),
+                &[],
+            )
+            .await?;
+        if let Some(r) = roles {
+            let (o, w, rd): (String, String, String) = (r.get(0), r.get(1), r.get(2));
+            client
+                .execute(&format!("select {q}.grant_roles($1, $2, $3)"), &[&o, &w, &rd])
+                .await?;
+        }
         Ok(migrated)
     }
     .await;

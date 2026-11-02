@@ -16,9 +16,10 @@ set search_path = @schema@, pg_catalog, pg_temp as $$
 $$;
 
 create function @schema@.latest_tables()
-returns table (ref_id int, table_id uuid, namespace text[], name text) language sql stable
+returns table (ref_id int, table_id uuid, namespace text[], name text, snapshot_id bigint) language sql stable
 set search_path = @schema@, pg_catalog, pg_temp as $$
-  select r.ref_id, t.table_id, t.namespace, t.name from ref r, visible_table_names(r.ref_id, 9223372036854775806) t
+  select r.ref_id, t.table_id, t.namespace, t.name, snapshot_at(r.ref_id, t.table_id, 9223372036854775806)
+    from ref r, visible_table_names(r.ref_id, 9223372036854775806) t
    where not r.deleted and not t.dropped;
 $$;
 
@@ -49,8 +50,7 @@ create view @schema@.namespaces as
     from @schema@.latest_namespaces() n join @schema@.ref r on r.ref_id = n.ref_id;
 
 create view @schema@.tables as
-  select r.name as ref, t.namespace, t.name, t.table_id, @schema@.snapshot_at(t.ref_id, t.table_id,
-         9223372036854775806) as snapshot_id
+  select r.name as ref, t.namespace, t.name, t.table_id, t.snapshot_id
     from @schema@.latest_tables() t join @schema@.ref r on r.ref_id = t.ref_id;
 
 create view @schema@.columns as
