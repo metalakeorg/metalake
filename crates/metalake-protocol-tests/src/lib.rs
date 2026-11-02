@@ -59,10 +59,21 @@ pub fn fresh_schema(prefix: &str) -> String {
     )
 }
 
-/// A connection to the database of `DATABASE_URL`.
+/// A connection to the database of `DATABASE_URL`. Docker forwards the port to the host some time after the server
+/// is ready inside the container, and a connection attempted before that hangs until it is reset: each attempt
+/// gives up after three seconds, and the first minute is retried.
 pub async fn connect() -> Result<Client, Error> {
     let url = std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL is not set: run sql/test.sh")?;
-    let (client, connection) = tokio_postgres::connect(&url, NoTls).await?;
+    let mut config: tokio_postgres::Config = url.parse()?;
+    config.connect_timeout(std::time::Duration::from_secs(3));
+    let mut attempts = 0;
+    let (client, connection) = loop {
+        match config.connect(NoTls).await {
+            Ok(c) => break c,
+            Err(_) if attempts < 20 => attempts += 1,
+            Err(e) => return Err(e.into()),
+        }
+    };
     tokio::spawn(async move {
         if let Err(e) = connection.await {
             eprintln!("connection: {e}");
