@@ -56,7 +56,7 @@ begin
   execute format($q$
     select to_jsonb(x) - 'ref_id' - 'begin_seq' - 'end_seq'
       from chain($1, $2) c join %I x on x.ref_id = c.ref_id and x.begin_seq <= c.seq and c.seq < x.end_seq
-     where to_jsonb(x) @> $3
+     where x.table_id = ($3 ->> 'table_id')::uuid and to_jsonb(x) @> $3
      order by c.level limit 1$q$, tab) into v using r, s, k;
   return v;
 end $$;
@@ -145,7 +145,7 @@ begin
 
     -- Removed files.
     for fid in select x.file_id from tombstone x where x.table_id = t and x.ref_id = b and x.end_seq = open loop
-      if not exists (select 1 from visible_files(p, t, latest) v where v.file_id = fid) then
+      if not file_visible(p, t, latest, fid) then
         perform conflict(format('file %s was removed on both sides', fid));
       end if;
       if version_at('deletion_vector', jsonb_build_object('table_id', t, 'file_id', fid), p, f)
@@ -177,7 +177,7 @@ begin
         at_fork := version_at(vt.name, k, p, f);
         now_ := version_at(vt.name, k, p, latest);
         if vt.name = 'deletion_vector' then
-          if not exists (select 1 from visible_files(p, t, latest) v where v.file_id = (row ->> 'file_id')::bigint) then
+          if not file_visible(p, t, latest, (row ->> 'file_id')::bigint) then
             perform conflict(format('the rows of file %s were deleted on one side and the file removed on the other', row ->> 'file_id'));
           end if;
           if at_fork is distinct from now_ then
@@ -209,10 +209,10 @@ begin
         elsif at_fork is distinct from now_ and now_ is distinct from mine then
           perform conflict(format('%s %s changed on both sides', vt.name, k));
         end if;
-        execute format('update %I x set end_seq = $1 where to_jsonb(x) @> $2 and x.ref_id = $3 and x.end_seq = $4', vt.name)
-          using m, k, p, open;
-        execute format('update %I x set end_seq = $1 where to_jsonb(x) @> $2 and x.ref_id = $3 and x.end_seq = $4', vt.name)
-          using m, k, b, open;
+        execute format('update %I x set end_seq = $1 where x.table_id = $5 and to_jsonb(x) @> $2 and x.ref_id = $3 and x.end_seq = $4', vt.name)
+          using m, k, p, open, t;
+        execute format('update %I x set end_seq = $1 where x.table_id = $5 and to_jsonb(x) @> $2 and x.ref_id = $3 and x.end_seq = $4', vt.name)
+          using m, k, b, open, t;
         execute format('insert into %I select (jsonb_populate_record(null::%I, $1)).*', vt.name, vt.name)
           using mine || jsonb_build_object('ref_id', p, 'begin_seq', m, 'end_seq', open);
       end loop;
@@ -235,9 +235,9 @@ begin
         'deleted-data-files', (select count(*) from data_file x where x.table_id = t and x.ref_id = p and x.end_seq = m)
                             + (select count(*) from tombstone x where x.table_id = t and x.ref_id = p and x.begin_seq = m),
         'added-records', (select coalesce(sum(record_count), 0) from data_file x where x.table_id = t and x.ref_id = p and x.begin_seq = m),
-        'deleted-records', (select coalesce(sum(d.record_count), 0) from visible_files(p, t, m - 1) d
-                             where d.file_id in (select x.file_id from data_file x where x.table_id = t and x.ref_id = p and x.end_seq = m
-                                                 union select x.file_id from tombstone x where x.table_id = t and x.ref_id = p and x.begin_seq = m))));
+        'deleted-records', (select coalesce(sum((visible_file(p, t, m - 1, y.file_id)).record_count), 0)
+                              from (select x.file_id from data_file x where x.table_id = t and x.ref_id = p and x.end_seq = m
+                                    union select x.file_id from tombstone x where x.table_id = t and x.ref_id = p and x.begin_seq = m) y)));
     insert into head values (p, t, m) on conflict (ref_id, table_id) do update set snapshot_id = m;
   end loop;
 

@@ -182,6 +182,15 @@ create function visible_dvs(r int, t uuid, s bigint) returns setof deletion_vect
    where (v).file_id in (select file_id from visible_files(r, t, s));
 $$;
 
+-- DV-1 for one file: the vector of file `fid` of t at (r, s), if the file is visible and has one.
+create function file_dv(r int, t uuid, s bigint, fid bigint) returns deletion_vector language sql stable as $$
+  select x.*
+    from chain(r, s) c join deletion_vector x
+      on x.table_id = t and x.file_id = fid and x.ref_id = c.ref_id and x.begin_seq <= c.seq and c.seq < x.end_seq
+   where file_visible(r, t, s, fid)
+   order by c.level limit 1;
+$$;
+
 -- DV-5: the live rows of each visible file of t at (r, s).
 create function live_rows(r int, t uuid, s bigint) returns table (file_id bigint, rows bigint) language sql stable as $$
   select f.file_id, f.record_count - coalesce(d.cardinality, 0)
@@ -198,9 +207,13 @@ declare
   f data_file;
   p bigint[];
 begin
-  for d in select * from visible_dvs(r, t, s) x where added is null or (x.ref_id = r and x.begin_seq = added) loop
+  for d in select * from visible_dvs(r, t, s) x where added is null
+           union all
+           select * from deletion_vector x
+            where added is not null and x.table_id = t and x.ref_id = r and x.begin_seq = added
+              and (file_dv(r, t, s, x.file_id)).begin_seq = added loop
     p := null;
-    select * into f from visible_files(r, t, s) v where v.file_id = d.file_id;
+    f := visible_file(r, t, s, d.file_id);
     if d.inline is not null then
       p := array(select dv_positions(d.inline));
       if cardinality(p) <> d.cardinality then
@@ -213,7 +226,7 @@ begin
     if d.cardinality > f.record_count then
       return next format('DV-2: the vector of file %s deletes more rows than it has', d.file_id);
     end if;
-    select * into base from visible_dvs(r, t, d.begin_seq - 1) x where x.file_id = d.file_id;
+    base := file_dv(r, t, d.begin_seq - 1, d.file_id);
     if base.file_id is not null and d.cardinality < base.cardinality then
       return next format('DV-4: the vector of file %s drops positions of the one it replaces', d.file_id);
     elsif base.inline is not null and d.inline is not null

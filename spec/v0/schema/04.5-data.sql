@@ -31,8 +31,21 @@ create table data_file (
 -- VIS-7: one live row per file.
 create unique index data_file_live on data_file (table_id, file_id) where end_seq = 9223372036854775807;
 create index data_file_ref on data_file (table_id, ref_id, begin_seq);
--- STA-3: bounds of the first statistics position, the first cluster key field when writers follow STA-3.
-create index data_file_first_bound on data_file (table_id, ref_id, (lower[1]), (upper[1]));
+-- STA-3 and STA-10: the bounds of the first statistics position, the first cluster key field when writers follow
+-- STA-3, indexed as an int8range of their first 8 bytes read as an integer (halved, so that a closed range never
+-- overflows). Bounds keep their order in those bytes (STA-5), so the range overlaps a predicate's whenever the bounds
+-- do, and a query rechecks the bounds themselves. A range of bytea would need a distance GiST cannot take from bytea.
+-- - A missing bound leaves its side of the range open.
+-- - Bounds that are not ordered values (STA-9) are indexed as the range between their keys and never pruned (STA-10).
+-- - A query on a field promoted from date also takes the files whose bounds still have 4 bytes (STA-7).
+-- The function uses only built-ins: index expressions run with a safe search_path, and it stays inlinable.
+create extension if not exists btree_gist schema public;
+create function bound_range(lower bytea, upper bytea) returns int8range language sql immutable parallel safe as $$
+  select case when ((('x' || rpad(encode(substring(upper for 8), 'hex'), 16, '0'))::bit(64)::bigint # (-9223372036854775808)::bigint) >> 1) < ((('x' || rpad(encode(substring(lower for 8), 'hex'), 16, '0'))::bit(64)::bigint # (-9223372036854775808)::bigint) >> 1)
+              then int8range(((('x' || rpad(encode(substring(upper for 8), 'hex'), 16, '0'))::bit(64)::bigint # (-9223372036854775808)::bigint) >> 1), ((('x' || rpad(encode(substring(lower for 8), 'hex'), 16, '0'))::bit(64)::bigint # (-9223372036854775808)::bigint) >> 1), '[]')
+              else int8range(((('x' || rpad(encode(substring(lower for 8), 'hex'), 16, '0'))::bit(64)::bigint # (-9223372036854775808)::bigint) >> 1), ((('x' || rpad(encode(substring(upper for 8), 'hex'), 16, '0'))::bit(64)::bigint # (-9223372036854775808)::bigint) >> 1), '[]') end;
+$$;
+create index data_file_bound on data_file using gist (table_id, ref_id, bound_range(lower[1], upper[1]));
 
 create table tombstone (
   table_id uuid not null references tbl,

@@ -188,3 +188,24 @@ docker run --rm -v "$PWD":/b:ro python:3.12-slim bash -c 'pip install -q pyarrow
 |---|---|---|
 | `iceberg_ingest.py` | 2.7 · a minimal Iceberg REST catalog (config, `loadTable`, `updateTable`) over the o1 schema; a real PyIceberg client appends, retries a stale append (409 → rebase) and deletes; Postgres and PyIceberg must plan the same files after every step | postgres:17 + python:3.12-slim on one network; `pip install "pyiceberg[pyarrow]==0.12.0" "psycopg[binary]"`; load `schema.sql` + `merge.sql`, `select seed(2000, 20, 0, 0, 0, 0, false); call build_indexes();`, then `python iceberg_ingest.py "host=<pg> user=postgres"` |
 | `tenancy_bench.sh` | 2.8 · many catalogs in one Postgres: schema per catalog against database per catalog | `docker run --rm -u postgres -e CATALOGS=1000 -e DBS=20 -v $PWD:/b:ro postgres:17 bash /b/tenancy_bench.sh` |
+
+## The v0 measurement gate
+
+Unlike the prototypes above, `v0.sh` runs against the specification itself: the reference DDL and behaviour of
+`spec/v0/`, copied next to it as `s-*.sql` and `r-*.sql`. It measures pruned planning at 10⁷ files (checked against
+the reference `prune()`), and commits and merges both through the reference and through the statements the format
+requires (`v0_commit_lean.sql`, `v0_merge_lean.sql`), whose results the reference then checks. Results are in
+[`docs/adr/0002-specification-v0.md`](../docs/adr/0002-specification-v0.md).
+
+```bash
+mkdir -p /tmp/v0 && cp v0.sh v0_*.sql /tmp/v0/
+for f in ../spec/v0/schema/*.sql; do cp "$f" /tmp/v0/s-$(basename "$f"); done
+for f in ../spec/v0/reference/*.sql; do cp "$f" /tmp/v0/r-$(basename "$f"); done
+docker run --rm -u postgres -v /tmp/v0:/b:ro -e N=20000 -e TABLES=20 -e MERGE=2000 -e DUR=2 -e SB=512MB -e ECS=1GB \
+  postgres:17 bash /b/v0.sh
+```
+
+It must report `correctness failures=0`, `lean commits checked errors=0 broken_chains=0 heads_behind=0` and
+`lean merge checked differences=0 errors=0`.
+With `GATE=1` it runs only what decides the gate: planning at full scale, and lean commits and merges on small
+tables.

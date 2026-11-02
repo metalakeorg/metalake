@@ -132,3 +132,41 @@ select branch(2, 'b', 2, 1, 1);
 select tomb(1, 2, 3, 5);
 select expect_files(2, :'t', 4, '{}', 'b at 4, the tombstone is valid');
 select expect_files(2, :'t', 5, '{1}', 'b at 5, the tombstone is closed');
+
+-- case: one file's visibility and vector, read alone, agree with the whole set at every ref and sequence
+-- rules: VIS-6, DV-1
+-- The refs of the first case, with vectors at two levels: main's of files 1 and 2 at s1, b1's of file 2 at s4,
+-- and one of b1 for file 1, which b1 hides at the same commit. Main also owns file 9 and holds a tombstone of it at
+-- the same level, a state VIS-7 forbids, so that only a lower level hides.
+create function dv(id bigint, r int, b bigint, n bigint) returns void language sql as $$
+  insert into deletion_vector (table_id, file_id, path, content_offset, content_size, cardinality, ref_id, begin_seq)
+  select table_id, id, 'gs://lake/t/dv-' || id || '-' || r || '.puffin', 4, 40, n, r, b from tbl;
+$$;
+select f(g, 1, 1) from generate_series(1, 4) g;
+select f(5, 1, 1, 2), f(6, 1, 2), f(9, 1, 1), tomb(9, 1, 1);
+select branch(2, 'b1', 3, 1, 2);
+select f(101, 2, 4), tomb(1, 2, 4);
+select branch(3, 'b2', 5, 2, 4);
+select f(201, 3, 6), tomb(2, 3, 6);
+select f(7, 1, 7);
+update data_file set end_seq = 7 where file_id = 3;
+select f(102, 2, 8), tomb(4, 2, 8);
+select dv(1, 1, 1, 3), dv(2, 1, 1, 2), dv(2, 2, 4, 3), dv(1, 2, 4, 1);
+create view disagreements as
+  select r, s, 'files' as what, array(select file_id from visible_files(r, :'t', s) order by 1)::text as whole,
+         array(select x from (select distinct file_id from data_file) d(x) where file_visible(r, :'t', s, x) order by 1)::text as alone
+    from generate_series(1, 3) r, generate_series(0, 9) s
+  union all
+  select r, s, 'vectors', array(select (v.file_id, v.begin_seq)::text from visible_dvs(r, :'t', s) v order by 1)::text,
+         array(select (x, (file_dv(r, :'t', s, x)).begin_seq)::text from (select distinct file_id from data_file) d(x)
+                where (file_dv(r, :'t', s, x)).file_id is not null order by 1)::text
+    from generate_series(1, 3) r, generate_series(0, 9) s;
+select expect(not exists (select from disagreements where whole <> alone),
+  'visible_file and file_dv agree with visible_files and visible_dvs: '
+  || (select string_agg(format('ref %s at %s, %s: %s alone, %s whole', r, s, what, alone, whole), '; ')
+        from disagreements where whole <> alone));
+select expect_files(2, :'t', 9, '{2,3,6,9,101,102}', 'b1 sees 9: the tombstone is at its own level');
+select expect((file_dv(2, :'t', 9, 2)).ref_id = 2, 'b1''s own vector of file 2, not main''s');
+select expect((file_dv(2, :'t', 9, 1)).file_id is null, 'no vector for a file b1 hides');
+select expect(not exists (select from dv_errors(2, :'t', 9, 4)),
+  'the vector b1 wrote for a file it hides is not checked: it does not apply');

@@ -131,7 +131,7 @@ begin
       perform conflict(format('the name %s is taken', e -> 'rename'));
     end if;
     for fid in select jsonb_array_elements_text(coalesce(e -> 'remove', '[]'))::bigint loop
-      if not exists (select 1 from visible_files(r, t, latest) v where v.file_id = fid) then
+      if not file_visible(r, t, latest, fid) then
         perform conflict(format('file %s is not visible', fid));
       end if;
     end loop;
@@ -139,10 +139,10 @@ begin
       -- A vector may also delete rows of a file this commit adds.
       continue when x ->> 'base_seq' is null and (x ->> 'file_id')::bigint in (
         select (y ->> 'file_id')::bigint from jsonb_array_elements(coalesce(e -> 'add', '[]')) y);
-      if not exists (select 1 from visible_files(r, t, latest) v where v.file_id = (x ->> 'file_id')::bigint) then
+      if not file_visible(r, t, latest, (x ->> 'file_id')::bigint) then
         perform conflict(format('file %s is not visible', x ->> 'file_id'));
       end if;
-      if (select d.begin_seq from visible_dvs(r, t, latest) d where d.file_id = (x ->> 'file_id')::bigint)
+      if (file_dv(r, t, latest, (x ->> 'file_id')::bigint)).begin_seq
          is distinct from (x ->> 'base_seq')::bigint then
         perform conflict(format('the deletion vector of file %s is not the one at %s', x ->> 'file_id', x ->> 'base_seq'));
       end if;
@@ -183,8 +183,9 @@ begin
   for e in select * from jsonb_array_elements(entries) loop
     t := (e ->> 'table_id')::uuid;
     cur := (select h.snapshot_id from head h where h.ref_id = r and h.table_id = t);
-    removed_rows := (select coalesce(sum(l.rows), 0) from live_rows(r, t, latest) l
-                      where l.file_id in (select jsonb_array_elements_text(coalesce(e -> 'remove', '[]'))::bigint));
+    removed_rows := (select coalesce(sum((visible_file(r, t, latest, y.id)).record_count
+                                         - coalesce((file_dv(r, t, latest, y.id)).cardinality, 0)), 0)
+                       from (select distinct jsonb_array_elements_text(coalesce(e -> 'remove', '[]'))::bigint) y(id));
 
     if e ? 'create' then
       insert into tbl values (t, e -> 'create' ->> 'location', seq);

@@ -44,3 +44,18 @@ create function visible_files(r int, t uuid, s bigint) returns setof data_file l
     left join hidden h on h.file_id = f.file_id and h.level < c.level
    where h.file_id is null;
 $$;
+
+-- VIS-6 for one file: the row through which file `fid` of t is visible at (r, s), if it is. It reads only that
+-- file's rows, so a commit's checks do not grow with the table (CMT-9).
+create function visible_file(r int, t uuid, s bigint, fid bigint) returns data_file language sql stable as $$
+  with c as (select * from chain(r, s))
+  select f.*
+    from c join data_file f on f.table_id = t and f.file_id = fid and f.ref_id = c.ref_id
+     and f.begin_seq <= c.seq and c.seq < f.end_seq
+   where not exists (select 1 from c d join tombstone x on x.table_id = t and x.file_id = fid and x.ref_id = d.ref_id
+                       and x.begin_seq <= d.seq and d.seq < x.end_seq where d.level < c.level);
+$$;
+
+create function file_visible(r int, t uuid, s bigint, fid bigint) returns boolean language sql stable as $$
+  select (visible_file(r, t, s, fid)).file_id is not null;
+$$;
