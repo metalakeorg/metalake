@@ -1,6 +1,6 @@
 # MetaLake table format · version 0
 
-**Status:** complete. The text becomes final with the tag `spec-v0`; later changes follow §17.
+**Status:** final, tagged `spec-v0` on 2026-11-02. Later changes follow §18.
 
 ## 1. Conventions
 
