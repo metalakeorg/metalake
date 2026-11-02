@@ -1,0 +1,17 @@
+[package]
+name = "metalake-previo"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Preliminary study of the implementation (ADR 0003 §8): call shapes, round trips and Arrow streaming against a v0 catalog"
+
+[dependencies]
+arrow-array = "56"
+futures = "0.3"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1", "with-uuid-1"] }
+uuid = "1"
+
+[profile.release]
+codegen-units = 4

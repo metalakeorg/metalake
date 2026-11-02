@@ -209,3 +209,14 @@ It must report `correctness failures=0`, `lean commits checked errors=0 broken_c
 `lean merge checked differences=0 errors=0`.
 With `GATE=1` it runs only what decides the gate: planning at full scale, and lean commits and merges on small
 tables.
+
+## The implementation study
+
+`impl/` answers ADR 0003 §8 from Rust: how a batch of files enters the protocol (arrays, JSON or `COPY`), one call
+against the same statements one by one and pipelined, and a planned file list streamed into Arrow batches. It runs
+against the reference DDL and behaviour of `spec/v0/` and the prototype protocol `impl/proto.sql`; the reference then
+checks what it wrote. `impl/local.sh` runs it in Docker, for correctness only:
+
+```bash
+cd bench/impl && cargo build --release && bash local.sh 20000 20 2
+```
