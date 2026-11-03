@@ -14,9 +14,11 @@
 //! # }
 //! ```
 
+pub mod bounds;
 mod catalog;
 mod error;
 pub mod schema;
+pub mod stats;
 mod storage;
 mod table;
 

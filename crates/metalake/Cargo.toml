@@ -17,6 +17,7 @@ azure = ["object_store/azure"]
 [dependencies]
 metalake-pg.workspace = true
 arrow-schema.workspace = true
+parquet.workspace = true
 object_store.workspace = true
 bytes.workspace = true
 serde_json.workspace = true

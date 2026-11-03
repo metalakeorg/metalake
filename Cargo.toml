@@ -11,11 +11,14 @@ repository = "https://github.com/describeloai/metalake"
 publish = false
 
 [workspace.dependencies]
+metalake = { path = "crates/metalake" }
 metalake-pg = { path = "crates/metalake-pg" }
 thiserror = "2"
 deadpool-postgres = "0.14"
 futures-util = "0.3"
 arrow-schema = "59"
+arrow-array = "59"
+parquet = { version = "59", default-features = false, features = ["arrow"] }
 object_store = "0.14"
 bytes = "1"
 url = "2"
