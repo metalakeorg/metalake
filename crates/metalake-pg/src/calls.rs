@@ -12,7 +12,8 @@ use tokio_postgres::{GenericClient, Row};
 use uuid::Uuid;
 
 use crate::records::{
-    CommitResult, FeedCommit, FileAdd, FileChange, FileRef, LATEST, PlannedFile, StablePoint, TableExpect, VectorSet,
+    CommitResult, FeedCommit, FileAdd, FileChange, FileRef, LATEST, PlannedFile, RefRow, StablePoint, TableExpect,
+    TableName, VectorSet,
 };
 use crate::{Result, Session, quote_ident};
 
@@ -217,6 +218,55 @@ impl Protocol {
         let params: [Param<'_>; 6] = [&ref_id, &table_id, &at, &field, &lo, &hi];
         let rows = s.client().query_raw(&statement, params).await?;
         Ok(rows.map_ok(|r| PlannedFile::from_row(&r)).map_err(Into::into))
+    }
+
+    /// The refs of the catalog that are not deleted.
+    pub async fn refs(&self, s: &impl Session) -> Result<Vec<RefRow>> {
+        let statement = s
+            .statement(&format!(
+                "select ref_id, name, kind, protected, parent, fork_seq, created_seq from {}.refs order by ref_id",
+                self.schema
+            ))
+            .await?;
+        let rows = s.client().query(&statement, &[]).await?;
+        Ok(rows.iter().map(RefRow::from_row).collect())
+    }
+
+    /// The tables visible at a read (TBL-1).
+    pub async fn tables_at(&self, s: &impl Session, ref_id: i32, at: Option<i64>) -> Result<Vec<TableName>> {
+        let at = at.unwrap_or(LATEST);
+        let rows = self
+            .all(s, "tables_at(ref_id => $1, at => $2)", &[&ref_id, &at])
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| TableName {
+                table_id: r.get("table_id"),
+                namespace: r.get("namespace"),
+                name: r.get("name"),
+            })
+            .collect())
+    }
+
+    /// A table's definition at a read, in the reference's shape, or none if the read does not see it: its name and
+    /// location, snapshot, fields, partition specs and sort orders (the default's id and all it has had), cluster
+    /// key and properties.
+    pub async fn describe(
+        &self,
+        s: &impl Session,
+        ref_id: i32,
+        table_id: Uuid,
+        at: Option<i64>,
+    ) -> Result<Option<Value>> {
+        let at = at.unwrap_or(LATEST);
+        Ok(self
+            .one(
+                s,
+                "describe(ref_id => $1, table_id => $2, at => $3) as d",
+                &[&ref_id, &table_id, &at],
+            )
+            .await?
+            .get("d"))
     }
 
     /// The snapshot of a table a read at `at` sees (CMT-2).
@@ -441,6 +491,8 @@ pub const INTERFACE: &[(&str, &[&str], bool)] = &[
     ("register_intents", &["ref_id", "table_id", "paths", "ttl"], true),
     ("next_id", &["t", "kind"], true),
     ("plan", &["ref_id", "table_id", "at", "field_id", "lo", "hi"], false),
+    ("tables_at", &["ref_id", "at"], false),
+    ("describe", &["ref_id", "table_id", "at"], false),
     ("snapshot_at", &["r", "t", "s"], false),
     ("as_of_time", &["r", "t", "at"], false),
     ("stable_point", &[], false),

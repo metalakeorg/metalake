@@ -129,6 +129,42 @@ pub struct StablePoint {
     pub horizon: u64,
 }
 
+/// A table visible at a read: its id and its name there (TBL-1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableName {
+    pub table_id: Uuid,
+    pub namespace: Vec<String>,
+    pub name: String,
+}
+
+/// A ref of the catalog, as the view `refs` shows it (BR-1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefRow {
+    pub ref_id: i32,
+    pub name: String,
+    /// `branch` or `tag`.
+    pub kind: String,
+    pub protected: bool,
+    /// The parent's name, for a ref forked from another.
+    pub parent: Option<String>,
+    pub fork_seq: Option<i64>,
+    pub created_seq: i64,
+}
+
+impl RefRow {
+    pub(crate) fn from_row(row: &Row) -> Self {
+        Self {
+            ref_id: row.get("ref_id"),
+            name: row.get("name"),
+            kind: row.get("kind"),
+            protected: row.get("protected"),
+            parent: row.get("parent"),
+            fork_seq: row.get("fork_seq"),
+            created_seq: row.get("created_seq"),
+        }
+    }
+}
+
 impl PlannedFile {
     pub(crate) fn from_row(row: &Row) -> Self {
         let vector = row

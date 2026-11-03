@@ -85,3 +85,39 @@ alter function @schema@.next_id(uuid, text) set search_path = @schema@, pg_catal
 alter function @schema@.chain(int, bigint) set search_path = @schema@, pg_catalog, pg_temp;
 -- VIS-11: so is `stable_point`, which reads the commit sequence.
 alter function @schema@.stable_point() set search_path = @schema@, pg_catalog, pg_temp;
+
+-- A table as a read sees it (TBL-1, VIS-9, §6, §7), for the core, which needs the definition at a ref and a
+-- sequence and not only at LATEST: the tables visible at (ref_id, at), and one table's definition there, or null if
+-- it is not visible. `specs` and `sort_orders` hold every one the table has had, since each file names its own.
+create function @schema@.tables_at(ref_id int, at bigint default 9223372036854775806)
+returns table (table_id uuid, namespace text[], name text) language sql stable
+set search_path = @schema@, pg_catalog, pg_temp as $$
+  select x.table_id, x.namespace, x.name from visible_table_names($1, $2) x order by x.namespace, x.name;
+$$;
+
+create function @schema@.describe(ref_id int, table_id uuid, at bigint default 9223372036854775806)
+returns jsonb language sql stable
+set search_path = @schema@, pg_catalog, pg_temp as $$
+  select jsonb_build_object(
+    'table_id', n.table_id,
+    'namespace', to_jsonb(n.namespace),
+    'name', n.name,
+    'location', (select t.location from tbl t where t.table_id = $2),
+    'snapshot_id', snapshot_at($1, $2, $3),
+    'fields', (select coalesce(jsonb_agg(jsonb_build_object(
+                 'field_id', f.field_id, 'parent_field_id', f.parent_field_id, 'position', f.position,
+                 'name', f.name, 'type', f.type, 'required', f.required, 'initial_default', f.initial_default,
+                 'write_default', f.write_default, 'doc', f.doc)
+               order by f.parent_field_id nulls first, f.position), '[]')
+                 from visible_fields($1, $2, $3) f),
+    'spec_id', (select s.spec_id from default_spec($1, $2, $3) s),
+    'specs', (select coalesce(jsonb_object_agg(s.spec_id::text, s.fields), '{}')
+                from (select distinct spec_id, fields from partition_spec where partition_spec.table_id = $2) s),
+    'sort_order_id', (select o.sort_order_id from default_sort_order($1, $2, $3) o),
+    'sort_orders', (select coalesce(jsonb_object_agg(o.sort_order_id::text, o.fields), '{}')
+                      from (select distinct sort_order_id, fields from sort_order where sort_order.table_id = $2) o),
+    'cluster_key', (select to_jsonb(k.field_ids) from visible_cluster_key($1, $2, $3) k),
+    'properties', (select coalesce(jsonb_object_agg(p.key, p.value), '{}') from visible_properties($1, $2, $3) p))
+    from visible_table_names($1, $3) n
+   where n.table_id = $2;
+$$;
