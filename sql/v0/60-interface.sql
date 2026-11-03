@@ -121,3 +121,23 @@ set search_path = @schema@, pg_catalog, pg_temp as $$
     from visible_table_names($1, $3) n
    where n.table_id = $2;
 $$;
+
+-- TT-3, TBL-1: the tables ref_id saw as of time `at`, each with the sequence to read it at (as_of_time) and its name
+-- then: none that was dropped by then or created after. A commit that wrote several tables has one time, so it is in
+-- each one's sequence or in none, and the reads agree as one point would. Every table that has been on the ref's
+-- chain is a candidate; as_of_time refuses a time less than one second ago or older than the ref keeps.
+create function @schema@.tables_as_of(ref_id int, at timestamptz)
+returns table (table_id uuid, namespace text[], name text, seq bigint) language sql stable
+set search_path = @schema@, pg_catalog, pg_temp as $$
+  select n.table_id, n.namespace, n.name, s.seq
+    from (select distinct x.table_id
+            from chain($1, 9223372036854775806) c join table_name x on x.ref_id = c.ref_id) t
+   cross join lateral (select as_of_time($1, t.table_id, $2) as seq) s
+   cross join lateral (select x.*
+                         from chain($1, s.seq) c join table_name x
+                           on x.table_id = t.table_id and x.ref_id = c.ref_id
+                          and x.begin_seq <= c.seq and c.seq < x.end_seq
+                        order by c.level limit 1) n
+   where not n.dropped
+   order by n.namespace, n.name;
+$$;

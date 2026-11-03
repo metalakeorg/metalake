@@ -137,6 +137,15 @@ pub struct TableName {
     pub name: String,
 }
 
+/// A table a ref saw as of a time, with the sequence to read it at (TT-3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableAsOf {
+    pub table_id: Uuid,
+    pub namespace: Vec<String>,
+    pub name: String,
+    pub seq: i64,
+}
+
 /// A ref of the catalog, as the view `refs` shows it (BR-1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefRow {

@@ -212,26 +212,30 @@ impl Run {
                     .pair
                     .on_reference
                     .query_one(
-                        "select f.file_id, d.begin_seq, coalesce(d.cardinality, 0)
+                        "select f.file_id, d.begin_seq, coalesce(d.cardinality, 0), d.inline
                            from visible_files($1, $2, $3) f left join visible_dvs($1, $2, $3) d on d.file_id = f.file_id
                           order by f.file_id limit 1",
                         &[&r, &t, &LATEST],
                     )
                     .await?;
                 let (fid, base_seq, cardinality): (i64, Option<i64>, i64) = (row.get(0), row.get(1), row.get(2));
-                let cardinality = (cardinality + 1).min(10);
-                // Each side deletes rows of its own, so that a union is larger than either.
+                let base: Option<Vec<u8>> = row.get(3);
+                let mut cardinality = (cardinality + 1).min(10);
+                // Each side deletes rows of its own, so that a union is larger than either; an inline vector holds
+                // the one it replaces too, as a writer must (DV-4), since the protocol checks its count only.
                 let lo: i64 = if r == MAIN { 5 } else { 0 };
                 let blob: Option<Vec<u8>> = if *inline {
-                    let sql =
-                        "select dv_encode(array(select generate_series($1::bigint, $1::bigint + $2::bigint - 1)))";
-                    Some(
-                        self.pair
-                            .on_reference
-                            .query_one(sql, &[&lo, &cardinality.min(5)])
-                            .await?
-                            .get(0),
-                    )
+                    let sql = "select dv_encode(u), cardinality(u)
+                                 from (select array(select p from dv_positions($3) p where $3 is not null
+                                                    union select generate_series($1::bigint, $1::bigint + $2::bigint - 1))
+                                                as u) x";
+                    let row = self
+                        .pair
+                        .on_reference
+                        .query_one(sql, &[&lo, &cardinality.min(5), &base])
+                        .await?;
+                    cardinality = i64::from(row.get::<_, i32>(1));
+                    Some(row.get(0))
                 } else {
                     None
                 };
@@ -242,7 +246,7 @@ impl Run {
                     path: blob.is_none().then(|| format!("gs://dv/{}.puffin", self.n)),
                     content_offset: blob.is_none().then_some(4),
                     content_size: blob.as_ref().map_or(40, |b| b.len() as i64),
-                    cardinality: if *inline { cardinality.min(5) } else { cardinality },
+                    cardinality,
                     inline: blob,
                 });
             }

@@ -1,9 +1,10 @@
 //! A catalog and its refs: where every read and write of the core starts.
 
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use metalake_pg::records::{RefRow, TableName};
-use metalake_pg::{Pool, PooledSession, Protocol, Roles, Versions};
+use metalake_pg::{CreateRef, Pool, PooledSession, Protocol, Roles, Versions};
 
 use crate::error::{Error, Result};
 use crate::table::Table;
@@ -107,7 +108,7 @@ impl Catalog {
             id: row.ref_id,
             name: row.name,
             kind: row.kind,
-            at: None,
+            at: Point::Latest,
         }
     }
 
@@ -136,7 +137,7 @@ pub struct Ref {
     id: i32,
     name: String,
     kind: String,
-    at: Option<i64>,
+    at: Point,
 }
 
 impl Ref {
@@ -153,7 +154,7 @@ impl Ref {
         &self.kind
     }
 
-    /// A transaction on this ref, which commits on its latest state.
+    /// A transaction on this ref, which commits on its latest state; only a branch read at its latest takes one.
     pub fn transaction(&self) -> crate::Transaction {
         crate::Transaction::new(self.clone())
     }
@@ -165,45 +166,150 @@ impl Ref {
     /// The same ref, read at `seq` instead of its latest state.
     pub fn at(&self, seq: i64) -> Self {
         Self {
-            at: Some(seq),
+            at: Point::Seq(seq),
+            ..self.clone()
+        }
+    }
+
+    /// The same ref, read as of `time` (TT-3): each table at the sequence of its state then. A commit that wrote
+    /// several tables has one time, so the tables read agree as one point would.
+    pub fn as_of(&self, time: SystemTime) -> Self {
+        Self {
+            at: Point::Time(time),
             ..self.clone()
         }
     }
 
     /// The sequence a read of this ref is at: the one given, or a stable point taken now (VIS-11), so that every
-    /// table read from one point sees the same commits.
+    /// table read from one point sees the same commits. A read as of a time has a sequence per table instead.
     pub async fn read_point(&self) -> Result<i64> {
         match self.at {
-            Some(seq) => Ok(seq),
-            None => {
+            Point::Seq(seq) => Ok(seq),
+            Point::Latest => {
                 let p = self.catalog.protocol();
                 Ok(p.stable_point(&self.catalog.session().await?).await?.seq)
             }
+            Point::Time(_) => Err(Error::Invalid(format!(
+                "a read of {} as of a time reads each table at its own sequence",
+                self.name
+            ))),
         }
+    }
+
+    /// The tables this ref sees at its read point, each with the sequence a read of it is at.
+    async fn tables_seen(&self) -> Result<Vec<(TableName, i64)>> {
+        let session = self.catalog.session().await?;
+        let p = self.catalog.protocol();
+        Ok(match self.at {
+            Point::Time(time) => p
+                .tables_as_of(&session, self.id, time)
+                .await?
+                .into_iter()
+                .map(|t| {
+                    let name = TableName {
+                        table_id: t.table_id,
+                        namespace: t.namespace,
+                        name: t.name,
+                    };
+                    (name, t.seq)
+                })
+                .collect(),
+            _ => {
+                let seq = self.read_point().await?;
+                let names = p.tables_at(&session, self.id, Some(seq)).await?;
+                names.into_iter().map(|t| (t, seq)).collect()
+            }
+        })
     }
 
     /// The tables this ref sees at its read point.
     pub async fn tables(&self) -> Result<Vec<TableName>> {
-        let seq = self.read_point().await?;
-        let p = self.catalog.protocol();
-        Ok(p.tables_at(&self.catalog.session().await?, self.id, Some(seq)).await?)
+        Ok(self.tables_seen().await?.into_iter().map(|(t, _)| t).collect())
     }
 
     /// A table by its name, as this ref sees it at its read point.
     pub async fn table(&self, namespace: &[&str], name: &str) -> Result<Table> {
-        let seq = self.read_point().await?;
-        let session = self.catalog.session().await?;
-        let p = self.catalog.protocol();
-        let found = p
-            .tables_at(&session, self.id, Some(seq))
+        let (found, seq) = self
+            .tables_seen()
             .await?
             .into_iter()
-            .find(|t| t.namespace == namespace && t.name == name)
+            .find(|(t, _)| t.namespace == namespace && t.name == name)
             .ok_or_else(|| Error::NotFound(format!("table {}.{name} on {}", namespace.join("."), self.name)))?;
+        let p = self.catalog.protocol();
         let definition = p
-            .describe(&session, self.id, found.table_id, Some(seq))
+            .describe(&self.catalog.session().await?, self.id, found.table_id, Some(seq))
             .await?
             .ok_or_else(|| Error::NotFound(format!("table {} on {}", found.table_id, self.name)))?;
         Table::from_definition(self.id, seq, &definition)
     }
+
+    /// A branch of this ref, from its read point (BR-1 to BR-3).
+    pub async fn create_branch(&self, name: &str) -> Result<Ref> {
+        self.create(name, "branch").await
+    }
+
+    /// A tag of this ref, at its read point: a name for that state, which no commit changes.
+    pub async fn create_tag(&self, name: &str) -> Result<Ref> {
+        self.create(name, "tag").await
+    }
+
+    async fn create(&self, name: &str, kind: &str) -> Result<Ref> {
+        let at = match self.at {
+            Point::Latest => None,
+            Point::Seq(seq) => Some(seq),
+            Point::Time(_) => {
+                return Err(Error::Invalid(format!(
+                    "a ref of {} as of a time has no one sequence to start from: give it one with at",
+                    self.name
+                )));
+            }
+        };
+        let p = self.catalog.protocol();
+        let new = CreateRef {
+            name: name.into(),
+            parent: self.id,
+            kind: kind.into(),
+            at,
+            author: "metalake".into(),
+        };
+        let id = p.create_ref(&self.catalog.session().await?, &new).await?;
+        Ok(Ref {
+            catalog: self.catalog.clone(),
+            id,
+            name: name.into(),
+            kind: kind.into(),
+            at: Point::Latest,
+        })
+    }
+
+    /// Deletes the ref; its rows go at the next collection (RET-6).
+    pub async fn delete(self) -> Result<()> {
+        let p = self.catalog.protocol();
+        Ok(p.delete_ref(&self.catalog.session().await?, self.id).await?)
+    }
+
+    /// Whether a commit may write this ref: a branch, at its latest state.
+    pub(crate) fn writable(&self) -> Result<()> {
+        if self.kind != "branch" {
+            return Err(Error::Invalid(format!(
+                "{} is a {}, which no commit writes",
+                self.name, self.kind
+            )));
+        }
+        if !matches!(self.at, Point::Latest) {
+            return Err(Error::Invalid(format!(
+                "{} is read in the past here, and a commit writes its latest state",
+                self.name
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Where a read of a ref is: its latest state, a sequence, or a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Point {
+    Latest,
+    Seq(i64),
+    Time(SystemTime),
 }

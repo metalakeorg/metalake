@@ -236,6 +236,7 @@ impl Transaction {
     /// a lost connection is an error whose kind says the outcome is unknown. A delete whose file's vector changed
     /// under it is taken again over the new vector and retried (DV-4).
     pub async fn commit(self) -> Result<Outcome> {
+        self.on.writable()?;
         let (app_id, app_version) = self.app.clone().unzip();
         let mut call = Commit {
             ref_id: self.on.id(),

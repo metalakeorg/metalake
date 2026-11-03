@@ -12,8 +12,8 @@ use tokio_postgres::{GenericClient, Row};
 use uuid::Uuid;
 
 use crate::records::{
-    CommitResult, FeedCommit, FileAdd, FileChange, FileRef, LATEST, PlannedFile, RefRow, StablePoint, TableExpect,
-    TableName, VectorSet,
+    CommitResult, FeedCommit, FileAdd, FileChange, FileRef, LATEST, PlannedFile, RefRow, StablePoint, TableAsOf,
+    TableExpect, TableName, VectorSet,
 };
 use crate::{Result, Session, quote_ident};
 
@@ -298,6 +298,22 @@ impl Protocol {
             .get(0))
     }
 
+    /// The tables a ref saw as of a time, each with the sequence to read it at and its name then (TT-3).
+    pub async fn tables_as_of(&self, s: &impl Session, ref_id: i32, at: SystemTime) -> Result<Vec<TableAsOf>> {
+        let rows = self
+            .all(s, "tables_as_of(ref_id => $1, at => $2)", &[&ref_id, &at])
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| TableAsOf {
+                table_id: r.get("table_id"),
+                namespace: r.get("namespace"),
+                name: r.get("name"),
+                seq: r.get("seq"),
+            })
+            .collect())
+    }
+
     /// A sequence to read at, and the horizon after which reading at it is repeatable (VIS-11).
     pub async fn stable_point(&self, s: &impl Session) -> Result<StablePoint> {
         let statement = s
@@ -495,6 +511,7 @@ pub const INTERFACE: &[(&str, &[&str], bool)] = &[
     ("describe", &["ref_id", "table_id", "at"], false),
     ("snapshot_at", &["r", "t", "s"], false),
     ("as_of_time", &["r", "t", "at"], false),
+    ("tables_as_of", &["ref_id", "at"], false),
     ("stable_point", &[], false),
     ("is_stable", &["horizon"], false),
     ("changes", &["after_at", "after_seq", "lim", "tab"], false),
