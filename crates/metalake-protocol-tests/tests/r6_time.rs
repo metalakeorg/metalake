@@ -4,9 +4,10 @@
 //! the feed from every cursor and a read as of every instant around a commit alike.
 
 use metalake_protocol_tests::differential::{clone_catalog, commit_protocol, Commit, Outcome, TableChange};
-use metalake_protocol_tests::records::stored_file;
+use metalake_protocol_tests::records::{stored_file, VectorSet};
 use metalake_protocol_tests::{connect, fresh_schema, install_protocol, install_reference, quote_ident, Error};
 use serde_json::json;
+use tokio_postgres::types::ToSql;
 use tokio_postgres::Client;
 use uuid::Uuid;
 
@@ -73,6 +74,49 @@ async fn the_feed_and_reads_as_of_a_time_match_the_reference() -> Result<(), Err
     .await?;
     commit(&on, &protocol, 1, 1, 2, false).await?;
     commit(&on, &protocol, 1, 0, 6, false).await?;
+    // CHG-2: on table 0, a file removed and a vector on another.
+    let t0 = Uuid::from_u128(TABLES[0]);
+    let ids: Vec<i64> = on
+        .query(&format!("select file_id from {p}.plan(1, $1) order by file_id"), &[&t0])
+        .await?
+        .iter()
+        .map(|r| r.get(0))
+        .collect();
+    let change = |c: TableChange| Commit {
+        ref_id: 1,
+        operation: "delete".into(),
+        tables: vec![c],
+        app: None,
+        namespaces: None,
+    };
+    for c in [
+        TableChange {
+            table_id: t0,
+            removes: vec![ids[0]],
+            ..TableChange::default()
+        },
+        TableChange {
+            table_id: t0,
+            vectors: vec![VectorSet {
+                table_id: t0,
+                file_id: ids[1],
+                base_seq: None,
+                path: Some("gs://dv/0.puffin".into()),
+                content_offset: Some(4),
+                content_size: 40,
+                cardinality: 1,
+                inline: None,
+            }],
+            ..TableChange::default()
+        },
+    ] {
+        if !matches!(
+            commit_protocol(&on, &protocol, &change(c)).await?.outcome,
+            Outcome::Committed(_)
+        ) {
+            return Err("the changes of table 0 were refused".into());
+        }
+    }
     on.batch_execute("select pg_sleep(1.1)").await?;
     clone_catalog(&on, &protocol, &reference).await?;
     let r = quote_ident(&reference);
@@ -134,6 +178,75 @@ async fn the_feed_and_reads_as_of_a_time_match_the_reference() -> Result<(), Err
             }
         }
     }
+    // CHG-1 by table, CHG-2 on every pair of snapshots, then both again under a retention, and TT-1.
+    for t in TABLES {
+        let t = Uuid::from_u128(t);
+        for lim in [1i32, 1000] {
+            let feed = "select commit_seq, ref_id, committed_at, operation from {s}.changes('-infinity', 0, $1, $2)";
+            same(&on, &r, &p, feed, &[&lim, &t]).await?;
+        }
+    }
+    let pairs: Vec<(i32, Uuid, i64, i64)> = on
+        .query(
+            &format!(
+                "select x.ref_id, x.table_id, x.snapshot_id, y.snapshot_id from {p}.snapshot x join {p}.snapshot y
+                   on y.table_id = x.table_id and y.ref_id = x.ref_id
+                  order by 1, 2, 3, 4"
+            ),
+            &[],
+        )
+        .await?
+        .iter()
+        .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3)))
+        .collect();
+    let changes = "select change, file_id, path, vector_before, vector_after from {s}.table_changes($1, $2, $3, $4)";
+    for retained in [false, true] {
+        if retained {
+            for s in [&r, &p] {
+                on.batch_execute(&format!("select {s}.set_retention(1, min_snapshots => 3)"))
+                    .await?;
+            }
+            for row in &all {
+                let when: Timestamp = row.get(2);
+                for t in TABLES {
+                    let at = "select {s}.as_of_time(1, $1, $2)";
+                    same(&on, &r, &p, at, &[&Uuid::from_u128(t), &when]).await?;
+                }
+            }
+        }
+        for (rf, t, a, b) in &pairs {
+            same(&on, &r, &p, changes, &[rf, t, a, b]).await?;
+        }
+    }
+    same(&on, &r, &p, "select {s}.fill_committed_at(1)", &[]).await?;
+    same(
+        &on,
+        &r,
+        &p,
+        "select committed_at from {s}.commit order by commit_seq",
+        &[],
+    )
+    .await?;
+    // TT-1: a commit whose transaction left no timestamp, as one that rolled back.
+    on.batch_execute("begin").await?;
+    let dead: String = on.query_one("select pg_current_xact_id()::text", &[]).await?.get(0);
+    on.batch_execute("rollback").await?;
+    for s in [&r, &p] {
+        on.batch_execute(&format!(
+            "update {s}.commit set committed_at = null, xid = '{dead}'
+              where commit_seq = (select max(commit_seq) from {s}.commit)"
+        ))
+        .await?;
+    }
+    for sql in [
+        "select {s}.fill_committed_at()",
+        "select * from {s}.changes('-infinity', 0)",
+    ] {
+        if same(&on, &r, &p, sql, &[]).await? != "0A000" {
+            return Err(format!("{sql}: a commit without a time was not refused").into());
+        }
+    }
+
     // Too recent a time is refused by both.
     let now = "select {s}.as_of_time(1, $1, now())";
     for s in [&r, &p] {
@@ -214,4 +327,31 @@ fn micro() -> std::time::Duration {
 
 fn rows(rows: Vec<tokio_postgres::Row>) -> Vec<(i64, i32, Timestamp, String)> {
     rows.iter().map(|r| (r.get(0), r.get(1), r.get(2), r.get(3))).collect()
+}
+
+/// What a statement answers in one catalog, as text: its rows, or the SQLSTATE of its refusal.
+async fn answer(on: &Client, sql: &str, params: &[&(dyn ToSql + Sync)]) -> Result<String, Error> {
+    match on
+        .query(
+            &format!("select coalesce(string_agg(x::text, ' | ' order by x::text), '') from ({sql}) x"),
+            params,
+        )
+        .await
+    {
+        Ok(rows) => Ok(rows[0].get(0)),
+        Err(e) => match e.code() {
+            Some(code) => Ok(code.code().to_string()),
+            None => Err(e.into()),
+        },
+    }
+}
+
+/// Runs `sql`, with `{s}` the catalog, in the reference and in the protocol, and requires the same answer.
+async fn same(on: &Client, r: &str, p: &str, sql: &str, params: &[&(dyn ToSql + Sync)]) -> Result<String, Error> {
+    let want = answer(on, &sql.replace("{s}", r), params).await?;
+    let got = answer(on, &sql.replace("{s}", p), params).await?;
+    if want != got {
+        return Err(format!("{sql}: the reference answered {want}, the protocol {got}").into());
+    }
+    Ok(want)
 }
