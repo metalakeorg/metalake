@@ -16,6 +16,9 @@ pub enum Error {
     /// Object storage failed.
     #[error(transparent)]
     Storage(#[from] object_store::Error),
+    /// Bytes that are not what the catalog says they are.
+    #[error("corrupt: {0}")]
+    Corrupt(String),
     /// Something the format allows that this version of the core does not do yet.
     #[error("unsupported: {0}")]
     Unsupported(String),

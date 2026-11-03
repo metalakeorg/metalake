@@ -24,6 +24,7 @@ pub mod schema;
 pub mod stats;
 mod storage;
 mod table;
+pub mod vectors;
 mod write;
 
 pub use catalog::{Catalog, CatalogConfig, Ref};

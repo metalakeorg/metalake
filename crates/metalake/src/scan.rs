@@ -38,6 +38,7 @@ use crate::schema::FIELD_ID;
 use crate::stats;
 use crate::storage::Storage;
 use crate::table::{Field, Table};
+use crate::vectors::DeletionVector;
 
 /// Rows in a batch at most.
 const BATCH_SIZE: usize = 8192;
@@ -218,12 +219,6 @@ async fn batches(
     filter: Option<Filter>,
     batch_size: usize,
 ) -> Result<BoxStream<'static, Result<RecordBatch>>> {
-    if task.vector.is_some() {
-        return Err(Error::Unsupported(format!(
-            "file {} has a deletion vector, which the core reads from C6",
-            task.file_id
-        )));
-    }
     let mut source = match (task.content, &task.path) {
         (Some(content), _) => Source::Inline(Bytes::from(content)),
         (None, Some(path)) => Source::Object {
@@ -237,14 +232,18 @@ async fn batches(
             )));
         }
     };
-    let metadata = match &task.footer {
-        Some(footer) => ParquetMetaDataReader::decode_metadata(footer).map_err(read_error)?,
-        None => ParquetMetaDataReader::new()
-            .with_prefetch_hint(Some(task.footer_size as usize + 8))
-            .load_and_finish(&mut source, task.file_size as u64)
-            .await
-            .map_err(read_error)?,
+    // The footer and the vector, at once: each a request at most.
+    let footer = async {
+        match &task.footer {
+            Some(footer) => ParquetMetaDataReader::decode_metadata(footer).map_err(read_error),
+            None => ParquetMetaDataReader::new()
+                .with_prefetch_hint(Some(task.footer_size as usize + 8))
+                .load_and_finish(&mut source, task.file_size as u64)
+                .await
+                .map_err(read_error),
+        }
     };
+    let (metadata, vector) = futures_util::try_join!(footer, vector(task.file_id, task.vector.as_ref(), storage))?;
     let metadata = Arc::new(metadata);
     let reader = ArrowReaderMetadata::try_new(metadata.clone(), ArrowReaderOptions::new()).map_err(read_error)?;
 
@@ -274,12 +273,27 @@ async fn batches(
         None => (0..metadata.num_row_groups()).collect(),
     };
     let mask = ProjectionMask::roots(metadata.file_metadata().schema_descr(), present);
-    let stream = ParquetRecordBatchStreamBuilder::new_with_metadata(source, reader)
+    let mut builder = ParquetRecordBatchStreamBuilder::new_with_metadata(source, reader)
         .with_projection(mask)
-        .with_row_groups(groups)
-        .with_batch_size(batch_size)
-        .build()
-        .map_err(read_error)?;
+        .with_batch_size(batch_size);
+    if let Some(vector) = vector {
+        let mut first = 0u64;
+        let starts: Vec<u64> = metadata
+            .row_groups()
+            .iter()
+            .map(|g| {
+                let at = first;
+                first += g.num_rows() as u64;
+                at
+            })
+            .collect();
+        let read: Vec<(u64, u64)> = groups
+            .iter()
+            .map(|g| (starts[*g], metadata.row_group(*g).num_rows() as u64))
+            .collect();
+        builder = builder.with_row_selection(vector.row_selection(&read));
+    }
+    let stream = builder.with_row_groups(groups).build().map_err(read_error)?;
     Ok(stream
         .map(move |batch| {
             let batch = batch.map_err(read_error)?;
@@ -293,6 +307,38 @@ async fn batches(
             RecordBatch::try_new_with_options(schema.clone(), columns, &rows).map_err(|e| Error::Schema(e.to_string()))
         })
         .boxed())
+}
+
+/// A file's deletion vector, from the catalog's bytes or a range of its Puffin file, checked against the count the
+/// catalog keeps.
+async fn vector(file_id: i64, at: Option<&TaskVector>, storage: &Storage) -> Result<Option<DeletionVector>> {
+    let Some(at) = at else {
+        return Ok(None);
+    };
+    let vector = match (&at.inline, &at.path) {
+        (Some(blob), _) => DeletionVector::from_blob(blob)?,
+        (None, Some(path)) => {
+            let start = at.offset.unwrap_or(0) as u64;
+            let blob = storage
+                .store()
+                .get_range(&storage.path(path)?, start..start + at.size as u64)
+                .await?;
+            DeletionVector::from_blob(&blob)?
+        }
+        (None, None) => {
+            return Err(Error::Corrupt(format!(
+                "the vector of file {file_id} has neither bytes nor a path"
+            )));
+        }
+    };
+    if vector.cardinality() != at.cardinality as u64 {
+        return Err(Error::Corrupt(format!(
+            "the vector of file {file_id} holds {} positions, not {}",
+            vector.cardinality(),
+            at.cardinality
+        )));
+    }
+    Ok(Some(vector))
 }
 
 /// The row groups whose statistics may hold a value of the filter's range: those without bounds too.

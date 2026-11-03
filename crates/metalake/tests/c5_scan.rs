@@ -1,12 +1,9 @@
 //! C5a (ADR 0003 §7): the scan. What is read is what was written, inline and uploaded, under a projection by name;
 //! a file opens with the footer the catalog serves and no request but for its data, or one more with only its
-//! footer's size; a range prunes files in Postgres and row groups in the reader, keeping every row inside it; and a
-//! file with a deletion vector is refused until the core reads vectors.
+//! footer's size; and a range prunes files in Postgres and row groups in the reader, keeping every row inside it.
 
-use std::fmt;
 use std::ops::Range;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use arrow_array::cast::AsArray;
@@ -15,88 +12,12 @@ use arrow_array::{Array, ArrayRef, Float64Array, Int64Array, RecordBatch, String
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use futures_util::stream::{self, BoxStream, StreamExt, TryStreamExt};
 use metalake::partition::Scalar;
-use metalake::{
-    Catalog, CatalogConfig, Error, NewTable, Scan, ScanTask, Storage, Table, TableWriter, TaskVector, WriteOptions,
-};
-use object_store::memory::InMemory;
-use object_store::path::Path;
-use object_store::{
-    CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore, PutMultipartOptions,
-    PutOptions, PutPayload, PutResult,
-};
+use metalake::{Catalog, CatalogConfig, Error, NewTable, Scan, ScanTask, Storage, Table, TableWriter, WriteOptions};
 use parquet::file::metadata::ParquetMetaDataReader;
 
-fn url() -> String {
-    std::env::var("DATABASE_URL").expect("DATABASE_URL: run CRATE=metalake bash sql/test.sh")
-}
+mod common;
 
-fn fresh_schema() -> String {
-    static NEXT: AtomicU32 = AtomicU32::new(0);
-    format!("scan_{}_{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed))
-}
-
-/// A store in memory that counts its GET requests, each range of a read being one, as a remote store's are.
-#[derive(Debug, Default)]
-struct Counting {
-    inner: InMemory,
-    gets: AtomicUsize,
-}
-
-impl Counting {
-    fn take(&self) -> usize {
-        self.gets.swap(0, Ordering::SeqCst)
-    }
-}
-
-impl fmt::Display for Counting {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Counting({})", self.inner)
-    }
-}
-
-#[async_trait::async_trait]
-impl ObjectStore for Counting {
-    async fn put_opts(
-        &self,
-        location: &Path,
-        payload: PutPayload,
-        opts: PutOptions,
-    ) -> object_store::Result<PutResult> {
-        self.inner.put_opts(location, payload, opts).await
-    }
-
-    async fn put_multipart_opts(
-        &self,
-        location: &Path,
-        opts: PutMultipartOptions,
-    ) -> object_store::Result<Box<dyn MultipartUpload>> {
-        self.inner.put_multipart_opts(location, opts).await
-    }
-
-    async fn get_opts(&self, location: &Path, options: GetOptions) -> object_store::Result<GetResult> {
-        self.gets.fetch_add(1, Ordering::SeqCst);
-        self.inner.get_opts(location, options).await
-    }
-
-    fn delete_stream(
-        &self,
-        locations: BoxStream<'static, object_store::Result<Path>>,
-    ) -> BoxStream<'static, object_store::Result<Path>> {
-        self.inner.delete_stream(locations)
-    }
-
-    fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
-        self.inner.list(prefix)
-    }
-
-    async fn list_with_delimiter(&self, prefix: Option<&Path>) -> object_store::Result<ListResult> {
-        self.inner.list_with_delimiter(prefix).await
-    }
-
-    async fn copy_opts(&self, from: &Path, to: &Path, options: CopyOptions) -> object_store::Result<()> {
-        self.inner.copy_opts(from, to, options).await
-    }
-}
+use common::{Counting, fresh_schema, url};
 
 /// Rows `keys`: `d` is NaN every 10th row and null every 7th, `s` varied enough not to compress away.
 fn batch(keys: Range<i64>) -> RecordBatch {
@@ -396,18 +317,5 @@ async fn a_range_reads_only_the_files_and_row_groups_that_may_hold_it() -> Resul
     let want: Vec<i64> = (0..5_000).chain(3_000_000..3_010_000).collect();
     assert_eq!(keys(&batches, 0), want);
 
-    // A file with a deletion vector is refused, not read without it.
-    let scan = Scan::new(&catalog, &t);
-    let mut task = tasks(&scan).await?.remove(0);
-    task.vector = Some(TaskVector {
-        begin_seq: 1,
-        path: None,
-        offset: None,
-        size: 1,
-        cardinality: 1,
-        inline: Some(vec![0]),
-    });
-    let refused = scan.open(task, &storage).try_collect::<Vec<_>>().await;
-    assert!(matches!(refused, Err(Error::Unsupported(_))), "{refused:?}");
     Ok(())
 }
