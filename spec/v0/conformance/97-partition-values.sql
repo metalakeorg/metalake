@@ -112,3 +112,10 @@ select expect(encode_bound(t, decode_bound(t, encode_bound(t, v))) = encode_boun
 -- rules: PAR-1
 select expect(hash_value('timestamp_ns', '1969-12-31T23:59:59.999999999') = hash_value('timestamp', '1969-12-31T23:59:59.999999'),
   '-1 nanosecond is in microsecond -1');
+
+-- case: years and months count the proleptic calendar, which has a year 0, as Iceberg does
+-- rules: PAR-1
+select expect(transform_value('date', 'year', '0001-12-31 BC') = '-1970', '1 BC is year 0');
+select expect(transform_value('date', 'year', '0002-01-01 BC') = '-1971', '2 BC is year -1');
+select expect(transform_value('date', 'month', '0001-12-01 BC') = to_jsonb(-1970 * 12 + 11), 'December of year 0');
+select expect(transform_value('date', 'year', '0001-01-01') = '-1969', 'AD 1 is year 1');

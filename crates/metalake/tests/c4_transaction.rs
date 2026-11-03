@@ -92,6 +92,7 @@ async fn transactions_create_write_and_refuse_as_the_protocol_says() -> Result<(
         schema: &events(),
         location: None,
         cluster_key: vec!["k"],
+        partitioning: vec![],
         properties: vec![("owner", "a")],
     })?;
     let keys = Schema::new(vec![Field::new("k", DataType::Int64, false)]);
@@ -101,6 +102,7 @@ async fn transactions_create_write_and_refuse_as_the_protocol_says() -> Result<(
         schema: &keys,
         location: Some("memory:///elsewhere/keys".into()),
         cluster_key: vec!["k"],
+        partitioning: vec![],
         properties: vec![],
     })?;
     assert!(matches!(tx.commit().await?, Outcome::Committed(_)));
@@ -191,6 +193,7 @@ async fn transactions_create_write_and_refuse_as_the_protocol_says() -> Result<(
         schema: &keys,
         location: None,
         cluster_key: vec!["nope"],
+        partitioning: vec![],
         properties: vec![],
     });
     assert!(matches!(no_column, Err(Error::Schema(_))));
@@ -205,6 +208,7 @@ async fn transactions_create_write_and_refuse_as_the_protocol_says() -> Result<(
             schema: &keys,
             location: None,
             cluster_key: vec![],
+            partitioning: vec![],
             properties: vec![],
         });
     assert!(matches!(no_location, Err(Error::Location(_))));

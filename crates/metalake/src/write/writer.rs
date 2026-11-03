@@ -7,8 +7,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::cast::AsArray;
-use arrow_array::{Array, ArrayRef, Float32Array, Float64Array, RecordBatch, make_array};
+use arrow_array::types::{
+    Date32Type, Decimal128Type, Float32Type, Float64Type, Int32Type, Int64Type, Time64MicrosecondType,
+    TimestampMicrosecondType, TimestampNanosecondType,
+};
+use arrow_array::{Array, ArrayRef, Float32Array, Float64Array, RecordBatch, UInt32Array, make_array};
 use arrow_schema::{ArrowError, DataType, Field as ArrowField, SchemaRef};
+use arrow_select::take::take_record_batch;
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use metalake_pg::records::FileAdd;
@@ -18,11 +23,12 @@ use parquet::arrow::async_writer::AsyncFileWriter;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::errors::ParquetError;
 use parquet::file::properties::WriterProperties;
-use serde_json::json;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::catalog::Catalog;
 use crate::error::{Error, Result};
+use crate::partition::{Scalar, Transform};
 use crate::schema::FIELD_ID;
 use crate::stats::{self, FileFacts};
 use crate::storage::Storage;
@@ -54,7 +60,8 @@ impl Default for WriteOptions {
     }
 }
 
-/// The writer of one table, as it was read: its files follow that read's schema and default spec.
+/// The writer of one table, as it was read: its files follow that read's schema and default spec. A partitioned
+/// table's rows go to one open file for each partition value (PAR-2).
 pub struct TableWriter {
     catalog: Catalog,
     table: Table,
@@ -62,25 +69,56 @@ pub struct TableWriter {
     options: WriteOptions,
     inline_max: usize,
     target: usize,
-    open: Option<OpenFile>,
+    spec_id: i32,
+    partitioning: Vec<PartitionField>,
+    open: HashMap<String, OpenFile>,
     done: Vec<FileAdd>,
+}
+
+/// A field of the default spec: the source field's id and type, and the transform.
+struct PartitionField {
+    source_id: i32,
+    ty: String,
+    transform: Transform,
 }
 
 struct OpenFile {
     writer: AsyncArrowWriter<Spill>,
     nan_counts: HashMap<i32, i64>,
+    partition: Value,
 }
 
 impl TableWriter {
     /// A writer of `table` into `storage`, the store of its location.
     pub fn new(catalog: &Catalog, table: &Table, storage: Storage, options: WriteOptions) -> Result<Self> {
-        let spec = table.spec_id().and_then(|id| table.specs().get(&id));
-        if spec.and_then(|s| s.as_array()).is_some_and(|fields| !fields.is_empty()) {
-            return Err(Error::Schema(format!(
-                "{} is partitioned: partitioned writes come with C4c",
-                table.name()
-            )));
-        }
+        let spec_id = table.spec_id().unwrap_or(0);
+        let spec = table
+            .specs()
+            .get(&spec_id)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let partitioning = spec
+            .iter()
+            .map(|f| {
+                let source_id = f["source_ids"][0]
+                    .as_i64()
+                    .and_then(|v| i32::try_from(v).ok())
+                    .ok_or_else(|| Error::Schema(format!("a partition field without a source: {f}")))?;
+                let ty = table
+                    .fields()
+                    .iter()
+                    .find(|x| x.field_id == source_id)
+                    .map(|x| x.ty.clone())
+                    .ok_or_else(|| Error::Schema(format!("partition source {source_id} is not a field")))?;
+                let transform = Transform::parse(f["transform"].as_str().unwrap_or_default())?;
+                Ok(PartitionField {
+                    source_id,
+                    ty,
+                    transform,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
         let property = |key: &str| table.properties().get(key).and_then(|v| v.parse::<usize>().ok());
         Ok(Self {
             catalog: catalog.clone(),
@@ -92,7 +130,9 @@ impl TableWriter {
                 .or_else(|| property("write.target-file-size-bytes"))
                 .unwrap_or(TARGET_FILE_SIZE),
             options,
-            open: None,
+            spec_id,
+            partitioning,
+            open: HashMap::new(),
             done: Vec::new(),
         })
     }
@@ -101,25 +141,72 @@ impl TableWriter {
     /// holds no null.
     pub async fn write(&mut self, batch: &RecordBatch) -> Result<()> {
         let batch = conform(self.table.schema(), batch)?;
-        if self.open.is_none() {
-            self.open = Some(self.open_file()?);
-        }
-        let open = self.open.as_mut().expect("a file is open");
-        count_nans(self.table.schema(), batch.columns(), &mut open.nan_counts);
-        open.writer.write(&batch).await.map_err(parquet_error)?;
-        if open.writer.bytes_written() + open.writer.in_progress_size() >= self.target {
-            self.close_file().await?;
+        for (partition, rows) in self.split(&batch)? {
+            let key = partition.to_string();
+            if !self.open.contains_key(&key) {
+                let file = self.open_file(partition)?;
+                self.open.insert(key.clone(), file);
+            }
+            let open = self.open.get_mut(&key).expect("a file is open");
+            count_nans(self.table.schema(), rows.columns(), &mut open.nan_counts);
+            open.writer.write(&rows).await.map_err(parquet_error)?;
+            if open.writer.bytes_written() + open.writer.in_progress_size() >= self.target {
+                self.close_file(&key).await?;
+            }
         }
         Ok(())
     }
 
-    /// Closes the open file, and answers every file written, for one commit.
+    /// Closes the open files, and answers every file written, for one commit.
     pub async fn finish(mut self) -> Result<Vec<FileAdd>> {
-        self.close_file().await?;
+        let mut keys: Vec<String> = self.open.keys().cloned().collect();
+        keys.sort();
+        for key in keys {
+            self.close_file(&key).await?;
+        }
         Ok(self.done)
     }
 
-    fn open_file(&self) -> Result<OpenFile> {
+    /// The batch's rows by partition value, in the order the values first appear.
+    fn split(&self, batch: &RecordBatch) -> Result<Vec<(Value, RecordBatch)>> {
+        if self.partitioning.is_empty() {
+            return Ok(vec![(json!([]), batch.clone())]);
+        }
+        let sources = self
+            .partitioning
+            .iter()
+            .map(|f| {
+                column_of(self.table.schema().fields(), batch.columns(), f.source_id)
+                    .ok_or_else(|| Error::Schema(format!("partition source {} is not a column", f.source_id)))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut groups: Vec<(Value, Vec<u32>)> = Vec::new();
+        let mut index: HashMap<String, usize> = HashMap::new();
+        for row in 0..batch.num_rows() {
+            let values = self
+                .partitioning
+                .iter()
+                .zip(&sources)
+                .map(|(f, column)| f.transform.apply(&f.ty, scalar_at(column, &f.ty, row)?))
+                .collect::<Result<Vec<_>>>()?;
+            let value = Value::Array(values);
+            let at = *index.entry(value.to_string()).or_insert_with(|| {
+                groups.push((value, Vec::new()));
+                groups.len() - 1
+            });
+            groups[at].1.push(row as u32);
+        }
+        groups
+            .into_iter()
+            .map(|(value, rows)| {
+                let rows =
+                    take_record_batch(batch, &UInt32Array::from(rows)).map_err(|e| Error::Schema(e.to_string()))?;
+                Ok((value, rows))
+            })
+            .collect()
+    }
+
+    fn open_file(&self, partition: Value) -> Result<OpenFile> {
         let path = format!(
             "{}/data/{}.parquet",
             self.table.location().trim_end_matches('/'),
@@ -147,11 +234,12 @@ impl TableWriter {
         Ok(OpenFile {
             writer,
             nan_counts: HashMap::new(),
+            partition,
         })
     }
 
-    async fn close_file(&mut self) -> Result<()> {
-        let Some(mut open) = self.open.take() else {
+    async fn close_file(&mut self, key: &str) -> Result<()> {
+        let Some(mut open) = self.open.remove(key) else {
             return Ok(());
         };
         let metadata = open.writer.finish().await.map_err(parquet_error)?;
@@ -173,13 +261,79 @@ impl TableWriter {
                 content,
                 file_size,
                 footer_size,
-                spec_id: self.table.spec_id().unwrap_or(0),
-                partition: json!([]),
+                spec_id: self.spec_id,
+                partition: open.partition,
                 sort_order_id: None,
             },
         ));
         Ok(())
     }
+}
+
+/// The column of field `id`, top level or inside structs.
+fn column_of(fields: &arrow_schema::Fields, columns: &[ArrayRef], id: i32) -> Option<ArrayRef> {
+    for (field, column) in fields.iter().zip(columns) {
+        if field.metadata().get(FIELD_ID).and_then(|v| v.parse::<i32>().ok()) == Some(id) {
+            return Some(column.clone());
+        }
+        if let DataType::Struct(children) = field.data_type() {
+            if let Some(found) = column_of(children, column.as_struct().columns(), id) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+/// The value at `row` of a column of the specification's type `ty`, as a transform takes it.
+fn scalar_at<'a>(column: &'a ArrayRef, ty: &str, row: usize) -> Result<Scalar<'a>> {
+    if column.is_null(row) {
+        return Ok(Scalar::Null);
+    }
+    let wrong = || Error::Schema(format!("a {ty} column holds {}", column.data_type()));
+    let base = ty.split(['(', '[']).next().unwrap_or(ty);
+    Ok(match base {
+        "boolean" => Scalar::Boolean(column.as_boolean_opt().ok_or_else(wrong)?.value(row)),
+        "int" => Scalar::Long(i64::from(
+            column.as_primitive_opt::<Int32Type>().ok_or_else(wrong)?.value(row),
+        )),
+        "long" => Scalar::Long(column.as_primitive_opt::<Int64Type>().ok_or_else(wrong)?.value(row)),
+        "date" => Scalar::Long(i64::from(
+            column.as_primitive_opt::<Date32Type>().ok_or_else(wrong)?.value(row),
+        )),
+        "time" => Scalar::Long(
+            column
+                .as_primitive_opt::<Time64MicrosecondType>()
+                .ok_or_else(wrong)?
+                .value(row),
+        ),
+        "timestamp" | "timestamptz" => Scalar::Long(
+            column
+                .as_primitive_opt::<TimestampMicrosecondType>()
+                .ok_or_else(wrong)?
+                .value(row),
+        ),
+        "timestamp_ns" | "timestamptz_ns" => Scalar::Long(
+            column
+                .as_primitive_opt::<TimestampNanosecondType>()
+                .ok_or_else(wrong)?
+                .value(row),
+        ),
+        "float" => Scalar::Double(f64::from(
+            column.as_primitive_opt::<Float32Type>().ok_or_else(wrong)?.value(row),
+        )),
+        "double" => Scalar::Double(column.as_primitive_opt::<Float64Type>().ok_or_else(wrong)?.value(row)),
+        "decimal" => Scalar::Decimal(
+            column
+                .as_primitive_opt::<Decimal128Type>()
+                .ok_or_else(wrong)?
+                .value(row),
+        ),
+        "string" => Scalar::String(column.as_string_opt::<i32>().ok_or_else(wrong)?.value(row)),
+        "uuid" | "fixed" => Scalar::Bytes(column.as_fixed_size_binary_opt().ok_or_else(wrong)?.value(row)),
+        "binary" => Scalar::Bytes(column.as_binary_opt::<i32>().ok_or_else(wrong)?.value(row)),
+        _ => return Err(wrong()),
+    })
 }
 
 /// The destination of one file: in memory while it fits the inline limit; past it, its intent registered, then a

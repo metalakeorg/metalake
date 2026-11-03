@@ -18,6 +18,7 @@ deadpool-postgres = "0.14"
 futures-util = "0.3"
 arrow-schema = "59"
 arrow-array = "59"
+arrow-select = "59"
 parquet = { version = "59", default-features = false, features = ["arrow", "async", "zstd"] }
 object_store = "0.14"
 bytes = "1"

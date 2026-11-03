@@ -19,6 +19,7 @@ metalake-pg.workspace = true
 arrow-schema.workspace = true
 parquet.workspace = true
 arrow-array.workspace = true
+arrow-select.workspace = true
 futures-util.workspace = true
 object_store.workspace = true
 bytes.workspace = true

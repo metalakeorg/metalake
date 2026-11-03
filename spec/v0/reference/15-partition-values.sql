@@ -152,6 +152,7 @@ declare
   scale int := (regexp_match(c, ',([0-9]+)\)'))[1]::int;
   u numeric;
   ts timestamp;
+  y numeric;
 begin
   if v is null or tr = 'void' then
     return 'null';
@@ -180,9 +181,12 @@ begin
     when 'timestamptz' then regexp_replace(v, '\.[0-9]+', '')::timestamptz at time zone 'UTC'
     when 'timestamptz_ns' then regexp_replace(v, '\.[0-9]+', '')::timestamptz at time zone 'UTC'
   end;
+  -- The proleptic Gregorian year, which has a year 0, as Iceberg counts: Postgres has none, and calls 1 BC -1.
+  y := extract(year from ts);
+  y := case when y < 0 then y + 1 else y end;
   return to_jsonb(case tr
-    when 'year' then extract(year from ts) - 1970
-    when 'month' then (extract(year from ts) - 1970) * 12 + extract(month from ts) - 1
+    when 'year' then y - 1970
+    when 'month' then (y - 1970) * 12 + extract(month from ts) - 1
     when 'day' then floor(extract(epoch from ts) / 86400)
     when 'hour' then floor(extract(epoch from ts) / 3600)
   end::bigint);

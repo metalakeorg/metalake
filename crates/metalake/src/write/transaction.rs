@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::catalog::Ref;
 use crate::error::{Error, Result};
+use crate::partition::Transform;
 use crate::schema::spec_fields;
 use crate::table::Table;
 
@@ -42,6 +43,8 @@ pub struct NewTable<'a> {
     pub location: Option<String>,
     /// The columns its files are clustered by, by name, the first indexed for pruning (STA-3).
     pub cluster_key: Vec<&'a str>,
+    /// Its partition spec: a top-level column and a transform for each field (`identity`, `bucket[16]`, `day`…).
+    pub partitioning: Vec<(&'a str, &'a str)>,
     pub properties: Vec<(&'a str, &'a str)>,
 }
 
@@ -117,15 +120,29 @@ impl Transaction {
     pub fn create_table(mut self, new: NewTable<'_>) -> Result<(Self, Uuid)> {
         let id = Uuid::new_v4();
         let fields = spec_fields(new.schema)?;
+        let column = |name: &str, what: &str| {
+            fields
+                .iter()
+                .find(|f| f.parent_field_id.is_none() && f.name == name)
+                .map(|f| f.field_id)
+                .ok_or_else(|| Error::Schema(format!("the {what} names {name}, which is not a column")))
+        };
         let cluster_key = new
             .cluster_key
             .iter()
-            .map(|name| {
-                fields
-                    .iter()
-                    .find(|f| f.parent_field_id.is_none() && f.name == *name)
-                    .map(|f| f.field_id)
-                    .ok_or_else(|| Error::Schema(format!("the cluster key names {name}, which is not a column")))
+            .map(|name| column(name, "cluster key"))
+            .collect::<Result<Vec<_>>>()?;
+        // Partition fields take ids from 1000, as Iceberg's do.
+        let partition_spec = new
+            .partitioning
+            .iter()
+            .enumerate()
+            .map(|(i, (name, transform))| {
+                let parsed = Transform::parse(transform)?;
+                Ok(
+                    json!({"source_ids": [column(name, "partition spec")?], "field_id": 1000 + i,
+                          "name": parsed.field_name(name), "transform": transform}),
+                )
             })
             .collect::<Result<Vec<_>>>()?;
         let location = match new.location {
@@ -155,6 +172,9 @@ impl Transaction {
         });
         if !cluster_key.is_empty() {
             definition["cluster_key"] = json!(cluster_key);
+        }
+        if !partition_spec.is_empty() {
+            definition["partition_spec"] = Value::Array(partition_spec);
         }
         if !properties.is_empty() {
             definition["properties"] = Value::Object(properties);

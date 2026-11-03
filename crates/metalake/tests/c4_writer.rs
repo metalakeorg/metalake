@@ -77,6 +77,7 @@ async fn setup() -> Result<(String, Catalog, Table, Storage), Box<dyn std::error
         schema: &columns(),
         location: None,
         cluster_key: vec!["k"],
+        partitioning: vec![],
         properties: vec![],
     })?;
     tx.commit().await?;
@@ -224,5 +225,89 @@ async fn batches_that_are_not_the_tables_are_refused() -> Result<(), Box<dyn std
 
     writer.write(&good).await?;
     assert_eq!(writer.finish().await?.len(), 1);
+    Ok(())
+}
+
+/// C4c: a partitioned table's rows go to one file for each partition value, which the file carries, nulls
+/// included; the files commit.
+#[tokio::test]
+async fn rows_go_to_one_file_for_each_partition_value() -> Result<(), Box<dyn std::error::Error>> {
+    use std::collections::BTreeMap;
+
+    use metalake::partition::{Scalar, Transform};
+    use serde_json::{Value, json};
+
+    let schema = fresh_schema();
+    let catalog = Catalog::init(CatalogConfig::new(url(), &schema).warehouse("memory:///wh"), None).await?;
+    let main = catalog.branch("main").await?;
+    let columns = Schema::new(vec![
+        Field::new("region", DataType::Utf8, true),
+        Field::new(
+            "at",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into())),
+            false,
+        ),
+        Field::new("k", DataType::Int64, false),
+    ]);
+    let (tx, _) = main.transaction().create_namespace(&["db"]).create_table(NewTable {
+        namespace: &["db"],
+        name: "visits",
+        schema: &columns,
+        location: None,
+        cluster_key: vec!["k"],
+        partitioning: vec![("region", "identity"), ("at", "day"), ("k", "bucket[4]")],
+        properties: vec![],
+    })?;
+    tx.commit().await?;
+    let table = main.table(&["db"], "visits").await?;
+    let spec = &table.specs()[&table.spec_id().unwrap()];
+    assert_eq!(spec.as_array().map(Vec::len), Some(3), "{spec}");
+    assert_eq!(spec[1]["name"], json!("at_day"));
+
+    let regions = [Some("eu"), Some("us"), None];
+    let rows: Vec<(Option<&str>, i64, i64)> = (0..1000i64)
+        .map(|k| {
+            (
+                regions[(k % 3) as usize],
+                1_700_000_000_000_000 + (k % 4) * 86_400_000_000,
+                k,
+            )
+        })
+        .collect();
+    let batch = RecordBatch::try_new(
+        Arc::new(columns.clone()),
+        vec![
+            Arc::new(StringArray::from(rows.iter().map(|r| r.0).collect::<Vec<_>>())),
+            Arc::new(TimestampMicrosecondArray::from_iter_values(rows.iter().map(|r| r.1)).with_timezone("+00:00")),
+            Arc::new(Int64Array::from_iter_values(rows.iter().map(|r| r.2))),
+        ],
+    )?;
+    let mut writer = TableWriter::new(&catalog, &table, Storage::in_memory(), WriteOptions::default())?;
+    writer.write(&batch.slice(0, 500)).await?;
+    writer.write(&batch.slice(500, 500)).await?;
+    let files = writer.finish().await?;
+
+    // What each row's partition value is, as the transforms give it, and how many rows each value has.
+    let mut want: BTreeMap<String, i64> = BTreeMap::new();
+    for (region, at, k) in &rows {
+        let value = json!([
+            Transform::Identity.apply("string", region.map_or(Scalar::Null, Scalar::String))?,
+            Transform::Day.apply("timestamptz", Scalar::Long(*at))?,
+            Transform::Bucket(4).apply("long", Scalar::Long(*k))?,
+        ]);
+        *want.entry(value.to_string()).or_default() += 1;
+    }
+    let got: BTreeMap<String, i64> = files
+        .iter()
+        .map(|f| (f.partition.to_string(), f.record_count))
+        .collect();
+    assert_eq!(files.len(), want.len(), "one file for each value");
+    assert_eq!(got, want);
+    assert!(files.iter().all(|f| f.spec_id == table.spec_id().unwrap()));
+    assert!(
+        files.iter().any(|f| f.partition[0] == Value::Null),
+        "nulls have their partition"
+    );
+    main.transaction().append(files).commit().await?;
     Ok(())
 }
