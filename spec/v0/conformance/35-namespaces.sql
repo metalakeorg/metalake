@@ -103,9 +103,9 @@ select expect_error(format('select merge(%s)', :d), '40001', 'a table in a names
 
 -- case: a writer refuses a catalog whose writer_version it does not know, and one of version 0 until migrated
 -- rules: LAY-5
-select expect((select value from meta where key = 'writer_version') = '1', 'a new catalog is at writer_version 1');
-update meta set value = '2' where key = 'writer_version';
-select expect_error($$select ns_commit(1, '[{"namespace": ["w"], "create": true}]')$$, '0A000', 'writer_version 2');
+select expect((select value from meta where key = 'writer_version') = '2', 'a new catalog is at writer_version 2');
+update meta set value = '3' where key = 'writer_version';
+select expect_error($$select ns_commit(1, '[{"namespace": ["w"], "create": true}]')$$, '0A000', 'writer_version 3');
 select expect_error($$select create_ref('w', 1)$$, '0A000', 'nor a branch');
 delete from meta where key = 'writer_version';
 select expect_error($$select ns_commit(1, '[{"namespace": ["w"], "create": true}]')$$, '0A000', 'version 0, not migrated');
@@ -120,7 +120,7 @@ select ns_commit(:b, '[]', jsonb_build_array(create_in('00000000-0000-0000-0000-
 -- The catalog as version 0 left it: no namespaces, no writer_version.
 delete from namespace_property; delete from namespace; delete from meta where key = 'writer_version';
 select migrate() as m \gset
-select expect((select value from meta where key = 'writer_version') = '1', 'writer_version 1');
+select expect((select value from meta where key = 'writer_version') = '2', 'writer_version 2');
 select expect((select operation from commit where commit_seq = :m) = 'migrate', 'a migrate commit on main');
 select expect(spaces(1) = 'db', 'main: the namespace of its table');
 select expect(spaces(:b) = 'db only only.here', 'the branch: what it does not see of main, and its own table''s, with its parent');

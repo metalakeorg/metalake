@@ -25,14 +25,15 @@ $$;
 create function files(r int, t uuid, s bigint default 9223372036854775806) returns bigint[] language sql as $$
   select coalesce(array_agg(file_id order by file_id), '{}') from visible_files(r, t, s);
 $$;
--- What every retained read returns, table by table.
+-- What retained reads return, table by table: at LATEST and at every snapshot each live ref keeps.
 create function image() returns table (ref_id int, seq bigint, table_id uuid, snapshot bigint, files text, fields text, dvs text)
 language sql as $$
   select rr.ref_id, rr.seq, t.table_id, snapshot_at(rr.ref_id, t.table_id, rr.seq),
     (select string_agg(file_id::text, ',' order by file_id) from visible_files(rr.ref_id, t.table_id, rr.seq)),
     (select string_agg(field_id || ':' || name || ':' || type, ',' order by field_id) from visible_fields(rr.ref_id, t.table_id, rr.seq)),
     (select string_agg(file_id || ':' || cardinality, ',' order by file_id) from visible_dvs(rr.ref_id, t.table_id, rr.seq))
-    from retained_reads() rr, tbl t;
+    from (select r.ref_id, 9223372036854775806::bigint as seq from ref r where not r.deleted
+          union select r.ref_id, k from ref r, kept_snapshots(r.ref_id) k where not r.deleted) rr, tbl t;
 $$;
 create function conn(name text) returns void language sql as $$
   select public.dblink_connect(name, 'dbname=postgres host=/tmp user=postgres options=-csearch_path=' || current_schema());
@@ -66,12 +67,12 @@ select mk('t') as t \gset
 select create_ref('b', 1) as b \gset
 select create_ref('c', :b) as c \gset
 select set_retention(1, min_snapshots => 0), set_retention(:b, min_snapshots => 0), set_retention(:c, min_snapshots => 0);
-select expect((select array_agg(distinct ref_id order by ref_id) from retained_reads()) = array[1, :b, :c], 'every live ref reads');
+select expect((select array_agg(distinct ref_id order by ref_id) from retained_ranges()) = array[1, :b, :c], 'every live ref reads');
 select delete_ref(:b);
-select expect(:b not in (select ref_id from retained_reads()) and :b in (select ref_id from reach_points()),
+select expect(:b not in (select ref_id from retained_ranges()) and :b in (select ref_id from reach_ranges()),
   'b is deleted but hidden: c reads through it');
 select delete_ref(:c);
-select expect(:b not in (select ref_id from reach_points()) and :c not in (select ref_id from reach_points()), 'then nothing reaches either');
+select expect(:b not in (select ref_id from reach_ranges()) and :c not in (select ref_id from reach_ranges()), 'then nothing reaches either');
 
 -- case: collecting removes exactly what no retained read reaches, and changes no retained read
 -- rules: RET-3
@@ -91,7 +92,7 @@ select delete_ref(:c);
 -- main keeps its last two snapshots: the field change, which still has 10, and the merge.
 select set_retention(1, min_snapshots => 2), set_retention(:b, min_snapshots => 0);
 create temp table before as select * from image();
-select collect() > 0 as collected \gset
+select expire() > 0 as collected \gset
 select expect(:'collected', 'something was collected');
 select expect(not exists (select * from before except select * from image()) and not exists (select * from image() except select * from before),
   'every retained read returns what it returned before');
@@ -105,7 +106,7 @@ select expect((select count(*) from field where field_id = 1) = 1, 'the old vers
 select expect(not exists (select 1 from snapshot s where (s.table_id, s.snapshot_id) not in (select * from needed_snapshots())),
   'only snapshots a retained read uses');
 select expect(not exists (select 1 from commit c where c.commit_seq in (:s1, :s2, :s3)), 'their commits went with them');
-select expect(collect() = 0, 'a second collection finds nothing');
+select expect(expire() = 0, 'a second expiring finds nothing');
 
 -- case: objects go only when nothing refers to them any more
 -- rules: RET-4
@@ -122,16 +123,19 @@ select cm(tj(:'t', '{"remove": [1, 4]}'::jsonb), 1, 'delete');
 -- After the merge b reads main at the merge, which no longer has 1 or 4.
 select merge(:b);
 select set_retention(1, min_snapshots => 0), set_retention(:b, min_snapshots => 0);
-select expect((select array_agg(o order by o) from collectable_objects() o) = '{gs://lake/t/1.parquet}',
+select expire();
+select expect((select array_agg(path order by path) from deletion_queue) = '{gs://lake/t/1.parquet}',
   'file 1 only: the Puffin file still holds file 2''s vector, and file 9 has a live row on main');
-select collect();
 select expect(not exists (select 1 from inline_file where file_id = 4) and not exists (select 1 from file_footer where file_id = 4),
   'the inline file and its footer went with its last row');
 select cm(tj(:'t', '{"remove": [2]}'::jsonb), 1, 'delete');
-select expect((select array_agg(o order by o) from collectable_objects() o) is null,
+select expire();
+select expect((select array_agg(path order by path) from deletion_queue) = '{gs://lake/t/1.parquet}',
   'b, merged and idle, still reads main at the merge, where file 2 and its vector are');
 select delete_ref(:b);
-select expect((select array_agg(o order by o) from collectable_objects() o) = '{gs://lake/t/2.parquet,gs://lake/t/dv.puffin}',
+select expire();
+select expect((select array_agg(path || ':' || kind order by path) from deletion_queue)
+              = '{gs://lake/t/1.parquet:data,gs://lake/t/2.parquet:data,gs://lake/t/dv.puffin:puffin}',
   'once b is deleted, file 2 goes, and the Puffin file with it');
 
 -- case: a collection blocks forks and retention changes, never commits

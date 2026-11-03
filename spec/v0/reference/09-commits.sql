@@ -2,6 +2,17 @@
 --
 -- It defines the right answer, not the fast one.
 
+-- RET-5 (0.2): expiring and a commit exclude each other on a path, so that a path is never queued while a commit
+-- adds it: expiring holds it exclusively, a commit shared.
+create function path_lock(path text, exclusive boolean) returns void language plpgsql as $$
+begin
+  if exclusive then
+    perform pg_advisory_xact_lock(hashtext(current_schema() || ' paths'), hashtext(path));
+  else
+    perform pg_advisory_xact_lock_shared(hashtext(current_schema() || ' paths'), hashtext(path));
+  end if;
+end $$;
+
 -- CMT-2: the snapshot of t at (r, s), or NULL.
 create function snapshot_at(r int, t uuid, s bigint) returns bigint language sql stable as $$
   select x.id from chain(r, s) c
@@ -346,6 +357,13 @@ begin
       insert into cluster_key values (t, array(select y::int from jsonb_array_elements_text(e -> 'cluster_key') y), r, seq);
     end if;
 
+    -- RET-5: the paths it adds, held against expiring before RET-8 looks at the queue.
+    perform path_lock(z.path, false) from (
+      select d.path from data_file d where d.table_id = t and d.ref_id = r and d.begin_seq = seq
+      union select x.path from deletion_vector x
+       where x.table_id = t and x.ref_id = r and x.begin_seq = seq and x.path is not null) z
+     order by z.path;
+
     -- CMT-9: the result is valid.
     problems := (select string_agg(p, '; ') from (
       select table_errors(r, t, latest) as p
@@ -353,6 +371,12 @@ begin
       union all select dv_errors(r, t, latest, seq)
       union all select inline_errors(r, t, latest, seq)
       union all select partition_errors(r, t, latest, seq)
+      union all select format('RET-8: %s is queued for deletion', d.path)
+        from data_file d join deletion_queue q on q.path = d.path
+       where d.table_id = t and d.ref_id = r and d.begin_seq = seq
+      union all select format('RET-8: %s is queued for deletion', x.path)
+        from deletion_vector x join deletion_queue q on q.path = x.path
+       where x.table_id = t and x.ref_id = r and x.begin_seq = seq
       union all select format('RET-7: the intent of %s expired at %s', i.path, i.expires_at)
         from intent i join data_file d on d.path = i.path
        where d.table_id = t and d.ref_id = r and d.begin_seq = seq and i.expires_at < now()

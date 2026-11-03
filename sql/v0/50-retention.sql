@@ -23,18 +23,23 @@ begin
                                        min_snapshots = excluded.min_snapshots;
 end $$;
 
--- RET-2 to RET-4: the objects collection deletes. The caller deletes them, then calls collect_end, in the same
--- transaction: the locks taken here hold until it ends.
-create function @schema@.collect_begin() returns setof text language sql
+-- RET-5 (0.2): expiring and a commit exclude each other on a path, under the reference's key.
+create function @schema@.path_lock(path text, exclusive boolean) returns void language plpgsql
 set search_path = @schema@, pg_catalog, pg_temp as $$
-  select * from collectable_objects();
-$$;
+begin
+  if exclusive then
+    perform pg_advisory_xact_lock(hashtext(current_schema() || ' paths'), hashtext(path));
+  else
+    perform pg_advisory_xact_lock_shared(hashtext(current_schema() || ' paths'), hashtext(path));
+  end if;
+end $$;
 
--- RET-3: deletes the collectable rows, once the caller has deleted the objects. Returns how many rows it deleted.
-create function @schema@.collect_end() returns bigint language sql
-set search_path = @schema@, pg_catalog, pg_temp as $$
-  select collect();
-$$;
+-- RET-1, RET-4, RET-9: the reference's floor, expiring and sweeping, callable from outside the catalog's search_path.
+-- Z3 of ADR 0002 §22 replaces expiring by the protocol's own, by index over the closed rows.
+alter function @schema@.retention_floor(int) set search_path = @schema@, pg_catalog, pg_temp;
+alter function @schema@.expire() set search_path = @schema@, pg_catalog, pg_temp;
+alter function @schema@.sweep_due(int) set search_path = @schema@, pg_catalog, pg_temp;
+alter function @schema@.sweep_done(text[]) set search_path = @schema@, pg_catalog, pg_temp;
 
 -- RET-7: the orphans at time `at`: the reference's answer, callable from outside the catalog's search_path.
 create or replace function @schema@.orphans(at timestamptz default now()) returns setof text language sql stable

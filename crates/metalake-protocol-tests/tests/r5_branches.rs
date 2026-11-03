@@ -235,31 +235,22 @@ impl Run {
         Ok(by_reference)
     }
 
-    /// Both collect: the reference in two calls, the protocol between collect_begin and collect_end in one
-    /// transaction. They must delete the same objects and rows.
-    async fn collect(&self) -> Result<Vec<String>, Error> {
-        let reference: Vec<String> = self
-            .pair
-            .on_reference
-            .query_one("select array(select x from collectable_objects() x order by 1)", &[])
-            .await?
-            .get(0);
-        let rows: i64 = self.pair.on_reference.query_one("select collect()", &[]).await?.get(0);
+    /// Both expire (RET-4): they must delete the same rows and queue the same objects. Returns the rows deleted and
+    /// the queue.
+    async fn collect(&self) -> Result<(i64, Vec<String>), Error> {
+        let queue = "select array(select path || ':' || kind from deletion_queue order by 1)";
+        let rows: i64 = self.pair.on_reference.query_one("select expire()", &[]).await?.get(0);
+        let reference: Vec<String> = self.pair.on_reference.query_one(queue, &[]).await?.get(0);
         let p = quote_ident(&self.pair.protocol);
         let on = &self.pair.on_protocol;
-        on.batch_execute("begin").await?;
+        let deleted: i64 = on.query_one(&format!("select {p}.expire()"), &[]).await?.get(0);
         let protocol: Vec<String> = on
-            .query_one(
-                &format!("select array(select x from {p}.collect_begin() x order by 1)"),
-                &[],
-            )
+            .query_one(&queue.replace("from deletion_queue", &format!("from {p}.deletion_queue")), &[])
             .await?
             .get(0);
-        let deleted: i64 = on.query_one(&format!("select {p}.collect_end()"), &[]).await?.get(0);
-        on.batch_execute("commit").await?;
         if reference != protocol || rows != deleted {
             return Err(format!(
-                "collection: the reference deletes {reference:?} and {rows} rows, the protocol {protocol:?} and {deleted}"
+                "expiring: the reference deletes {rows} rows and queues {reference:?}, the protocol {deleted} and {protocol:?}"
             )
             .into());
         }
@@ -268,7 +259,7 @@ impl Run {
             count("collect: objects".into());
         }
         self.pair.same_rows().await?;
-        Ok(reference)
+        Ok((rows, reference))
     }
 
     async fn apply(&mut self, s: &Step) -> Result<(), Error> {
@@ -606,7 +597,7 @@ fn branches_and_merges_match_the_reference() {
     }
 }
 
-/// RET-4: a file removed on a ref that keeps no snapshot is an object both collect, and once.
+/// RET-4: a file removed on a ref that keeps no snapshot is queued by both, once.
 #[tokio::test]
 async fn a_removed_file_is_collected() -> Result<(), Error> {
     let mut run = Run::new().await?;
@@ -628,8 +619,8 @@ async fn a_removed_file_is_collected() -> Result<(), Error> {
     let first = run.collect().await?;
     let second = run.collect().await?;
     run.pair.drop().await?;
-    if first.len() != 1 || !second.is_empty() {
-        return Err(format!("collected {first:?}, then {second:?}").into());
+    if first.1.len() != 1 || second.0 != 0 || second.1 != first.1 {
+        return Err(format!("expired {first:?}, then {second:?}").into());
     }
     Ok(())
 }

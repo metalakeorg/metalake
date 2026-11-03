@@ -560,8 +560,9 @@ referred to. Retention says how much history each ref keeps.
   the floor is `0` and the ref keeps every snapshot. A ref's snapshots are the distinct `snapshot_id` values of its
   `snapshot` rows. *Each criterion keeps what it kept in v0 and possibly more: the kept set is now closed upwards.*
 - **RET-2.** A ref is **live** when it is not deleted. The **retained reads** are, for every live ref `r`,
-  `(r, LATEST)` and `(r, s)` for every snapshot `s` that `r` keeps. The **reach points** are the levels of the
-  chains of the retained reads (VIS-3). A deleted ref that a reach point still reaches is **hidden**: its rows
+  `(r, s)` for every sequence `s` from its retention floor up to `LATEST` (*0.2*; in v0, only `LATEST` and the
+  snapshots `r` kept: a commit that writes no snapshot, such as one of namespaces only, left a gap). The **reach
+  points** are the levels of the chains of the retained reads (VIS-3). A deleted ref that a reach point still reaches is **hidden**: its rows
   stay, because a live ref reads through them. A live ref keeps what it reads alive: a branch keeps its
   parent's state at its fork, and a merged branch, an empty child at the merge (MRG-4), keeps the parent's state
   at the merge until it is deleted.
@@ -571,7 +572,7 @@ referred to. Retention says how much history each ref keeps.
   row is collectable when its `commit_seq` is not the id of a remaining snapshot, the `created_seq` of a ref,
   or a commit recorded in `idempotency`. Collecting never changes the result of a retained read.
 
-  *0.2. Note.* By RET-1, the reach points on a live ref `r` are every sequence from its floor up, and isolated
+  *0.2. Note.* By RET-2, the reach points on a live ref `r` are every sequence from its floor up, and isolated
   points below it, where the chains of other refs reach `r`; a hidden ref has isolated points only. So a row of
   `r` valid over `[begin, end)` is collectable exactly when `end` is at most the floor (or `r` is deleted) and no
   isolated point lies in `[begin, end)`. Live rows of a live ref never are, and the closed rows are the only

@@ -256,8 +256,8 @@ declare
   t uuid;
   problem text;
 begin
-  -- LAY-5: a writer of revision 0.1 commits to writer_version 1 only.
-  if coalesce((select m.value from meta m where m.key = 'writer_version'), '0') <> '1' then
+  -- LAY-5: a writer of revision 0.2 commits to writer_version 2 only.
+  if coalesce((select m.value from meta m where m.key = 'writer_version'), '0') <> '2' then
     raise exception 'metalake unsupported: writer_version %',
       coalesce((select m.value from meta m where m.key = 'writer_version'), '0') using errcode = '0A000';
   end if;

@@ -76,7 +76,7 @@ async fn migrating_changes_nothing_and_refuses_what_it_does_not_know() -> Result
         .query_one(&format!("select * from {p}.versions()"), &[])
         .await
         .map(|r| (r.get(0), r.get(1), r.get(2)))?;
-    if versions != ("0".into(), "1".into(), "0".into()) {
+    if versions != ("0".into(), "2".into(), "0".into()) {
         return Err(format!("versions {versions:?}").into());
     }
 
@@ -278,7 +278,7 @@ async fn roles_allow_what_they_should_and_nothing_else() -> Result<(), Error> {
             format!("select * from {p}.data_file"),
             format!("insert into {p}.intent values ('x', '{t}', 1, now())"),
             format!("select {p}.register_intents(1, '{t}', array['y'], '1 hour')"),
-            format!("select {p}.collect_end()"),
+            format!("select {p}.expire()"),
         ] {
             seen.push(answer(&on, &sql).await);
         }

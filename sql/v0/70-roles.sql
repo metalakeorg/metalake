@@ -19,7 +19,7 @@ create function @schema@.writing_functions() returns setof regprocedure language
   select p.oid::regprocedure from pg_proc p
    where p.pronamespace = '@schema@'::regnamespace
      and p.proname in ('commit', 'merge', 'merge_report', 'create_ref', 'delete_ref', 'set_retention',
-                       'collect_begin', 'collect_end', 'forget_intents', 'fill_committed_at', 'next_id',
+                       'expire', 'sweep_done', 'forget_intents', 'fill_committed_at', 'next_id',
                        'register_intents');
 $$;
 
