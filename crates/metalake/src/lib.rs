@@ -17,6 +17,7 @@
 pub mod bounds;
 mod catalog;
 mod error;
+mod evolve;
 pub mod partition;
 mod scan;
 pub mod schema;

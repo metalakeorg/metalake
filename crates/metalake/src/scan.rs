@@ -4,13 +4,14 @@
 //!
 //! A file opens with the footer the catalog serves (FTR-1): no request but those for its data. Without one, its
 //! size is the hint that fetches the footer in one request; an inline file is read from its bytes, with none.
-//! Columns are found by field id, and a range on a field also skips the row groups its statistics rule out. What
+//! Columns are found by field id, under the table's fields at the read (`evolve`), and a range on a field also
+//! skips the row groups its statistics rule out. What
 //! comes back may hold rows outside the range (the engine filters them exactly), never fewer than those inside.
 
 use std::ops::Range;
 use std::sync::Arc;
 
-use arrow_array::RecordBatch;
+use arrow_array::{RecordBatch, RecordBatchOptions};
 use arrow_schema::{Schema, SchemaRef};
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
@@ -31,8 +32,9 @@ use serde_json::Value;
 use crate::bounds;
 use crate::catalog::Catalog;
 use crate::error::{Error, Result};
+use crate::evolve::Evolve;
 use crate::partition::Scalar;
-use crate::schema::{self, FIELD_ID};
+use crate::schema::FIELD_ID;
 use crate::stats;
 use crate::storage::Storage;
 use crate::table::{Field, Table};
@@ -48,6 +50,7 @@ pub struct Scan {
     catalog: Catalog,
     table: Table,
     schema: SchemaRef,
+    evolve: Arc<Evolve>,
     filter: Option<Filter>,
     batch_size: usize,
     concurrency: usize,
@@ -96,6 +99,7 @@ impl Scan {
             catalog: catalog.clone(),
             table: table.clone(),
             schema: table.schema().clone(),
+            evolve: Arc::new(Evolve::new(table)),
             filter: None,
             batch_size: BATCH_SIZE,
             concurrency: CONCURRENCY,
@@ -197,9 +201,9 @@ impl Scan {
 
     /// One task's batches.
     pub fn open(&self, task: ScanTask, storage: &Storage) -> BoxStream<'static, Result<RecordBatch>> {
-        let (schema, filter, batch_size) = (self.schema.clone(), self.filter.clone(), self.batch_size);
-        let storage = storage.clone();
-        stream::once(async move { batches(task, &storage, schema, filter, batch_size).await })
+        let (schema, evolve) = (self.schema.clone(), self.evolve.clone());
+        let (filter, batch_size, storage) = (self.filter.clone(), self.batch_size, storage.clone());
+        stream::once(async move { batches(task, &storage, schema, evolve, filter, batch_size).await })
             .try_flatten()
             .boxed()
     }
@@ -210,6 +214,7 @@ async fn batches(
     task: ScanTask,
     storage: &Storage,
     schema: SchemaRef,
+    evolve: Arc<Evolve>,
     filter: Option<Filter>,
     batch_size: usize,
 ) -> Result<BoxStream<'static, Result<RecordBatch>>> {
@@ -243,9 +248,10 @@ async fn batches(
     let metadata = Arc::new(metadata);
     let reader = ArrowReaderMetadata::try_new(metadata.clone(), ArrowReaderOptions::new()).map_err(read_error)?;
 
-    // The file's top-level columns of the schema's fields, by id, and where each comes in the projection's order.
+    // The file's top-level column of each of the schema's fields, by id, if it has one, and where each comes in
+    // the projection's order.
     let in_file = reader.schema();
-    let roots = schema
+    let roots: Vec<Option<usize>> = schema
         .fields()
         .iter()
         .map(|f| {
@@ -253,28 +259,21 @@ async fn batches(
             in_file
                 .fields()
                 .iter()
-                .position(|g| g.metadata().get(FIELD_ID) == id)
-                .ok_or_else(|| {
-                    Error::Unsupported(format!(
-                        "file {} has no column for {}: reading under a later schema comes in C5b",
-                        task.file_id,
-                        f.name()
-                    ))
-                })
+                .position(|g| id.is_some() && g.metadata().get(FIELD_ID) == id)
         })
-        .collect::<Result<Vec<_>>>()?;
-    let mut sorted = roots.clone();
-    sorted.sort_unstable();
-    let order: Vec<usize> = roots
+        .collect();
+    let mut present: Vec<usize> = roots.iter().flatten().copied().collect();
+    present.sort_unstable();
+    let order: Vec<Option<usize>> = roots
         .iter()
-        .map(|r| sorted.binary_search(r).expect("a root of the projection"))
+        .map(|r| r.map(|r| present.binary_search(&r).expect("a root of the projection")))
         .collect();
 
     let groups = match &filter {
         Some(f) => kept_groups(&metadata, f),
         None => (0..metadata.num_row_groups()).collect(),
     };
-    let mask = ProjectionMask::roots(metadata.file_metadata().schema_descr(), roots);
+    let mask = ProjectionMask::roots(metadata.file_metadata().schema_descr(), present);
     let stream = ParquetRecordBatchStreamBuilder::new_with_metadata(source, reader)
         .with_projection(mask)
         .with_row_groups(groups)
@@ -288,12 +287,10 @@ async fn batches(
                 .fields()
                 .iter()
                 .zip(&order)
-                .map(|(field, at)| {
-                    schema::retype(batch.column(*at), field.data_type())
-                        .map_err(|e| Error::Schema(format!("{}: {e}", field.name())))
-                })
+                .map(|(field, at)| evolve.column(field, at.map(|i| batch.column(i)), batch.num_rows()))
                 .collect::<Result<Vec<_>>>()?;
-            RecordBatch::try_new(schema.clone(), columns).map_err(|e| Error::Schema(e.to_string()))
+            let rows = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
+            RecordBatch::try_new_with_options(schema.clone(), columns, &rows).map_err(|e| Error::Schema(e.to_string()))
         })
         .boxed())
 }

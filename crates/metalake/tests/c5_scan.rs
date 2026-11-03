@@ -312,6 +312,14 @@ async fn what_is_read_is_what_was_written_with_no_request_for_a_footer() -> Resu
         Scan::new(&catalog, &t).columns(["nope"]),
         Err(Error::NotFound(_))
     ));
+
+    // No column at all: batches of rows and nothing else, as `count(*)` reads them.
+    let none = Scan::new(&catalog, &t).columns(Vec::<&str>::new())?;
+    let counted: usize = none
+        .read(replay(&planned), &storage)
+        .try_fold(0, |n, b| async move { Ok(n + b.num_rows()) })
+        .await?;
+    assert_eq!(counted, 200_010);
     Ok(())
 }
 

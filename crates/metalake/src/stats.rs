@@ -183,6 +183,13 @@ fn bounds_of(field: &Field, logical: Option<&LogicalType>, scale: i32, s: &Stati
                 match ty {
                     "int" | "long" => Some(bounds::long(i64::from(x))),
                     "date" => Some(bounds::date(x)),
+                    // A date written before its field was promoted to a timestamp (STA-7).
+                    "timestamp" if matches!(logical, Some(LogicalType::Date)) => {
+                        Some(bounds::long(i64::from(x).checked_mul(86_400_000_000)?))
+                    }
+                    "timestamp_ns" if matches!(logical, Some(LogicalType::Date)) => {
+                        Some(bounds::long(i64::from(x).checked_mul(86_400_000_000_000)?))
+                    }
                     "time" => Some(bounds::long(i64::from(x) * 1000)),
                     t if t.starts_with("decimal(") && decimal_scale(t) == Some(scale) => {
                         Some(bounds::decimal(i128::from(x)))
@@ -287,6 +294,27 @@ mod tests {
         assert_eq!(rescale(5_000, 1, 1_000), Some(5));
         assert_eq!(rescale(5_001, 1, 1_000), None);
         assert_eq!(rescale(i64::MAX, 1_000_000, 1_000), None);
+    }
+
+    #[test]
+    fn a_date_written_before_its_promotion_bounds_as_the_timestamp_it_is() {
+        let field = |ty: &str| Field {
+            field_id: 1,
+            parent_field_id: None,
+            position: 1,
+            name: "day".into(),
+            ty: ty.into(),
+            required: false,
+            doc: None,
+            initial_default: None,
+            write_default: None,
+        };
+        let s = Statistics::int32(Some(1), Some(2), None, Some(0), false);
+        let date = Some(&LogicalType::Date);
+        let want = |per_day: i64| Some((bounds::long(per_day), bounds::long(2 * per_day)));
+        assert_eq!(bounds_of(&field("timestamp"), date, 0, &s), want(86_400_000_000));
+        assert_eq!(bounds_of(&field("timestamp_ns"), date, 0, &s), want(86_400_000_000_000));
+        assert_eq!(bounds_of(&field("timestamp"), None, 0, &s), None);
     }
 
     #[test]
