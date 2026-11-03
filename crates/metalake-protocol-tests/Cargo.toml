@@ -10,6 +10,8 @@ publish.workspace = true
 
 [dependencies]
 metalake-pg.workspace = true
+futures-util.workspace = true
+deadpool-postgres.workspace = true
 tokio.workspace = true
 tokio-postgres.workspace = true
 postgres-types.workspace = true

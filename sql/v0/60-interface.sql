@@ -79,3 +79,9 @@ $$;
 -- ID-3: writers draw ids before a commit, from outside the catalog's search_path. The reference's function finds its
 -- tables through the caller's; the protocol pins it.
 alter function @schema@.next_id(uuid, text) set search_path = @schema@, pg_catalog, pg_temp;
+
+-- CMT-2: `snapshot_at` and `table_visible` are called from outside too, and reach the chain of a read through the
+-- reference's `chain`, which finds `ref_base` the same way.
+alter function @schema@.chain(int, bigint) set search_path = @schema@, pg_catalog, pg_temp;
+-- VIS-11: so is `stable_point`, which reads the commit sequence.
+alter function @schema@.stable_point() set search_path = @schema@, pg_catalog, pg_temp;

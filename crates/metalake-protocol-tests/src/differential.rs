@@ -185,32 +185,35 @@ pub async fn commit_protocol(client: &Client, schema: &str, commit: &Commit) -> 
         .filter_map(|t| t.definition.clone().map(|d| (t.table_id.to_string(), d)))
         .collect();
     let changes = (!definitions.is_empty()).then_some(Value::Object(definitions));
-    let (app, version) = commit.app.clone().unzip();
-    let sql = format!(
-        "select commit_seq from {}.commit(ref_id => $1, operation => $2, files => $3, removed => $4, vectors => $5, \
-         expected => $6, changes => $7, author => 'test', actor => 'test', app_id => $8, app_version => $9, \
-         namespaces => $10)",
-        quote_ident(schema)
-    );
-    let result = client
-        .query_one(
-            &sql,
-            &[
-                &commit.ref_id,
-                &commit.operation,
-                &files,
-                &removed,
-                &vectors,
-                &expected,
-                &changes,
-                &app,
-                &version,
-                &commit.namespaces,
-            ],
-        )
-        .await
-        .map(|r| r.get::<_, i64>(0));
-    answer(result)
+    let (app_id, app_version) = commit.app.clone().unzip();
+    let call = metalake_pg::Commit {
+        ref_id: commit.ref_id,
+        operation: commit.operation.clone(),
+        files,
+        removed,
+        vectors,
+        expected,
+        changes,
+        author: Some("test".into()),
+        actor: Some("test".into()),
+        app_id,
+        app_version,
+        namespaces: commit.namespaces.clone(),
+        ..Default::default()
+    };
+    match metalake_pg::Protocol::new(schema).commit(client, &call).await {
+        Ok(result) => Ok(Answer {
+            outcome: Outcome::Committed(result.commit_seq),
+            message: None,
+        }),
+        Err(e) => match e.code() {
+            Some(code) => Ok(Answer {
+                outcome: Outcome::Refused(code.to_string()),
+                message: Some(e.to_string()),
+            }),
+            None => Err(e.into()),
+        },
+    }
 }
 
 /// The two catalogs of a differential test, each with its own connection.

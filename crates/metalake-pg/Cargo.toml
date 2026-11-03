@@ -11,6 +11,11 @@ publish.workspace = true
 [dependencies]
 tokio-postgres.workspace = true
 thiserror.workspace = true
+deadpool-postgres.workspace = true
+futures-util.workspace = true
+postgres-types.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
