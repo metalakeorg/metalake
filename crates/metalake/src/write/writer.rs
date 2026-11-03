@@ -3,7 +3,6 @@
 //! larger than the table's inline limit is never uploaded: its bytes travel in the commit (INL-1).
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::cast::AsArray;
@@ -11,8 +10,8 @@ use arrow_array::types::{
     Date32Type, Decimal128Type, Float32Type, Float64Type, Int32Type, Int64Type, Time64MicrosecondType,
     TimestampMicrosecondType, TimestampNanosecondType,
 };
-use arrow_array::{Array, ArrayRef, Float32Array, Float64Array, RecordBatch, UInt32Array, make_array};
-use arrow_schema::{ArrowError, DataType, Field as ArrowField, SchemaRef};
+use arrow_array::{Array, ArrayRef, Float32Array, Float64Array, RecordBatch, UInt32Array};
+use arrow_schema::{DataType, Field as ArrowField, SchemaRef};
 use arrow_select::take::take_record_batch;
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
@@ -29,13 +28,18 @@ use uuid::Uuid;
 use crate::catalog::Catalog;
 use crate::error::{Error, Result};
 use crate::partition::{Scalar, Transform};
-use crate::schema::FIELD_ID;
+use crate::schema::{self, FIELD_ID};
 use crate::stats::{self, FileFacts};
 use crate::storage::Storage;
 use crate::table::Table;
 
 /// The size of an inline file at most, unless the table's property `inline.max-bytes` says otherwise (INL-1).
 const INLINE_MAX_BYTES: usize = 65_536;
+/// The footer a file's commit carries at most, for the catalog to serve it to readers (FTR-1): a larger one is read
+/// from the file, its size the hint.
+const FOOTER_MAX_BYTES: usize = 65_536;
+/// The bytes a file's tail is kept to: its footer at most, then the footer's length and `PAR1`.
+const TAIL: usize = FOOTER_MAX_BYTES + 8;
 /// The size a file is closed at, unless the table's property `write.target-file-size-bytes` says otherwise.
 const TARGET_FILE_SIZE: usize = 256 * 1024 * 1024;
 
@@ -223,7 +227,7 @@ impl TableWriter {
             buffer: Vec::new(),
             state: State::Inline,
             written: 0,
-            tail: Vec::with_capacity(16),
+            tail: Vec::new(),
         };
         let properties = WriterProperties::builder()
             .set_compression(Compression::ZSTD(ZstdLevel::default()))
@@ -249,9 +253,14 @@ impl TableWriter {
         let footer_size = stats::footer_size(&spill.tail)
             .ok_or_else(|| Error::Schema("the writer ended a file without a Parquet tail".into()))?;
         let file_size = spill.written as i64;
-        let (path, content) = match spill.state {
-            State::Inline => (None, Some(spill.buffer)),
-            State::Uploading(_) | State::Uploaded => (Some(spill.path), None),
+        // An inline file's footer is in its content: the commit carries the footer of an uploaded one.
+        let (path, content, footer) = match spill.state {
+            State::Inline => (None, Some(spill.buffer), None),
+            State::Uploading(_) | State::Uploaded => {
+                let (n, size) = (spill.tail.len(), footer_size as usize);
+                let footer = (size + 8 <= n).then(|| spill.tail[n - 8 - size..n - 8].to_vec());
+                (Some(spill.path), None, footer)
+            }
         };
         let statistics = stats::of_footer(&self.table, &metadata, &open.nan_counts);
         self.done.push(statistics.into_file_add(
@@ -261,6 +270,7 @@ impl TableWriter {
                 content,
                 file_size,
                 footer_size,
+                footer,
                 spec_id: self.spec_id,
                 partition: open.partition,
                 sort_order_id: None,
@@ -349,7 +359,7 @@ struct Spill {
     buffer: Vec<u8>,
     state: State,
     written: usize,
-    /// The last 8 bytes written, which hold the footer's length.
+    /// The last bytes written: the footer, its length and `PAR1`, unless the footer is longer than the catalog keeps.
     tail: Vec<u8>,
 }
 
@@ -367,8 +377,8 @@ impl AsyncFileWriter for Spill {
     fn write(&mut self, bs: Bytes) -> BoxFuture<'_, parquet::errors::Result<()>> {
         Box::pin(async move {
             self.written += bs.len();
-            self.tail.extend_from_slice(&bs[bs.len().saturating_sub(8)..]);
-            let excess = self.tail.len().saturating_sub(8);
+            self.tail.extend_from_slice(&bs[bs.len().saturating_sub(TAIL)..]);
+            let excess = self.tail.len().saturating_sub(TAIL);
             self.tail.drain(..excess);
             if matches!(self.state, State::Inline) && self.buffer.len() + bs.len() <= self.inline_max {
                 self.buffer.extend_from_slice(&bs);
@@ -455,51 +465,10 @@ fn conform(schema: &SchemaRef, batch: &RecordBatch) -> Result<RecordBatch> {
                     field.name()
                 )));
             }
-            retype(column, field.data_type()).map_err(|e| Error::Schema(format!("{}: {e}", field.name())))
+            schema::retype(column, field.data_type()).map_err(|e| Error::Schema(format!("{}: {e}", field.name())))
         })
         .collect::<Result<Vec<_>>>()?;
     RecordBatch::try_new(schema.clone(), columns).map_err(|e| Error::Schema(e.to_string()))
-}
-
-/// The same array under `ty`, which must be the same physical type: only names, ids, nullability and a timestamp's
-/// zone may differ, and nested fields are retyped in turn.
-fn retype(array: &ArrayRef, ty: &DataType) -> std::result::Result<ArrayRef, ArrowError> {
-    if !same_layout(array.data_type(), ty) {
-        return Err(ArrowError::SchemaError(format!("{} is not {ty}", array.data_type())));
-    }
-    let data = array.to_data();
-    let children = match ty {
-        DataType::Struct(fields) => {
-            let s = array.as_struct();
-            fields
-                .iter()
-                .zip(s.columns())
-                .map(|(f, c)| retype(c, f.data_type()).map(|a| a.to_data()))
-                .collect::<std::result::Result<Vec<_>, _>>()?
-        }
-        DataType::List(element) => vec![retype(array.as_list::<i32>().values(), element.data_type())?.to_data()],
-        DataType::Map(entries, _) => {
-            let m = array.as_map();
-            let entries_array: ArrayRef = Arc::new(m.entries().clone());
-            vec![retype(&entries_array, entries.data_type())?.to_data()]
-        }
-        _ => data.child_data().to_vec(),
-    };
-    let data = data.into_builder().data_type(ty.clone()).child_data(children).build()?;
-    Ok(make_array(data))
-}
-
-fn same_layout(a: &DataType, b: &DataType) -> bool {
-    use DataType::*;
-    match (a, b) {
-        (Timestamp(u, x), Timestamp(v, y)) => u == v && x.is_some() == y.is_some(),
-        (Struct(f), Struct(g)) => {
-            f.len() == g.len() && f.iter().zip(g).all(|(f, g)| same_layout(f.data_type(), g.data_type()))
-        }
-        (List(e), List(f)) => same_layout(e.data_type(), f.data_type()),
-        (Map(e, _), Map(f, _)) => same_layout(e.data_type(), f.data_type()),
-        (a, b) => a == b,
-    }
 }
 
 /// Adds the NaN of each `float` or `double` column to its field's count: a footer has none (STA-2).

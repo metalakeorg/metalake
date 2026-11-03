@@ -37,6 +37,8 @@ pub struct FileFacts {
     pub content: Option<Vec<u8>>,
     pub file_size: i64,
     pub footer_size: i32,
+    /// The footer itself, for the catalog to serve it to readers (FTR-1); none to read it from the file.
+    pub footer: Option<Vec<u8>>,
     pub spec_id: i32,
     /// One element per field of the spec, in Iceberg's JSON single-value serialization (STA-4).
     pub partition: Value,
@@ -64,7 +66,7 @@ impl FileStatistics {
             nan_count: self.nan_count,
             value_count: Some(self.value_count),
             content: facts.content,
-            footer: None,
+            footer: facts.footer,
         }
     }
 }
@@ -151,6 +153,19 @@ pub fn of_footer(table: &Table, metadata: &ParquetMetaData, nan_counts: &HashMap
         stats.value_count.push(Some(values));
     }
     stats
+}
+
+/// The bounds of row group `group` in column `column` of a file, encoded for `field`'s type, or none when the footer
+/// has none that can be trusted.
+pub(crate) fn row_group_bounds(
+    field: &Field,
+    metadata: &ParquetMetaData,
+    group: usize,
+    column: usize,
+) -> Option<(Vec<u8>, Vec<u8>)> {
+    let descr = metadata.file_metadata().schema_descr().column(column);
+    let s = metadata.row_group(group).column(column).statistics()?;
+    bounds_of(field, descr.logical_type_ref(), descr.type_scale(), s)
 }
 
 /// A row group's bounds of one column, encoded for the field's type, or none when the footer has none that can be

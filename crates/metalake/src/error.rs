@@ -16,6 +16,9 @@ pub enum Error {
     /// Object storage failed.
     #[error(transparent)]
     Storage(#[from] object_store::Error),
+    /// Something the format allows that this version of the core does not do yet.
+    #[error("unsupported: {0}")]
+    Unsupported(String),
     /// A location or path that is not one the storage of a table can hold.
     #[error("location: {0}")]
     Location(String),

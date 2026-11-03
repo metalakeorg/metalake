@@ -5,7 +5,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arrow_schema::{DataType, Field as ArrowField, Fields, Schema, TimeUnit};
+use arrow_array::cast::AsArray;
+use arrow_array::{ArrayRef, make_array};
+use arrow_schema::{ArrowError, DataType, Field as ArrowField, Fields, Schema, TimeUnit};
 
 use crate::error::{Error, Result};
 use crate::table::Field;
@@ -200,6 +202,47 @@ pub fn spec_type(ty: &DataType) -> Result<String> {
 fn parameters<'a>(ty: &'a str, prefix: &str, suffix: &str) -> Option<(&'a str, &'a str)> {
     let (a, b) = ty.strip_prefix(prefix)?.strip_suffix(suffix)?.split_once(',')?;
     Some((a.trim(), b.trim()))
+}
+
+/// The same array under `ty`, which must be the same physical type: only names, ids, nullability and a timestamp's
+/// zone may differ, and nested fields are retyped in turn.
+pub(crate) fn retype(array: &ArrayRef, ty: &DataType) -> std::result::Result<ArrayRef, ArrowError> {
+    if !same_layout(array.data_type(), ty) {
+        return Err(ArrowError::SchemaError(format!("{} is not {ty}", array.data_type())));
+    }
+    let data = array.to_data();
+    let children = match ty {
+        DataType::Struct(fields) => {
+            let s = array.as_struct();
+            fields
+                .iter()
+                .zip(s.columns())
+                .map(|(f, c)| retype(c, f.data_type()).map(|a| a.to_data()))
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        }
+        DataType::List(element) => vec![retype(array.as_list::<i32>().values(), element.data_type())?.to_data()],
+        DataType::Map(entries, _) => {
+            let m = array.as_map();
+            let entries_array: ArrayRef = Arc::new(m.entries().clone());
+            vec![retype(&entries_array, entries.data_type())?.to_data()]
+        }
+        _ => data.child_data().to_vec(),
+    };
+    let data = data.into_builder().data_type(ty.clone()).child_data(children).build()?;
+    Ok(make_array(data))
+}
+
+fn same_layout(a: &DataType, b: &DataType) -> bool {
+    use DataType::*;
+    match (a, b) {
+        (Timestamp(u, x), Timestamp(v, y)) => u == v && x.is_some() == y.is_some(),
+        (Struct(f), Struct(g)) => {
+            f.len() == g.len() && f.iter().zip(g).all(|(f, g)| same_layout(f.data_type(), g.data_type()))
+        }
+        (List(e), List(f)) => same_layout(e.data_type(), f.data_type()),
+        (Map(e, _), Map(f, _)) => same_layout(e.data_type(), f.data_type()),
+        (a, b) => a == b,
+    }
 }
 
 #[cfg(test)]

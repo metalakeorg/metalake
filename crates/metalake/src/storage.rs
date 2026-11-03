@@ -36,6 +36,15 @@ impl Storage {
         })
     }
 
+    /// A store the engine already has, for the paths under `location`, a URL.
+    pub fn from_store(location: &str, store: Arc<dyn ObjectStore>) -> Result<Self> {
+        let url = url::Url::parse(location).map_err(|e| Error::Location(format!("{location}: {e}")))?;
+        Ok(Self {
+            store,
+            base: format!("{}://{}", url.scheme(), url.authority()),
+        })
+    }
+
     /// A store in memory, for tests and for files that never leave the process.
     pub fn in_memory() -> Self {
         Self {

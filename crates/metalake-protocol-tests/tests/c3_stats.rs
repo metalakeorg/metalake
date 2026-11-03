@@ -278,6 +278,7 @@ async fn statistics_from_the_footer_are_the_references() -> Result<(), Error> {
             content: None,
             file_size: file.len() as i64,
             footer_size,
+            footer: None,
             spec_id: table.spec_id().unwrap_or(0),
             partition: json!([]),
             sort_order_id: None,

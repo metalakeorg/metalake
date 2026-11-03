@@ -2,6 +2,8 @@
 //! field, `encode(a) < encode(b)`, comparing bytes, exactly when `a < b`. Pruning is then plain SQL over the catalog.
 //! The reference's `encode_bound`, `truncate_lower` and `truncate_upper` are the oracle these are tested against.
 
+use crate::partition::Scalar;
+
 /// The length strings and binaries are truncated to: 16 code points, 16 bytes (STA-8).
 pub const TRUNCATE: usize = 16;
 
@@ -45,6 +47,25 @@ pub fn string(v: &str) -> Vec<u8> {
 /// A `uuid` (its 16 bytes, big-endian), a `fixed[L]` or a `binary`: the bytes.
 pub fn bytes(v: &[u8]) -> Vec<u8> {
     v.to_vec()
+}
+
+/// A value of a field of type `ty`, as `partition::Scalar` holds it (a `date` in days, a `time` and the timestamps
+/// in their unit), encoded as a bound: none for a null, a NaN, or a value the type cannot have.
+pub fn value(ty: &str, v: Scalar<'_>) -> Option<Vec<u8>> {
+    let base = ty.split(['(', '[']).next().unwrap_or(ty);
+    match (base, v) {
+        ("boolean", Scalar::Boolean(b)) => Some(boolean(b)),
+        (
+            "int" | "long" | "time" | "timestamp" | "timestamptz" | "timestamp_ns" | "timestamptz_ns",
+            Scalar::Long(x),
+        ) => Some(long(x)),
+        ("date", Scalar::Long(x)) => Some(date(i32::try_from(x).ok()?)),
+        ("float" | "double", Scalar::Double(x)) => double(x),
+        ("decimal", Scalar::Decimal(x)) => Some(decimal(x)),
+        ("string", Scalar::String(x)) => Some(string(x)),
+        ("binary" | "uuid" | "fixed", Scalar::Bytes(x)) => Some(bytes(x)),
+        _ => None,
+    }
 }
 
 /// What a type's bounds may be truncated as (STA-8): a `string` by code points, a `binary` by bytes, others never.
@@ -145,6 +166,22 @@ mod tests {
         assert_eq!(double(f64::NAN), None);
         assert!(decimal(i128::MIN) < decimal(-1) && decimal(-1) < decimal(0) && decimal(0) < decimal(i128::MAX));
         assert!(boolean(false) < boolean(true));
+    }
+
+    #[test]
+    fn values_encode_as_their_type_does() {
+        assert_eq!(value("int", Scalar::Long(-3)), Some(long(-3)));
+        assert_eq!(value("timestamptz", Scalar::Long(7)), Some(long(7)));
+        assert_eq!(value("date", Scalar::Long(-2)), Some(date(-2)));
+        assert_eq!(value("date", Scalar::Long(i64::MAX)), None);
+        assert_eq!(value("double", Scalar::Double(0.5)), double(0.5));
+        assert_eq!(value("float", Scalar::Double(f64::NAN)), None);
+        assert_eq!(value("decimal(10,2)", Scalar::Decimal(-5)), Some(decimal(-5)));
+        assert_eq!(value("string", Scalar::String("ñ")), Some(string("ñ")));
+        assert_eq!(value("fixed[2]", Scalar::Bytes(&[1, 2])), Some(vec![1, 2]));
+        assert_eq!(value("boolean", Scalar::Boolean(true)), Some(boolean(true)));
+        assert_eq!(value("long", Scalar::String("1")), None);
+        assert_eq!(value("long", Scalar::Null), None);
     }
 
     #[test]

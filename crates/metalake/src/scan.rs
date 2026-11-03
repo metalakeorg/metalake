@@ -1,0 +1,405 @@
+//! Reading a table: `plan` asks the protocol which files a read opens, pruned in Postgres, and answers each as a
+//! `ScanTask`; `open` reads a task as Arrow batches, straight from its storage. A task is a value, so an engine with
+//! its own reader, or another process, may open it instead.
+//!
+//! A file opens with the footer the catalog serves (FTR-1): no request but those for its data. Without one, its
+//! size is the hint that fetches the footer in one request; an inline file is read from its bytes, with none.
+//! Columns are found by field id, and a range on a field also skips the row groups its statistics rule out. What
+//! comes back may hold rows outside the range (the engine filters them exactly), never fewer than those inside.
+
+use std::ops::Range;
+use std::sync::Arc;
+
+use arrow_array::RecordBatch;
+use arrow_schema::{Schema, SchemaRef};
+use bytes::Bytes;
+use futures_util::future::BoxFuture;
+use futures_util::stream::{self, BoxStream};
+use futures_util::{FutureExt, StreamExt, TryStreamExt};
+use metalake_pg::Prune;
+use metalake_pg::records::{PlannedFile, PlannedVector};
+use object_store::path::Path;
+use object_store::{ObjectStore, ObjectStoreExt};
+use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
+use parquet::arrow::async_reader::AsyncFileReader;
+use parquet::arrow::{ParquetRecordBatchStreamBuilder, ProjectionMask};
+use parquet::errors::ParquetError;
+use parquet::file::metadata::{ParquetMetaData, ParquetMetaDataReader};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::bounds;
+use crate::catalog::Catalog;
+use crate::error::{Error, Result};
+use crate::partition::Scalar;
+use crate::schema::{self, FIELD_ID};
+use crate::stats;
+use crate::storage::Storage;
+use crate::table::{Field, Table};
+
+/// Rows in a batch at most.
+const BATCH_SIZE: usize = 8192;
+/// Files read at once.
+const CONCURRENCY: usize = 16;
+
+/// A read of one table at its read point: which columns, and a range on a field that prunes.
+#[derive(Debug, Clone)]
+pub struct Scan {
+    catalog: Catalog,
+    table: Table,
+    schema: SchemaRef,
+    filter: Option<Filter>,
+    batch_size: usize,
+    concurrency: usize,
+}
+
+/// A range on one field, its ends as bounds (STA-5), each inclusive.
+#[derive(Debug, Clone)]
+struct Filter {
+    field: Field,
+    lo: Option<Vec<u8>>,
+    hi: Option<Vec<u8>>,
+}
+
+/// A file a scan reads, as the protocol planned it: where its bytes are, its footer, and its deletion vector.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScanTask {
+    pub file_id: i64,
+    /// Its object, or none for an inline file, whose bytes are in `content` (INL-1).
+    pub path: Option<String>,
+    pub content: Option<Vec<u8>>,
+    pub file_size: i64,
+    pub footer_size: i32,
+    /// Its footer, as the catalog keeps it (FTR-1).
+    pub footer: Option<Vec<u8>>,
+    pub record_count: i64,
+    pub spec_id: i32,
+    pub partition: Value,
+    pub vector: Option<TaskVector>,
+}
+
+/// Where a file's deletion vector is (DV-1): in a Puffin file at `path`, or inline.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskVector {
+    pub begin_seq: i64,
+    pub path: Option<String>,
+    pub offset: Option<i64>,
+    pub size: i64,
+    pub cardinality: i64,
+    pub inline: Option<Vec<u8>>,
+}
+
+impl Scan {
+    /// A read of every column of `table`, as it was read, from `catalog`.
+    pub fn new(catalog: &Catalog, table: &Table) -> Self {
+        Self {
+            catalog: catalog.clone(),
+            table: table.clone(),
+            schema: table.schema().clone(),
+            filter: None,
+            batch_size: BATCH_SIZE,
+            concurrency: CONCURRENCY,
+        }
+    }
+
+    /// Only these columns, by name and in this order.
+    pub fn columns<I, S>(mut self, names: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let all = self.table.schema();
+        let fields = names
+            .into_iter()
+            .map(|name| {
+                let name = name.as_ref();
+                all.field_with_name(name)
+                    .cloned()
+                    .map_err(|_| Error::NotFound(format!("column {name} of {}", self.table.name())))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.schema = Arc::new(Schema::new(fields));
+        Ok(self)
+    }
+
+    /// Only rows whose `column` is in `[lo, hi]`, an end of none being open: the files and row groups that cannot
+    /// hold one are not read.
+    pub fn filter(mut self, column: &str, lo: Option<Scalar<'_>>, hi: Option<Scalar<'_>>) -> Result<Self> {
+        let field = self
+            .table
+            .fields()
+            .iter()
+            .find(|f| f.parent_field_id.is_none() && f.name == column)
+            .ok_or_else(|| Error::NotFound(format!("column {column} of {}", self.table.name())))?
+            .clone();
+        let encode = |v: Option<Scalar<'_>>| match v {
+            None => Ok(None),
+            Some(v) => bounds::value(&field.ty, v)
+                .map(Some)
+                .ok_or_else(|| Error::Schema(format!("{v:?} is not a value of {column}, a {}", field.ty))),
+        };
+        let (lo, hi) = (encode(lo)?, encode(hi)?);
+        self.filter = Some(Filter { field, lo, hi });
+        Ok(self)
+    }
+
+    pub fn batch_size(mut self, rows: usize) -> Self {
+        self.batch_size = rows.max(1);
+        self
+    }
+
+    /// How many files `read` reads at once.
+    pub fn concurrency(mut self, files: usize) -> Self {
+        self.concurrency = files.max(1);
+        self
+    }
+
+    /// The schema of the batches the scan answers.
+    pub fn schema(&self) -> &SchemaRef {
+        &self.schema
+    }
+
+    /// The files the scan reads, as they stream from the protocol.
+    pub async fn plan(&self) -> Result<BoxStream<'static, Result<ScanTask>>> {
+        let session = self.catalog.session().await?;
+        let prune = self.filter.as_ref().map(|f| Prune {
+            field_id: f.field.field_id,
+            lo: f.lo.clone(),
+            hi: f.hi.clone(),
+        });
+        let t = &self.table;
+        let files = self
+            .catalog
+            .protocol()
+            .plan(&session, t.ref_id(), t.id(), Some(t.seq()), prune.as_ref())
+            .await?;
+        // The session goes with the stream, whose rows are its connection's.
+        Ok(files
+            .map(move |file| {
+                let _ = &session;
+                Ok(ScanTask::from(file?))
+            })
+            .boxed())
+    }
+
+    /// Every task's batches, `concurrency` files at a time, as they come.
+    pub fn read(
+        &self,
+        tasks: BoxStream<'static, Result<ScanTask>>,
+        storage: &Storage,
+    ) -> BoxStream<'static, Result<RecordBatch>> {
+        let (scan, storage) = (self.clone(), storage.clone());
+        tasks
+            .map_ok(move |task| scan.open(task, &storage))
+            .try_flatten_unordered(self.concurrency)
+            .boxed()
+    }
+
+    /// One task's batches.
+    pub fn open(&self, task: ScanTask, storage: &Storage) -> BoxStream<'static, Result<RecordBatch>> {
+        let (schema, filter, batch_size) = (self.schema.clone(), self.filter.clone(), self.batch_size);
+        let storage = storage.clone();
+        stream::once(async move { batches(task, &storage, schema, filter, batch_size).await })
+            .try_flatten()
+            .boxed()
+    }
+}
+
+/// The batches of one file, under `schema`.
+async fn batches(
+    task: ScanTask,
+    storage: &Storage,
+    schema: SchemaRef,
+    filter: Option<Filter>,
+    batch_size: usize,
+) -> Result<BoxStream<'static, Result<RecordBatch>>> {
+    if task.vector.is_some() {
+        return Err(Error::Unsupported(format!(
+            "file {} has a deletion vector, which the core reads from C6",
+            task.file_id
+        )));
+    }
+    let mut source = match (task.content, &task.path) {
+        (Some(content), _) => Source::Inline(Bytes::from(content)),
+        (None, Some(path)) => Source::Object {
+            store: storage.store().clone(),
+            path: storage.path(path)?,
+        },
+        (None, None) => {
+            return Err(Error::Schema(format!(
+                "file {} has neither a path nor content",
+                task.file_id
+            )));
+        }
+    };
+    let metadata = match &task.footer {
+        Some(footer) => ParquetMetaDataReader::decode_metadata(footer).map_err(read_error)?,
+        None => ParquetMetaDataReader::new()
+            .with_prefetch_hint(Some(task.footer_size as usize + 8))
+            .load_and_finish(&mut source, task.file_size as u64)
+            .await
+            .map_err(read_error)?,
+    };
+    let metadata = Arc::new(metadata);
+    let reader = ArrowReaderMetadata::try_new(metadata.clone(), ArrowReaderOptions::new()).map_err(read_error)?;
+
+    // The file's top-level columns of the schema's fields, by id, and where each comes in the projection's order.
+    let in_file = reader.schema();
+    let roots = schema
+        .fields()
+        .iter()
+        .map(|f| {
+            let id = f.metadata().get(FIELD_ID);
+            in_file
+                .fields()
+                .iter()
+                .position(|g| g.metadata().get(FIELD_ID) == id)
+                .ok_or_else(|| {
+                    Error::Unsupported(format!(
+                        "file {} has no column for {}: reading under a later schema comes in C5b",
+                        task.file_id,
+                        f.name()
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut sorted = roots.clone();
+    sorted.sort_unstable();
+    let order: Vec<usize> = roots
+        .iter()
+        .map(|r| sorted.binary_search(r).expect("a root of the projection"))
+        .collect();
+
+    let groups = match &filter {
+        Some(f) => kept_groups(&metadata, f),
+        None => (0..metadata.num_row_groups()).collect(),
+    };
+    let mask = ProjectionMask::roots(metadata.file_metadata().schema_descr(), roots);
+    let stream = ParquetRecordBatchStreamBuilder::new_with_metadata(source, reader)
+        .with_projection(mask)
+        .with_row_groups(groups)
+        .with_batch_size(batch_size)
+        .build()
+        .map_err(read_error)?;
+    Ok(stream
+        .map(move |batch| {
+            let batch = batch.map_err(read_error)?;
+            let columns = schema
+                .fields()
+                .iter()
+                .zip(&order)
+                .map(|(field, at)| {
+                    schema::retype(batch.column(*at), field.data_type())
+                        .map_err(|e| Error::Schema(format!("{}: {e}", field.name())))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            RecordBatch::try_new(schema.clone(), columns).map_err(|e| Error::Schema(e.to_string()))
+        })
+        .boxed())
+}
+
+/// The row groups whose statistics may hold a value of the filter's range: those without bounds too.
+fn kept_groups(metadata: &ParquetMetaData, filter: &Filter) -> Vec<usize> {
+    let descr = metadata.file_metadata().schema_descr();
+    let column = (0..descr.num_columns()).find(|i| {
+        let info = descr.column(*i).self_type_ptr();
+        let info = info.get_basic_info();
+        info.has_id() && info.id() == filter.field.field_id
+    });
+    (0..metadata.num_row_groups())
+        .filter(|g| {
+            let Some((lower, upper)) = column.and_then(|c| stats::row_group_bounds(&filter.field, metadata, *g, c))
+            else {
+                return true;
+            };
+            !(filter.lo.as_ref().is_some_and(|lo| upper < *lo) || filter.hi.as_ref().is_some_and(|hi| lower > *hi))
+        })
+        .collect()
+}
+
+/// A file's bytes: inline, or an object, each range of which is a request.
+enum Source {
+    Inline(Bytes),
+    Object { store: Arc<dyn ObjectStore>, path: Path },
+}
+
+impl AsyncFileReader for Source {
+    fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
+        async move {
+            match self {
+                Self::Inline(bytes) => Ok(bytes.slice(range.start as usize..range.end as usize)),
+                Self::Object { store, path } => store.get_range(path, range).await.map_err(external),
+            }
+        }
+        .boxed()
+    }
+
+    fn get_byte_ranges(&mut self, ranges: Vec<Range<u64>>) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>> {
+        async move {
+            match self {
+                Self::Inline(bytes) => Ok(ranges
+                    .into_iter()
+                    .map(|r| bytes.slice(r.start as usize..r.end as usize))
+                    .collect()),
+                Self::Object { store, path } => store.get_ranges(path, &ranges).await.map_err(external),
+            }
+        }
+        .boxed()
+    }
+
+    fn get_metadata<'a>(
+        &'a mut self,
+        _options: Option<&'a ArrowReaderOptions>,
+    ) -> BoxFuture<'a, parquet::errors::Result<Arc<ParquetMetaData>>> {
+        async {
+            Err(ParquetError::General(
+                "a task's metadata is read before its reader".into(),
+            ))
+        }
+        .boxed()
+    }
+}
+
+impl From<PlannedFile> for ScanTask {
+    fn from(f: PlannedFile) -> Self {
+        Self {
+            file_id: f.file_id,
+            path: f.path,
+            content: f.content,
+            file_size: f.file_size,
+            footer_size: f.footer_size,
+            footer: f.footer,
+            record_count: f.record_count,
+            spec_id: f.spec_id,
+            partition: f.partition,
+            vector: f.vector.map(TaskVector::from),
+        }
+    }
+}
+
+impl From<PlannedVector> for TaskVector {
+    fn from(v: PlannedVector) -> Self {
+        Self {
+            begin_seq: v.begin_seq,
+            path: v.path,
+            offset: v.offset,
+            size: v.size,
+            cardinality: v.cardinality,
+            inline: v.inline,
+        }
+    }
+}
+
+fn external(e: object_store::Error) -> ParquetError {
+    ParquetError::External(Box::new(e))
+}
+
+fn read_error(e: ParquetError) -> Error {
+    match e {
+        ParquetError::External(inner) => match inner.downcast::<object_store::Error>() {
+            Ok(e) => Error::Storage(*e),
+            Err(other) => Error::Schema(format!("reading Parquet: {other}")),
+        },
+        other => Error::Schema(format!("reading Parquet: {other}")),
+    }
+}
