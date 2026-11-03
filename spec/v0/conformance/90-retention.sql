@@ -175,3 +175,108 @@ select expect((select array_agg(o order by o) from orphans() o) = '{gs://lake/t/
 select expect_error(format('select cm(%L::jsonb)', tj(:'t', jsonb_build_object('add', jsonb_build_array(fj(1))))), '22023',
   'a commit of a file whose intent expired');
 select expect(cm(tj(:'t', jsonb_build_object('add', jsonb_build_array(fj(3))))) > 0, 'one whose intent is valid');
+
+-- case: the floor keeps every sequence from it up, also between two snapshots where a commit wrote none
+-- rules: RET-1, RET-2
+select mk('t') as t \gset
+select cm(tj(:'t', jsonb_build_object('add', jsonb_build_array(fj(1))))) as s1 \gset
+select swap(:'t', 1, 2) as s2 \gset
+-- A namespace created and dropped between two snapshots of main: commits of namespaces only write no snapshot.
+select commit('{"ref": 1, "author": "ana", "actor": "test", "operation": "update", "tables": [],
+                "namespaces": [{"namespace": ["n"], "create": true}]}') as n1 \gset
+select commit('{"ref": 1, "author": "ana", "actor": "test", "operation": "update", "tables": [],
+                "namespaces": [{"namespace": ["n"], "drop": true}]}') as n2 \gset
+select swap(:'t', 2, 3) as s3 \gset
+select set_retention(1, min_snapshots => 2);
+select expect(retention_floor(1) = :s2, 'the floor: the second latest snapshot');
+select set_retention(1, min_snapshots => 2, min_seq => :s1);
+select expect(retention_floor(1) = :s1, 'the least of the criteria');
+select set_retention(1, min_snapshots => 2);
+select expire();
+select expect(exists (select 1 from namespace where namespace = '{n}' and begin_seq = :n1),
+  'the namespace''s row, valid only between two kept snapshots, stays: the reads in between are retained');
+select expect(not exists (select 1 from data_file where file_id = 1), 'file 1, closed below the floor, goes');
+select set_retention(1, min_snapshots => 0);
+select expect(retention_floor(1) = 9223372036854775807 and not exists (select 1 from kept_snapshots(1)),
+  'keeping no snapshot: the floor is OPEN, and only LATEST is read');
+
+-- case: expiring and a commit that adds a path exclude each other on that path
+-- rules: RET-5
+select mk('t') as t \gset
+select conn('expirer');
+select public.dblink_exec('expirer', 'begin');
+select * from public.dblink('expirer', 'select path_lock(''gs://lake/t/9.parquet'', true)') as x(v text);
+set lock_timeout = '300ms';
+select expect_error(format('select cm(%L::jsonb)', tj(:'t', jsonb_build_object('add', jsonb_build_array(fj(9))))), '55P03',
+  'a commit of a path being queued waits');
+reset lock_timeout;
+select expect(cm(tj(:'t', jsonb_build_object('add', jsonb_build_array(fj(8))))) > 0, 'another path does not');
+select public.dblink_exec('expirer', 'commit');
+select public.dblink_exec('expirer', 'begin');
+select * from public.dblink('expirer', format('select cm(%L::jsonb)', tj(:'t', jsonb_build_object('add', jsonb_build_array(fj(7)))))) as x(v text);
+set lock_timeout = '300ms';
+select expect_error('select path_lock(''gs://lake/t/7.parquet'', true)', '55P03', 'expiring waits for a commit adding the path');
+reset lock_timeout;
+select public.dblink_exec('expirer', 'commit');
+-- Expiring itself: file 1 is collectable while a commit in flight adds a file under its path; expiring waits.
+select cm(tj(:'t', jsonb_build_object('add', jsonb_build_array(fj(1)))));
+select cm(tj(:'t', '{"remove": [1]}'::jsonb), 1, 'delete');
+select set_retention(1, min_snapshots => 0);
+select public.dblink_exec('expirer', 'begin');
+select * from public.dblink('expirer', format('select cm(%L::jsonb)', tj(:'t', jsonb_build_object('add', jsonb_build_array(
+  fj(5) || '{"path": "gs://lake/t/1.parquet"}'::jsonb))))) as x(v text);
+set lock_timeout = '300ms';
+select expect_error('select expire()', '55P03', 'expiring waits rather than queue a path being committed');
+reset lock_timeout;
+select public.dblink_exec('expirer', 'commit');
+select expire();
+select expect(not exists (select 1 from deletion_queue), 'and then queues nothing: the path is referenced again');
+
+-- case: a commit of a path in the deletion queue is refused
+-- rules: RET-8
+select mk('t') as t \gset
+select cm(tj(:'t', jsonb_build_object('add', jsonb_build_array(fj(1)))));
+select cm(tj(:'t', '{"remove": [1]}'::jsonb), 1, 'delete');
+select set_retention(1, min_snapshots => 0);
+select expire();
+select expect((select array_agg(path) from deletion_queue) = '{gs://lake/t/1.parquet}', 'file 1 is queued');
+select expect_error(format('select cm(%L::jsonb)', tj(:'t', jsonb_build_object('add', jsonb_build_array(
+  fj(2) || '{"path": "gs://lake/t/1.parquet"}'::jsonb)))), '22023', 'another file under the queued path');
+select expect(cm(tj(:'t', jsonb_build_object('add', jsonb_build_array(fj(3))))) > 0, 'a new path');
+
+-- case: a queued object is swept only once its grace has passed, and sweeping again is harmless
+-- rules: RET-9
+select mk('t') as t \gset
+select cm(tj(:'t', jsonb_build_object('add', jsonb_build_array(fj(1)))));
+select cm(tj(:'t', '{"remove": [1]}'::jsonb), 1, 'delete');
+select set_retention(1, min_snapshots => 0);
+select expire();
+select expect(collect_grace() = interval '1 day', 'a day unless set');
+select expect(not exists (select 1 from sweep_due()), 'nothing is due within the grace');
+select expect(sweep_done('{gs://lake/t/1.parquet}') = 0, 'an object within its grace stays queued');
+update meta set value = '0 seconds' where key = 'collect_grace';
+select expect((select array_agg(p) from sweep_due() p) = '{gs://lake/t/1.parquet}', 'due once the grace has passed');
+select expect(sweep_done('{gs://lake/t/1.parquet}') = 1, 'swept');
+select expect(not exists (select 1 from deletion_queue), 'and gone from the queue');
+select expect(sweep_done('{gs://lake/t/1.parquet}') = 0, 'and sweeping it again does nothing');
+
+-- case: migrating a catalog of revision 0.1 creates the queue and its indexes, and changes no row
+-- rules: LAY-5, RET-1
+select mk('t') as t \gset
+select cm(tj(:'t', jsonb_build_object('add', jsonb_build_array(fj(1)))));
+select set_retention(1, min_snapshots => 1);
+-- The catalog as 0.1 left it.
+drop table deletion_queue;
+drop index data_file_closed, data_file_path;
+delete from meta where key = 'collect_grace';
+update meta set value = '1' where key = 'writer_version';
+create temp table rows_before as select (select count(*) from data_file) f, (select count(*) from snapshot) s,
+  (select count(*) from commit) c;
+select expect(migrate() is null, 'no commit: nothing to migrate in rows');
+select expect((select value from meta where key = 'writer_version') = '2' and collect_grace() = interval '1 day',
+  'writer_version 2, and the grace by default');
+select expect(to_regclass('deletion_queue') is not null and to_regclass('data_file_closed') is not null,
+  'the queue and the indexes');
+select expect((select (f, s, c) from rows_before) = ((select count(*) from data_file), (select count(*) from snapshot),
+  (select count(*) from commit)), 'no row changed');
+select expect(cm(tj(:'t', jsonb_build_object('add', jsonb_build_array(fj(2))))) > 0, 'and it takes commits');

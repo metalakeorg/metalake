@@ -127,3 +127,63 @@ select expect(not exists (select 1 from (select committed_at, commit_seq, lag(co
 select expect(exists (select 1 from commit x, commit y where x.commit_seq < y.commit_seq
                         and committed_time(x.commit_seq) > committed_time(y.commit_seq)),
   'and the slow commit drew an earlier commit_seq than commits that committed before it');
+
+-- case: the filler goes in batches, oldest first, and a visible commit without a time is refused, never invented
+-- rules: TT-1
+select mk('t') as t \gset
+select add(:'t', 1) as a \gset
+select add(:'t', 2) as b \gset
+update commit set committed_at = null;
+select expect(fill_committed_at(1) = 1, 'one per batch');
+select expect((select committed_at is not null from commit where commit_seq = (select min(commit_seq) from commit))
+              and (select committed_at is null from commit where commit_seq = :b), 'the oldest first');
+select expect(fill_committed_at() > 0, 'then the rest');
+select expect(not exists (select 1 from commit where committed_at is null), 'all of them');
+-- A commit whose transaction left no timestamp: one that rolled back stands for one Postgres has discarded.
+begin;
+select pg_current_xact_id() as dead \gset
+rollback;
+update commit set committed_at = null, xid = :'dead' where commit_seq = :b;
+select expect_error('select fill_committed_at()', '0A000', 'the filler');
+select expect_error($$select * from changes('-infinity', 0)$$, '0A000', 'the feed');
+
+-- case: a read as of a time older than what the ref keeps is refused
+-- rules: TT-3
+select mk('t') as t \gset
+select add(:'t', 1) as s1 \gset
+select pg_sleep(0.05);
+select add(:'t', 2) as s2 \gset
+select pg_sleep(1.1);
+select expect(as_of_time(1, :'t', committed_time(:s1)) = :s1, 'kept: every snapshot');
+select set_retention(1, min_snapshots => 1);
+select expect_error(format('select as_of_time(1, %L, %L)', :'t', committed_time(:s1)), '22023', 'below the floor');
+select expect(as_of_time(1, :'t', committed_time(:s2)) = :s2, 'from the floor up');
+
+-- case: the feed of one table delivers only the commits that made a snapshot of it
+-- rules: CHG-1
+select mk('t') as t \gset
+select mk('u') as u \gset
+select add(:'t', 1), add(:'u', 2), add(:'t', 3), add(:'u', 4);
+select pg_sleep(1.1);
+select expect((select array_agg(c.commit_seq order by c.commit_seq) from changes('-infinity', 0, 1000, :'u') c)
+              = (select array_agg(distinct s.snapshot_id order by s.snapshot_id) from snapshot s where s.table_id = :'u'),
+  'u''s commits only');
+select expect((select count(*) from changes('-infinity', 0, 1000)) = (select count(*) from commit), 'and without a table, all');
+
+-- case: the changes of a table between two retained reads are the files added, removed, and whose vector changed
+-- rules: CHG-2
+select mk('t') as t \gset
+select cm(jsonb_build_array(jsonb_build_object('table_id', :'t', 'add', jsonb_build_array(fj(1), fj(2))))) as s1 \gset
+select add(:'t', 3) as s2 \gset
+select commit(jsonb_build_object('ref', 1, 'author', 'ana', 'actor', 'test', 'operation', 'delete',
+  'tables', jsonb_build_array(jsonb_build_object('table_id', :'t', 'remove', '[2]'::jsonb)))) as s3 \gset
+select commit(jsonb_build_object('ref', 1, 'author', 'ana', 'actor', 'test', 'operation', 'delete',
+  'tables', jsonb_build_array(jsonb_build_object('table_id', :'t',
+    'dvs', '[{"file_id": 1, "base_seq": null, "path": "gs://lake/t/dv.puffin", "content_offset": 4, "content_size": 40, "cardinality": 1}]'::jsonb)))) as s4 \gset
+select expect((select array_agg(change || ':' || file_id order by change, file_id) from table_changes(1, :'t', :s1, :s4))
+              = '{added:3,removed:2,vector:1}', 'added 3, removed 2, a vector on 1');
+select expect((select vector_before is null and vector_after ->> 'path' = 'gs://lake/t/dv.puffin'
+                 from table_changes(1, :'t', :s1, :s4) where change = 'vector'), 'with the vector at each read');
+select expect_error(format('select * from table_changes(1, %L, %s, %s)', :'t', :s4, :s1), '22023', 'not in order');
+select set_retention(1, min_snapshots => 1);
+select expect_error(format('select * from table_changes(1, %L, %s, %s)', :'t', :s1, :s4), '22023', 'a read no longer kept');

@@ -66,12 +66,12 @@ begin
                     where d.file_id is not null) as before,
                   (select to_jsonb(d) - 'ref_id' - 'begin_seq' - 'end_seq' from file_dv(r, t, b, v.file_id) d
                     where d.file_id is not null) as after
-             from vb v where v.file_id in (select file_id from va))
+             from vb v where v.file_id in (select y.file_id from va y))
     select 'added', v.file_id, v.path, null::jsonb, null::jsonb from vb v
-     where v.file_id not in (select file_id from va)
+     where v.file_id not in (select y.file_id from va y)
     union all
     select 'removed', v.file_id, v.path, null, null from va v
-     where v.file_id not in (select file_id from vb)
+     where v.file_id not in (select y.file_id from vb y)
     union all
     select 'vector', d.file_id, (select v.path from vb v where v.file_id = d.file_id), d.before, d.after from dv d
      where d.before is distinct from d.after;
