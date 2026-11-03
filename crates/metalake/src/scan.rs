@@ -11,8 +11,8 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use arrow_array::{RecordBatch, RecordBatchOptions};
-use arrow_schema::{Schema, SchemaRef};
+use arrow_array::{Int64Array, RecordBatch, RecordBatchOptions};
+use arrow_schema::{DataType, Field as ArrowField, Schema, SchemaRef};
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use futures_util::stream::{self, BoxStream};
@@ -23,7 +23,7 @@ use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt};
 use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
 use parquet::arrow::async_reader::AsyncFileReader;
-use parquet::arrow::{ParquetRecordBatchStreamBuilder, ProjectionMask};
+use parquet::arrow::{ParquetRecordBatchStreamBuilder, ProjectionMask, RowNumber};
 use parquet::errors::ParquetError;
 use parquet::file::metadata::{ParquetMetaData, ParquetMetaDataReader};
 use serde::{Deserialize, Serialize};
@@ -38,7 +38,7 @@ use crate::schema::FIELD_ID;
 use crate::stats;
 use crate::storage::Storage;
 use crate::table::{Field, Table};
-use crate::vectors::DeletionVector;
+use crate::vectors::{self, DeletionVector};
 
 /// Rows in a batch at most.
 const BATCH_SIZE: usize = 8192;
@@ -50,11 +50,25 @@ const CONCURRENCY: usize = 16;
 pub struct Scan {
     catalog: Catalog,
     table: Table,
+    /// The table's columns the scan reads.
+    columns: SchemaRef,
+    /// What it answers: those columns, then each row's file and position when asked.
     schema: SchemaRef,
     evolve: Arc<Evolve>,
     filter: Option<Filter>,
+    positions: bool,
     batch_size: usize,
     concurrency: usize,
+}
+
+/// What reading one file of a scan takes.
+struct Reading {
+    columns: SchemaRef,
+    schema: SchemaRef,
+    evolve: Arc<Evolve>,
+    filter: Option<Filter>,
+    positions: bool,
+    batch_size: usize,
 }
 
 /// A range on one field, its ends as bounds (STA-5), each inclusive.
@@ -99,9 +113,11 @@ impl Scan {
         Self {
             catalog: catalog.clone(),
             table: table.clone(),
+            columns: table.schema().clone(),
             schema: table.schema().clone(),
             evolve: Arc::new(Evolve::new(table)),
             filter: None,
+            positions: false,
             batch_size: BATCH_SIZE,
             concurrency: CONCURRENCY,
         }
@@ -123,8 +139,26 @@ impl Scan {
                     .map_err(|_| Error::NotFound(format!("column {name} of {}", self.table.name())))
             })
             .collect::<Result<Vec<_>>>()?;
-        self.schema = Arc::new(Schema::new(fields));
+        self.columns = Arc::new(Schema::new(fields));
+        self.schema = self.answered();
         Ok(self)
+    }
+
+    /// Each row's file and position in it as two more columns, `_file_id` and `_pos`, both `Int64`: what a delete
+    /// names a row by (`Deletes`).
+    pub fn with_positions(mut self) -> Self {
+        self.positions = true;
+        self.schema = self.answered();
+        self
+    }
+
+    fn answered(&self) -> SchemaRef {
+        let mut fields: Vec<ArrowField> = self.columns.fields().iter().map(|f| f.as_ref().clone()).collect();
+        if self.positions {
+            fields.push(ArrowField::new(vectors::FILE_ID, DataType::Int64, false));
+            fields.push(ArrowField::new(vectors::POSITION, DataType::Int64, false));
+        }
+        Arc::new(Schema::new(fields))
     }
 
     /// Only rows whose `column` is in `[lo, hi]`, an end of none being open: the files and row groups that cannot
@@ -202,23 +236,32 @@ impl Scan {
 
     /// One task's batches.
     pub fn open(&self, task: ScanTask, storage: &Storage) -> BoxStream<'static, Result<RecordBatch>> {
-        let (schema, evolve) = (self.schema.clone(), self.evolve.clone());
-        let (filter, batch_size, storage) = (self.filter.clone(), self.batch_size, storage.clone());
-        stream::once(async move { batches(task, &storage, schema, evolve, filter, batch_size).await })
+        let reading = Reading {
+            columns: self.columns.clone(),
+            schema: self.schema.clone(),
+            evolve: self.evolve.clone(),
+            filter: self.filter.clone(),
+            positions: self.positions,
+            batch_size: self.batch_size,
+        };
+        let storage = storage.clone();
+        stream::once(async move { batches(task, &storage, reading).await })
             .try_flatten()
             .boxed()
     }
 }
 
-/// The batches of one file, under `schema`.
-async fn batches(
-    task: ScanTask,
-    storage: &Storage,
-    schema: SchemaRef,
-    evolve: Arc<Evolve>,
-    filter: Option<Filter>,
-    batch_size: usize,
-) -> Result<BoxStream<'static, Result<RecordBatch>>> {
+/// The batches of one file, under the scan's schema.
+async fn batches(task: ScanTask, storage: &Storage, r: Reading) -> Result<BoxStream<'static, Result<RecordBatch>>> {
+    let Reading {
+        columns,
+        schema,
+        evolve,
+        filter,
+        positions,
+        batch_size,
+    } = r;
+    let file_id = task.file_id;
     let mut source = match (task.content, &task.path) {
         (Some(content), _) => Source::Inline(Bytes::from(content)),
         (None, Some(path)) => Source::Object {
@@ -245,7 +288,14 @@ async fn batches(
     };
     let (metadata, vector) = futures_util::try_join!(footer, vector(task.file_id, task.vector.as_ref(), storage))?;
     let metadata = Arc::new(metadata);
-    let reader = ArrowReaderMetadata::try_new(metadata.clone(), ArrowReaderOptions::new()).map_err(read_error)?;
+    let mut options = ArrowReaderOptions::new();
+    if positions {
+        let row_number = ArrowField::new(vectors::POSITION, DataType::Int64, false).with_extension_type(RowNumber);
+        options = options
+            .with_virtual_columns(vec![Arc::new(row_number)])
+            .map_err(read_error)?;
+    }
+    let reader = ArrowReaderMetadata::try_new(metadata.clone(), options).map_err(read_error)?;
 
     // The file's top-level column of each of the schema's fields, by id, if it has one, and where each comes in
     // the projection's order.
@@ -297,21 +347,28 @@ async fn batches(
     Ok(stream
         .map(move |batch| {
             let batch = batch.map_err(read_error)?;
-            let columns = schema
+            let mut answered = columns
                 .fields()
                 .iter()
                 .zip(&order)
                 .map(|(field, at)| evolve.column(field, at.map(|i| batch.column(i)), batch.num_rows()))
                 .collect::<Result<Vec<_>>>()?;
+            if positions {
+                let position = batch
+                    .column_by_name(vectors::POSITION)
+                    .ok_or_else(|| Error::Schema("Parquet answered no row numbers".into()))?;
+                answered.push(Arc::new(Int64Array::from(vec![file_id; batch.num_rows()])));
+                answered.push(position.clone());
+            }
             let rows = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
-            RecordBatch::try_new_with_options(schema.clone(), columns, &rows).map_err(|e| Error::Schema(e.to_string()))
+            RecordBatch::try_new_with_options(schema.clone(), answered, &rows).map_err(|e| Error::Schema(e.to_string()))
         })
         .boxed())
 }
 
 /// A file's deletion vector, from the catalog's bytes or a range of its Puffin file, checked against the count the
 /// catalog keeps.
-async fn vector(file_id: i64, at: Option<&TaskVector>, storage: &Storage) -> Result<Option<DeletionVector>> {
+pub(crate) async fn vector(file_id: i64, at: Option<&TaskVector>, storage: &Storage) -> Result<Option<DeletionVector>> {
     let Some(at) = at else {
         return Ok(None);
     };

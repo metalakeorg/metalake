@@ -16,6 +16,9 @@ pub enum Error {
     /// Object storage failed.
     #[error(transparent)]
     Storage(#[from] object_store::Error),
+    /// A request the format does not allow, refused before reaching the protocol.
+    #[error("invalid: {0}")]
+    Invalid(String),
     /// Bytes that are not what the catalog says they are.
     #[error("corrupt: {0}")]
     Corrupt(String),

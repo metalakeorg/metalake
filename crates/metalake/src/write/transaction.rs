@@ -11,7 +11,10 @@ use crate::catalog::Ref;
 use crate::error::{Error, Result};
 use crate::partition::Transform;
 use crate::schema::spec_fields;
+use crate::storage::Storage;
 use crate::table::Table;
+use crate::vectors::Deletes;
+use crate::write::delete::{self, TableDeletes};
 
 /// How many times a commit is tried when the attempt may be repeated.
 const ATTEMPTS: usize = 3;
@@ -54,6 +57,7 @@ pub struct Transaction {
     on: Ref,
     files: Vec<FileAdd>,
     removed: Vec<FileRef>,
+    deletes: Vec<TableDeletes>,
     expected: Vec<TableExpect>,
     changes: Map<String, Value>,
     namespaces: Vec<Value>,
@@ -69,6 +73,7 @@ impl Transaction {
             on,
             files: Vec::new(),
             removed: Vec::new(),
+            deletes: Vec::new(),
             expected: Vec::new(),
             changes: Map::new(),
             namespaces: Vec::new(),
@@ -90,6 +95,20 @@ impl Transaction {
         let table_id = table.id();
         self.removed
             .extend(file_ids.into_iter().map(|file_id| FileRef { table_id, file_id }));
+        self
+    }
+
+    /// Deletes rows of a table's files, which `storage` holds, as `table` read them: each file's vector becomes the
+    /// union of these and the one it has. If another commit changes a vector first, the union is taken again over
+    /// the new one, and the commit retried (DV-4).
+    pub fn delete(mut self, table: &Table, storage: &Storage, deletes: Deletes) -> Self {
+        if !deletes.is_empty() {
+            self.deletes.push(TableDeletes {
+                table: table.clone(),
+                storage: storage.clone(),
+                deletes,
+            });
+        }
         self
     }
 
@@ -202,7 +221,8 @@ impl Transaction {
 
     /// What the commit does, as history shows it.
     fn operation(&self) -> &'static str {
-        match (self.replace, self.files.is_empty(), self.removed.is_empty()) {
+        let keeps = self.removed.is_empty() && self.deletes.is_empty();
+        match (self.replace, self.files.is_empty(), keeps) {
             (true, _, _) => "replace",
             (false, false, true) => "append",
             (false, false, false) => "overwrite",
@@ -213,10 +233,11 @@ impl Transaction {
 
     /// Commits, in one call. A failure Postgres had in serializing it is repeated; so is a lost connection when the
     /// transaction has an idempotency key, which makes the repeat answer what the first attempt did. Without a key,
-    /// a lost connection is an error whose kind says the outcome is unknown.
+    /// a lost connection is an error whose kind says the outcome is unknown. A delete whose file's vector changed
+    /// under it is taken again over the new vector and retried (DV-4).
     pub async fn commit(self) -> Result<Outcome> {
         let (app_id, app_version) = self.app.clone().unzip();
-        let call = Commit {
+        let mut call = Commit {
             ref_id: self.on.id(),
             operation: self.operation().into(),
             files: self.files,
@@ -233,14 +254,22 @@ impl Transaction {
             namespaces: (!self.namespaces.is_empty()).then_some(Value::Array(self.namespaces)),
         };
         let catalog = self.on.catalog();
-        let mut attempt = 0;
+        let (mut attempt, mut rebase) = (0, false);
         loop {
             attempt += 1;
+            if !self.deletes.is_empty() {
+                call.vectors.clear();
+                for d in &self.deletes {
+                    let at = if rebase { None } else { Some(d.table.seq()) };
+                    call.vectors.extend(d.vectors(catalog, at).await?);
+                }
+            }
             let result = async { catalog.protocol().commit(&catalog.pg_session().await?, &call).await }.await;
             match result {
                 Ok(r) if r.applied => return Ok(Outcome::Committed(r.commit_seq)),
                 Ok(r) => return Ok(Outcome::AlreadyApplied(r.commit_seq)),
                 Err(e) if attempt < ATTEMPTS && repeatable(e.kind(), call.app_id.is_some()) => continue,
+                Err(e) if attempt < ATTEMPTS && !self.deletes.is_empty() && delete::rebases(&e) => rebase = true,
                 Err(e) => return Err(e.into()),
             }
         }

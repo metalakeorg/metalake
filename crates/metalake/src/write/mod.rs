@@ -1,5 +1,6 @@
 //! Writing: the writer, which turns Arrow into Parquet files and their statistics, and transactions, which commit them.
 
+mod delete;
 mod transaction;
 mod writer;
 

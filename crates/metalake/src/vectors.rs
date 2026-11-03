@@ -3,12 +3,22 @@
 //! (big-endian), the magic `D1 D3 39 64`, a 64-bit Roaring bitmap in its portable serialization, and a CRC-32 of the
 //! magic and the bitmap (big-endian). A reader skips the positions as a Parquet `RowSelection`.
 
+use std::collections::BTreeMap;
+
+use arrow_array::RecordBatch;
+use arrow_array::cast::AsArray;
+use arrow_array::types::Int64Type;
 use parquet::arrow::arrow_reader::{RowSelection, RowSelector};
 use roaring::RoaringTreemap;
 
 use crate::error::{Error, Result};
 
 const MAGIC: [u8; 4] = [0xD1, 0xD3, 0x39, 0x64];
+
+/// The column of a scan read `with_positions` that holds each row's file.
+pub const FILE_ID: &str = "_file_id";
+/// The column that holds each row's position in its file, from 0.
+pub const POSITION: &str = "_pos";
 
 /// The deleted positions of one data file.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -64,6 +74,23 @@ impl DeletionVector {
         blob
     }
 
+    pub fn insert(&mut self, position: u64) {
+        self.positions.insert(position);
+    }
+
+    /// The positions either deletes: the vector of a file that two writers, or a branch and its parent, both
+    /// deleted from (DV-4, MRG-5).
+    pub fn union(&self, other: &Self) -> Self {
+        Self {
+            positions: &self.positions | &other.positions,
+        }
+    }
+
+    /// The greatest position it deletes.
+    pub fn max(&self) -> Option<u64> {
+        self.positions.max()
+    }
+
     /// How many rows it deletes.
     pub fn cardinality(&self) -> u64 {
         self.positions.len()
@@ -109,6 +136,48 @@ impl DeletionVector {
             }
         }
         selectors.into()
+    }
+}
+
+/// Rows to delete, by file: what an engine gathers from the rows of a scan read `with_positions` that it chose.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Deletes {
+    files: BTreeMap<i64, DeletionVector>,
+}
+
+impl Deletes {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Deletes the row at `position` of file `file_id`.
+    pub fn insert(&mut self, file_id: i64, position: u64) {
+        self.files.entry(file_id).or_default().insert(position);
+    }
+
+    /// Deletes every row of a batch read `with_positions`, by its `_file_id` and `_pos`.
+    pub fn add(&mut self, batch: &RecordBatch) -> Result<()> {
+        let column = |name: &str| {
+            batch
+                .column_by_name(name)
+                .and_then(|c| c.as_primitive_opt::<Int64Type>())
+                .ok_or_else(|| Error::Schema(format!("the batch has no {name}: read it with_positions")))
+        };
+        let (files, positions) = (column(FILE_ID)?, column(POSITION)?);
+        for (file, position) in files.values().iter().zip(positions.values()) {
+            let position = u64::try_from(*position).map_err(|_| Error::Schema(format!("a position {position}")))?;
+            self.insert(*file, position);
+        }
+        Ok(())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    /// The files and what to delete of each.
+    pub fn files(&self) -> &BTreeMap<i64, DeletionVector> {
+        &self.files
     }
 }
 
