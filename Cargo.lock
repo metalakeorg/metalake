@@ -1132,6 +1132,7 @@ version = "0.0.0"
 dependencies = [
  "arrow-schema",
  "bytes",
+ "futures-util",
  "metalake-pg",
  "object_store",
  "parquet",

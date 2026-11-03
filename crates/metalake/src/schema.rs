@@ -91,6 +91,111 @@ pub fn arrow_type(ty: &str) -> Result<DataType> {
     })
 }
 
+/// The fields of a new table from an Arrow schema, the reverse of [`arrow_schema`]: ids drawn from 1 in the order
+/// the fields appear, depth first (a struct's children, a list's element, a map's key and value after their
+/// parent). Arrow types the specification has no type for are refused by name; cast them first.
+pub fn spec_fields(schema: &Schema) -> Result<Vec<Field>> {
+    let mut fields = Vec::new();
+    let mut next = 1;
+    for (i, f) in schema.fields().iter().enumerate() {
+        add_field(
+            &mut fields,
+            &mut next,
+            None,
+            i as i32 + 1,
+            f.name(),
+            f.data_type(),
+            f.is_nullable(),
+        )?;
+    }
+    Ok(fields)
+}
+
+fn add_field(
+    out: &mut Vec<Field>,
+    next: &mut i32,
+    parent: Option<i32>,
+    position: i32,
+    name: &str,
+    ty: &DataType,
+    nullable: bool,
+) -> Result<()> {
+    let id = *next;
+    *next += 1;
+    let (spec, children): (String, Vec<(String, DataType, bool)>) = match ty {
+        DataType::Struct(fs) => (
+            "struct".into(),
+            fs.iter()
+                .map(|f| (f.name().clone(), f.data_type().clone(), f.is_nullable()))
+                .collect(),
+        ),
+        DataType::List(e) | DataType::LargeList(e) => (
+            "list".into(),
+            vec![("element".into(), e.data_type().clone(), e.is_nullable())],
+        ),
+        DataType::Map(entries, _) => match entries.data_type() {
+            DataType::Struct(kv) if kv.len() == 2 => (
+                "map".into(),
+                vec![
+                    ("key".into(), kv[0].data_type().clone(), false),
+                    ("value".into(), kv[1].data_type().clone(), kv[1].is_nullable()),
+                ],
+            ),
+            _ => {
+                return Err(Error::Schema(format!(
+                    "{name}: a map's entries are a struct of a key and a value"
+                )));
+            }
+        },
+        primitive => (
+            spec_type(primitive).map_err(|e| Error::Schema(format!("{name}: {e}")))?,
+            Vec::new(),
+        ),
+    };
+    out.push(Field {
+        field_id: id,
+        parent_field_id: parent,
+        position,
+        name: name.to_string(),
+        ty: spec,
+        required: !nullable,
+        doc: None,
+        initial_default: None,
+        write_default: None,
+    });
+    for (i, (child, ty, nullable)) in children.iter().enumerate() {
+        add_field(out, next, Some(id), i as i32 + 1, child, ty, *nullable)?;
+    }
+    Ok(())
+}
+
+/// The type of the specification of a primitive Arrow type.
+pub fn spec_type(ty: &DataType) -> Result<String> {
+    Ok(match ty {
+        DataType::Null => "unknown".into(),
+        DataType::Boolean => "boolean".into(),
+        DataType::Int32 => "int".into(),
+        DataType::Int64 => "long".into(),
+        DataType::Float32 => "float".into(),
+        DataType::Float64 => "double".into(),
+        DataType::Date32 => "date".into(),
+        DataType::Time64(TimeUnit::Microsecond) => "time".into(),
+        DataType::Timestamp(TimeUnit::Microsecond, None) => "timestamp".into(),
+        DataType::Timestamp(TimeUnit::Microsecond, Some(_)) => "timestamptz".into(),
+        DataType::Timestamp(TimeUnit::Nanosecond, None) => "timestamp_ns".into(),
+        DataType::Timestamp(TimeUnit::Nanosecond, Some(_)) => "timestamptz_ns".into(),
+        DataType::Utf8 | DataType::LargeUtf8 => "string".into(),
+        DataType::Binary | DataType::LargeBinary => "binary".into(),
+        DataType::FixedSizeBinary(n) => format!("fixed[{n}]"),
+        DataType::Decimal128(p, s) if *s >= 0 => format!("decimal({p},{s})"),
+        other => {
+            return Err(Error::Schema(format!(
+                "{other} has no type in the specification: cast it to one that has"
+            )));
+        }
+    })
+}
+
 /// The two parameters of `prefix<a>,<b>suffix`, trimmed.
 fn parameters<'a>(ty: &'a str, prefix: &str, suffix: &str) -> Option<(&'a str, &'a str)> {
     let (a, b) = ty.strip_prefix(prefix)?.strip_suffix(suffix)?.split_once(',')?;
@@ -235,6 +340,40 @@ mod tests {
                 ("value", "8", true, &DataType::Float64)
             ]
         );
+    }
+
+    #[test]
+    fn an_arrow_schema_becomes_fields_and_comes_back_the_same() {
+        let fields = [
+            field(1, None, 1, "k", "long", true),
+            field(2, None, 2, "s", "struct", false),
+            field(3, Some(2), 1, "x", "int", false),
+            field(4, Some(2), 2, "y", "string", true),
+            field(5, None, 3, "tags", "list", false),
+            field(6, Some(5), 1, "element", "string", true),
+            field(7, None, 4, "m", "map", false),
+            field(8, Some(7), 1, "key", "string", true),
+            field(9, Some(7), 2, "value", "decimal(10,2)", false),
+            field(10, None, 5, "at", "timestamptz", false),
+        ];
+        let schema = arrow_schema(&fields).unwrap();
+        assert_eq!(spec_fields(&schema).unwrap(), fields);
+    }
+
+    #[test]
+    fn arrow_types_without_a_spec_type_are_refused() {
+        for ty in [
+            DataType::UInt64,
+            DataType::Int16,
+            DataType::Utf8View,
+            DataType::Time32(TimeUnit::Millisecond),
+        ] {
+            let schema = Schema::new(vec![ArrowField::new("c", ty.clone(), true)]);
+            assert!(
+                matches!(spec_fields(&schema), Err(Error::Schema(m)) if m.starts_with("c: ")),
+                "{ty}"
+            );
+        }
     }
 
     #[test]

@@ -15,6 +15,8 @@ pub struct CatalogConfig {
     pub postgres: String,
     pub schema: String,
     pub connections: usize,
+    /// Where new tables put their files when they name no location: a URL, such as `gs://lake/warehouse`.
+    pub warehouse: Option<String>,
 }
 
 impl CatalogConfig {
@@ -23,7 +25,13 @@ impl CatalogConfig {
             postgres: postgres.into(),
             schema: schema.into(),
             connections: 8,
+            warehouse: None,
         }
+    }
+
+    pub fn warehouse(mut self, url: impl Into<String>) -> Self {
+        self.warehouse = Some(url.into());
+        self
     }
 }
 
@@ -38,6 +46,7 @@ struct Inner {
     pool: Pool,
     protocol: Protocol,
     versions: Versions,
+    warehouse: Option<String>,
 }
 
 impl Catalog {
@@ -50,6 +59,7 @@ impl Catalog {
                 pool,
                 protocol: Protocol::new(&config.schema),
                 versions,
+                warehouse: config.warehouse,
             }),
         })
     }
@@ -105,8 +115,17 @@ impl Catalog {
         Ok(self.inner.pool.get().await?)
     }
 
+    /// A session, with the SDK's error, for a call whose error decides whether it is repeated.
+    pub(crate) async fn pg_session(&self) -> metalake_pg::Result<PooledSession> {
+        self.inner.pool.get().await
+    }
+
     pub(crate) fn protocol(&self) -> &Protocol {
         &self.inner.protocol
+    }
+
+    pub(crate) fn warehouse(&self) -> Option<&str> {
+        self.inner.warehouse.as_deref()
     }
 }
 
@@ -132,6 +151,15 @@ impl Ref {
     /// `branch` or `tag`.
     pub fn kind(&self) -> &str {
         &self.kind
+    }
+
+    /// A transaction on this ref, which commits on its latest state.
+    pub fn transaction(&self) -> crate::Transaction {
+        crate::Transaction::new(self.clone())
+    }
+
+    pub(crate) fn catalog(&self) -> &Catalog {
+        &self.catalog
     }
 
     /// The same ref, read at `seq` instead of its latest state.
