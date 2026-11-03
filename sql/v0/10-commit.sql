@@ -129,6 +129,28 @@ begin
 end $$;
 
 -- The first rule a commit's own rows break, or NULL (CMT-9): only what the commit wrote is checked.
+-- PAR-3: whether a file's partition value `pv`, of transform `tr` over a field of type `t`, contradicts the field's
+-- statistics in the file: its bounds, current under STA-7, and its null count. The same branches, in the same order,
+-- as the reference's partition_errors, whose functions it reuses for the transforms themselves.
+create function @schema@.partition_contradicts(t text, tr text, pv jsonb, lo bytea, hi bytea, nulls bigint)
+returns boolean language sql immutable
+set search_path = @schema@, pg_catalog, pg_temp as $$
+  select case
+    when pv is null or pv = 'null' then lo is not null or hi is not null
+    when nulls > 0 then true
+    when lo is null or hi is null then false
+    when tr like 'bucket[%' then
+      lo = hi and base_type(t) not in ('string', 'binary')
+      and compare_partition_values(t, tr, transform_value(t, tr, decode_bound(t, lo)), pv) <> 0
+    when base_type(t) in ('string', 'binary') then
+      compare_partition_values(t, tr, transform_value(t, tr, decode_bound(t, lo)), pv) > 0
+      or compare_partition_values(t, tr, pv, transform_value(t, tr, decode_bound(t, hi))) > 0
+    else
+      compare_partition_values(t, tr, transform_value(t, tr, decode_bound(t, lo)), pv) <> 0
+      or compare_partition_values(t, tr, transform_value(t, tr, decode_bound(t, hi)), pv) <> 0
+  end;
+$$;
+
 create function @schema@.commit_problem(r int, seq bigint, adds file_add[], ids bigint[], vecs vector_set[],
                                          defined uuid[]) returns text language plpgsql
 set search_path = @schema@, pg_catalog, pg_temp as $$
@@ -165,6 +187,22 @@ begin
      where (a.f).sort_order_id <> 0
        and not exists (select 1 from sort_order o
                         where o.table_id = (a.f).table_id and o.sort_order_id = (a.f).sort_order_id)
+    -- PAR-3: no partition value that the statistics of its source field contradict; a field without statistics in
+    -- the file, or of transform void, is not checked.
+    union all
+    select format('PAR-3: file %s has partition %s = %s, which its statistics contradict', a.fid, x.name, x.pv)
+      from a
+     cross join lateral (select p.fields from partition_spec p
+                          where p.table_id = (a.f).table_id and p.spec_id = coalesce((a.f).spec_id, 0) limit 1) s
+     cross join lateral jsonb_array_elements(s.fields) with ordinality pf(f, n)
+     cross join lateral (select pf.f ->> 'name' as name, pf.f ->> 'transform' as tr,
+                                (a.f).partition -> (pf.n::int - 1) as pv,
+                                array_position((a.f).stat_field_ids, (pf.f -> 'source_ids' ->> 0)::int) as i,
+                                (select y.type from visible_fields(r, (a.f).table_id, latest) y
+                                  where y.field_id = (pf.f -> 'source_ids' ->> 0)::int) as t) x
+     where x.tr <> 'void' and x.i is not null and x.t is not null
+       and partition_contradicts(x.t, x.tr, x.pv, current_bound(x.t, (a.f).lower[x.i]),
+                                 current_bound(x.t, (a.f).upper[x.i]), (a.f).null_count[x.i])
     -- STA-3: bounds for every field of the cluster key.
     union all
     select format('STA-3: file %s has no statistics for cluster key field %s', a.fid, k) from a
