@@ -32,7 +32,9 @@ pub struct FileStatistics {
 /// Where a file is and what the writer knows of it beyond its footer.
 #[derive(Debug, Clone)]
 pub struct FileFacts {
-    pub path: String,
+    /// Its path, or none for an inline file, whose bytes travel in `content` (INL-1).
+    pub path: Option<String>,
+    pub content: Option<Vec<u8>>,
     pub file_size: i64,
     pub footer_size: i32,
     pub spec_id: i32,
@@ -47,7 +49,7 @@ impl FileStatistics {
         FileAdd {
             table_id,
             file_id: None,
-            path: Some(facts.path),
+            path: facts.path,
             spec_id: facts.spec_id,
             partition: facts.partition,
             sort_order_id: facts.sort_order_id,
@@ -61,7 +63,7 @@ impl FileStatistics {
             null_count: self.null_count,
             nan_count: self.nan_count,
             value_count: Some(self.value_count),
-            content: None,
+            content: facts.content,
             footer: None,
         }
     }

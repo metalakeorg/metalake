@@ -18,6 +18,8 @@ azure = ["object_store/azure"]
 metalake-pg.workspace = true
 arrow-schema.workspace = true
 parquet.workspace = true
+arrow-array.workspace = true
+futures-util.workspace = true
 object_store.workspace = true
 bytes.workspace = true
 serde_json.workspace = true
@@ -27,4 +29,3 @@ url.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
-futures-util.workspace = true

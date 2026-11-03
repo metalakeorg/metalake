@@ -274,7 +274,8 @@ async fn statistics_from_the_footer_are_the_references() -> Result<(), Error> {
     let add = got.into_file_add(
         table.id(),
         FileFacts {
-            path: "memory:///lake/t/a.parquet".into(),
+            path: Some("memory:///lake/t/a.parquet".into()),
+            content: None,
             file_size: file.len() as i64,
             footer_size,
             spec_id: table.spec_id().unwrap_or(0),

@@ -28,4 +28,4 @@ pub use error::{Error, Result};
 pub use metalake_pg::records::TableName;
 pub use storage::Storage;
 pub use table::{Field, Table};
-pub use write::{NewTable, Outcome, Transaction};
+pub use write::{NewTable, Outcome, TableWriter, Transaction, WriteOptions};
