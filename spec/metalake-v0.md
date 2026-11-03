@@ -570,7 +570,9 @@ referred to. Retention says how much history each ref keeps.
   **collectable** when no reach point `(R, s)` has `R` equal to the row's ref and the row valid at `s`. A
   `snapshot` row is collectable when no retained read uses it as its snapshot of the table (CMT-2). A `commit`
   row is collectable when its `commit_seq` is not the id of a remaining snapshot, the `created_seq` of a ref,
-  or a commit recorded in `idempotency`. Collecting never changes the result of a retained read.
+  or a commit recorded in `idempotency`, and, *0.2*, its ref is deleted or the commit is below the ref's floor:
+  a commit within the retention stays, so that the feed delivers it (CHG-1), even one that wrote no snapshot.
+  Collecting never changes the result of a retained read.
 
   *0.2. Note.* By RET-2, the reach points on a live ref `r` are every sequence from its floor up, and isolated
   points below it, where the chains of other refs reach `r`; a hidden ref has isolated points only. So a row of

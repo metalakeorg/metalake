@@ -196,6 +196,9 @@ select expire();
 select expect(exists (select 1 from namespace where namespace = '{n}' and begin_seq = :n1),
   'the namespace''s row, valid only between two kept snapshots, stays: the reads in between are retained');
 select expect(not exists (select 1 from data_file where file_id = 1), 'file 1, closed below the floor, goes');
+select expect(exists (select 1 from commit where commit_seq = :n1) and exists (select 1 from commit where commit_seq = :n2),
+  'and the commits of namespaces only, within the retention, stay for the feed');
+select expect(not exists (select 1 from commit where commit_seq = :s1), 'a commit below the floor without a snapshot goes');
 select set_retention(1, min_snapshots => 0);
 select expect(retention_floor(1) = 9223372036854775807 and not exists (select 1 from kept_snapshots(1)),
   'keeping no snapshot: the floor is OPEN, and only LATEST is read');

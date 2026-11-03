@@ -136,7 +136,9 @@ begin
   delete from commit c
    where not exists (select 1 from snapshot s where s.snapshot_id = c.commit_seq)
      and not exists (select 1 from ref r where r.created_seq = c.commit_seq)
-     and not exists (select 1 from idempotency i where i.commit_seq = c.commit_seq);
+     and not exists (select 1 from idempotency i where i.commit_seq = c.commit_seq)
+     and (exists (select 1 from ref r where r.ref_id = c.ref_id and r.deleted)
+          or c.commit_seq < retention_floor(c.ref_id));
   get diagnostics k = row_count; n := n + k;
 
   -- RET-4: the objects of the doomed rows that no remaining row refers to.

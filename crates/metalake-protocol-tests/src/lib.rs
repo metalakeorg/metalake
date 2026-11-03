@@ -16,8 +16,11 @@ use tokio_postgres::{Client, NoTls};
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
 /// Columns that differ between two catalogs by nature, not by what they hold: when a transaction ran.
-const VOLATILE_COLUMNS: &[(&str, &str)] =
-    &[("commit", "xid"), ("commit", "committed_at"), ("deletion_queue", "expired_at")];
+const VOLATILE_COLUMNS: &[(&str, &str)] = &[
+    ("commit", "xid"),
+    ("commit", "committed_at"),
+    ("deletion_queue", "expired_at"),
+];
 
 /// Rows of `meta` that identify a catalog, or belong to the protocol alone.
 const OWN_META_KEYS: &[&str] = &["catalog_uuid", "created_at", "protocol_version"];

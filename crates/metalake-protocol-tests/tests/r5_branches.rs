@@ -235,17 +235,28 @@ impl Run {
         Ok(by_reference)
     }
 
-    /// Both expire (RET-4): they must delete the same rows and queue the same objects. Returns the rows deleted and
-    /// the queue.
+    /// Both expire (RET-4), the protocol in batches: they must delete the same rows and queue the same objects.
+    /// Returns the rows deleted and the queue.
     async fn collect(&self) -> Result<(i64, Vec<String>), Error> {
         let queue = "select array(select path || ':' || kind from deletion_queue order by 1)";
         let rows: i64 = self.pair.on_reference.query_one("select expire()", &[]).await?.get(0);
         let reference: Vec<String> = self.pair.on_reference.query_one(queue, &[]).await?.get(0);
         let p = quote_ident(&self.pair.protocol);
         let on = &self.pair.on_protocol;
-        let deleted: i64 = on.query_one(&format!("select {p}.expire()"), &[]).await?.get(0);
+        // The protocol in small batches, until a batch deletes nothing: it must end where the reference does.
+        let mut deleted = 0i64;
+        loop {
+            let k: i64 = on.query_one(&format!("select {p}.expire(3)"), &[]).await?.get(0);
+            if k == 0 {
+                break;
+            }
+            deleted += k;
+        }
         let protocol: Vec<String> = on
-            .query_one(&queue.replace("from deletion_queue", &format!("from {p}.deletion_queue")), &[])
+            .query_one(
+                &queue.replace("from deletion_queue", &format!("from {p}.deletion_queue")),
+                &[],
+            )
             .await?
             .get(0);
         if reference != protocol || rows != deleted {
@@ -621,6 +632,136 @@ async fn a_removed_file_is_collected() -> Result<(), Error> {
     run.pair.drop().await?;
     if first.1.len() != 1 || second.0 != 0 || second.1 != first.1 {
         return Err(format!("expired {first:?}, then {second:?}").into());
+    }
+    Ok(())
+}
+
+/// RET-2 to RET-4: scenes a short random run seldom reaches, each on a fresh pair; both expire alike, the protocol in
+/// batches. A file a branch still reads at its fork, a deleted branch, a file merged into main from a branch then
+/// deleted, a commit of namespaces only within the retention, and an inline file.
+#[tokio::test]
+async fn retention_scenes_match_the_reference() -> Result<(), Error> {
+    let append = |r: u8| Step::Commit {
+        r,
+        table: 0,
+        change: Change::Append(1),
+    };
+    let scenes: Vec<Vec<Step>> = vec![
+        vec![
+            append(0),
+            Step::Branch {
+                from: 0,
+                tag: false,
+                at: None,
+            },
+            Step::Commit {
+                r: 0,
+                table: 0,
+                change: Change::Remove(0),
+            },
+            Step::Retain { r: 0, min_snapshots: 0 },
+        ],
+        vec![
+            Step::Branch {
+                from: 0,
+                tag: false,
+                at: None,
+            },
+            append(1),
+            Step::Delete { r: 1 },
+        ],
+        vec![
+            Step::Branch {
+                from: 0,
+                tag: false,
+                at: None,
+            },
+            append(1),
+            Step::Merge { r: 1, supply: 0 },
+            Step::Delete { r: 1 },
+            Step::Retain { r: 0, min_snapshots: 1 },
+        ],
+    ];
+    for (i, steps) in scenes.iter().enumerate() {
+        let mut run = Run::new().await?;
+        for s in steps {
+            run.apply(s).await?;
+        }
+        let (rows, _) = run.collect().await?;
+        if rows == 0 {
+            return Err(format!("scene {i} expired nothing").into());
+        }
+        run.pair.drop().await?;
+    }
+
+    // A commit of namespaces only, within the retention, and an inline file removed.
+    let mut run = Run::new().await?;
+    run.apply(&append(0)).await?;
+    let t = Uuid::from_u128(0x8001);
+    let mut inline = stored_file(t, String::new(), 1, 1, 0, 0);
+    inline.path = None;
+    inline.content = Some(vec![7u8; 16]);
+    inline.file_size = 16;
+    for c in [
+        Commit {
+            ref_id: 1,
+            operation: "update".into(),
+            tables: vec![],
+            app: None,
+            namespaces: Some(json!([{"namespace": ["n"], "create": true}])),
+        },
+        Commit {
+            ref_id: 1,
+            operation: "append".into(),
+            tables: vec![TableChange {
+                table_id: t,
+                adds: vec![inline],
+                ..TableChange::default()
+            }],
+            app: None,
+            namespaces: None,
+        },
+    ] {
+        run.pair.commit(&c).await?;
+    }
+    let ids: Vec<i64> = run
+        .pair
+        .on_reference
+        .query(
+            "select file_id from visible_files(1, $1, $2) order by file_id desc",
+            &[&t, &LATEST],
+        )
+        .await?
+        .iter()
+        .map(|r| r.get(0))
+        .collect();
+    let remove = Commit {
+        ref_id: 1,
+        operation: "delete".into(),
+        tables: vec![TableChange {
+            table_id: t,
+            removes: vec![ids[0]],
+            ..TableChange::default()
+        }],
+        app: None,
+        namespaces: None,
+    };
+    run.pair.commit(&remove).await?;
+    run.apply(&append(0)).await?;
+    // Above the floor: kept for the feed.
+    let spaces = Commit {
+        ref_id: 1,
+        operation: "update".into(),
+        tables: vec![],
+        app: None,
+        namespaces: Some(json!([{"namespace": ["m"], "create": true}])),
+    };
+    run.pair.commit(&spaces).await?;
+    run.apply(&Step::Retain { r: 0, min_snapshots: 1 }).await?;
+    let (rows, _) = run.collect().await?;
+    run.pair.drop().await?;
+    if rows == 0 {
+        return Err("the last scene expired nothing".into());
     }
     Ok(())
 }

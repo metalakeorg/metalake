@@ -190,6 +190,11 @@ begin
     select format('RET-7: the intent of %s expired at %s', i.path, i.expires_at) from a
       join intent i on i.path = (a.f).path
      where i.expires_at < now()
+    -- RET-8: no path in the deletion queue, files or Puffin files.
+    union all
+    select format('RET-8: %s is queued for deletion', q.path) from a join deletion_queue q on q.path = (a.f).path
+    union all
+    select format('RET-8: %s is queued for deletion', q.path) from unnest(vecs) v join deletion_queue q on q.path = v.path
   ) z limit 1;
   if problem is not null then return problem; end if;
 
@@ -439,6 +444,11 @@ begin
     from unnest(vecs) v;
 
   -- CMT-9: what the commit wrote is valid.
+  -- RET-5: the paths it adds, held against expiring before RET-8 looks at the queue.
+  perform path_lock(z.path, false)
+     from (select (f).path from unnest(adds) f where (f).path is not null
+           union select v.path from unnest(vecs) v where v.path is not null) z
+    order by z.path;
   problem := commit_problem(r, seq, adds, ids, vecs, defined);
   if problem is not null then
     perform refuse_invalid(split_part(problem, ':', 1), problem);
