@@ -6,8 +6,8 @@
 
 use std::time::{Duration, Instant};
 
-use metalake_protocol_tests::records::{stored_file, FileAdd};
-use metalake_protocol_tests::{connect, fresh_schema, install_reference, render, Error};
+use metalake_protocol_tests::records::{FileAdd, stored_file};
+use metalake_protocol_tests::{Error, connect, fresh_schema, install_reference, render};
 
 const MEASURE: &str = "
 create function m_records(t uuid, files file_add[]) returns bigint language plpgsql as $$

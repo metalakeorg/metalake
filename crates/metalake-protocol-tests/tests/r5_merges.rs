@@ -3,9 +3,9 @@
 //! sides, and goes through with one that does, or by itself when both vectors are inline. MRG-3: the two sides add a
 //! field of the same name, and the merge, which would leave the table with two, is refused.
 
-use metalake_protocol_tests::differential::{clone_catalog, Commit, Outcome, Pair, TableChange};
-use metalake_protocol_tests::records::{stored_file, VectorSet};
-use metalake_protocol_tests::{connect, fresh_schema, install_protocol, install_reference, quote_ident, Error};
+use metalake_protocol_tests::differential::{Commit, Outcome, Pair, TableChange, clone_catalog};
+use metalake_protocol_tests::records::{VectorSet, stored_file};
+use metalake_protocol_tests::{Error, connect, fresh_schema, install_protocol, install_reference, quote_ident};
 use serde_json::json;
 use uuid::Uuid;
 

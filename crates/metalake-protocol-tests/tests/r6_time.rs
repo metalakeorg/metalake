@@ -3,12 +3,12 @@
 //! filler and some not (TT-1). The reference then gets a copy of it, with the same transactions, and both answer
 //! the feed from every cursor and a read as of every instant around a commit alike.
 
-use metalake_protocol_tests::differential::{clone_catalog, commit_protocol, Commit, Outcome, TableChange};
-use metalake_protocol_tests::records::{stored_file, VectorSet};
-use metalake_protocol_tests::{connect, fresh_schema, install_protocol, install_reference, quote_ident, Error};
+use metalake_protocol_tests::differential::{Commit, Outcome, TableChange, clone_catalog, commit_protocol};
+use metalake_protocol_tests::records::{VectorSet, stored_file};
+use metalake_protocol_tests::{Error, connect, fresh_schema, install_protocol, install_reference, quote_ident};
 use serde_json::json;
-use tokio_postgres::types::ToSql;
 use tokio_postgres::Client;
+use tokio_postgres::types::ToSql;
 use uuid::Uuid;
 
 const TABLES: [u128; 3] = [0xc001, 0xc002, 0xc003];

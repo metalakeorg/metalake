@@ -5,9 +5,9 @@
 
 use std::collections::HashMap;
 
-use metalake_protocol_tests::differential::{clone_catalog, Commit, Outcome, Pair, TableChange};
-use metalake_protocol_tests::records::{encode_long, stored_file, FileAdd, VectorSet};
-use metalake_protocol_tests::{connect, fresh_schema, install_protocol, install_reference, quote_ident, Error};
+use metalake_protocol_tests::differential::{Commit, Outcome, Pair, TableChange, clone_catalog};
+use metalake_protocol_tests::records::{FileAdd, VectorSet, encode_long, stored_file};
+use metalake_protocol_tests::{Error, connect, fresh_schema, install_protocol, install_reference, quote_ident};
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestCaseError, TestRunner};
 use serde_json::json;

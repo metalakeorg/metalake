@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use metalake_protocol_tests::records::stored_file;
-use metalake_protocol_tests::{connect, fresh_schema, install_protocol, quote_ident, Error};
+use metalake_protocol_tests::{Error, connect, fresh_schema, install_protocol, quote_ident};
 use tokio_postgres::Client;
 use uuid::Uuid;
 

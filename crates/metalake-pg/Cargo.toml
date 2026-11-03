@@ -1,0 +1,16 @@
+[package]
+name = "metalake-pg"
+version = "0.0.0"
+description = "The protocol's SDK: installs MetaLake's protocol in Postgres, calls it with types and translates its answers"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+tokio-postgres.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

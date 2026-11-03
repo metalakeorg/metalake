@@ -1,12 +1,12 @@
 //! Differential testing (ADR 0003 §5): one commit, expressed for the protocol and for the reference, applied to a
 //! catalog of each; both must answer alike and leave the same rows.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_postgres::Client;
 use uuid::Uuid;
 
 use crate::records::{FileAdd, FileRef, TableExpect, VectorSet};
-use crate::{compare, quote_ident, Difference, Error};
+use crate::{Difference, Error, compare, quote_ident};
 
 /// What a commit does to one table.
 #[derive(Debug, Clone, Default)]

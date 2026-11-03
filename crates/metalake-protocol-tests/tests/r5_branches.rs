@@ -3,12 +3,12 @@
 //! merges (with merged vectors supplied, short, or missing) and deletions; after every step both catalogs answer
 //! alike and hold the same rows.
 
-use metalake_protocol_tests::differential::{clone_catalog, Commit, Pair, TableChange};
-use metalake_protocol_tests::records::{stored_file, VectorSet};
-use metalake_protocol_tests::{connect, fresh_schema, install_protocol, install_reference, quote_ident, Error};
+use metalake_protocol_tests::differential::{Commit, Pair, TableChange, clone_catalog};
+use metalake_protocol_tests::records::{VectorSet, stored_file};
+use metalake_protocol_tests::{Error, connect, fresh_schema, install_protocol, install_reference, quote_ident};
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestCaseError, TestRunner};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_postgres::types::ToSql;
 use uuid::Uuid;
 

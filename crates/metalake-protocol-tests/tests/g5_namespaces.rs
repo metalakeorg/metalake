@@ -6,11 +6,11 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use metalake_protocol_tests::differential::{clone_catalog, Commit, Outcome, Pair, TableChange};
-use metalake_protocol_tests::{connect, fresh_schema, install_protocol, install_reference, quote_ident, Error};
+use metalake_protocol_tests::differential::{Commit, Outcome, Pair, TableChange, clone_catalog};
+use metalake_protocol_tests::{Error, connect, fresh_schema, install_protocol, install_reference, quote_ident};
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestCaseError, TestRunner};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 const LATEST: i64 = 9223372036854775806;

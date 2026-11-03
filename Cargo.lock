@@ -378,9 +378,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "metalake-pg"
+version = "0.0.0"
+dependencies = [
+ "thiserror",
+ "tokio",
+ "tokio-postgres",
+]
+
+[[package]]
 name = "metalake-protocol-tests"
 version = "0.0.0"
 dependencies = [
+ "metalake-pg",
  "postgres-types",
  "proptest",
  "serde_json",
@@ -795,6 +805,26 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys",
+]
+
+[[package]]
+name = "thiserror"
+version = "2.0.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e"
+dependencies = [
+ "thiserror-impl",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "2.0.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
 ]
 
 [[package]]

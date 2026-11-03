@@ -1,8 +1,8 @@
 //! R8: the protocol's interface (ADR 0003 §2.1, §2.7, §2.8): versions and `migrate`.
 
-use metalake_protocol_tests::differential::{clone_catalog, commit_protocol, Commit, Outcome, TableChange};
+use metalake_protocol_tests::differential::{Commit, Outcome, TableChange, clone_catalog, commit_protocol};
 use metalake_protocol_tests::records::stored_file;
-use metalake_protocol_tests::{compare, connect, fresh_schema, install_protocol, migrate_protocol, quote_ident, Error};
+use metalake_protocol_tests::{Error, compare, connect, fresh_schema, install_protocol, migrate_protocol, quote_ident};
 use serde_json::json;
 use tokio_postgres::Client;
 use uuid::Uuid;
@@ -86,7 +86,10 @@ async fn migrating_changes_nothing_and_refuses_what_it_does_not_know() -> Result
         let refused = migrate_protocol(&on, &schema).await;
         on.batch_execute(&format!("update {p}.meta set value = '0' where key = '{key}'"))
             .await?;
-        if !refused.as_ref().is_err_and(|e| e.to_string().contains("0A000")) {
+        if !refused.as_ref().is_err_and(|e| {
+            e.downcast_ref::<metalake_pg::Error>()
+                .is_some_and(|e| e.kind() == metalake_pg::ErrorKind::Unsupported)
+        }) {
             return Err(format!("{key} {value}: {refused:?}").into());
         }
         if !compare(&on, &schema, &twin).await?.is_empty() || functions(&on, &schema).await? != before {

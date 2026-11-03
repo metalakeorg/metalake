@@ -6,12 +6,12 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use metalake_protocol_tests::differential::{clone_catalog, commit_reference, Commit, Outcome, Pair, TableChange};
+use metalake_protocol_tests::differential::{Commit, Outcome, Pair, TableChange, clone_catalog, commit_reference};
 use metalake_protocol_tests::records::stored_file;
-use metalake_protocol_tests::{connect, fresh_schema, install_protocol, install_reference, quote_ident, Error};
+use metalake_protocol_tests::{Error, connect, fresh_schema, install_protocol, install_reference, quote_ident};
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestCaseError, TestRunner};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_postgres::Client;
 use uuid::Uuid;
 

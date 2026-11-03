@@ -1,6 +1,6 @@
 //! R0: the protocol and the reference install side by side, and the harness sees any difference between them.
 
-use metalake_protocol_tests::{compare, connect, fresh_schema, install_protocol, install_reference, Error};
+use metalake_protocol_tests::{Error, compare, connect, fresh_schema, install_protocol, install_reference};
 
 #[tokio::test]
 async fn both_install_into_an_empty_database() -> Result<(), Error> {

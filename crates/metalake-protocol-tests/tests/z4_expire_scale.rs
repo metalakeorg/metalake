@@ -4,9 +4,9 @@
 
 use std::time::Instant;
 
-use metalake_protocol_tests::differential::{commit_protocol, Commit, Outcome, TableChange};
+use metalake_protocol_tests::differential::{Commit, Outcome, TableChange, commit_protocol};
 use metalake_protocol_tests::records::stored_file;
-use metalake_protocol_tests::{connect, fresh_schema, install_protocol, quote_ident, Error};
+use metalake_protocol_tests::{Error, connect, fresh_schema, install_protocol, quote_ident};
 use serde_json::json;
 use tokio_postgres::Client;
 use uuid::Uuid;

@@ -1,9 +1,9 @@
 //! R3: each faulty definition change, once, on a fresh pair of catalogs; both must refuse it with the same SQLSTATE.
 //! The random sequences of `r3_commit_definitions` reach most of these only by chance.
 
-use metalake_protocol_tests::differential::{clone_catalog, Commit, Outcome, Pair, TableChange};
-use metalake_protocol_tests::{connect, fresh_schema, install_protocol, install_reference, quote_ident, Error};
-use serde_json::{json, Value};
+use metalake_protocol_tests::differential::{Commit, Outcome, Pair, TableChange, clone_catalog};
+use metalake_protocol_tests::{Error, connect, fresh_schema, install_protocol, install_reference, quote_ident};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 const MAIN: i32 = 1;

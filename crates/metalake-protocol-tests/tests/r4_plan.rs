@@ -4,9 +4,9 @@
 //! the same vectors as the reference's `prune` and `visible_dvs`. A second test checks with `EXPLAIN` that `plan` is
 //! inlined into a prepared statement and reaches the files through the index of their bound range.
 
-use metalake_protocol_tests::differential::{clone_catalog, commit_reference, Commit, Outcome, TableChange};
-use metalake_protocol_tests::records::{encode_long, stored_file, FileAdd, VectorSet};
-use metalake_protocol_tests::{connect, fresh_schema, install_protocol, install_reference, quote_ident, Error};
+use metalake_protocol_tests::differential::{Commit, Outcome, TableChange, clone_catalog, commit_reference};
+use metalake_protocol_tests::records::{FileAdd, VectorSet, encode_long, stored_file};
+use metalake_protocol_tests::{Error, connect, fresh_schema, install_protocol, install_reference, quote_ident};
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestCaseError, TestRunner};
 use serde_json::json;
