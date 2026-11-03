@@ -1,0 +1,28 @@
+[package]
+name = "metalake"
+version = "0.0.0"
+description = "MetaLake's core: tables as Arrow, statistics, deletion vectors, storage, scans and writes, over the protocol in Postgres"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+s3 = ["object_store/aws"]
+gcs = ["object_store/gcp"]
+azure = ["object_store/azure"]
+
+[dependencies]
+metalake-pg.workspace = true
+arrow-schema.workspace = true
+object_store.workspace = true
+bytes.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

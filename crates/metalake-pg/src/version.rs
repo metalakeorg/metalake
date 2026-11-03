@@ -2,7 +2,7 @@
 
 use tokio_postgres::GenericClient;
 
-use crate::{Error, ErrorKind, Result, quote_ident};
+use crate::{Error, ErrorKind, Result, Session, quote_ident};
 
 /// The format this SDK reads and writes.
 pub const FORMAT_VERSION: &str = "0";
@@ -27,8 +27,9 @@ impl Versions {
 }
 
 /// The versions of the catalog in `schema`.
-pub async fn versions(client: &impl GenericClient, schema: &str) -> Result<Versions> {
-    let row = client
+pub async fn versions(session: &impl Session, schema: &str) -> Result<Versions> {
+    let row = session
+        .client()
         .query_one(&format!("select * from {}.versions()", quote_ident(schema)), &[])
         .await?;
     Ok(Versions {
@@ -40,8 +41,8 @@ pub async fn versions(client: &impl GenericClient, schema: &str) -> Result<Versi
 
 /// The versions of the catalog in `schema`, refused unless this SDK speaks them (LAY-3): the format it knows, and
 /// the protocol it installs. A catalog installed by an older SDK is refused until it is migrated.
-pub async fn check_versions(client: &impl GenericClient, schema: &str) -> Result<Versions> {
-    let found = versions(client, schema).await?;
+pub async fn check_versions(session: &impl Session, schema: &str) -> Result<Versions> {
+    let found = versions(session, schema).await?;
     if found.format_version != FORMAT_VERSION {
         return Err(Error::new(
             ErrorKind::Unsupported,
