@@ -593,7 +593,8 @@ referred to. Retention says how much history each ref keeps.
 - **RET-5.** *0.2.* Expiring excludes, for as long as one batch lasts, creating a ref at an earlier sequence,
   changing a retention and deleting a ref; commits are not excluded. Sweeping excludes nothing. Expiring and a
   commit that adds a `path` exclude each other on that `path`, so that a path is never queued while a commit
-  adds it.
+  adds it. An implementation MAY exclude on a set of paths holding it instead, so that a batch holds a bounded
+  number of locks; the reference hashes a path into one of 1,024 buckets.
 - **RET-6.** A ref created at an earlier sequence (BR-1) is created at a retained read of its parent: one of
   the snapshots the parent keeps. Together with RET-5, nothing a collector decided to delete can become
   reachable again.

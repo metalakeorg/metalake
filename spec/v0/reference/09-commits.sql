@@ -3,13 +3,18 @@
 -- It defines the right answer, not the fast one.
 
 -- RET-5 (0.2): expiring and a commit exclude each other on a path, so that a path is never queued while a commit
--- adds it: expiring holds it exclusively, a commit shared.
+-- adds it: expiring holds it exclusively, a commit shared. The lock is the path's bucket, one of 1,024, so that a
+-- batch holds a bounded number of locks.
+create function path_bucket(path text) returns int language sql immutable as $$
+  select hashtext(path) & 1023;
+$$;
+
 create function path_lock(path text, exclusive boolean) returns void language plpgsql as $$
 begin
   if exclusive then
-    perform pg_advisory_xact_lock(hashtext(current_schema() || ' paths'), hashtext(path));
+    perform pg_advisory_xact_lock(hashtext(current_schema() || ' paths'), path_bucket(path));
   else
-    perform pg_advisory_xact_lock_shared(hashtext(current_schema() || ' paths'), hashtext(path));
+    perform pg_advisory_xact_lock_shared(hashtext(current_schema() || ' paths'), path_bucket(path));
   end if;
 end $$;
 

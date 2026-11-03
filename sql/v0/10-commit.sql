@@ -445,10 +445,11 @@ begin
 
   -- CMT-9: what the commit wrote is valid.
   -- RET-5: the paths it adds, held against expiring before RET-8 looks at the queue.
-  perform path_lock(z.path, false)
-     from (select (f).path from unnest(adds) f where (f).path is not null
-           union select v.path from unnest(vecs) v where v.path is not null) z
-    order by z.path;
+  perform pg_advisory_xact_lock_shared(hashtext(current_schema() || ' paths'), z.b)
+     from (select distinct hashtext(y.path) & 1023 as b
+             from (select (f).path from unnest(adds) f union select v.path from unnest(vecs) v) y
+            where y.path is not null) z
+    order by z.b;
   problem := commit_problem(r, seq, adds, ids, vecs, defined);
   if problem is not null then
     perform refuse_invalid(split_part(problem, ':', 1), problem);

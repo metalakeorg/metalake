@@ -19,7 +19,7 @@ if command -v powershell >/dev/null 2>&1; then
   host=${host:-localhost}
 fi
 docker run -d --name "$name" -p "$port:5432" -e POSTGRES_HOST_AUTH_METHOD=trust "$image" \
-  -c track_commit_timestamp=on -c fsync=off >/dev/null
+  -c track_commit_timestamp=on -c fsync=off ${PGARGS:-} >/dev/null
 trap 'docker rm -f "$name" >/dev/null' EXIT
 until docker exec "$name" pg_isready -q -U postgres 2>/dev/null; do sleep 1; done; sleep 2
 export DATABASE_URL="host=$host port=$port user=postgres dbname=postgres"

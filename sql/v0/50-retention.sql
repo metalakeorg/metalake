@@ -23,14 +23,15 @@ begin
                                        min_snapshots = excluded.min_snapshots;
 end $$;
 
--- RET-5 (0.2): expiring and a commit exclude each other on a path, under the reference's key.
+-- RET-5 (0.2): expiring and a commit exclude each other on a path's bucket, under the reference's key
+-- (09-commits.sql, path_bucket). Callers take a set of buckets in one statement, each once, in ascending order.
 create function @schema@.path_lock(path text, exclusive boolean) returns void language plpgsql
 set search_path = @schema@, pg_catalog, pg_temp as $$
 begin
   if exclusive then
-    perform pg_advisory_xact_lock(hashtext(current_schema() || ' paths'), hashtext(path));
+    perform pg_advisory_xact_lock(hashtext(current_schema() || ' paths'), hashtext(path) & 1023);
   else
-    perform pg_advisory_xact_lock_shared(hashtext(current_schema() || ' paths'), hashtext(path));
+    perform pg_advisory_xact_lock_shared(hashtext(current_schema() || ' paths'), hashtext(path) & 1023);
   end if;
 end $$;
 
@@ -48,9 +49,10 @@ create index if not exists commit_by_ref on @schema@.commit (ref_id, commit_seq)
 -- every ranged table. By RET-2, a row of a live ref is collectable only if it closed at or below the ref's floor, so
 -- the candidates of a live ref are its closed rows below its floor, through the closed-row index, and those of a
 -- deleted ref all its rows; each is then checked against the reach ranges, as many as the refs and their bases.
--- It deletes and queues what the reference's does, in batches: run it until it returns 0.
+-- It deletes and queues what the reference's does, in batches of 1,000 rows by default, which bounds how long it
+-- holds the refs (RET-5): run it until it returns 0.
 drop function @schema@.expire();
-create function @schema@.expire(lim int default null) returns bigint language plpgsql
+create function @schema@.expire(lim int default 1000) returns bigint language plpgsql
 set search_path = @schema@, pg_catalog, pg_temp as $$
 declare
   open constant bigint := 9223372036854775807;
@@ -111,7 +113,9 @@ begin
   get diagnostics k = row_count; n := n + k;
 
   -- RET-5, RET-4: a path nothing refers to any more is queued, held against a commit that adds it.
-  perform path_lock(t.path, true) from (select distinct path from x_touched where path is not null) t order by t.path;
+  perform pg_advisory_xact_lock(hashtext(current_schema() || ' paths'), z.b)
+     from (select distinct hashtext(path) & 1023 as b from x_touched where path is not null) z
+    order by z.b;
   insert into deletion_queue
   select distinct on (t.path) t.path, t.kind, now() from x_touched t
    where t.path is not null
