@@ -42,6 +42,33 @@ pub enum Verb {
         #[command(subcommand)]
         verb: RefVerb,
     },
+    /// Merges a branch into its parent, in one transaction.
+    Merge(Merge),
+}
+
+#[derive(Debug, Args)]
+pub struct Merge {
+    pub branch: String,
+
+    /// Says what the merge would do, or why it would be refused, and does nothing.
+    #[arg(long)]
+    pub check: bool,
+
+    /// Merges only this table, `namespace.table`; the branch's others are rebased onto the merge. Repeatable.
+    #[arg(long = "table", value_name = "TABLE")]
+    pub tables: Vec<String>,
+
+    /// Allows a selection that one of the branch's commits crossed, by splitting that commit.
+    #[arg(long)]
+    pub split: bool,
+
+    /// The commit's message.
+    #[arg(short, long)]
+    pub message: Option<String>,
+
+    /// The commit's author; by default `METALAKE_AUTHOR`, or the user of the machine.
+    #[arg(long)]
+    pub author: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]

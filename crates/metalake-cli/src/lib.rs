@@ -60,5 +60,6 @@ async fn run(cli: Cli) -> Result<(), Failure> {
         Verb::Refs => commands::refs::list(&Lake::open(dir).await?, &out, None).await,
         Verb::Branch { verb } => commands::refs::run(verb, Kind::Branch, &Lake::open(dir).await?, &out).await,
         Verb::Tag { verb } => commands::refs::run(verb, Kind::Tag, &Lake::open(dir).await?, &out).await,
+        Verb::Merge(merge) => commands::merge::run(merge, &Lake::open(dir).await?, &out).await,
     }
 }

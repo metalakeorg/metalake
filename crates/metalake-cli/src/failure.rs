@@ -59,6 +59,14 @@ impl Failure {
         Self::new(Exit::Usage, message)
     }
 
+    /// A write that would conflict, by this rule.
+    pub fn conflict(rule: Option<String>, message: impl Into<String>) -> Self {
+        Self {
+            rule,
+            ..Self::new(Exit::Conflict, message)
+        }
+    }
+
     /// Prints the failure on stderr, so that stdout holds only what was asked for.
     pub fn report(&self, format: Option<Format>) {
         match format {
