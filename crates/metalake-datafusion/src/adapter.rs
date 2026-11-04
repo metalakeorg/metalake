@@ -52,6 +52,11 @@ impl PhysicalExprAdapter for FileAdapter {
             let Ok(field) = self.logical.field_with_name(column.name()) else {
                 return Ok(Transformed::no(e));
             };
+            // A column with no field id is none of the table's: a position, which the reader gives, at its place there.
+            if !field.metadata().contains_key(FIELD_ID) {
+                let at = self.physical.index_of(column.name())?;
+                return Ok(Transformed::yes(Arc::new(Column::new(column.name(), at))));
+            }
             self.adapted(field).map(Transformed::yes)
         })
         .data()

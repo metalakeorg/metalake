@@ -14,6 +14,7 @@ use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource};
 use datafusion::datasource::sink::{DataSink, DataSinkExec};
 use datafusion::datasource::source::DataSourceExec;
+use datafusion::datasource::table_schema::TableSchema;
 use datafusion::error::Result as DataFusionResult;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::dml::{InsertOp, MergeIntoClause};
@@ -86,14 +87,71 @@ impl MetaTable {
         }
     }
 
+    /// The plan that reads what `scan` plans of `table` with DataFusion's reader, the core's bytes and footers, the
+    /// vectors as selections and the columns by field id. With `positions`, its schema with them, each row also says
+    /// its file and its position, for a statement that goes on to write.
+    pub(crate) async fn read(
+        &self,
+        state: &dyn Session,
+        table: &Table,
+        scan: Scan,
+        projection: Option<&Vec<usize>>,
+        limit: Option<usize>,
+        positions: Option<&SchemaRef>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let storage = &self.storage;
+        let schema = table.schema();
+        let planned: Vec<_> = scan
+            .plan()
+            .await
+            .map_err(external)?
+            .map_err(external)
+            .map_ok(|task| read::file(task, schema, storage, positions.is_some()))
+            .try_buffered(CONCURRENCY)
+            .try_collect()
+            .await?;
+        let columns = positions.unwrap_or(schema);
+        let (groups, mut statistics) = Self::groups(columns, planned, state.config().target_partitions())?;
+        // The other side of a statement's join is a source that knows nothing of its size: told this table's, the
+        // optimizer would have the whole table build the join. Each file keeps its own, which is what prunes it.
+        if positions.is_some() {
+            statistics = Statistics::new_unknown(columns);
+        }
+
+        let mut options = state.table_options().parquet.clone();
+        // The core's rules read strings as the table has them.
+        options.global.schema_force_view_types = false;
+        let mut layout = TableSchema::builder(schema.clone());
+        if let Some(positions) = positions {
+            let at = schema.fields().len();
+            layout = layout
+                .with_table_partition_cols(vec![positions.fields()[at].clone()])
+                .with_virtual_columns(vec![positions.fields()[at + 1].clone()]);
+        }
+        let source = ParquetSource::new(layout.build())
+            .with_table_parquet_options(options)
+            .with_parquet_file_reader_factory(Arc::new(TaskReaders {
+                storage: storage.clone(),
+            }));
+        let config = FileScanConfigBuilder::new(ObjectStoreUrl::parse(storage.base())?, Arc::new(source))
+            .with_file_groups(groups)
+            .with_statistics(statistics)
+            .with_projection_indices(projection.cloned())?
+            .with_limit(limit)
+            .with_expr_adapter(Some(Arc::new(ByFieldId {
+                evolve: Arc::new(Evolve::new(table)),
+            })))
+            .build();
+        Ok(DataSourceExec::from_data_source(config))
+    }
+
     /// The files in `groups` groups, each a partition of the plan, with the statistics of each group: at least one
     /// group, even an empty one, since a sink needs a partition to drain.
     fn groups(
-        &self,
+        schema: &SchemaRef,
         planned: Vec<(PartitionedFile, Statistics)>,
         groups: usize,
     ) -> DataFusionResult<(Vec<FileGroup>, Statistics)> {
-        let schema = self.table.schema();
         let empty = planned.is_empty();
         let mut files = vec![Vec::new(); groups.clamp(1, planned.len().max(1))];
         let mut statistics = vec![Vec::new(); files.len()];
@@ -142,38 +200,8 @@ impl TableProvider for MetaTable {
         limit: Option<usize>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         let table = &self.at_statement().await.map_err(external)?;
-        let storage = &self.storage;
-        let schema = table.schema();
         let scan = filters::pruned(Scan::new(&self.catalog, table), table, filters).map_err(external)?;
-        let planned: Vec<_> = scan
-            .plan()
-            .await
-            .map_err(external)?
-            .map_err(external)
-            .map_ok(|task| read::file(task, schema, storage))
-            .try_buffered(CONCURRENCY)
-            .try_collect()
-            .await?;
-        let (groups, statistics) = self.groups(planned, state.config().target_partitions())?;
-
-        let mut options = state.table_options().parquet.clone();
-        // The core's rules read strings as the table has them.
-        options.global.schema_force_view_types = false;
-        let source = ParquetSource::new(schema.clone())
-            .with_table_parquet_options(options)
-            .with_parquet_file_reader_factory(Arc::new(TaskReaders {
-                storage: storage.clone(),
-            }));
-        let config = FileScanConfigBuilder::new(ObjectStoreUrl::parse(storage.base())?, Arc::new(source))
-            .with_file_groups(groups)
-            .with_statistics(statistics)
-            .with_projection_indices(projection.cloned())?
-            .with_limit(limit)
-            .with_expr_adapter(Some(Arc::new(ByFieldId {
-                evolve: Arc::new(Evolve::new(table)),
-            })))
-            .build();
-        Ok(DataSourceExec::from_data_source(config))
+        self.read(state, table, scan, projection, limit, None).await
     }
 
     async fn insert_into(

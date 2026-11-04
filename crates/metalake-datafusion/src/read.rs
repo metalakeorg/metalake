@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::Statistics;
+use datafusion::common::{ColumnStatistics, ScalarValue, Statistics};
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::parquet::{ParquetFileReaderFactory, ParquetRowSelection};
 use datafusion::error::{DataFusionError, Result};
@@ -38,10 +38,12 @@ impl ParquetFileReaderFactory for TaskReaders {
 }
 
 /// The file of `task` for DataFusion, and its statistics under the table's `schema`. A vector in Puffin is one request.
+/// With `positions`, the file's id is a constant column of its rows, and neither position column has statistics.
 pub(crate) async fn file(
     task: ScanTask,
     schema: &SchemaRef,
     storage: &Storage,
+    positions: bool,
 ) -> Result<(PartitionedFile, Statistics)> {
     let size = task.file_size as u64;
     let mut file = match &task.path {
@@ -71,7 +73,13 @@ pub(crate) async fn file(
             .collect();
         file = file.with_extension(ParquetRowSelection::new(vector.row_selection(&groups)));
     }
-    let statistics = stats::of_file(&task, metadata.as_deref(), schema)?;
+    let mut statistics = stats::of_file(&task, metadata.as_deref(), schema)?;
+    if positions {
+        file = file.with_partition_values(vec![ScalarValue::Int64(Some(task.file_id))]);
+        statistics
+            .column_statistics
+            .extend([ColumnStatistics::new_unknown(), ColumnStatistics::new_unknown()]);
+    }
     let file = file
         .with_statistics(Arc::new(statistics.clone()))
         .with_extension(Arc::new(task));
