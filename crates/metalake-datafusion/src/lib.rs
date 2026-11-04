@@ -17,6 +17,7 @@
 mod adapter;
 mod catalog;
 mod filters;
+mod merge;
 mod point;
 mod read;
 mod sink;

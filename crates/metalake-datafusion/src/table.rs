@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::stats::Precision;
-use datafusion::common::{DFSchema, Statistics, not_impl_err};
+use datafusion::common::{DFSchema, DFSchemaRef, Statistics, not_impl_err};
 use datafusion::datasource::TableType;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource};
@@ -16,7 +16,7 @@ use datafusion::datasource::sink::{DataSink, DataSinkExec};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::error::Result as DataFusionResult;
 use datafusion::execution::object_store::ObjectStoreUrl;
-use datafusion::logical_expr::dml::InsertOp;
+use datafusion::logical_expr::dml::{InsertOp, MergeIntoClause};
 use datafusion::logical_expr::utils::conjunction;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_plan::ExecutionPlan;
@@ -26,10 +26,10 @@ use metalake::{Catalog, Evolve, Ref, Scan, Storage, Table};
 
 use crate::adapter::ByFieldId;
 use crate::catalog::external;
-use crate::filters;
 use crate::point::StatementPoint;
 use crate::read::{self, TaskReaders};
 use crate::sink::{Delete, Insert, Selection, Update};
+use crate::{filters, merge};
 
 /// How many files' vectors are read at once while planning.
 const CONCURRENCY: usize = 16;
@@ -190,6 +190,17 @@ impl TableProvider for MetaTable {
         Ok(no_input(rows.scan.schema().clone(), Delete { rows }))
     }
 
+    async fn merge_into(
+        &self,
+        state: &dyn Session,
+        source: Arc<dyn ExecutionPlan>,
+        combined: DFSchemaRef,
+        on: Expr,
+        clauses: Vec<MergeIntoClause>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        merge::plan(self, state, source, combined, on, clauses).await
+    }
+
     async fn update(
         &self,
         state: &dyn Session,
@@ -212,7 +223,7 @@ impl TableProvider for MetaTable {
 }
 
 /// A plan of `sink` with nothing to feed it: only DataFusion's way of answering a count.
-fn no_input(schema: SchemaRef, sink: impl DataSink + 'static) -> Arc<dyn ExecutionPlan> {
+pub(crate) fn no_input(schema: SchemaRef, sink: impl DataSink + 'static) -> Arc<dyn ExecutionPlan> {
     Arc::new(DataSinkExec::new(
         Arc::new(EmptyExec::new(schema)),
         Arc::new(sink),

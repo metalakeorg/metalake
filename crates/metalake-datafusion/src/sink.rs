@@ -102,7 +102,7 @@ impl Selection {
 }
 
 /// Marks the rows of `batch` to delete.
-fn mark(deletes: &mut Deletes, batch: &RecordBatch) {
+pub(crate) fn mark(deletes: &mut Deletes, batch: &RecordBatch) {
     let column = |name: &str| {
         batch
             .column_by_name(name)
