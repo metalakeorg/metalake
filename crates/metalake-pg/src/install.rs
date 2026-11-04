@@ -4,7 +4,7 @@
 use tokio_postgres::Client;
 
 use crate::sources::{Kind, created, sources};
-use crate::version::{FORMAT_VERSION, PROTOCOL_VERSION};
+use crate::version::{FORMAT_VERSION, newer};
 use crate::{Error, ErrorKind, Result, quote_ident};
 
 /// The roles a catalog is given to (§2.7), which `init`'s caller has created.
@@ -73,10 +73,7 @@ pub async fn migrate(client: &mut Client, schema: &str) -> Result<Option<i64>> {
         return Err(Error::new(ErrorKind::Unsupported, format!("format_version {format:?}")));
     }
     let protocol = meta("protocol_version").await?;
-    if protocol
-        .as_deref()
-        .is_some_and(|v| v.parse::<u64>().map_or(true, |v| v > PROTOCOL_VERSION.parse().unwrap()))
-    {
+    if newer(protocol.as_deref()) {
         return Err(Error::new(
             ErrorKind::Unsupported,
             format!("protocol_version {protocol:?} is newer"),

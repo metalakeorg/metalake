@@ -44,6 +44,8 @@ pub enum Verb {
     },
     /// Merges a branch into its parent, in one transaction.
     Merge(Merge),
+    /// Upgrades the catalog to this binary's protocol, once per upgrade of `metalake`, holding every ref meanwhile.
+    Migrate,
     /// Lists a ref's own commits, the latest first; their sequences read the past as `"main@1234"`.
     Log(Log),
 }

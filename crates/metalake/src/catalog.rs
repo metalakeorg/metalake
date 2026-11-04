@@ -93,6 +93,15 @@ impl Catalog {
         Self::connect(config).await
     }
 
+    /// Upgrades a catalog to this core's protocol (`metalake migrate`), and answers the sequence of a migration of the
+    /// format's rows, if there was one. It connects by itself, since `connect` refuses a catalog that needs this, and
+    /// it holds every ref while it runs, so nothing calls it on its own.
+    pub async fn migrate(config: &CatalogConfig) -> Result<Option<i64>> {
+        let pool = Pool::new(&config.postgres, 1)?;
+        let mut session = pool.get().await?;
+        Ok(metalake_pg::migrate(&mut session, &config.schema).await?)
+    }
+
     /// The versions of the catalog; whether the core may write it is `versions().writable()`.
     pub fn versions(&self) -> &Versions {
         &self.inner.versions

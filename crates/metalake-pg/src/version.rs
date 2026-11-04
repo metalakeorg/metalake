@@ -40,6 +40,12 @@ pub async fn versions(session: &impl Session, schema: &str) -> Result<Versions> 
     })
 }
 
+/// Whether a catalog's protocol is ahead of these sources. One that is not a number is.
+pub(crate) fn newer(protocol: Option<&str>) -> bool {
+    let known: u64 = PROTOCOL_VERSION.parse().expect("the protocol's version is a number");
+    protocol.is_some_and(|v| v.parse::<u64>().map_or(true, |v| v > known))
+}
+
 /// Where the catalog in `schema` puts the files of a table that names no location (LAY-2), if it says.
 pub async fn warehouse(session: &impl Session, schema: &str) -> Result<Option<String>> {
     let select = format!("select value from {}.meta where key = 'warehouse'", quote_ident(schema));
@@ -58,10 +64,14 @@ pub async fn check_versions(session: &impl Session, schema: &str) -> Result<Vers
         ));
     }
     if found.protocol_version.as_deref() != Some(PROTOCOL_VERSION) {
+        let action = match newer(found.protocol_version.as_deref()) {
+            true => "the catalog is ahead of this client: upgrade it",
+            false => "run `metalake migrate`",
+        };
         return Err(Error::new(
             ErrorKind::Unsupported,
             format!(
-                "protocol_version {:?} is not {PROTOCOL_VERSION}: run `metalake migrate`",
+                "protocol_version {:?} is not {PROTOCOL_VERSION}: {action}",
                 found.protocol_version
             ),
         ));

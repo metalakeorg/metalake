@@ -81,6 +81,14 @@ impl Lake {
         Ok(Self { catalog, location })
     }
 
+    /// Upgrades the catalog of the lake a command means, which `open` refuses, and reaches it.
+    pub async fn migrate(dir: Option<&Path>) -> Result<(Self, Option<i64>), Failure> {
+        let location = Location::find(dir)?;
+        let format_migration = Catalog::migrate(&location.config()).await?;
+        let catalog = Catalog::connect(location.config()).await?;
+        Ok((Self { catalog, location }, format_migration))
+    }
+
     /// Creates a catalog and the file that finds it. The file comes first, so that a lake already here is refused
     /// before a catalog exists, and it goes if the catalog fails.
     pub async fn create(init: &Init, dir: Option<&Path>) -> Result<Self, Failure> {
