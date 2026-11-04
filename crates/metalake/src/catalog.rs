@@ -159,6 +159,11 @@ impl Ref {
         crate::Transaction::new(self.clone())
     }
 
+    /// A merge of this branch into its parent, what it would do or doing it (MRG-1 to MRG-8).
+    pub fn merge(&self) -> crate::Merge {
+        crate::Merge::new(self.clone())
+    }
+
     pub(crate) fn catalog(&self) -> &Catalog {
         &self.catalog
     }

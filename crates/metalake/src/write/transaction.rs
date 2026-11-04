@@ -17,7 +17,7 @@ use crate::vectors::Deletes;
 use crate::write::delete::{self, TableDeletes};
 
 /// How many times a commit is tried when the attempt may be repeated.
-const ATTEMPTS: usize = 3;
+pub(crate) const ATTEMPTS: usize = 3;
 
 /// What a commit did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

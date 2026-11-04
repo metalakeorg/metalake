@@ -82,8 +82,9 @@ async fn every_call_answers_what_its_function_does() -> Result<(), Error> {
     p.commit(&on, &append(dev, t, "gs://lake/b.parquet", 10)).await?;
     let report = p.merge_report(&on, &Merge::of(dev)).await?;
     assert!(report.is_object(), "{report}");
-    let merged = p.merge(&on, &Merge::of(dev)).await?;
+    let merged = p.merge(&on, &Merge::of(dev)).await?.expect("a commit to merge");
     assert!(merged.applied);
+    assert_eq!(p.merge(&on, &Merge::of(dev)).await?, None, "nothing left to merge");
     let changed = p.table_changes(&on, 1, t, first.commit_seq, merged.commit_seq).await?;
     assert_eq!(
         changed

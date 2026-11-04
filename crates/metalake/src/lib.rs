@@ -33,4 +33,4 @@ pub use metalake_pg::records::TableName;
 pub use scan::{Scan, ScanTask, TaskVector};
 pub use storage::Storage;
 pub use table::{Field, Table};
-pub use write::{NewTable, Outcome, TableWriter, Transaction, WriteOptions};
+pub use write::{Merge, MergeReport, NewTable, Outcome, TableWriter, Transaction, WriteOptions};

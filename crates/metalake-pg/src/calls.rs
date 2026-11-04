@@ -400,7 +400,8 @@ impl Protocol {
         Ok(())
     }
 
-    pub async fn merge(&self, s: &impl Session, m: &Merge) -> Result<CommitResult> {
+    /// Merges a branch, or a selection of it, into its parent; none when it has nothing to merge.
+    pub async fn merge(&self, s: &impl Session, m: &Merge) -> Result<Option<CommitResult>> {
         let row = self
             .one(
                 s,
@@ -417,10 +418,10 @@ impl Protocol {
                 ],
             )
             .await?;
-        Ok(CommitResult {
-            commit_seq: row.get("commit_seq"),
-            applied: row.get("applied"),
-        })
+        let applied = row.get("applied");
+        Ok(row
+            .get::<_, Option<i64>>("commit_seq")
+            .map(|commit_seq| CommitResult { commit_seq, applied }))
     }
 
     /// What the same merge would do, or why it would conflict, without doing it. Its author and message are unused.
