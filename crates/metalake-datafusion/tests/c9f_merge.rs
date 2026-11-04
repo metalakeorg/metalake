@@ -153,3 +153,85 @@ async fn nothing_to_do_is_no_commit_and_a_branch_is_apart() -> Result<(), Box<dy
     assert!(refused.is_err_and(|e| e.to_string().contains("tag")));
     Ok(())
 }
+
+#[tokio::test]
+async fn a_row_matched_twice_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+    let lake = lake().await?;
+    lake.run("insert into main.db.t values (1, 1, 'a'), (2, 2, 'b')")
+        .await?;
+    lake.run("insert into main.db.changes values (1, 10, 'x'), (1, 20, 'y')")
+        .await?;
+    let before = lake.main.table(&["db"], "t").await?.snapshot_id();
+    for action in ["update set n = c.n", "delete"] {
+        let sql = format!("merge into main.db.t t using main.db.changes c on t.k = c.k when matched then {action}");
+        assert!(lake.context.sql(&sql).await?.collect().await.is_err(), "{action}");
+    }
+    assert_eq!(lake.rows("main.db.t").await?, [(1, 1), (2, 2)]);
+    assert_eq!(lake.main.table(&["db"], "t").await?.snapshot_id(), before);
+
+    // A clause that takes only one of them is no double match; two inserts of one key are the source's to say.
+    let sql = "merge into main.db.t t using main.db.changes c on t.k = c.k
+               when matched and c.s = 'x' then update set n = c.n";
+    assert_eq!(lake.run(sql).await?, 1);
+    assert_eq!(lake.rows("main.db.t").await?, [(1, 10), (2, 2)]);
+    let sql = "merge into main.db.changes t using (select 7 as k union all select 7) c on t.k = c.k
+               when not matched then insert (k) values (c.k)";
+    assert_eq!(lake.run(sql).await?, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn rows_the_source_lacks_are_for_their_own_clause() -> Result<(), Box<dyn std::error::Error>> {
+    let lake = lake().await?;
+    lake.run("insert into main.db.t values (1, 1, 'a'), (2, 2, 'b'), (3, 3, 'c'), (4, 4, 'd')")
+        .await?;
+    lake.run("insert into main.db.changes values (1, 10, 'x')").await?;
+
+    // Only the rows the predicate holds for, and matched rows go their own way.
+    let sql = "merge into main.db.t t using main.db.changes c on t.k = c.k
+               when matched then update set n = c.n
+               when not matched by source and t.k = 2 then delete
+               when not matched by source and t.k = 3 then update set n = 33";
+    assert_eq!(lake.run(sql).await?, 3);
+    assert_eq!(lake.rows("main.db.t").await?, [(1, 10), (3, 33), (4, 4)]);
+
+    // An empty source: everything is missing from it, and all of it goes.
+    lake.run("delete from main.db.changes").await?;
+    let sql = "merge into main.db.t t using main.db.changes c on t.k = c.k when not matched by source then delete";
+    assert_eq!(lake.run(sql).await?, 3);
+    assert!(lake.rows("main.db.t").await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_merge_loses_to_a_commit_that_got_in_first() -> Result<(), Box<dyn std::error::Error>> {
+    let lake = lake().await?;
+    lake.run("insert into main.db.t values (1, 1, 'a')").await?;
+    lake.run("insert into main.db.t values (2, 2, 'b')").await?;
+    let upsert = "merge into main.db.t t using (select 7 as k, 70 as n) c on t.k = c.k
+                  when matched then update set n = c.n
+                  when not matched then insert (k, n) values (c.k, c.n)";
+
+    // Two merges adding one key: neither sees the other's row, and no vector tells them apart.
+    let (first, second) = (lake.context.sql(upsert).await?, lake.context.sql(upsert).await?);
+    first.collect().await?;
+    assert!(second.collect().await.is_err());
+    assert_eq!(lake.rows("main.db.t").await?, [(1, 1), (2, 2), (7, 70)]);
+
+    // A delete of a row gets in before a merge updating it: the row does not come back.
+    let update = "merge into main.db.t t using (select 1 as k) c on t.k = c.k when matched then update set n = 100";
+    let merge = lake.context.sql(update).await?;
+    lake.run("delete from main.db.t where k = 1").await?;
+    assert!(merge.collect().await.is_err());
+    assert_eq!(lake.rows("main.db.t").await?, [(2, 2), (7, 70)]);
+
+    // Merges that only update other files both stand.
+    let on = |k: i64, n: i32| {
+        format!("merge into main.db.t t using (select {k} as k) c on t.k = c.k when matched then update set n = {n}")
+    };
+    let (first, second) = (lake.context.sql(&on(2, 22)).await?, lake.context.sql(&on(7, 77)).await?);
+    first.collect().await?;
+    second.collect().await?;
+    assert_eq!(lake.rows("main.db.t").await?, [(2, 22), (7, 77)]);
+    Ok(())
+}

@@ -2,6 +2,9 @@
 //! join is DataFusion's, planned by the session, so it picks the join it would for any query; the table comes in through
 //! the core's scan, which names each row by file and position, and what a clause does is a `delete`, an `update` or an
 //! `insert`, as those statements do it.
+//!
+//! An update or a delete conflicts by file, as those statements do. An insert decides by a row's absence, which touches
+//! no file, so a merge that inserts is refused if the table changed at all: two merges adding one key would both go in.
 
 use std::fmt;
 use std::sync::Arc;
@@ -15,7 +18,7 @@ use datafusion::arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion::catalog::Session;
 use datafusion::catalog::default_table_source::provider_as_source;
 use datafusion::catalog::streaming::StreamingTable;
-use datafusion::common::{Column, DFSchema, DFSchemaRef, JoinType, TableReference, not_impl_err};
+use datafusion::common::{Column, DFSchema, DFSchemaRef, JoinType, TableReference, exec_err};
 use datafusion::datasource::sink::DataSink;
 use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
@@ -81,6 +84,17 @@ impl PartitionStream for Source {
     }
 }
 
+/// Which joined rows a clause is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// In both.
+    Matched,
+    /// In the source only.
+    NotMatched,
+    /// In the table only.
+    NotMatchedBySource,
+}
+
 /// What a clause does.
 #[derive(Debug)]
 enum Action {
@@ -94,7 +108,7 @@ enum Action {
 /// A `when` of the statement, in physical terms, over the statement's combined columns.
 #[derive(Debug)]
 struct Clause {
-    matched: bool,
+    kind: Kind,
     predicate: Option<Arc<dyn PhysicalExpr>>,
     action: Action,
 }
@@ -140,8 +154,15 @@ pub(crate) async fn plan(
     let right = LogicalPlanBuilder::scan(right_name.clone(), provider_as_source(Arc::new(right)), None)?
         .project(marked)?
         .build()?;
-    let joined = left.join_on(right, JoinType::Right, [on])?.build()?;
+    // Rows of the table that the source lacks are read only for a clause about them.
+    let join = match clauses.iter().any(|c| c.kind == Kind::NotMatchedBySource) {
+        true => JoinType::Full,
+        false => JoinType::Right,
+    };
+    let joined = left.join_on(right, join, [on])?.build()?;
     let joined = state.create_physical_plan(&joined).await?;
+
+    let inserts = clauses.iter().any(|c| matches!(c.action, Action::Insert(_)));
 
     // The rows clauses read, in the combined schema's order, where either side may be missing.
     let fields = combined.fields().iter().map(|f| f.as_ref().clone().with_nullable(true));
@@ -152,6 +173,7 @@ pub(crate) async fn plan(
         view,
         columns,
         clauses,
+        inserts,
     };
     Ok(no_input(schema, sink))
 }
@@ -163,12 +185,10 @@ fn qualifier(schema: &DFSchema, at: usize) -> TableReference {
 }
 
 fn physical(clause: MergeIntoClause, schema: &SchemaRef, state: &dyn Session, combined: &DFSchema) -> Result<Clause> {
-    let matched = match clause.kind.canonical() {
-        MergeIntoClauseKind::Matched => true,
-        MergeIntoClauseKind::NotMatchedBySource => {
-            return not_impl_err!("when not matched by source is not supported yet");
-        }
-        _ => false,
+    let kind = match clause.kind.canonical() {
+        MergeIntoClauseKind::Matched => Kind::Matched,
+        MergeIntoClauseKind::NotMatchedBySource => Kind::NotMatchedBySource,
+        _ => Kind::NotMatched,
     };
     let expression = |e: Expr| state.create_physical_expr(e, combined);
     let predicate = clause.predicate.map(expression).transpose()?;
@@ -189,7 +209,7 @@ fn physical(clause: MergeIntoClause, schema: &SchemaRef, state: &dyn Session, co
         }
     };
     Ok(Clause {
-        matched,
+        kind,
         predicate,
         action,
     })
@@ -204,6 +224,8 @@ struct Merge {
     /// How many of the join's first columns are the table's.
     columns: usize,
     clauses: Vec<Clause>,
+    /// Whether a clause inserts: it decides by a row's absence, which no vector records.
+    inserts: bool,
 }
 
 impl Merge {
@@ -272,16 +294,18 @@ impl DataSink for Merge {
         let mut writer =
             TableWriter::new(catalog, table, storage.clone(), WriteOptions::default()).map_err(external)?;
         let mut deletes = Deletes::new();
-        let mut affected = 0;
+        let (mut affected, mut marked) = (0, 0);
         while let Some(batch) = joined.try_next().await? {
             let view = self.view(&batch)?;
-            let in_table = is_not_null(batch.column_by_name(FILE_ID).expect("asked of the scan"))?;
+            let column = |name: &str| batch.column_by_name(name).expect("asked of the join");
+            let in_table = is_not_null(column(FILE_ID))?;
+            let in_source = is_not_null(column(FROM_SOURCE))?;
             let mut pending = BooleanArray::from(vec![true; batch.num_rows()]);
             for clause in &self.clauses {
-                let kind = if clause.matched {
-                    in_table.clone()
-                } else {
-                    not(&in_table)?
+                let kind = match clause.kind {
+                    Kind::Matched => and(&in_table, &in_source)?,
+                    Kind::NotMatched => not(&in_table)?,
+                    Kind::NotMatchedBySource => not(&in_source)?,
                 };
                 let mut fires = and(&pending, &kind)?;
                 if let Some(predicate) = &clause.predicate {
@@ -294,10 +318,13 @@ impl DataSink for Merge {
                     continue;
                 }
                 affected += rows.num_rows() as u64;
+                if !matches!(clause.action, Action::Insert(_)) {
+                    marked += rows.num_rows() as u64;
+                    mark(&mut deletes, &filter_record_batch(&batch, &fires)?);
+                }
                 match &clause.action {
-                    Action::Delete => mark(&mut deletes, &filter_record_batch(&batch, &fires)?),
+                    Action::Delete => {}
                     Action::Update(assigned) => {
-                        mark(&mut deletes, &filter_record_batch(&batch, &fires)?);
                         writer
                             .write(&self.row(&rows, true, assigned)?)
                             .await
@@ -312,10 +339,18 @@ impl DataSink for Merge {
                 }
             }
         }
+        // A row taken twice would depend on the order of the source: the standard refuses it.
+        let distinct: u64 = deletes.files().values().map(|v| v.cardinality()).sum();
+        if distinct != marked {
+            return exec_err!("merge into: a row of {} matches more than one source row", table.name());
+        }
         let files = writer.finish().await.map_err(external)?;
         if !deletes.is_empty() || !files.is_empty() {
-            let commit = on.transaction().append(files).delete(table, storage, deletes).commit();
-            commit.await.map_err(external)?;
+            let mut transaction = on.transaction().append(files).delete(table, storage, deletes);
+            if self.inserts {
+                transaction = transaction.expect_unchanged(table);
+            }
+            transaction.commit().await.map_err(external)?;
         }
         Ok(affected)
     }
