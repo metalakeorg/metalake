@@ -97,11 +97,7 @@ fn outcome(args: &Merge, outcome: &'static str, commit: Option<i64>) -> Outcome 
 async fn selection(branch: &Ref, tables: &[String]) -> Result<Vec<Table>, Failure> {
     let mut selected = Vec::with_capacity(tables.len());
     for table in tables {
-        let (namespace, name) = table
-            .rsplit_once('.')
-            .ok_or_else(|| Failure::usage(format!("{table}: a table is namespace.table")))?;
-        let namespace: Vec<&str> = namespace.split('.').collect();
-        selected.push(branch.table(&namespace, name).await?);
+        selected.push(super::table(branch, table).await?);
     }
     Ok(selected)
 }

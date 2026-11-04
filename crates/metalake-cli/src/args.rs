@@ -44,6 +44,23 @@ pub enum Verb {
     },
     /// Merges a branch into its parent, in one transaction.
     Merge(Merge),
+    /// Lists a ref's own commits, the latest first; their sequences read the past as `"main@1234"`.
+    Log(Log),
+}
+
+#[derive(Debug, Args)]
+pub struct Log {
+    /// The ref.
+    #[arg(default_value = "main", value_name = "REF")]
+    pub on: String,
+
+    /// How many.
+    #[arg(long, default_value_t = 20)]
+    pub limit: u32,
+
+    /// Lists the snapshots of this table, `namespace.table`, instead.
+    #[arg(long, value_name = "TABLE")]
+    pub table: Option<String>,
 }
 
 #[derive(Debug, Args)]

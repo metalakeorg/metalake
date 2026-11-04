@@ -12,8 +12,8 @@ use tokio_postgres::{GenericClient, Row};
 use uuid::Uuid;
 
 use crate::records::{
-    CommitResult, FeedCommit, FileAdd, FileChange, FileRef, LATEST, PlannedFile, RefRow, StablePoint, TableAsOf,
-    TableExpect, TableLatest, TableName, VectorSet,
+    CommitEntry, CommitResult, FeedCommit, FileAdd, FileChange, FileRef, LATEST, PlannedFile, RefRow, SnapshotEntry,
+    StablePoint, TableAsOf, TableExpect, TableLatest, TableName, VectorSet,
 };
 use crate::{Result, Session, quote_ident};
 
@@ -247,6 +247,32 @@ impl Protocol {
             .await?;
         let rows = s.client().query(&statement, &[]).await?;
         Ok(rows.iter().map(RefRow::from_row).collect())
+    }
+
+    /// The commits of a ref, the latest first.
+    pub async fn history(&self, s: &impl Session, on: &str, limit: i64) -> Result<Vec<CommitEntry>> {
+        let statement = s
+            .statement(&format!(
+                "select commit_seq, {UTC} as committed_at, author, operation, message from {}.history \
+                 where ref = $1 order by commit_seq desc limit $2",
+                self.schema
+            ))
+            .await?;
+        let rows = s.client().query(&statement, &[&on, &limit]).await?;
+        Ok(rows.iter().map(CommitEntry::from_row).collect())
+    }
+
+    /// The snapshots of a table on a ref, the latest first.
+    pub async fn snapshots(&self, s: &impl Session, on: &str, table: Uuid, limit: i64) -> Result<Vec<SnapshotEntry>> {
+        let statement = s
+            .statement(&format!(
+                "select snapshot_id, parent_snapshot_id, operation, {UTC} as committed_at from {}.snapshots \
+                 where ref = $1 and table_id = $2 order by snapshot_id desc limit $3",
+                self.schema
+            ))
+            .await?;
+        let rows = s.client().query(&statement, &[&on, &table, &limit]).await?;
+        Ok(rows.iter().map(SnapshotEntry::from_row).collect())
     }
 
     /// The tables visible at a read (TBL-1).
@@ -544,6 +570,9 @@ impl Protocol {
 
 /// The names of the interface's functions and the calls that make them, for the test that holds them to `pg_proc`:
 /// (function, its parameters in order, whether only a writer may call it).
+/// A view's `committed_at`, as text, whatever the session's time zone.
+const UTC: &str = r#"to_char(committed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')"#;
+
 pub const INTERFACE: &[(&str, &[&str], bool)] = &[
     (
         "commit",

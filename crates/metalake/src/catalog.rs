@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use metalake_pg::records::{RefRow, TableName};
+use metalake_pg::records::{CommitEntry, RefRow, SnapshotEntry, TableName};
 use metalake_pg::{CreateRef, Pool, PooledSession, Protocol, Retention, Roles, Versions};
 use uuid::Uuid;
 
@@ -208,6 +208,19 @@ impl Ref {
     /// A merge of this branch into its parent, what it would do or doing it (MRG-1 to MRG-8).
     pub fn merge(&self) -> crate::Merge {
         crate::Merge::new(self.clone())
+    }
+
+    /// This ref's own commits, the latest first: what it inherited is its parent's, up to its `fork_seq`.
+    pub async fn history(&self, limit: i64) -> Result<Vec<CommitEntry>> {
+        let p = self.catalog.protocol();
+        Ok(p.history(&self.catalog.session().await?, &self.name, limit).await?)
+    }
+
+    /// The snapshots of `table` on this ref, the latest first.
+    pub async fn snapshots(&self, table: &Table, limit: i64) -> Result<Vec<SnapshotEntry>> {
+        let p = self.catalog.protocol();
+        let session = self.catalog.session().await?;
+        Ok(p.snapshots(&session, &self.name, table.id(), limit).await?)
     }
 
     /// What this ref keeps (RET-1); expiring takes the rest.

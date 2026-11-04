@@ -156,6 +156,48 @@ pub struct TableLatest {
     pub seq: i64,
 }
 
+/// A commit of a ref, as the view `history` shows it, its time in RFC 3339 in UTC.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitEntry {
+    pub commit_seq: i64,
+    pub committed_at: Option<String>,
+    pub author: Option<String>,
+    pub operation: String,
+    pub message: Option<String>,
+}
+
+impl CommitEntry {
+    pub(crate) fn from_row(row: &Row) -> Self {
+        Self {
+            commit_seq: row.get("commit_seq"),
+            committed_at: row.get("committed_at"),
+            author: row.get("author"),
+            operation: row.get("operation"),
+            message: row.get("message"),
+        }
+    }
+}
+
+/// A snapshot of a table on a ref, as the view `snapshots` shows it, its time in RFC 3339 in UTC.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotEntry {
+    pub snapshot_id: i64,
+    pub parent_snapshot_id: Option<i64>,
+    pub operation: Option<String>,
+    pub committed_at: Option<String>,
+}
+
+impl SnapshotEntry {
+    pub(crate) fn from_row(row: &Row) -> Self {
+        Self {
+            snapshot_id: row.get("snapshot_id"),
+            parent_snapshot_id: row.get("parent_snapshot_id"),
+            operation: row.get("operation"),
+            committed_at: row.get("committed_at"),
+        }
+    }
+}
+
 /// A ref of the catalog, as the view `refs` shows it (BR-1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefRow {
