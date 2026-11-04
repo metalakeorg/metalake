@@ -172,6 +172,10 @@ insert into data_file (table_id, file_id, ref_id, begin_seq, path, spec_id, part
   values (:'t', 5, 1, 1, 'gs://lake/t/5.parquet', 0, '[]', 1, 1, 1);
 select expect((select array_agg(o order by o) from orphans() o) = '{gs://lake/t/1.parquet,gs://lake/t/2.parquet}',
   'expired and unreferenced: 1 and 2; not 3, still valid, nor 5, committed');
+insert into deletion_queue values ('gs://lake/t/2.parquet', 'puffin', now());
+select expect((select array_agg(o order by o) from orphans() o) = '{gs://lake/t/1.parquet}',
+  'a queued object waits for its grace, whatever its intent');
+delete from deletion_queue where path = 'gs://lake/t/2.parquet';
 select expect_error(format('select cm(%L::jsonb)', tj(:'t', jsonb_build_object('add', jsonb_build_array(fj(1))))), '22023',
   'a commit of a file whose intent expired');
 select expect(cm(tj(:'t', jsonb_build_object('add', jsonb_build_array(fj(3))))) > 0, 'one whose intent is valid');

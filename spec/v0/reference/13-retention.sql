@@ -172,5 +172,6 @@ create function orphans(at timestamptz default now()) returns setof text languag
   select i.path from intent i
    where i.expires_at < at
      and not exists (select 1 from data_file d where d.path = i.path)
-     and not exists (select 1 from deletion_vector x where x.path = i.path);
+     and not exists (select 1 from deletion_vector x where x.path = i.path)
+     and not exists (select 1 from deletion_queue q where q.path = i.path);
 $$;

@@ -23,6 +23,13 @@ begin
                                        min_snapshots = excluded.min_snapshots;
 end $$;
 
+-- RET-9: how long a queued object waits before a sweep may delete it.
+create function @schema@.set_collect_grace(grace interval) returns void language sql
+set search_path = @schema@, pg_catalog, pg_temp as $$
+  insert into meta (key, value) values ('collect_grace', grace::text)
+    on conflict (key) do update set value = excluded.value;
+$$;
+
 -- RET-5 (0.2): expiring and a commit exclude each other on a path's bucket, under the reference's key
 -- (09-commits.sql, path_bucket). Callers take a set of buckets in one statement, each once, in ascending order.
 create function @schema@.path_lock(path text, exclusive boolean) returns void language plpgsql
@@ -167,7 +174,8 @@ set search_path = @schema@, pg_catalog, pg_temp as $$
   select i.path from intent i
    where i.expires_at < at
      and not exists (select 1 from data_file d where d.path = i.path)
-     and not exists (select 1 from deletion_vector x where x.path = i.path);
+     and not exists (select 1 from deletion_vector x where x.path = i.path)
+     and not exists (select 1 from deletion_queue q where q.path = i.path);
 $$;
 
 -- RET-7: forgets the intents of orphans whose objects the caller deleted; an intent that is not an orphan stays.

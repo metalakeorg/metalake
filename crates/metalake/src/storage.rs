@@ -2,9 +2,11 @@
 //! (`gs://lake/t/a.parquet`); a handle reaches every path under its location's store. Local disk and memory are
 //! always there; S3, GCS and Azure come with the crate's features of the same names.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use futures_util::{StreamExt, stream};
 use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
 
@@ -82,5 +84,41 @@ impl Storage {
             Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// Deletes objects through the store's batches, and answers those that are gone and the error that stopped it, if
+    /// any. A batch may report an object already gone as a failure, without saying which: what it leaves goes one at
+    /// a time, up to the first that truly fails.
+    pub(crate) async fn delete_all(&self, urls: &[String]) -> (Vec<String>, Option<Error>) {
+        let mut pending = BTreeMap::new();
+        let mut failed = None;
+        for url in urls {
+            match self.path(url) {
+                Ok(path) => {
+                    pending.insert(path, url);
+                }
+                Err(e) => {
+                    failed.get_or_insert(e);
+                }
+            }
+        }
+        let paths: Vec<_> = pending.keys().cloned().map(Ok).collect();
+        let mut results = self.store.delete_stream(stream::iter(paths).boxed());
+        let mut gone = Vec::new();
+        while let Some(result) = results.next().await {
+            if let Some(url) = result.ok().and_then(|path| pending.remove(&path)) {
+                gone.push(url.clone());
+            }
+        }
+        for url in pending.into_values() {
+            match self.delete(url).await {
+                Ok(()) => gone.push(url.clone()),
+                Err(e) => {
+                    failed.get_or_insert(e);
+                    break;
+                }
+            }
+        }
+        (gone, failed)
     }
 }

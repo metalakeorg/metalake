@@ -18,6 +18,7 @@ pub mod bounds;
 mod catalog;
 mod error;
 mod evolve;
+mod maintain;
 pub mod partition;
 mod scan;
 pub mod schema;
@@ -29,6 +30,8 @@ mod write;
 
 pub use catalog::{Catalog, CatalogConfig, Ref};
 pub use error::{Error, Result};
+pub use maintain::Maintenance;
+pub use metalake_pg::Retention;
 pub use metalake_pg::records::TableName;
 pub use scan::{Scan, ScanTask, TaskVector};
 pub use storage::Storage;

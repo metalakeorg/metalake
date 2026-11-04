@@ -16,7 +16,7 @@ mod session;
 mod sources;
 mod version;
 
-pub use calls::{BATCH, Commit, CreateRef, INTERFACE, Merge, Protocol, Prune, Retention};
+pub use calls::{BATCH, Commit, CreateRef, INTERFACE, Merge, Protocol, Prune, Retention, Sweep};
 pub use error::{Error, ErrorKind};
 pub use install::{Roles, init, migrate};
 pub use pool::{Pool, PooledSession};

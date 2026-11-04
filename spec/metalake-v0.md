@@ -607,8 +607,8 @@ referred to. Retention says how much history each ref keeps.
 
 ### 13.3 Orphans
 
-- **RET-7.** A path is an **orphan** when its `intent` has expired and no `data_file` or `deletion_vector`
-  row refers to it. Orphans are found from `intent` alone, without listing storage: a collector deletes the
+- **RET-7.** A path is an **orphan** when its `intent` has expired, no `data_file` or `deletion_vector` row
+  refers to it and it is not in `deletion_queue`, whose objects wait for their grace (RET-9). Orphans are found from `intent` alone, without listing storage: a collector deletes the
   object, then the `intent` row. A commit that adds a file whose `intent` has expired is refused (CMT-9), so a
   writer that missed its deadline never commits a path that a collector may have deleted.
 

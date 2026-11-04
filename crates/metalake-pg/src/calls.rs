@@ -112,6 +112,23 @@ pub struct Retention {
     pub min_snapshots: Option<i32>,
 }
 
+/// A sweep under way (RET-9): the objects `due`, locked by its transaction until [`Sweep::done`] or until it is
+/// dropped, which leaves them all queued.
+pub struct Sweep<'s> {
+    protocol: &'s Protocol,
+    tx: deadpool_postgres::Transaction<'s>,
+    pub due: Vec<String>,
+}
+
+impl Sweep<'_> {
+    /// Forgets the objects the caller deleted from storage, and answers how many.
+    pub async fn done(self, deleted: &[String]) -> Result<i64> {
+        let forgotten = self.protocol.sweep_done(&self.tx, deleted).await?;
+        self.tx.commit().await?;
+        Ok(forgotten)
+    }
+}
+
 /// The default batch of `expire` and of the change feed.
 pub const BATCH: i32 = 1000;
 
@@ -449,6 +466,14 @@ impl Protocol {
         Ok(())
     }
 
+    /// How long a queued object waits before a sweep may delete it (RET-9).
+    pub async fn set_collect_grace(&self, s: &impl Session, grace: Duration) -> Result<()> {
+        let grace = grace.as_secs_f64();
+        self.all(s, "set_collect_grace(grace => make_interval(secs => $1))", &[&grace])
+            .await?;
+        Ok(())
+    }
+
     /// Deletes up to `lim` rows no retained read reaches and queues their objects (RET-4); call it until it answers 0.
     pub async fn expire(&self, s: &impl Session, lim: Option<i32>) -> Result<i64> {
         let lim = lim.unwrap_or(BATCH);
@@ -464,6 +489,17 @@ impl Protocol {
 
     pub async fn sweep_done(&self, tx: &impl Session, paths: &[String]) -> Result<i64> {
         Ok(self.one(tx, "sweep_done(paths => $1)", &[&paths]).await?.get(0))
+    }
+
+    /// Starts a sweep of up to `lim` objects past the grace, in a transaction of its own.
+    pub async fn sweep<'s>(&'s self, s: &'s mut crate::PooledSession, lim: Option<i32>) -> Result<Sweep<'s>> {
+        let tx = s.transaction().await?;
+        let due = self.sweep_due(&tx, lim).await?;
+        Ok(Sweep {
+            protocol: self,
+            tx,
+            due,
+        })
     }
 
     /// The expired intents whose file never went in (RET-7), as of `at` or now.
@@ -539,6 +575,7 @@ pub const INTERFACE: &[(&str, &[&str], bool)] = &[
         true,
     ),
     ("set_retention", &["r", "min_seq", "max_age", "min_snapshots"], true),
+    ("set_collect_grace", &["grace"], true),
     ("expire", &["lim"], true),
     ("sweep_due", &["lim"], false),
     ("sweep_done", &["paths"], true),

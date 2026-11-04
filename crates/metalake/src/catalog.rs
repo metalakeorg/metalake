@@ -1,10 +1,10 @@
 //! A catalog and its refs: where every read and write of the core starts.
 
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use metalake_pg::records::{RefRow, TableName};
-use metalake_pg::{CreateRef, Pool, PooledSession, Protocol, Roles, Versions};
+use metalake_pg::{CreateRef, Pool, PooledSession, Protocol, Retention, Roles, Versions};
 
 use crate::error::{Error, Result};
 use crate::table::Table;
@@ -76,6 +76,17 @@ impl Catalog {
     /// The versions of the catalog; whether the core may write it is `versions().writable()`.
     pub fn versions(&self) -> &Versions {
         &self.inner.versions
+    }
+
+    /// The maintenance of this catalog: expiring, sweeping, orphans and commit times.
+    pub fn maintenance(&self) -> crate::Maintenance {
+        crate::Maintenance::new(self.clone())
+    }
+
+    /// How long a queued object waits before a sweep deletes it (RET-9), which reads should end within.
+    pub async fn set_collect_grace(&self, grace: Duration) -> Result<()> {
+        let session = self.session().await?;
+        Ok(self.inner.protocol.set_collect_grace(&session, grace).await?)
     }
 
     /// A branch, by name.
@@ -162,6 +173,16 @@ impl Ref {
     /// A merge of this branch into its parent, what it would do or doing it (MRG-1 to MRG-8).
     pub fn merge(&self) -> crate::Merge {
         crate::Merge::new(self.clone())
+    }
+
+    /// What this ref keeps (RET-1); expiring takes the rest.
+    pub async fn set_retention(&self, retention: &Retention) -> Result<()> {
+        let session = self.catalog.session().await?;
+        Ok(self
+            .catalog
+            .protocol()
+            .set_retention(&session, self.id, retention)
+            .await?)
     }
 
     pub(crate) fn catalog(&self) -> &Catalog {
