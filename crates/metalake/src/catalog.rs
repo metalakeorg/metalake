@@ -18,7 +18,7 @@ pub struct CatalogConfig {
     pub postgres: String,
     pub schema: String,
     pub connections: usize,
-    /// Where new tables put their files when they name no location: a URL, such as `gs://lake/warehouse`.
+    /// Stored by `init`; for `connect`, where this connection's new tables go instead of the catalog's warehouse: a URL, such as `gs://lake/warehouse`.
     pub warehouse: Option<String>,
 }
 
@@ -67,22 +67,29 @@ impl Catalog {
     /// Connects to a catalog and checks that the core speaks its versions (LAY-3).
     pub async fn connect(config: CatalogConfig) -> Result<Self> {
         let pool = Pool::new(&config.postgres, config.connections)?;
-        let versions = metalake_pg::check_versions(&pool.get().await?, &config.schema).await?;
+        let session = pool.get().await?;
+        let versions = metalake_pg::check_versions(&session, &config.schema).await?;
+        let warehouse = match config.warehouse {
+            Some(w) => Some(w),
+            None => metalake_pg::warehouse(&session, &config.schema).await?,
+        };
+        drop(session);
         Ok(Self {
             inner: Arc::new(Inner {
                 pool,
                 protocol: Protocol::new(&config.schema),
                 versions,
-                warehouse: config.warehouse,
+                warehouse,
             }),
         })
     }
 
-    /// Creates a catalog in a new schema (`metalake init`), with its roles if given, and connects to it.
+    /// Creates a catalog in a new schema (`metalake init`), with the config's warehouse and its roles if given, and
+    /// connects to it.
     pub async fn init(config: CatalogConfig, roles: Option<&Roles>) -> Result<Self> {
         let pool = Pool::new(&config.postgres, 1)?;
         let mut session = pool.get().await?;
-        metalake_pg::init(&mut session, &config.schema, roles).await?;
+        metalake_pg::init(&mut session, &config.schema, config.warehouse.as_deref(), roles).await?;
         Self::connect(config).await
     }
 
@@ -158,7 +165,8 @@ impl Catalog {
         &self.inner.protocol
     }
 
-    pub(crate) fn warehouse(&self) -> Option<&str> {
+    /// Where this connection's new tables put their files when they name no location: the config's, or the catalog's.
+    pub fn warehouse(&self) -> Option<&str> {
         self.inner.warehouse.as_deref()
     }
 }

@@ -1,4 +1,5 @@
-//! The versions a catalog carries (LAY-2, LAY-3, LAY-5), and whether this SDK may read or write it.
+//! What a catalog says of itself in `meta` (LAY-2): its versions, whether this SDK may read or write it (LAY-3,
+//! LAY-5), and its warehouse.
 
 use tokio_postgres::GenericClient;
 
@@ -37,6 +38,13 @@ pub async fn versions(session: &impl Session, schema: &str) -> Result<Versions> 
         writer_version: row.get("writer_version"),
         protocol_version: row.get("protocol_version"),
     })
+}
+
+/// Where the catalog in `schema` puts the files of a table that names no location (LAY-2), if it says.
+pub async fn warehouse(session: &impl Session, schema: &str) -> Result<Option<String>> {
+    let select = format!("select value from {}.meta where key = 'warehouse'", quote_ident(schema));
+    let row = session.client().query_opt(&select, &[]).await?;
+    Ok(row.map(|r| r.get(0)))
 }
 
 /// The versions of the catalog in `schema`, refused unless this SDK speaks them (LAY-3): the format it knows, and

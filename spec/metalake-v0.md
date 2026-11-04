@@ -31,6 +31,9 @@ and changes complete) follows it: its rules are marked *0.2*.
   - `created_at`, the creation time in ISO 8601 with a time zone;
   - *0.1:* `writer_version`, `1` for revision 0.1 and, *0.2*, `2` for revision 0.2 (LAY-5);
   - *0.2:* `collect_grace`, an interval, `1 day` unless set (RET-9).
+
+  It MAY hold, *0.2*, `warehouse`, a URL: where a writer puts the files of a table that names no location of its own.
+  A reader does not need it.
 - **LAY-3.** A reader MUST refuse a catalog whose `format_version` it does not know, or that has none. The
   reference raises SQLSTATE `0A000` with the message prefix `metalake unsupported:`.
 - **LAY-4.** Every sequence number is a `bigint`. The end of a validity range is never `NULL`: an open end is

@@ -126,7 +126,7 @@ async fn the_core_reads_a_table_as_arrow_where_a_read_sees_it() -> Result<(), Bo
         ("memory:///lake/t", &[1][..])
     );
     assert_eq!(on_main.properties().get("owner").map(String::as_str), Some("a"));
-    assert!(on_main.seq() >= added, "a stable point after every commit");
+    assert_eq!(on_main.seq(), created, "its latest snapshot on main; the commit on dev is not one");
 
     let branch = catalog.branch("dev").await?;
     assert_eq!(branch.table(&["db"], "t").await?.arrow_schema(), expected(true));

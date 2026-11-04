@@ -16,9 +16,9 @@ pub struct Roles {
 }
 
 /// Creates a catalog in a new schema: the tables of the specification, the protocol, `meta` and `main`, and, if
-/// given, the roles. Installs in one database take turns, since two transactions creating the same extension at once
-/// collide.
-pub async fn init(client: &mut Client, schema: &str, roles: Option<&Roles>) -> Result<()> {
+/// given, its warehouse and the roles. Installs in one database take turns, since two transactions creating the same
+/// extension at once collide.
+pub async fn init(client: &mut Client, schema: &str, warehouse: Option<&str>, roles: Option<&Roles>) -> Result<()> {
     let q = quote_ident(schema);
     let tx = client.transaction().await?;
     tx.batch_execute(&format!(
@@ -30,6 +30,10 @@ pub async fn init(client: &mut Client, schema: &str, roles: Option<&Roles>) -> R
         tx.batch_execute(&source.sql)
             .await
             .map_err(|e| Error::from(e).context(source.name))?;
+    }
+    if let Some(w) = warehouse {
+        tx.execute(&format!("insert into {q}.meta values ('warehouse', $1)"), &[&w])
+            .await?;
     }
     if let Some(r) = roles {
         tx.execute(

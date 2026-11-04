@@ -197,20 +197,74 @@ async fn transactions_create_write_and_refuse_as_the_protocol_says() -> Result<(
         properties: vec![],
     });
     assert!(matches!(no_column, Err(Error::Schema(_))));
-    let without_warehouse = Catalog::connect(CatalogConfig::new(url(), &schema)).await?;
-    let no_location = without_warehouse
+    Ok(())
+}
+
+/// A table of `name`, with no location, created through `catalog`, and where it went.
+async fn located(catalog: &Catalog, name: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let main = catalog.branch("main").await?;
+    let schema = bare(&events());
+    let (tx, _) = main.transaction().create_table(NewTable {
+        namespace: &["db"],
+        name,
+        schema: &schema,
+        location: None,
+        cluster_key: vec![],
+        partitioning: vec![],
+        properties: vec![],
+    })?;
+    tx.commit().await?;
+    Ok(main.table(&["db"], name).await?.location().to_string())
+}
+
+#[tokio::test]
+async fn the_warehouse_is_the_catalogs() -> Result<(), Box<dyn std::error::Error>> {
+    let schema = fresh_schema();
+    let created = Catalog::init(CatalogConfig::new(url(), &schema).warehouse("memory:///wh/"), None).await?;
+    let (tx, _) = created
         .branch("main")
         .await?
         .transaction()
+        .create_namespace(&["db"])
         .create_table(NewTable {
             namespace: &["db"],
-            name: "bad",
-            schema: &keys,
+            name: "first",
+            schema: &bare(&events()),
             location: None,
             cluster_key: vec![],
             partitioning: vec![],
             properties: vec![],
-        });
+        })?;
+    tx.commit().await?;
+
+    // A connection that names none takes the catalog's.
+    let plain = Catalog::connect(CatalogConfig::new(url(), &schema)).await?;
+    assert_eq!(plain.warehouse(), Some("memory:///wh/"));
+    assert!(located(&plain, "plain").await?.starts_with("memory:///wh/db/plain-"));
+
+    // One that names its own uses it, and changes nothing for the others.
+    let elsewhere = Catalog::connect(CatalogConfig::new(url(), &schema).warehouse("memory:///other")).await?;
+    assert!(
+        located(&elsewhere, "moved")
+            .await?
+            .starts_with("memory:///other/db/moved-")
+    );
+    let again = Catalog::connect(CatalogConfig::new(url(), &schema)).await?;
+    assert_eq!(again.warehouse(), Some("memory:///wh/"));
+
+    // A catalog with none asks for a location, as it always did.
+    let schema = fresh_schema();
+    let none = Catalog::init(CatalogConfig::new(url(), &schema), None).await?;
+    assert_eq!(none.warehouse(), None);
+    let no_location = none.branch("main").await?.transaction().create_table(NewTable {
+        namespace: &["db"],
+        name: "bad",
+        schema: &bare(&events()),
+        location: None,
+        cluster_key: vec![],
+        partitioning: vec![],
+        properties: vec![],
+    });
     assert!(matches!(no_location, Err(Error::Location(_))));
     Ok(())
 }

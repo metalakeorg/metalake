@@ -113,7 +113,7 @@ async fn install(client: &Client, schema: &str, files: Vec<(PathBuf, String)>) -
 /// their tables in (revision 0.1, NS-2). The SDK installs in a transaction of its own, on a connection of its own.
 pub async fn install_protocol(_client: &Client, schema: &str) -> Result<(), Error> {
     let mut own = connect().await?;
-    metalake_pg::init(&mut own, schema, None).await?;
+    metalake_pg::init(&mut own, schema, None, None).await?;
     own.batch_execute(&format!(
         "insert into {}.namespace values ('{{db}}', false, 1, 0)",
         quote_ident(schema)

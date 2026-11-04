@@ -22,6 +22,6 @@ pub use install::{Roles, init, migrate};
 pub use pool::{Pool, PooledSession};
 pub use session::Session;
 pub use sources::{quote_ident, render};
-pub use version::{FORMAT_VERSION, PROTOCOL_VERSION, Versions, WRITER_VERSION, check_versions, versions};
+pub use version::{FORMAT_VERSION, PROTOCOL_VERSION, Versions, WRITER_VERSION, check_versions, versions, warehouse};
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
