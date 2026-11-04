@@ -368,10 +368,11 @@ impl Run {
             .changes
             .iter()
             .any(|(_, a)| matches!(a, Act::Faulty(Fault::ExpiredIntent)));
-        if step.intent && !expired {
-            if let Some(path) = changes.iter().flat_map(|c| &c.adds).find_map(|f| f.path.clone()) {
-                self.intent(&path, changes[0].table_id, r, false).await?;
-            }
+        if step.intent
+            && !expired
+            && let Some(path) = changes.iter().flat_map(|c| &c.adds).find_map(|f| f.path.clone())
+        {
+            self.intent(&path, changes[0].table_id, r, false).await?;
         }
         let app = step.app.map(|(n, replay)| {
             let key = (r, format!("app{n}"));

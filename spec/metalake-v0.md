@@ -172,9 +172,14 @@ Every read goes through this section.
 - **VIS-11.** A sequence `s` is **stable** when no commit with `commit_seq <= s` can still commit. A read that
   must be repeatable, across transactions or readers, uses a stable sequence; a read at `LATEST` is consistent
   within one transaction but not repeatable. To obtain one, a reader takes `L`, the last value drawn from
-  `commit_seq_gen`, and then `X = pg_snapshot_xmax(pg_current_snapshot())`. `L` is stable once a later
-  snapshot has `pg_snapshot_xmin >= X`. This holds because a commit has a transaction id, from locking its ref
-  row, before it draws its `commit_seq` (CMT-4).
+  `commit_seq_gen`, and then, in a later statement, `X = pg_current_xact_id()`. `L` is stable once a later
+  transaction's snapshot has `pg_snapshot_xmin >= X`. This holds because a commit has a transaction id before it
+  draws its `commit_seq` (CMT-4), so every commit at or below `L` has an id below `X`. `pg_snapshot_xmax` will not
+  do for `X`: it is one past the latest id to complete, and a commit in flight can hold an id at or above it.
+  This takes a transaction id for each sequence, and waits for every transaction open at the time. A read need not
+  pay for it: commits of a `(ref, table)` land in sequence order (CMT-4), so a table's latest snapshot on a ref is
+  stable as it stands, and the latest snapshots of several tables taken in one statement are consistent, since a
+  commit is in all of them or none. A branch reads a table it has not touched at the start of its base (VIS-3).
 
 ## 6. Tables
 

@@ -41,8 +41,8 @@ pub struct MetaTable {
     pub(crate) catalog: Catalog,
     pub(crate) storage: Storage,
     pub(crate) table: Table,
-    /// The point a statement of several tables reads, instead of the one this table was looked up at.
-    pub(crate) statement: Option<StatementPoint>,
+    /// Where a statement of several tables reads them all, instead of where this one was looked up.
+    pub(crate) statement: Option<Arc<StatementPoint>>,
 }
 
 impl fmt::Debug for MetaTable {
@@ -70,12 +70,20 @@ impl MetaTable {
 
     /// This table at the point of its statement.
     async fn at_statement(&self) -> metalake::Result<Table> {
-        let Some(point) = &self.statement else {
+        let Some(statement) = &self.statement else {
             return Ok(self.table.clone());
         };
-        let seq = *point.get_or_try_init(|| self.on.read_point()).await?;
-        let namespace: Vec<&str> = self.table.namespace().iter().map(String::as_str).collect();
-        self.on.at(seq).table(&namespace, self.table.name()).await
+        let points = statement
+            .points
+            .get_or_try_init(|| self.catalog.latest(&statement.refs));
+        let seq = points.await?.seq(&self.table).ok_or_else(|| {
+            let name = self.table.name();
+            metalake::Error::NotFound(format!("table {name} on {} at this statement", self.on.name()))
+        })?;
+        match seq == self.table.seq() {
+            true => Ok(self.table.clone()),
+            false => self.on.table_at(&self.table, seq).await,
+        }
     }
 
     /// The files in `groups` groups, each a partition of the plan, with the statistics of each group: at least one

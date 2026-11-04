@@ -1,9 +1,10 @@
 //! Where a statement reads. A catalog's name may carry a point, `"main@1234"` a sequence and
 //! `"main@2026-11-04T10:00:00Z"` a time, with no change to the SQL parser, so any client can say it.
 //!
-//! A statement reads one point (VIS-11), but DataFusion looks its tables up one by one, and each would take its own.
-//! This rule runs once on the statement's whole plan and gives the tables that read the latest state one point, which
-//! the first of them to plan takes, so that a commit between two tables' lookups is seen by both or by neither.
+//! A statement's tables must agree, but DataFusion looks them up one by one, and a commit could land between two
+//! lookups. This rule runs once on the statement's whole plan and shares one [`StatementPoint`] among the tables that
+//! read the latest state: the first of them to plan takes all their sequences in one query (`Catalog::latest`), so that
+//! a commit is seen by all of them or by none.
 
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
@@ -15,13 +16,17 @@ use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNodeRecu
 use datafusion::error::Result;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::optimizer::AnalyzerRule;
-use metalake::{Error, Ref};
+use metalake::{Error, LatestPoints, Ref};
 use tokio::sync::OnceCell;
 
 use crate::table::MetaTable;
 
-/// The one point of a statement, taken once.
-pub(crate) type StatementPoint = Arc<OnceCell<i64>>;
+/// Where a statement reads each of its tables, taken once, by the first of them to plan.
+#[derive(Debug)]
+pub(crate) struct StatementPoint {
+    pub refs: Vec<i32>,
+    pub points: OnceCell<LatestPoints>,
+}
 
 /// `on`, read at the point `name` carries after its `@`.
 pub(crate) fn at(on: Ref, point: &str) -> metalake::Result<Ref> {
@@ -53,15 +58,20 @@ impl AnalyzerRule for OnePoint {
     }
 
     fn analyze(&self, plan: LogicalPlan, _: &ConfigOptions) -> Result<LogicalPlan> {
-        let mut tables = 0;
+        let mut refs = Vec::new();
         plan.apply_with_subqueries(|node| {
-            tables += usize::from(latest(node).is_some());
+            refs.extend(latest(node).map(|table| table.on.id()));
             Ok(TreeNodeRecursion::Continue)
         })?;
-        if tables < 2 {
+        if refs.len() < 2 {
             return Ok(plan);
         }
-        let point = StatementPoint::default();
+        refs.sort_unstable();
+        refs.dedup();
+        let point = Arc::new(StatementPoint {
+            refs,
+            points: OnceCell::new(),
+        });
         plan.transform_up_with_subqueries(|node| {
             let Some(table) = latest(&node) else {
                 return Ok(Transformed::no(node));

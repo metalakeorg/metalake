@@ -1,10 +1,12 @@
 //! A catalog and its refs: where every read and write of the core starts.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use metalake_pg::records::{RefRow, TableName};
 use metalake_pg::{CreateRef, Pool, PooledSession, Protocol, Retention, Roles, Versions};
+use uuid::Uuid;
 
 use crate::error::{Error, Result};
 use crate::table::Table;
@@ -33,6 +35,17 @@ impl CatalogConfig {
     pub fn warehouse(mut self, url: impl Into<String>) -> Self {
         self.warehouse = Some(url.into());
         self
+    }
+}
+
+/// Where to read each table of some refs, from [`Catalog::latest`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LatestPoints(HashMap<(i32, Uuid), i64>);
+
+impl LatestPoints {
+    /// The sequence to read `table` at, on its ref; none if it is not there any more.
+    pub fn seq(&self, table: &Table) -> Option<i64> {
+        self.0.get(&(table.ref_id(), table.id())).copied()
     }
 }
 
@@ -87,6 +100,15 @@ impl Catalog {
     pub async fn set_collect_grace(&self, grace: Duration) -> Result<()> {
         let session = self.session().await?;
         Ok(self.inner.protocol.set_collect_grace(&session, grace).await?)
+    }
+
+    /// Where to read each table of `refs` now, seen at once: whatever several reads take from this agree, as one point
+    /// would, since a commit of several tables is in the sequence of each or of none.
+    pub async fn latest(&self, refs: &[i32]) -> Result<LatestPoints> {
+        let tables = self.inner.protocol.tables_latest(&self.session().await?, refs).await?;
+        Ok(LatestPoints(
+            tables.into_iter().map(|t| ((t.ref_id, t.table_id), t.seq)).collect(),
+        ))
     }
 
     /// A branch, by name.
@@ -206,8 +228,10 @@ impl Ref {
         }
     }
 
-    /// The sequence a read of this ref is at: the one given, or a stable point taken now (VIS-11), so that every
-    /// table read from one point sees the same commits. A read as of a time has a sequence per table instead.
+    /// One sequence for the whole catalog: the one given, or a stable one taken now (VIS-11), for a reader that must
+    /// name a single point. It takes a transaction id, and waits for every transaction open on the server. Reads do
+    /// not need it: a table is read at its own latest snapshot, and tables that must agree through
+    /// [`Catalog::latest`]. A read as of a time has a sequence per table, and no such point.
     pub async fn read_point(&self) -> Result<i64> {
         match self.at {
             Point::Seq(seq) => Ok(seq),
@@ -219,10 +243,9 @@ impl Ref {
         }
     }
 
-    /// A sequence no commit at or below it can still change (VIS-11). The last one drawn becomes that once the commits
-    /// in flight when it was taken have ended, which takes milliseconds. Any transaction left open on the server holds
-    /// this up, so a catalog's Postgres keeps transactions short; a read that waits is one a caller can cancel, and it
-    /// never reads a point that can still change.
+    /// A sequence no commit at or below it can still change (VIS-11): the last one drawn, once the transactions open
+    /// when it was taken have ended. There is no limit to the wait, since past one the sequence could still change;
+    /// a caller cancels it by dropping the future.
     async fn stable(&self) -> Result<i64> {
         let session = self.catalog.session().await?;
         let p = self.catalog.protocol();
@@ -253,11 +276,23 @@ impl Ref {
                     (name, t.seq)
                 })
                 .collect(),
-            _ => {
-                let seq = self.read_point().await?;
+            Point::Seq(seq) => {
                 let names = p.tables_at(&session, self.id, Some(seq)).await?;
                 names.into_iter().map(|t| (t, seq)).collect()
             }
+            Point::Latest => p
+                .tables_latest(&session, &[self.id])
+                .await?
+                .into_iter()
+                .map(|t| {
+                    let name = TableName {
+                        table_id: t.table_id,
+                        namespace: t.namespace,
+                        name: t.name,
+                    };
+                    (name, t.seq)
+                })
+                .collect(),
         })
     }
 
@@ -279,6 +314,16 @@ impl Ref {
             .describe(&self.catalog.session().await?, self.id, found.table_id, Some(seq))
             .await?
             .ok_or_else(|| Error::NotFound(format!("table {} on {}", found.table_id, self.name)))?;
+        Table::from_definition(self.id, seq, &definition)
+    }
+
+    /// `table` of this ref, read at `seq`.
+    pub async fn table_at(&self, table: &Table, seq: i64) -> Result<Table> {
+        let p = self.catalog.protocol();
+        let definition = p
+            .describe(&self.catalog.session().await?, self.id, table.id(), Some(seq))
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("table {} on {} at {seq}", table.name(), self.name)))?;
         Table::from_definition(self.id, seq, &definition)
     }
 

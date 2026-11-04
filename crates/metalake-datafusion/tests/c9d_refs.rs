@@ -180,3 +180,33 @@ async fn a_statement_reads_one_point() -> Result<(), Box<dyn std::error::Error>>
     assert!(writer.await?? > 1, "the writer wrote while they read");
     Ok(())
 }
+
+#[tokio::test]
+async fn a_branch_reads_what_it_inherited_and_two_refs_agree() -> Result<(), Box<dyn std::error::Error>> {
+    let (catalog, main, storage, _) = lake(&["a"]).await?;
+    let context = MetaLake::new(catalog.clone(), storage).await?.context()?;
+    context
+        .sql("insert into main.db.a values (1), (2)")
+        .await?
+        .collect()
+        .await?;
+    let dev = main.create_branch("dev").await?;
+    context.sql("insert into main.db.a values (3)").await?.collect().await?;
+
+    // Untouched on the branch: read at the branch's base, not at the older snapshot, below which it sees nothing.
+    let inherited = dev.table(&["db"], "a").await?;
+    assert!(inherited.seq() > inherited.snapshot_id().unwrap());
+    assert_eq!(keys(&context, "dev.db.a").await?, [1, 2]);
+
+    // Two refs in one statement, each with its own state.
+    let sql = "select count(*) as c from main.db.a m cross join dev.db.a d";
+    let joined = context.sql(sql).await?.collect().await?;
+    assert_eq!(joined[0].column(0).as_primitive::<Int64Type>().value(0), 3 * 2);
+
+    // Once the branch writes the table, it reads its own snapshot, and a read of it is a point that stays.
+    context.sql("insert into dev.db.a values (4)").await?.collect().await?;
+    let own = dev.table(&["db"], "a").await?;
+    assert_eq!(Some(own.seq()), own.snapshot_id());
+    assert_eq!(keys(&context, "dev.db.a").await?, [1, 2, 4]);
+    Ok(())
+}

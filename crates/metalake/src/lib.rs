@@ -28,7 +28,7 @@ mod table;
 pub mod vectors;
 mod write;
 
-pub use catalog::{Catalog, CatalogConfig, Ref};
+pub use catalog::{Catalog, CatalogConfig, LatestPoints, Ref};
 pub use error::{Error, Result};
 pub use evolve::Evolve;
 pub use maintain::Maintenance;

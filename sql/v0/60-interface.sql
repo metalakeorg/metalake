@@ -122,6 +122,23 @@ set search_path = @schema@, pg_catalog, pg_temp as $$
    where n.table_id = $2;
 $$;
 
+-- VIS-11, CMT-4: the tables of each ref now, each with the sequence to read it at, in one statement. A table's own
+-- commits land in sequence order, so no commit of it is in flight below its latest snapshot, and that sequence is stable
+-- with nothing to wait for. One statement sees one state, so a commit that wrote several tables is in the sequence of
+-- each or of none, and the reads agree as one point would. A branch does not read below its base, so a table it
+-- inherits and has not touched is read at the start of the base, where it is the same.
+create function @schema@.tables_latest(ref_ids int[])
+returns table (ref_id int, table_id uuid, namespace text[], name text, seq bigint) language sql stable
+set search_path = @schema@, pg_catalog, pg_temp as $$
+  select r.id, x.table_id, x.namespace, x.name,
+         greatest(snapshot_at(r.id, x.table_id, 9223372036854775806),
+                  (select b.begin_seq from ref_base b
+                    where b.ref_id = r.id and b.end_seq = 9223372036854775807))
+    from unnest($1) r(id)
+   cross join lateral visible_table_names(r.id, 9223372036854775806) x
+   order by r.id, x.namespace, x.name;
+$$;
+
 -- TT-3, TBL-1: the tables ref_id saw as of time `at`, each with the sequence to read it at (as_of_time) and its name
 -- then: none that was dropped by then or created after. A commit that wrote several tables has one time, so it is in
 -- each one's sequence or in none, and the reads agree as one point would. Every table that has been on the ref's

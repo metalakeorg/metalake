@@ -105,6 +105,27 @@ async fn every_call_answers_what_its_function_does() -> Result<(), Error> {
     let now = SystemTime::now() - Duration::from_millis(1100);
     assert_eq!(p.as_of_time(&on, 1, t, now).await?, Some(merged.commit_seq));
 
+    // The tables now: a table's sequence is its latest snapshot, and a branch reads what it inherited from its base.
+    let child = p.create_ref(&on, &CreateRef::branch("child", 1)).await?;
+    let latest = p.tables_latest(&on, &[1, child]).await?;
+    assert_eq!(latest.len(), 2);
+    assert_eq!(latest[0].seq, merged.commit_seq);
+    assert!(latest[1].seq > merged.commit_seq, "the start of the base, not below it");
+    let planned = |r: i32, seq: i64| {
+        let (p, on) = (&p, &on);
+        async move { p.plan(on, r, t, Some(seq), None).await?.try_collect::<Vec<_>>().await }
+    };
+    assert_eq!(planned(child, latest[1].seq).await?.len(), 2, "the files it inherited");
+
+    // A commit in flight is not in it, though it has drawn a higher sequence.
+    let other = connect().await?;
+    other.batch_execute("begin").await?;
+    let flying = p.commit(&other, &append(1, t, "gs://lake/c.parquet", 10)).await?;
+    assert!(flying.commit_seq > latest[0].seq);
+    assert_eq!(p.tables_latest(&on, &[1]).await?[0].seq, latest[0].seq);
+    other.batch_execute("commit").await?;
+    assert_eq!(p.tables_latest(&on, &[1]).await?[0].seq, flying.commit_seq);
+
     // Intents: an intent that expires at once is an orphan, and is forgotten.
     let path = vec!["gs://lake/orphan.parquet".to_string()];
     p.register_intents(&on, 1, t, &path, Duration::ZERO).await?;

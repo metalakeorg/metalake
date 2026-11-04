@@ -432,6 +432,8 @@ begin
   end loop;
 
   -- CMT-3: the commit.
+  -- VIS-11: an id before a sequence, which the advisory locks above do not give.
+  perform pg_current_xact_id();
   seq := nextval('commit_seq_gen');
   insert into commit values (seq, r, pg_current_xact_id(), null, who, via, op, app, ver, $13, $12);
 

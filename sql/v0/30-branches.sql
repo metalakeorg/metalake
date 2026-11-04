@@ -23,6 +23,8 @@ begin
     end if;
     fork := at;
   end if;
+  -- VIS-11: an id before a sequence, which the advisory locks above do not give.
+  perform pg_current_xact_id();
   c := nextval('commit_seq_gen');
   insert into ref (ref_id, name, kind, created_seq) values (id, create_ref.name, create_ref.kind, c);
   insert into ref_base (ref_id, begin_seq, parent_ref_id, fork_seq) values (id, c, parent, fork);
@@ -293,6 +295,8 @@ begin
     perform refuse_conflict('MRG-8', 'a namespace of the rest changed on both sides');
   end if;
 
+  -- VIS-11: an id before a sequence, which the advisory locks above do not give.
+  perform pg_current_xact_id();
   m := nextval('commit_seq_gen');
   insert into commit values (m, p, pg_current_xact_id(), null, who, who, 'merge', null, null, null, $4);
 

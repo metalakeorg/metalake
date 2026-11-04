@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::records::{
     CommitResult, FeedCommit, FileAdd, FileChange, FileRef, LATEST, PlannedFile, RefRow, StablePoint, TableAsOf,
-    TableExpect, TableName, VectorSet,
+    TableExpect, TableLatest, TableName, VectorSet,
 };
 use crate::{Result, Session, quote_ident};
 
@@ -316,6 +316,22 @@ impl Protocol {
     }
 
     /// The tables a ref saw as of a time, each with the sequence to read it at and its name then (TT-3).
+    /// The tables of `ref_ids` now, each with the sequence to read it at, seen in one statement: a commit of several
+    /// tables is in the sequence of each or of none.
+    pub async fn tables_latest(&self, s: &impl Session, ref_ids: &[i32]) -> Result<Vec<TableLatest>> {
+        let rows = self.all(s, "tables_latest(ref_ids => $1)", &[&ref_ids]).await?;
+        Ok(rows
+            .iter()
+            .map(|r| TableLatest {
+                ref_id: r.get("ref_id"),
+                table_id: r.get("table_id"),
+                namespace: r.get("namespace"),
+                name: r.get("name"),
+                seq: r.get("seq"),
+            })
+            .collect())
+    }
+
     pub async fn tables_as_of(&self, s: &impl Session, ref_id: i32, at: SystemTime) -> Result<Vec<TableAsOf>> {
         let rows = self
             .all(s, "tables_as_of(ref_id => $1, at => $2)", &[&ref_id, &at])
@@ -557,6 +573,7 @@ pub const INTERFACE: &[(&str, &[&str], bool)] = &[
     ("snapshot_at", &["r", "t", "s"], false),
     ("as_of_time", &["r", "t", "at"], false),
     ("tables_as_of", &["ref_id", "at"], false),
+    ("tables_latest", &["ref_ids"], false),
     ("stable_point", &[], false),
     ("is_stable", &["horizon"], false),
     ("changes", &["after_at", "after_seq", "lim", "tab"], false),
