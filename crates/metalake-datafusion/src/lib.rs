@@ -14,7 +14,10 @@
 //! # }
 //! ```
 
+mod adapter;
 mod catalog;
+mod filters;
+mod read;
 mod stats;
 mod table;
 

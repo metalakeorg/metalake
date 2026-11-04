@@ -108,6 +108,22 @@ pub struct TaskVector {
 }
 
 impl ScanTask {
+    /// A Parquet reader of its file, for an engine with a reader of its own: the footer comes from the catalog when it
+    /// has it, and an inline file's bytes from the task.
+    pub fn reader(&self, storage: &Storage) -> Result<TaskReader> {
+        Ok(TaskReader {
+            source: Source::of(self.content.clone(), self.path.as_deref(), self.file_id, storage)?,
+            footer: self.footer.clone(),
+            footer_size: self.footer_size,
+            file_size: self.file_size,
+        })
+    }
+
+    /// Its deletion vector: one request if it is in Puffin, none if inline.
+    pub async fn vector(&self, storage: &Storage) -> Result<Option<DeletionVector>> {
+        vector(self.file_id, self.vector.as_ref(), storage).await
+    }
+
     /// Its file's metadata, if it travels with the task: from the footer the catalog keeps, or an inline file's bytes.
     /// None if only the object has it (FTR-1).
     pub fn metadata(&self) -> Result<Option<ParquetMetaData>> {
@@ -277,19 +293,7 @@ async fn batches(task: ScanTask, storage: &Storage, r: Reading) -> Result<BoxStr
         batch_size,
     } = r;
     let file_id = task.file_id;
-    let mut source = match (task.content, &task.path) {
-        (Some(content), _) => Source::Inline(Bytes::from(content)),
-        (None, Some(path)) => Source::Object {
-            store: storage.store().clone(),
-            path: storage.path(path)?,
-        },
-        (None, None) => {
-            return Err(Error::Schema(format!(
-                "file {} has neither a path nor content",
-                task.file_id
-            )));
-        }
-    };
+    let mut source = Source::of(task.content, task.path.as_deref(), file_id, storage)?;
     // The footer and the vector, at once: each a request at most.
     let footer = async {
         match &task.footer {
@@ -436,6 +440,55 @@ fn kept_groups(metadata: &ParquetMetaData, filter: &Filter) -> Vec<usize> {
 enum Source {
     Inline(Bytes),
     Object { store: Arc<dyn ObjectStore>, path: Path },
+}
+
+impl Source {
+    fn of(content: Option<Vec<u8>>, path: Option<&str>, file_id: i64, storage: &Storage) -> Result<Self> {
+        match (content, path) {
+            (Some(content), _) => Ok(Self::Inline(Bytes::from(content))),
+            (None, Some(path)) => Ok(Self::Object {
+                store: storage.store().clone(),
+                path: storage.path(path)?,
+            }),
+            (None, None) => Err(Error::Schema(format!("file {file_id} has neither a path nor content"))),
+        }
+    }
+}
+
+/// A task's file as Parquet reads it, with its metadata.
+pub struct TaskReader {
+    source: Source,
+    footer: Option<Vec<u8>>,
+    footer_size: i32,
+    file_size: i64,
+}
+
+impl AsyncFileReader for TaskReader {
+    fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
+        self.source.get_bytes(range)
+    }
+
+    fn get_byte_ranges(&mut self, ranges: Vec<Range<u64>>) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>> {
+        self.source.get_byte_ranges(ranges)
+    }
+
+    fn get_metadata<'a>(
+        &'a mut self,
+        _options: Option<&'a ArrowReaderOptions>,
+    ) -> BoxFuture<'a, parquet::errors::Result<Arc<ParquetMetaData>>> {
+        async {
+            Ok(Arc::new(match &self.footer {
+                Some(footer) => ParquetMetaDataReader::decode_metadata(footer)?,
+                None => {
+                    ParquetMetaDataReader::new()
+                        .with_prefetch_hint(Some(self.footer_size as usize + 8))
+                        .load_and_finish(&mut self.source, self.file_size as u64)
+                        .await?
+                }
+            }))
+        }
+        .boxed()
+    }
 }
 
 impl AsyncFileReader for Source {

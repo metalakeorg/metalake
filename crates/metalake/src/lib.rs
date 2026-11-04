@@ -30,10 +30,11 @@ mod write;
 
 pub use catalog::{Catalog, CatalogConfig, Ref};
 pub use error::{Error, Result};
+pub use evolve::Evolve;
 pub use maintain::Maintenance;
 pub use metalake_pg::Retention;
 pub use metalake_pg::records::TableName;
-pub use scan::{Scan, ScanTask, TaskVector};
+pub use scan::{Scan, ScanTask, TaskReader, TaskVector};
 pub use storage::Storage;
 pub use table::{Field, Table};
 pub use write::{Merge, MergeReport, NewTable, Outcome, TableWriter, Transaction, WriteOptions};

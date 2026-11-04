@@ -7,21 +7,27 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::{Session, TableProvider};
-use datafusion::common::Statistics;
 use datafusion::common::stats::Precision;
+use datafusion::common::{DFSchema, Statistics};
 use datafusion::datasource::TableType;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::error::Result as DataFusionResult;
 use datafusion::execution::object_store::ObjectStoreUrl;
-use datafusion::logical_expr::Expr;
+use datafusion::logical_expr::utils::conjunction;
+use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_plan::ExecutionPlan;
 use futures_util::TryStreamExt;
-use metalake::{Catalog, Scan, ScanTask, Storage, Table};
+use metalake::{Catalog, Evolve, Scan, Storage, Table};
 
+use crate::adapter::ByFieldId;
 use crate::catalog::external;
-use crate::stats;
+use crate::filters;
+use crate::read::{self, TaskReaders};
+
+/// How many files' vectors are read at once while planning.
+const CONCURRENCY: usize = 16;
 
 /// A table of a ref, at the point it was read.
 #[derive(Clone)]
@@ -46,31 +52,27 @@ impl MetaTable {
         }
     }
 
-    /// Where DataFusion finds a task's file: an inline file has no object, and takes a name only it uses.
-    fn file(&self, task: &ScanTask) -> DataFusionResult<PartitionedFile> {
-        let size = task.file_size as u64;
-        Ok(match &task.path {
-            Some(url) => PartitionedFile::new(self.storage.path(url).map_err(external)?.to_string(), size),
-            None => PartitionedFile::new(format!("inline/{}", task.file_id), size),
-        })
-    }
-
     /// The files in `groups` groups, each a partition of the plan, with the statistics of each group.
-    fn groups(&self, tasks: &[ScanTask], groups: usize) -> DataFusionResult<(Vec<FileGroup>, Statistics)> {
+    fn groups(
+        &self,
+        planned: Vec<(PartitionedFile, Statistics)>,
+        groups: usize,
+    ) -> DataFusionResult<(Vec<FileGroup>, Statistics)> {
         let schema = self.table.schema();
-        let mut files = vec![Vec::new(); groups.clamp(1, tasks.len().max(1))];
+        let empty = planned.is_empty();
+        let mut files = vec![Vec::new(); groups.clamp(1, planned.len().max(1))];
         let mut statistics = vec![Vec::new(); files.len()];
         let count = files.len();
-        for (at, task) in tasks.iter().enumerate() {
-            files[at % count].push(self.file(task)?);
-            statistics[at % count].push(stats::of_file(task, schema)?);
+        for (at, (file, file_statistics)) in planned.into_iter().enumerate() {
+            files[at % count].push(file);
+            statistics[at % count].push(file_statistics);
         }
         let merged = statistics
             .iter()
             .map(|group| Statistics::try_merge_iter(group, schema))
             .collect::<DataFusionResult<Vec<_>>>()?;
         let mut total = Statistics::try_merge_iter(&merged, schema)?;
-        if tasks.is_empty() {
+        if empty {
             total.num_rows = Precision::Exact(0);
         }
         let groups = files
@@ -93,29 +95,52 @@ impl TableProvider for MetaTable {
         TableType::Base
     }
 
+    /// Every filter is DataFusion's to apply again: pruning leaves out files and row groups, never rows.
+    fn supports_filters_pushdown(&self, filters: &[&Expr]) -> DataFusionResult<Vec<TableProviderFilterPushDown>> {
+        Ok(vec![TableProviderFilterPushDown::Inexact; filters.len()])
+    }
+
     async fn scan(
         &self,
         state: &dyn Session,
         projection: Option<&Vec<usize>>,
-        _filters: &[Expr],
+        filters: &[Expr],
         limit: Option<usize>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        let scan = Scan::new(&self.catalog, &self.table);
-        let tasks: Vec<ScanTask> = scan
+        let (table, storage) = (&self.table, &self.storage);
+        let schema = table.schema();
+        let scan = filters::pruned(Scan::new(&self.catalog, table), table, filters).map_err(external)?;
+        let planned: Vec<_> = scan
             .plan()
             .await
             .map_err(external)?
+            .map_err(external)
+            .map_ok(|task| read::file(task, schema, storage))
+            .try_buffered(CONCURRENCY)
             .try_collect()
-            .await
-            .map_err(external)?;
-        let (groups, statistics) = self.groups(&tasks, state.config().target_partitions())?;
-        let source = Arc::new(ParquetSource::new(self.table.schema().clone()));
-        let url = ObjectStoreUrl::parse(self.storage.base())?;
-        let config = FileScanConfigBuilder::new(url, source)
+            .await?;
+        let (groups, statistics) = self.groups(planned, state.config().target_partitions())?;
+
+        let mut options = state.table_options().parquet.clone();
+        // The core's rules read strings as the table has them.
+        options.global.schema_force_view_types = false;
+        let mut source = ParquetSource::new(schema.clone())
+            .with_table_parquet_options(options)
+            .with_parquet_file_reader_factory(Arc::new(TaskReaders {
+                storage: storage.clone(),
+            }));
+        if let Some(filter) = conjunction(filters.to_vec()) {
+            let names = DFSchema::try_from(schema.clone())?;
+            source = source.with_predicate(state.create_physical_expr(filter, &names)?);
+        }
+        let config = FileScanConfigBuilder::new(ObjectStoreUrl::parse(storage.base())?, Arc::new(source))
             .with_file_groups(groups)
             .with_statistics(statistics)
             .with_projection_indices(projection.cloned())?
             .with_limit(limit)
+            .with_expr_adapter(Some(Arc::new(ByFieldId {
+                evolve: Arc::new(Evolve::new(table)),
+            })))
             .build();
         Ok(DataSourceExec::from_data_source(config))
     }

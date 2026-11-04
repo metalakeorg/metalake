@@ -28,19 +28,19 @@ const NANOS_PER_DAY: i64 = 86_400_000_000_000;
 
 /// The table's fields by id, to read files under.
 #[derive(Debug, Clone)]
-pub(crate) struct Evolve {
+pub struct Evolve {
     fields: HashMap<i32, Field>,
 }
 
 impl Evolve {
-    pub(crate) fn new(table: &Table) -> Self {
+    pub fn new(table: &Table) -> Self {
         Self {
             fields: table.fields().iter().map(|f| (f.field_id, f.clone())).collect(),
         }
     }
 
     /// The column of `field`, from the file's column of its id, or of `rows` rows when the file has none.
-    pub(crate) fn column(&self, field: &ArrowField, file: Option<&ArrayRef>, rows: usize) -> Result<ArrayRef> {
+    pub fn column(&self, field: &ArrowField, file: Option<&ArrayRef>, rows: usize) -> Result<ArrayRef> {
         self.of(field, file, rows)
             .map_err(|e| Error::Schema(format!("{}: {e}", field.name())))
     }
