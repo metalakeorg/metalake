@@ -138,8 +138,14 @@ select ct(:c, jsonb_build_array(dv_of(:'t2', :f2, 0, 6, false, (file_dv(:c, :'t2
 select ct(1, jsonb_build_array(dv_of(:'t2', :f2, 5, 7, false, (file_dv(1, :'t2', 9223372036854775806, :f2)).begin_seq)));
 select expect_error(format('select merge(%s, ''{"only": {"tables": ["%s"]}}'')', :c, :'t1'), '40001',
                     'vectors in files on both sides, and no merged vector');
+select register_intent('gs://dv/late.puffin', :'t2', :c, '-1 second'), register_intent('gs://dv/merged.puffin', :'t2', :c, '1 hour');
+select expect_error(format('select merge(%s, %L::jsonb)', :c, jsonb_build_object('only', jsonb_build_object('tables', jsonb_build_array(:'t1')),
+             'dvs', jsonb_build_array(jsonb_build_object('table_id', :'t2', 'file_id', :f2, 'path', 'gs://dv/late.puffin',
+                                                         'content_offset', 4, 'content_size', 40, 'cardinality', 8)))),
+                    '22023', 'a merged vector in a Puffin file whose intent expired');
 select merge(:c, jsonb_build_object('only', jsonb_build_object('tables', jsonb_build_array(:'t1')),
              'dvs', jsonb_build_array(jsonb_build_object('table_id', :'t2', 'file_id', :f2, 'path', 'gs://dv/merged.puffin',
                                                          'content_offset', 4, 'content_size', 40, 'cardinality', 8))));
+select expect(not exists (select 1 from intent where path = 'gs://dv/merged.puffin'), 'its intent went with the merge');
 select expect((select cardinality = 8 and path = 'gs://dv/merged.puffin'
                  from file_dv(:c, :'t2', 9223372036854775806, :f2)), 'the supplied vector, on the branch');

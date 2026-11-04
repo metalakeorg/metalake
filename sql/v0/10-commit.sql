@@ -228,6 +228,10 @@ begin
     select format('RET-7: the intent of %s expired at %s', i.path, i.expires_at) from a
       join intent i on i.path = (a.f).path
      where i.expires_at < now()
+    union all
+    select format('RET-7: the intent of %s expired at %s', i.path, i.expires_at) from unnest(vecs) v
+      join intent i on i.path = v.path
+     where i.expires_at < now()
     -- RET-8: no path in the deletion queue, files or Puffin files.
     union all
     select format('RET-8: %s is queued for deletion', q.path) from a join deletion_queue q on q.path = (a.f).path
@@ -535,7 +539,7 @@ begin
     on conflict (ref_id, table_id) do update set snapshot_id = excluded.snapshot_id;
 
   -- CMT-10 and CMT-5: intents, idempotency, notification.
-  delete from intent where path in (select (f).path from unnest(adds) f);
+  delete from intent where path in (select (f).path from unnest(adds) f union select v.path from unnest(vecs) v);
   if app is not null then
     update idempotency x set version = ver, commit_seq = seq where x.ref_id = r and x.app_id = app;
   end if;

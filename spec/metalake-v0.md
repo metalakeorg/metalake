@@ -409,7 +409,7 @@ order and the cluster key.
   adds. Files committed earlier are not checked again, so
   the cost of a commit does not grow with the number of files in the table.
 - **CMT-10.** Writers SHOULD register an `intent` row (path, table, ref, expiry) in its own transaction before
-  uploading a file. A commit deletes the intents of the files it adds. After committing, it sends
+  uploading a file or a Puffin file. A commit or a merge deletes the intents of the files and Puffin files it adds. After committing, it sends
   `NOTIFY metalake` with the payload `<schema>:<commit_seq>`.
 - **CMT-11.** A commit whose `operation` is `replace` (a compaction or a flush) only removes and adds files.
   The live rows of the files it removes (DV-5) equal the rows of the files it adds, which carry no vectors.
@@ -609,8 +609,8 @@ referred to. Retention says how much history each ref keeps.
 
 - **RET-7.** A path is an **orphan** when its `intent` has expired, no `data_file` or `deletion_vector` row
   refers to it and it is not in `deletion_queue`, whose objects wait for their grace (RET-9). Orphans are found from `intent` alone, without listing storage: a collector deletes the
-  object, then the `intent` row. A commit that adds a file whose `intent` has expired is refused (CMT-9), so a
-  writer that missed its deadline never commits a path that a collector may have deleted.
+  object, then the `intent` row. A commit or a merge that adds a file or a Puffin file whose `intent` has expired is
+  refused (CMT-9), so a writer that missed its deadline never commits a path that a collector may have deleted.
 
 ## 14. Time and changes
 

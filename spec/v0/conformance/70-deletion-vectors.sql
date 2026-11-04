@@ -74,6 +74,18 @@ select cm(format('[{"table_id": "%s", "remove": [1]}]', :'t')::jsonb, '{"operati
 select expect((select count(*) from visible_dvs(1, :'t', 9223372036854775806)) = 0 and rows_of(1, :'t') = 10,
   'a vector applies only while its file is visible');
 
+-- case: a Puffin file is under its intent as a file is: an expired one is refused, a valid one goes with the commit
+-- rules: RET-7 CMT-10
+select mk('tp') as t \gset
+select cm(format('[{"table_id": "%s", "add": [%s]}]', :'t', fj(1))::jsonb);
+select register_intent('gs://lake/tp/late.puffin', :'t', 1, '-1 second'), register_intent('gs://lake/tp/dv.puffin', :'t', 1, '1 hour');
+select expect_error(format('select cm(%L::jsonb, ''{"operation": "delete"}'')', format('[{"table_id": "%s", "dvs": [{"file_id": 1,
+  "base_seq": null, "path": "gs://lake/tp/late.puffin", "content_offset": 4, "content_size": 46, "cardinality": 3}]}]', :'t')),
+  '22023', 'a vector in a Puffin file whose intent expired');
+select cm(format('[{"table_id": "%s", "dvs": [{"file_id": 1, "base_seq": null, "path": "gs://lake/tp/dv.puffin",
+  "content_offset": 4, "content_size": 46, "cardinality": 3}]}]', :'t')::jsonb, '{"operation": "delete"}');
+select expect(not exists (select 1 from intent where path = 'gs://lake/tp/dv.puffin'), 'its intent went with the commit');
+
 -- case: a vector is stored in a Puffin file or inline, never both
 -- rules: DV-3
 select mk('t') as t \gset

@@ -550,6 +550,12 @@ begin
     end if;
   end if;
   update head h set snapshot_id = snapshot_at(b, h.table_id, latest) where h.ref_id = b;
+  -- RET-7, CMT-10: a Puffin file the merge took, by its intent. One it was handed and did not take keeps its intent.
+  if exists (select 1 from unnest(vecs) v join intent i on i.path = v.path where i.expires_at < now()) then
+    perform refuse_invalid('RET-7', 'the intent of a merged vector expired');
+  end if;
+  delete from intent i where i.path in (select v.path from unnest(vecs) v)
+    and exists (select 1 from deletion_vector d where d.path = i.path);
   perform pg_notify('metalake', current_schema() || ':' || m);
   return row(m, true)::commit_result;
 end $$;

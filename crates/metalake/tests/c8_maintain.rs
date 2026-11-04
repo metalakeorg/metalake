@@ -17,7 +17,8 @@ use futures_util::TryStreamExt;
 use metalake::vectors::Deletes;
 use metalake::{Catalog, CatalogConfig, Error, NewTable, Retention, Scan, Storage, Table, TableWriter, WriteOptions};
 use metalake_pg::records::FileAdd;
-use metalake_pg::{Pool, Protocol};
+use metalake_pg::records::VectorSet;
+use metalake_pg::{Commit, ErrorKind, Merge, Pool, Protocol};
 use object_store::ObjectStoreExt;
 
 fn batch(keys: std::ops::Range<i64>) -> RecordBatch {
@@ -248,7 +249,7 @@ async fn an_abandoned_upload_is_deleted_and_a_committed_file_is_not() -> Result<
         2,
         "the file and its Puffin"
     );
-    assert_eq!(p.orphans(&session, Some(later)).await?.len(), 1);
+    assert!(p.orphans(&session, Some(later)).await?.is_empty());
     Ok(())
 }
 
@@ -260,5 +261,52 @@ async fn commit_times_are_filled_in_batches() -> Result<(), Box<dyn std::error::
     let maintain = catalog.maintenance().batch(1);
     assert!(maintain.fill_commit_times().await? >= 2, "more commits than a batch");
     assert_eq!(maintain.fill_commit_times().await?, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_vector_in_a_puffin_file_whose_intent_expired_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+    let (catalog, t, storage, p) = lake(Arc::default()).await?;
+    let main = catalog.branch("main").await?;
+    append(&catalog, &t, &storage, 0..5).await?;
+    let branch = main.create_branch("b").await?;
+    let on_branch = branch.table(&["db"], "t").await?;
+    let added = files(&catalog, &on_branch, &storage, 5..6, WriteOptions::default()).await?;
+    branch.transaction().append(added).commit().await?;
+    let t = main.table(&["db"], "t").await?;
+    let file = file_ids(&catalog, &t).await?[0];
+
+    let path = "memory:///wh/late.puffin".to_string();
+    let pool = Pool::new(&url(), 1)?;
+    let session = pool.get().await?;
+    p.register_intents(&session, main.id(), t.id(), std::slice::from_ref(&path), Duration::ZERO)
+        .await?;
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let vector = VectorSet {
+        table_id: t.id(),
+        file_id: file,
+        base_seq: None,
+        path: Some(path),
+        content_offset: Some(4),
+        content_size: 40,
+        cardinality: 1,
+        inline: None,
+    };
+    let refused = |e: &metalake_pg::Error| e.kind() == ErrorKind::Invalid && e.rule() == Some("RET-7");
+
+    let commit = Commit {
+        ref_id: main.id(),
+        operation: "delete".into(),
+        vectors: vec![vector.clone()],
+        ..Default::default()
+    };
+    let answer = p.commit(&session, &commit).await;
+    assert!(answer.as_ref().is_err_and(refused), "{answer:?}");
+    let merge = Merge {
+        vectors: vec![vector],
+        ..Merge::of(branch.id())
+    };
+    let answer = p.merge(&session, &merge).await;
+    assert!(answer.as_ref().is_err_and(refused), "{answer:?}");
     Ok(())
 }
