@@ -211,15 +211,28 @@ impl Ref {
     pub async fn read_point(&self) -> Result<i64> {
         match self.at {
             Point::Seq(seq) => Ok(seq),
-            Point::Latest => {
-                let p = self.catalog.protocol();
-                Ok(p.stable_point(&self.catalog.session().await?).await?.seq)
-            }
+            Point::Latest => self.stable().await,
             Point::Time(_) => Err(Error::Invalid(format!(
                 "a read of {} as of a time reads each table at its own sequence",
                 self.name
             ))),
         }
+    }
+
+    /// A sequence no commit at or below it can still change (VIS-11). The last one drawn becomes that once the commits
+    /// in flight when it was taken have ended, which takes milliseconds. Any transaction left open on the server holds
+    /// this up, so a catalog's Postgres keeps transactions short; a read that waits is one a caller can cancel, and it
+    /// never reads a point that can still change.
+    async fn stable(&self) -> Result<i64> {
+        let session = self.catalog.session().await?;
+        let p = self.catalog.protocol();
+        let point = p.stable_point(&session).await?;
+        let mut pause = Duration::from_millis(1);
+        while !p.is_stable(&session, point.horizon).await? {
+            tokio::time::sleep(pause).await;
+            pause = (pause * 2).min(Duration::from_millis(50));
+        }
+        Ok(point.seq)
     }
 
     /// The tables this ref sees at its read point, each with the sequence a read of it is at.
