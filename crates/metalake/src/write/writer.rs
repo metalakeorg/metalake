@@ -52,6 +52,8 @@ pub struct WriteOptions {
     pub row_group_rows: usize,
     /// Overrides the table's target file size.
     pub target_file_size: Option<usize>,
+    /// Stores every file, however small, as flushing inline files needs (INL-2).
+    pub stored: bool,
 }
 
 impl Default for WriteOptions {
@@ -60,8 +62,18 @@ impl Default for WriteOptions {
             intent_ttl: Duration::from_secs(3600),
             row_group_rows: 1024 * 1024,
             target_file_size: None,
+            stored: false,
         }
     }
+}
+
+/// The size a file of `table` is closed at.
+pub(crate) fn target_size(table: &Table) -> usize {
+    table
+        .properties()
+        .get("write.target-file-size-bytes")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(TARGET_FILE_SIZE)
 }
 
 /// The writer of one table, as it was read: its files follow that read's schema and default spec. A partitioned
@@ -128,11 +140,11 @@ impl TableWriter {
             catalog: catalog.clone(),
             table: table.clone(),
             storage,
-            inline_max: property("inline.max-bytes").unwrap_or(INLINE_MAX_BYTES),
-            target: options
-                .target_file_size
-                .or_else(|| property("write.target-file-size-bytes"))
-                .unwrap_or(TARGET_FILE_SIZE),
+            inline_max: match options.stored {
+                true => 0,
+                false => property("inline.max-bytes").unwrap_or(INLINE_MAX_BYTES),
+            },
+            target: options.target_file_size.unwrap_or_else(|| target_size(table)),
             options,
             spec_id,
             partitioning,

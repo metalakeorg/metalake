@@ -45,6 +45,8 @@ end $$;
 -- RET-1, RET-9: the reference's floor and the end of a sweep, callable from outside the catalog's search_path.
 alter function @schema@.retention_floor(int) set search_path = @schema@, pg_catalog, pg_temp;
 alter function @schema@.sweep_done(text[]) set search_path = @schema@, pg_catalog, pg_temp;
+-- INL-2: whether a table's inline files are due, callable from outside too.
+alter function @schema@.inline_flush_due(int, uuid) set search_path = @schema@, pg_catalog, pg_temp;
 
 -- RET-3 (note): the protocol's indexes for a ref's snapshots and commits below its floor, and for whether a snapshot
 -- of a commit remains.

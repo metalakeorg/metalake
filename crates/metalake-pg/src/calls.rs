@@ -512,6 +512,14 @@ impl Protocol {
         Ok(self.one(s, "forget_intents(paths => $1)", &[&paths]).await?.get(0))
     }
 
+    /// Whether a table's inline files on a ref are due a flush (INL-2).
+    pub async fn inline_flush_due(&self, s: &impl Session, r: i32, t: Uuid) -> Result<bool> {
+        Ok(self
+            .one(s, "inline_flush_due(r => $1, t => $2)", &[&r, &t])
+            .await?
+            .get(0))
+    }
+
     /// Copies commit times, oldest first (TT-1).
     pub async fn fill_committed_at(&self, s: &impl Session, lim: Option<i32>) -> Result<i64> {
         Ok(self.one(s, "fill_committed_at(lim => $1)", &[&lim]).await?.get(0))
@@ -582,4 +590,5 @@ pub const INTERFACE: &[(&str, &[&str], bool)] = &[
     ("orphans", &["at"], false),
     ("forget_intents", &["paths"], true),
     ("fill_committed_at", &["lim"], true),
+    ("inline_flush_due", &["r", "t"], false),
 ];

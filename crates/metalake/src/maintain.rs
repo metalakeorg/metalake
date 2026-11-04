@@ -1,13 +1,18 @@
 //! Maintenance: what takes history and objects away once no read can reach them (RET-1 to RET-9, TT-1). The protocol
 //! decides what goes; Postgres cannot touch storage, so the core deletes the objects, and forgets them only after.
 //! Each task is a loop of the protocol's batches, safe to repeat and to run beside commits; when to run it is the
-//! caller's.
+//! caller's. Flushing and compacting rewrite files instead: a `replace` commit (CMT-11) of the same live rows, which
+//! the protocol refuses if a delete got in first, since it counts them.
 
+use futures_util::{StreamExt, TryStreamExt, stream};
 use metalake_pg::BATCH;
 
 use crate::catalog::Catalog;
-use crate::error::Result;
+use crate::error::{Error, Result};
+use crate::scan::{Scan, ScanTask};
 use crate::storage::Storage;
+use crate::table::Table;
+use crate::write::{TableWriter, WriteOptions, target_size};
 
 /// The maintenance of a catalog.
 #[derive(Debug, Clone)]
@@ -74,6 +79,68 @@ impl Maintenance {
             }
         }
         Ok(forgotten)
+    }
+
+    /// Moves a table's inline files to storage if they are due (INL-2), and answers the commit, or none if they are
+    /// not. `table` is the state read: if a delete has touched one of its files since, the commit is refused.
+    pub async fn flush(&self, table: &Table, storage: &Storage) -> Result<Option<i64>> {
+        let session = self.catalog.session().await?;
+        let p = self.catalog.protocol();
+        if !p.inline_flush_due(&session, table.ref_id(), table.id()).await? {
+            return Ok(None);
+        }
+        drop(session);
+        let mut tasks = self.files(table).await?;
+        tasks.retain(|t| t.path.is_none());
+        self.rewrite(table, storage, tasks).await.map(Some)
+    }
+
+    /// Rewrites a table's files below its target size and those with a deletion vector, so that a read opens fewer
+    /// files and skips no deleted rows, and answers the commit, or none if a rewrite would change nothing. `table`
+    /// is the state read, as in [`Maintenance::flush`].
+    pub async fn compact(&self, table: &Table, storage: &Storage) -> Result<Option<i64>> {
+        let target = target_size(table) as i64;
+        let mut tasks = self.files(table).await?;
+        tasks.retain(|t| t.vector.is_some() || t.file_size < target);
+        if tasks.len() < 2 && tasks.iter().all(|t| t.vector.is_none()) {
+            return Ok(None);
+        }
+        self.rewrite(table, storage, tasks).await.map(Some)
+    }
+
+    async fn files(&self, table: &Table) -> Result<Vec<ScanTask>> {
+        Scan::new(&self.catalog, table).plan().await?.try_collect().await
+    }
+
+    /// The live rows of `tasks` in new stored files, the table's latest shape, replacing them in one commit.
+    async fn rewrite(&self, table: &Table, storage: &Storage, tasks: Vec<ScanTask>) -> Result<i64> {
+        let ids: Vec<i64> = tasks.iter().map(|t| t.file_id).collect();
+        let on = self
+            .catalog
+            .refs()
+            .await?
+            .into_iter()
+            .find(|r| r.id() == table.ref_id());
+        let on = on.ok_or_else(|| Error::NotFound(format!("the ref of {}", table.name())))?;
+        let options = WriteOptions {
+            stored: true,
+            ..Default::default()
+        };
+        let mut writer = TableWriter::new(&self.catalog, table, storage.clone(), options)?;
+        let scan = Scan::new(&self.catalog, table);
+        let mut batches = scan.read(stream::iter(tasks).map(Ok).boxed(), storage);
+        while let Some(batch) = batches.try_next().await? {
+            writer.write(&batch).await?;
+        }
+        let files = writer.finish().await?;
+        let done = on
+            .transaction()
+            .remove(table, ids)
+            .append(files)
+            .replace()
+            .commit()
+            .await?;
+        Ok(done.seq())
     }
 
     /// Copies commit times into the catalog before Postgres discards them (TT-1), and answers how many. It should run
