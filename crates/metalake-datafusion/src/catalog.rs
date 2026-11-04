@@ -167,11 +167,12 @@ impl SchemaProvider for Namespace {
         };
         let namespace: Vec<&str> = self.name.split(SEPARATOR).collect();
         match on.table(&namespace, name).await {
-            Ok(table) => Ok(Some(Arc::new(MetaTable::new(
-                shared.catalog.clone(),
-                shared.storage.clone(),
+            Ok(table) => Ok(Some(Arc::new(MetaTable {
+                on,
+                catalog: shared.catalog.clone(),
+                storage: shared.storage.clone(),
                 table,
-            )))),
+            }))),
             Err(Error::NotFound(_)) => Ok(None),
             Err(e) => Err(external(e)),
         }

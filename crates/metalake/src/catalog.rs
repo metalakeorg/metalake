@@ -315,7 +315,7 @@ impl Ref {
     }
 
     /// Whether a commit may write this ref: a branch, at its latest state.
-    pub(crate) fn writable(&self) -> Result<()> {
+    pub fn writable(&self) -> Result<()> {
         if self.kind != "branch" {
             return Err(Error::Invalid(format!(
                 "{} is a {}, which no commit writes",

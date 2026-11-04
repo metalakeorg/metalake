@@ -8,23 +8,27 @@ use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::stats::Precision;
-use datafusion::common::{DFSchema, Statistics};
+use datafusion::common::{DFSchema, Statistics, not_impl_err};
 use datafusion::datasource::TableType;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource};
+use datafusion::datasource::sink::DataSinkExec;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::error::Result as DataFusionResult;
 use datafusion::execution::object_store::ObjectStoreUrl;
+use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::utils::conjunction;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::empty::EmptyExec;
 use futures_util::TryStreamExt;
-use metalake::{Catalog, Evolve, Scan, Storage, Table};
+use metalake::{Catalog, Evolve, Ref, Scan, Storage, Table};
 
 use crate::adapter::ByFieldId;
 use crate::catalog::external;
 use crate::filters;
 use crate::read::{self, TaskReaders};
+use crate::sink::{Delete, Insert};
 
 /// How many files' vectors are read at once while planning.
 const CONCURRENCY: usize = 16;
@@ -32,9 +36,10 @@ const CONCURRENCY: usize = 16;
 /// A table of a ref, at the point it was read.
 #[derive(Clone)]
 pub struct MetaTable {
-    catalog: Catalog,
-    storage: Storage,
-    table: Table,
+    pub(crate) on: Ref,
+    pub(crate) catalog: Catalog,
+    pub(crate) storage: Storage,
+    pub(crate) table: Table,
 }
 
 impl fmt::Debug for MetaTable {
@@ -44,15 +49,8 @@ impl fmt::Debug for MetaTable {
 }
 
 impl MetaTable {
-    pub(crate) fn new(catalog: Catalog, storage: Storage, table: Table) -> Self {
-        Self {
-            catalog,
-            storage,
-            table,
-        }
-    }
-
-    /// The files in `groups` groups, each a partition of the plan, with the statistics of each group.
+    /// The files in `groups` groups, each a partition of the plan, with the statistics of each group: at least one
+    /// group, even an empty one, since a sink needs a partition to drain.
     fn groups(
         &self,
         planned: Vec<(PartitionedFile, Statistics)>,
@@ -78,7 +76,6 @@ impl MetaTable {
         let groups = files
             .into_iter()
             .zip(merged)
-            .filter(|(files, _)| !files.is_empty())
             .map(|(files, statistics)| FileGroup::new(files).with_statistics(Arc::new(statistics)))
             .collect();
         Ok((groups, total))
@@ -124,15 +121,11 @@ impl TableProvider for MetaTable {
         let mut options = state.table_options().parquet.clone();
         // The core's rules read strings as the table has them.
         options.global.schema_force_view_types = false;
-        let mut source = ParquetSource::new(schema.clone())
+        let source = ParquetSource::new(schema.clone())
             .with_table_parquet_options(options)
             .with_parquet_file_reader_factory(Arc::new(TaskReaders {
                 storage: storage.clone(),
             }));
-        if let Some(filter) = conjunction(filters.to_vec()) {
-            let names = DFSchema::try_from(schema.clone())?;
-            source = source.with_predicate(state.create_physical_expr(filter, &names)?);
-        }
         let config = FileScanConfigBuilder::new(ObjectStoreUrl::parse(storage.base())?, Arc::new(source))
             .with_file_groups(groups)
             .with_statistics(statistics)
@@ -143,5 +136,37 @@ impl TableProvider for MetaTable {
             })))
             .build();
         Ok(DataSourceExec::from_data_source(config))
+    }
+
+    async fn insert_into(
+        &self,
+        _state: &dyn Session,
+        input: Arc<dyn ExecutionPlan>,
+        insert_op: InsertOp,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        if insert_op != InsertOp::Append {
+            return not_impl_err!("{insert_op}: a MetaLake table takes only appends from an insert");
+        }
+        self.on.writable().map_err(external)?;
+        let table = self.clone();
+        Ok(Arc::new(DataSinkExec::new(input, Arc::new(Insert { table }), None)))
+    }
+
+    async fn delete_from(&self, state: &dyn Session, filters: Vec<Expr>) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        self.on.writable().map_err(external)?;
+        let scan = Scan::new(&self.catalog, &self.table).with_positions();
+        let scan = filters::pruned(scan, &self.table, &filters).map_err(external)?;
+        let schema = scan.schema().clone();
+        let filter = conjunction(filters)
+            .map(|f| state.create_physical_expr(f, &DFSchema::try_from(schema.clone())?))
+            .transpose()?;
+        let sink = Delete {
+            table: self.clone(),
+            scan,
+            filter,
+        };
+        // Its rows are the scan's, so DataFusion's plan has nothing to feed it: only the sink's way of answering a count.
+        let nothing = Arc::new(EmptyExec::new(schema));
+        Ok(Arc::new(DataSinkExec::new(nothing, Arc::new(sink), None)))
     }
 }

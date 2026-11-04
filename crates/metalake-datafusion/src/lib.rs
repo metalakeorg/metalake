@@ -18,6 +18,7 @@ mod adapter;
 mod catalog;
 mod filters;
 mod read;
+mod sink;
 mod stats;
 mod table;
 
