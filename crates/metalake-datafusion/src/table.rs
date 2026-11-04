@@ -12,7 +12,7 @@ use datafusion::common::{DFSchema, Statistics, not_impl_err};
 use datafusion::datasource::TableType;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource};
-use datafusion::datasource::sink::DataSinkExec;
+use datafusion::datasource::sink::{DataSink, DataSinkExec};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::error::Result as DataFusionResult;
 use datafusion::execution::object_store::ObjectStoreUrl;
@@ -29,7 +29,7 @@ use crate::catalog::external;
 use crate::filters;
 use crate::point::StatementPoint;
 use crate::read::{self, TaskReaders};
-use crate::sink::{Delete, Insert};
+use crate::sink::{Delete, Insert, Selection, Update};
 
 /// How many files' vectors are read at once while planning.
 const CONCURRENCY: usize = 16;
@@ -52,6 +52,22 @@ impl fmt::Debug for MetaTable {
 }
 
 impl MetaTable {
+    /// The rows `filters` match, for a statement that writes them.
+    fn selection(&self, state: &dyn Session, filters: Vec<Expr>) -> DataFusionResult<Selection> {
+        self.on.writable().map_err(external)?;
+        let scan = Scan::new(&self.catalog, &self.table).with_positions();
+        let scan = filters::pruned(scan, &self.table, &filters).map_err(external)?;
+        let names = DFSchema::try_from(scan.schema().clone())?;
+        let filter = conjunction(filters)
+            .map(|f| state.create_physical_expr(f, &names))
+            .transpose()?;
+        Ok(Selection {
+            table: self.clone(),
+            scan,
+            filter,
+        })
+    }
+
     /// This table at the point of its statement.
     async fn at_statement(&self) -> metalake::Result<Table> {
         let Some(point) = &self.statement else {
@@ -158,29 +174,48 @@ impl TableProvider for MetaTable {
         input: Arc<dyn ExecutionPlan>,
         insert_op: InsertOp,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        if insert_op != InsertOp::Append {
-            return not_impl_err!("{insert_op}: a MetaLake table takes only appends from an insert");
+        if insert_op == InsertOp::Replace {
+            return not_impl_err!("{insert_op}: a MetaLake table has no key to replace rows by");
         }
         self.on.writable().map_err(external)?;
-        let table = self.clone();
-        Ok(Arc::new(DataSinkExec::new(input, Arc::new(Insert { table }), None)))
+        let sink = Insert {
+            table: self.clone(),
+            overwrite: insert_op == InsertOp::Overwrite,
+        };
+        Ok(Arc::new(DataSinkExec::new(input, Arc::new(sink), None)))
     }
 
     async fn delete_from(&self, state: &dyn Session, filters: Vec<Expr>) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        self.on.writable().map_err(external)?;
-        let scan = Scan::new(&self.catalog, &self.table).with_positions();
-        let scan = filters::pruned(scan, &self.table, &filters).map_err(external)?;
-        let schema = scan.schema().clone();
-        let filter = conjunction(filters)
-            .map(|f| state.create_physical_expr(f, &DFSchema::try_from(schema.clone())?))
-            .transpose()?;
-        let sink = Delete {
-            table: self.clone(),
-            scan,
-            filter,
-        };
-        // Its rows are the scan's, so DataFusion's plan has nothing to feed it: only the sink's way of answering a count.
-        let nothing = Arc::new(EmptyExec::new(schema));
-        Ok(Arc::new(DataSinkExec::new(nothing, Arc::new(sink), None)))
+        let rows = self.selection(state, filters)?;
+        Ok(no_input(rows.scan.schema().clone(), Delete { rows }))
     }
+
+    async fn update(
+        &self,
+        state: &dyn Session,
+        assignments: Vec<(String, Expr)>,
+        filters: Vec<Expr>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let rows = self.selection(state, filters)?;
+        let names = DFSchema::try_from(rows.scan.schema().clone())?;
+        let assignments = assignments
+            .into_iter()
+            .map(|(column, value)| {
+                Ok((
+                    self.table.schema().index_of(&column)?,
+                    state.create_physical_expr(value, &names)?,
+                ))
+            })
+            .collect::<DataFusionResult<Vec<_>>>()?;
+        Ok(no_input(rows.scan.schema().clone(), Update { rows, assignments }))
+    }
+}
+
+/// A plan of `sink` with nothing to feed it: only DataFusion's way of answering a count.
+fn no_input(schema: SchemaRef, sink: impl DataSink + 'static) -> Arc<dyn ExecutionPlan> {
+    Arc::new(DataSinkExec::new(
+        Arc::new(EmptyExec::new(schema)),
+        Arc::new(sink),
+        None,
+    ))
 }

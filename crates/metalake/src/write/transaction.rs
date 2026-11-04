@@ -100,7 +100,8 @@ impl Transaction {
 
     /// Deletes rows of a table's files, which `storage` holds, as `table` read them: each file's vector becomes the
     /// union of these and the one it has. If another commit changes a vector first, the union is taken again over
-    /// the new one, and the commit retried (DV-4).
+    /// the new one, and the commit retried (DV-4), unless this commit also adds files, as an update does: then it is
+    /// refused.
     pub fn delete(mut self, table: &Table, storage: &Storage, deletes: Deletes) -> Self {
         if !deletes.is_empty() {
             self.deletes.push(TableDeletes {
@@ -270,7 +271,16 @@ impl Transaction {
                 Ok(r) if r.applied => return Ok(Outcome::Committed(r.commit_seq)),
                 Ok(r) => return Ok(Outcome::AlreadyApplied(r.commit_seq)),
                 Err(e) if attempt < ATTEMPTS && repeatable(e.kind(), call.app_id.is_some()) => continue,
-                Err(e) if attempt < ATTEMPTS && !self.deletes.is_empty() && delete::rebases(&e) => rebase = true,
+                // A delete commutes with another. An update does not: its new rows would stand for a row that the commit
+                // it lost to has deleted or changed, so that row would come back, or twice.
+                Err(e)
+                    if attempt < ATTEMPTS
+                        && !self.deletes.is_empty()
+                        && call.files.is_empty()
+                        && delete::rebases(&e) =>
+                {
+                    rebase = true
+                }
                 Err(e) => return Err(e.into()),
             }
         }

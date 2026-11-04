@@ -230,14 +230,5 @@ async fn a_tag_takes_no_statement() -> Result<(), Box<dyn std::error::Error>> {
         assert!(refused.is_err_and(|e| e.to_string().contains("tag")), "{sql}");
     }
     assert_eq!(lake.keys("v1.db.t").await?, [1]);
-
-    // An overwrite is refused, not done as an append.
-    let refused = lake.context.sql("insert overwrite main.db.t values (9, 'z')").await;
-    let refused = match refused {
-        Ok(statement) => statement.collect().await.map(|_| ()),
-        Err(e) => Err(e),
-    };
-    assert!(refused.is_err());
-    assert_eq!(lake.keys("main.db.t").await?, [1]);
     Ok(())
 }
