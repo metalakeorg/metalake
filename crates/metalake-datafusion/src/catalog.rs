@@ -13,6 +13,7 @@ use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use metalake::{Catalog, Error, Ref, Result, Storage};
 
+use crate::point::{self, OnePoint};
 use crate::table::MetaTable;
 
 /// The ref a session reads unqualified tables from.
@@ -79,6 +80,7 @@ impl MetaLake {
             .with_default_catalog_and_schema(DEFAULT_CATALOG, DEFAULT_SCHEMA);
         let context = SessionContext::new_with_config(config);
         context.register_catalog_list(Arc::new(self.clone()));
+        context.add_analyzer_rule(Arc::new(OnePoint));
         let url = ObjectStoreUrl::parse(self.shared.storage.base())?;
         context.register_object_store(url.as_ref(), self.shared.storage.store().clone());
         Ok(context)
@@ -90,8 +92,17 @@ impl Shared {
         read(&self.listing.read().expect("a listing is replaced whole"))
     }
 
+    /// The ref a catalog's name names, at the point it carries, if any: a ref's own name, `@` included, comes first.
     async fn find(&self, name: &str) -> Result<Option<Ref>> {
-        Ok(self.catalog.refs().await?.into_iter().find(|r| r.name() == name))
+        let refs = self.catalog.refs().await?;
+        let named = |name: &str| refs.iter().find(|r| r.name() == name).cloned();
+        if let Some(on) = named(name) {
+            return Ok(Some(on));
+        }
+        match name.split_once('@') {
+            Some((on, at)) => named(on).map(|on| point::at(on, at)).transpose(),
+            None => Ok(None),
+        }
     }
 }
 
@@ -172,6 +183,7 @@ impl SchemaProvider for Namespace {
                 catalog: shared.catalog.clone(),
                 storage: shared.storage.clone(),
                 table,
+                statement: None,
             }))),
             Err(Error::NotFound(_)) => Ok(None),
             Err(e) => Err(external(e)),

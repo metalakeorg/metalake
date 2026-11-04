@@ -14,9 +14,11 @@ async-trait = "0.1"
 datafusion = { version = "55.2", default-features = false, features = ["parquet", "sql"] }
 futures-util.workspace = true
 object_store.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 url.workspace = true
 
 [dev-dependencies]
+chrono = "0.4"
 arrow-array.workspace = true
 arrow-schema.workspace = true
 metalake-pg.workspace = true

@@ -314,6 +314,11 @@ impl Ref {
         Ok(p.delete_ref(&self.catalog.session().await?, self.id).await?)
     }
 
+    /// Whether this handle reads the ref's latest state, not a point of its past.
+    pub fn is_latest(&self) -> bool {
+        matches!(self.at, Point::Latest)
+    }
+
     /// Whether a commit may write this ref: a branch, at its latest state.
     pub fn writable(&self) -> Result<()> {
         if self.kind != "branch" {

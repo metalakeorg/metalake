@@ -27,6 +27,7 @@ use metalake::{Catalog, Evolve, Ref, Scan, Storage, Table};
 use crate::adapter::ByFieldId;
 use crate::catalog::external;
 use crate::filters;
+use crate::point::StatementPoint;
 use crate::read::{self, TaskReaders};
 use crate::sink::{Delete, Insert};
 
@@ -40,6 +41,8 @@ pub struct MetaTable {
     pub(crate) catalog: Catalog,
     pub(crate) storage: Storage,
     pub(crate) table: Table,
+    /// The point a statement of several tables reads, instead of the one this table was looked up at.
+    pub(crate) statement: Option<StatementPoint>,
 }
 
 impl fmt::Debug for MetaTable {
@@ -49,6 +52,16 @@ impl fmt::Debug for MetaTable {
 }
 
 impl MetaTable {
+    /// This table at the point of its statement.
+    async fn at_statement(&self) -> metalake::Result<Table> {
+        let Some(point) = &self.statement else {
+            return Ok(self.table.clone());
+        };
+        let seq = *point.get_or_try_init(|| self.on.read_point()).await?;
+        let namespace: Vec<&str> = self.table.namespace().iter().map(String::as_str).collect();
+        self.on.at(seq).table(&namespace, self.table.name()).await
+    }
+
     /// The files in `groups` groups, each a partition of the plan, with the statistics of each group: at least one
     /// group, even an empty one, since a sink needs a partition to drain.
     fn groups(
@@ -104,7 +117,8 @@ impl TableProvider for MetaTable {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        let (table, storage) = (&self.table, &self.storage);
+        let table = &self.at_statement().await.map_err(external)?;
+        let storage = &self.storage;
         let schema = table.schema();
         let scan = filters::pruned(Scan::new(&self.catalog, table), table, filters).map_err(external)?;
         let planned: Vec<_> = scan

@@ -44,6 +44,7 @@ impl DataSink for Insert {
             catalog,
             storage,
             table,
+            ..
         } = &self.table;
         let mut writer =
             TableWriter::new(catalog, table, storage.clone(), WriteOptions::default()).map_err(external)?;
