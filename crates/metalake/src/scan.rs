@@ -107,6 +107,21 @@ pub struct TaskVector {
     pub inline: Option<Vec<u8>>,
 }
 
+impl ScanTask {
+    /// Its file's metadata, if it travels with the task: from the footer the catalog keeps, or an inline file's bytes.
+    /// None if only the object has it (FTR-1).
+    pub fn metadata(&self) -> Result<Option<ParquetMetaData>> {
+        match (&self.footer, &self.content) {
+            (Some(footer), _) => ParquetMetaDataReader::decode_metadata(footer).map(Some),
+            (None, Some(content)) => ParquetMetaDataReader::new()
+                .parse_and_finish(&Bytes::copy_from_slice(content))
+                .map(Some),
+            (None, None) => Ok(None),
+        }
+        .map_err(read_error)
+    }
+}
+
 impl Scan {
     /// A read of every column of `table`, as it was read, from `catalog`.
     pub fn new(catalog: &Catalog, table: &Table) -> Self {

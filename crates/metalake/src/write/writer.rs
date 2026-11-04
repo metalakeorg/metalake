@@ -298,10 +298,10 @@ fn column_of(fields: &arrow_schema::Fields, columns: &[ArrayRef], id: i32) -> Op
         if field.metadata().get(FIELD_ID).and_then(|v| v.parse::<i32>().ok()) == Some(id) {
             return Some(column.clone());
         }
-        if let DataType::Struct(children) = field.data_type() {
-            if let Some(found) = column_of(children, column.as_struct().columns(), id) {
-                return Some(found);
-            }
+        if let DataType::Struct(children) = field.data_type()
+            && let Some(found) = column_of(children, column.as_struct().columns(), id)
+        {
+            return Some(found);
         }
     }
     None

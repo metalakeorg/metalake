@@ -192,14 +192,13 @@ pub fn murmur3_32(data: &[u8]) -> i32 {
     const C1: u32 = 0xcc9e_2d51;
     const C2: u32 = 0x1b87_3593;
     let mut h: u32 = 0;
-    let mut chunks = data.chunks_exact(4);
-    for chunk in &mut chunks {
-        let mut k = u32::from_le_bytes(chunk.try_into().expect("four bytes"));
+    let (chunks, tail) = data.as_chunks::<4>();
+    for chunk in chunks {
+        let mut k = u32::from_le_bytes(*chunk);
         k = k.wrapping_mul(C1).rotate_left(15).wrapping_mul(C2);
         h ^= k;
         h = h.rotate_left(13).wrapping_mul(5).wrapping_add(0xe654_6b64);
     }
-    let tail = chunks.remainder();
     if !tail.is_empty() {
         let mut k: u32 = 0;
         for (i, b) in tail.iter().enumerate() {

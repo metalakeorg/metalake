@@ -245,7 +245,7 @@ async fn deletes_cost_little() -> Result<(), Box<dyn std::error::Error>> {
             x ^= x << 13;
             x ^= x >> 7;
             x ^= x << 17;
-            x % 10 == 0
+            x.is_multiple_of(10)
         })
         .collect();
     let mut set = vector(&task, &positions, None);

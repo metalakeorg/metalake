@@ -55,6 +55,11 @@ impl Storage {
         }
     }
 
+    /// The scheme and authority every path of this store starts with.
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+
     /// The store, for an engine that reads through `object_store` itself.
     pub fn store(&self) -> &Arc<dyn ObjectStore> {
         &self.store
