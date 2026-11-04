@@ -1,65 +1,15 @@
 //! C10a (ADR 0003 §7): the command line, as a person or an agent runs it: the real binary, with its stdout, its stderr
 //! and its exit code. Run by `CRATE=metalake-cli bash sql/test.sh`.
 
+mod common;
+
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::process::Stdio;
 
+use common::{directory, lake, metalake, ok, run, sql, table, text, unique, url};
 use serde_json::Value;
-
-static NEXT: AtomicU32 = AtomicU32::new(0);
-
-fn unique() -> String {
-    format!("cli_{}_{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed))
-}
-
-fn url() -> String {
-    std::env::var("DATABASE_URL").expect("DATABASE_URL: run CRATE=metalake-cli bash sql/test.sh")
-}
-
-/// A new directory, of its own, for a test.
-fn directory() -> PathBuf {
-    let dir = std::env::temp_dir().join(unique());
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-/// The binary, run in `dir`, with none of the variables that would choose a lake for it.
-fn metalake(dir: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_metalake"));
-    command
-        .current_dir(dir)
-        .env_remove("METALAKE_POSTGRES")
-        .env_remove("METALAKE_SCHEMA")
-        .env_remove("PGPASSWORD");
-    command
-}
-
-fn run(dir: &Path, args: &[&str]) -> Output {
-    metalake(dir).args(args).output().unwrap()
-}
-
-fn text(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
-}
-
-/// Runs a command that must succeed, for its stdout.
-fn ok(dir: &Path, args: &[&str]) -> String {
-    let output = run(dir, args);
-    assert!(output.status.success(), "{args:?}: {}", text(&output.stderr));
-    assert!(output.stderr.is_empty(), "{args:?}: {}", text(&output.stderr));
-    text(&output.stdout)
-}
-
-/// A new lake in a new directory, and its schema.
-fn lake() -> (PathBuf, String) {
-    let dir = directory();
-    let schema = unique();
-    ok(&dir, &["init", &url(), "data", "--schema", &schema]);
-    (dir, schema)
-}
 
 #[test]
 fn a_lake_is_found_from_below_and_says_what_it_is() {
@@ -174,24 +124,6 @@ fn a_failure_is_on_stderr_with_its_code() {
     assert_eq!(missing.status.code(), Some(1));
     let failure: Value = serde_json::from_slice(&missing.stderr).unwrap();
     assert_eq!(failure["code"], "3F000");
-}
-
-/// `metalake sql`, which must succeed, for its stdout.
-fn sql(dir: &Path, statements: &str, format: &str) -> String {
-    ok(dir, &["sql", statements, "--format", format])
-}
-
-/// A lake with a table of two rows, one with a null, which small enough stay in the catalog.
-fn table() -> PathBuf {
-    let (dir, _) = lake();
-    sql(
-        &dir,
-        "create schema main.db;
-         create table main.db.t (k bigint not null, s varchar, f double);
-         insert into main.db.t values (1, 'a', 0.5), (2, null, 1.5);",
-        "csv",
-    );
-    dir
 }
 
 #[test]

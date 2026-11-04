@@ -2,16 +2,21 @@
 
 use std::fmt::Display;
 use std::io::{self, BufWriter, IsTerminal, Write};
+use std::sync::Arc;
 
 use clap::ValueEnum;
+use datafusion::arrow::array::{ArrayRef, StringArray};
 use datafusion::arrow::csv;
+use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::json::writer::{LineDelimited, WriterBuilder};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::arrow::util::pretty::pretty_format_batches_with_schema;
 use datafusion::execution::SendableRecordBatchStream;
-use futures_util::TryStreamExt;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use futures_util::{TryStreamExt, stream};
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::failure::Failure;
 
@@ -47,6 +52,25 @@ impl Out {
         write(text.as_bytes())
     }
 
+    /// A list of what a verb answers, under `columns`: as its own values in `json`, and otherwise through what prints a
+    /// statement's rows, so that there is one way to print a table.
+    pub async fn records<T: Serialize>(&self, columns: &[&str], rows: &[T]) -> Result<(), Failure> {
+        let to_value = |row| serde_json::to_value(row).map_err(|e| Failure::failed(e.to_string()));
+        let values = rows.iter().map(to_value).collect::<Result<Vec<Value>, Failure>>()?;
+        if self.format == Format::Json {
+            let lines: Vec<String> = values.iter().map(|v| format!("{v}\n")).collect();
+            return write(lines.concat().as_bytes());
+        }
+        let fields: Vec<Field> = columns.iter().map(|c| Field::new(*c, DataType::Utf8, true)).collect();
+        let schema = Arc::new(Schema::new(fields));
+        let cells = |column: &&str| values.iter().map(|v| cell(&v[*column])).collect::<StringArray>();
+        let arrays: Vec<ArrayRef> = columns.iter().map(|c| Arc::new(cells(c)) as ArrayRef).collect();
+        let batch = RecordBatch::try_new(schema.clone(), arrays)?;
+        let batches = stream::iter([Ok(batch)]);
+        self.rows(Box::pin(RecordBatchStreamAdapter::new(schema, batches)))
+            .await
+    }
+
     /// What a statement returns, as it arrives: only a table, which sizes its columns by every row, holds it all. A
     /// statement that returns no columns prints nothing.
     pub async fn rows(&self, stream: SendableRecordBatchStream) -> Result<(), Failure> {
@@ -76,6 +100,15 @@ impl Out {
                 done.and(ignoring_a_gone_reader(writer.finish()))
             }
         }
+    }
+}
+
+/// A cell of a record, in text: a null stays one.
+fn cell(value: &Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::String(text) => Some(text.clone()),
+        other => Some(other.to_string()),
     }
 }
 

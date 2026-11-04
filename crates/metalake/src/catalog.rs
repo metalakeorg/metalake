@@ -134,6 +134,11 @@ impl Catalog {
         Ok(rows.into_iter().map(|row| self.handle(row)).collect())
     }
 
+    /// Every ref of the catalog that is not deleted, as the protocol describes it: its parent and where it began.
+    pub async fn describe_refs(&self) -> Result<Vec<RefRow>> {
+        Ok(self.inner.protocol.refs(&self.session().await?).await?)
+    }
+
     async fn find(&self, name: &str, kind: &str) -> Result<Ref> {
         self.refs()
             .await?

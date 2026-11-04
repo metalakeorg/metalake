@@ -30,6 +30,38 @@ pub enum Verb {
     Status,
     /// Runs SQL, in DataFusion's dialect: tables are `ref.namespace.table`, by default on `main.default`.
     Sql(Sql),
+    /// Lists every branch and tag.
+    Refs,
+    /// A working copy of the whole lake, which writes alone until it is merged.
+    Branch {
+        #[command(subcommand)]
+        verb: RefVerb,
+    },
+    /// A name for a state of the whole lake, which no commit changes and which keeps that state's data.
+    Tag {
+        #[command(subcommand)]
+        verb: RefVerb,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RefVerb {
+    /// Lists them.
+    List,
+    /// Creates one, from `main` unless `--from` says otherwise.
+    Create {
+        name: String,
+        /// The ref to start from, at a sequence if given: `dev` or `main@1234`.
+        #[arg(long, value_name = "REF")]
+        from: Option<String>,
+    },
+    /// Deletes one. Its name is never used again.
+    Delete {
+        name: String,
+        /// Confirms it.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Args)]

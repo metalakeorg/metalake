@@ -17,6 +17,7 @@ use clap::Parser;
 pub use failure::Exit;
 
 use args::{Cli, Verb};
+use commands::refs::Kind;
 use failure::Failure;
 use lake::Lake;
 use out::Out;
@@ -56,5 +57,8 @@ async fn run(cli: Cli) -> Result<(), Failure> {
         Verb::Init(init) => commands::init::run(init, dir, &out).await,
         Verb::Status => commands::status::run(&Lake::open(dir).await?, &out).await,
         Verb::Sql(sql) => commands::sql::run(sql, &Lake::open(dir).await?, &out).await,
+        Verb::Refs => commands::refs::list(&Lake::open(dir).await?, &out, None).await,
+        Verb::Branch { verb } => commands::refs::run(verb, Kind::Branch, &Lake::open(dir).await?, &out).await,
+        Verb::Tag { verb } => commands::refs::run(verb, Kind::Tag, &Lake::open(dir).await?, &out).await,
     }
 }
