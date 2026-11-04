@@ -1,4 +1,4 @@
-//! `metalake init`: a new lake, which answers as `status` does.
+//! `metalake init`: a new lake, with the namespace a session's unqualified tables go in, which answers as `status`.
 
 use std::path::Path;
 
@@ -10,5 +10,7 @@ use crate::out::Out;
 
 pub async fn run(init: &Init, dir: Option<&Path>, out: &Out) -> Result<(), Failure> {
     let lake = Lake::create(init, dir).await?;
+    let main = lake.catalog.branch("main").await?;
+    main.transaction().create_namespace(&["default"]).commit().await?;
     out.value(&Status::of(&lake).await?)
 }

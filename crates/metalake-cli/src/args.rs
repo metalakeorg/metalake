@@ -28,6 +28,18 @@ pub enum Verb {
     Init(Init),
     /// Says what the lake is: its catalog, versions, warehouse and refs.
     Status,
+    /// Runs SQL, in DataFusion's dialect: tables are `ref.namespace.table`, by default on `main.default`.
+    Sql(Sql),
+}
+
+#[derive(Debug, Args)]
+pub struct Sql {
+    /// The statements, separated by `;`. With neither this nor `--file`, they are read from stdin.
+    pub sql: Option<String>,
+
+    /// A file of statements.
+    #[arg(short, long, value_name = "FILE", conflicts_with = "sql")]
+    pub file: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]

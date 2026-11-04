@@ -30,6 +30,7 @@ datafusion = { version = "55.2", default-features = false, features = [
     "string_expressions",
     "unicode_expressions",
 ] }
+futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

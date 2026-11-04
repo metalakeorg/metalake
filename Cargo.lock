@@ -2275,6 +2275,7 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "datafusion",
+ "futures-util",
  "metalake",
  "metalake-datafusion",
  "metalake-pg",

@@ -55,5 +55,6 @@ async fn run(cli: Cli) -> Result<(), Failure> {
     match &cli.verb {
         Verb::Init(init) => commands::init::run(init, dir, &out).await,
         Verb::Status => commands::status::run(&Lake::open(dir).await?, &out).await,
+        Verb::Sql(sql) => commands::sql::run(sql, &Lake::open(dir).await?, &out).await,
     }
 }

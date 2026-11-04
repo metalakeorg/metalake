@@ -3,6 +3,7 @@
 use std::fmt;
 use std::io;
 
+use datafusion::arrow::error::ArrowError;
 use datafusion::error::DataFusionError;
 use metalake_pg::ErrorKind;
 
@@ -113,6 +114,12 @@ impl From<DataFusionError> for Failure {
         {
             return core.into();
         }
+        Failure::failed(e.to_string())
+    }
+}
+
+impl From<ArrowError> for Failure {
+    fn from(e: ArrowError) -> Self {
         Failure::failed(e.to_string())
     }
 }

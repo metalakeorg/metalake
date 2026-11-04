@@ -8,11 +8,15 @@ use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use datafusion::catalog::{CatalogProvider, CatalogProviderList, SchemaProvider, TableProvider};
+use datafusion::dataframe::DataFrame;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::execution::object_store::ObjectStoreUrl;
+use datafusion::logical_expr::{DdlStatement, LogicalPlan, LogicalPlanBuilder};
 use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion::sql::parser::Statement;
 use metalake::{Catalog, Error, Ref, Result, Storage};
 
+use crate::ddl;
 use crate::point::{self, OnePoint};
 use crate::table::MetaTable;
 
@@ -75,9 +79,11 @@ impl MetaLake {
 
     /// A session over this catalog, with `information_schema`, and reading unqualified tables from `main.default`.
     pub fn context(&self) -> Result<SessionContext, DataFusionError> {
-        let config = SessionConfig::new()
+        let mut config = SessionConfig::new()
             .with_information_schema(true)
             .with_default_catalog_and_schema(DEFAULT_CATALOG, DEFAULT_SCHEMA);
+        // `varchar` is a table's string, which has no view.
+        config.options_mut().sql_parser.map_string_types_to_utf8view = false;
         let context = SessionContext::new_with_config(config);
         context.register_catalog_list(Arc::new(self.clone()));
         context.add_analyzer_rule(Arc::new(OnePoint));
@@ -85,11 +91,42 @@ impl MetaLake {
         context.register_object_store(url.as_ref(), self.shared.storage.store().clone());
         Ok(context)
     }
+
+    /// Runs one statement in a session of this catalog, as `context.sql` would, and what creates a namespace or a
+    /// table as a commit, which `context.sql` cannot do.
+    pub async fn execute(&self, context: &SessionContext, statement: Statement) -> DataFusionResult<DataFrame> {
+        let plan = context.state().statement_to_plan(statement).await?;
+        match plan {
+            LogicalPlan::Ddl(DdlStatement::CreateCatalogSchema(create)) => {
+                let (on, namespace) = match create.schema_name.split_once(SEPARATOR) {
+                    Some((on, namespace)) => (on, namespace),
+                    None => (DEFAULT_CATALOG, create.schema_name.as_str()),
+                };
+                let on = self.shared.named(on).await?;
+                ddl::create_schema(&on, &[namespace], create.if_not_exists).await?;
+            }
+            LogicalPlan::Ddl(DdlStatement::CreateMemoryTable(create)) => {
+                let name = create.name.clone().resolve(DEFAULT_CATALOG, DEFAULT_SCHEMA);
+                let on = self.shared.named(&name.catalog).await?;
+                let namespace: Vec<&str> = name.schema.split(SEPARATOR).collect();
+                ddl::create_table(&on, &namespace, &name.table, &create).await?;
+            }
+            plan => return context.execute_logical_plan(plan).await,
+        }
+        let done = LogicalPlanBuilder::empty(false).build()?;
+        context.execute_logical_plan(done).await
+    }
 }
 
 impl Shared {
     fn listed<T>(&self, read: impl FnOnce(&Listing) -> T) -> T {
         read(&self.listing.read().expect("a listing is replaced whole"))
+    }
+
+    /// The ref of a name a statement must find.
+    async fn named(&self, name: &str) -> DataFusionResult<Ref> {
+        let found = self.find(name).await.map_err(external)?;
+        found.ok_or_else(|| external(Error::NotFound(format!("ref {name}"))))
     }
 
     /// The ref a catalog's name names, at the point it carries, if any: a ref's own name, `@` included, comes first.
