@@ -2,9 +2,11 @@
 
 pub mod init;
 pub mod log;
+pub mod maintain;
 pub mod merge;
 pub mod migrate;
 pub mod refs;
+pub mod retain;
 pub mod sql;
 pub mod status;
 

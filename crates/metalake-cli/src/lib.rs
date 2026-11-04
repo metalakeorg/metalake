@@ -62,6 +62,8 @@ async fn run(cli: Cli) -> Result<(), Failure> {
         Verb::Tag { verb } => commands::refs::run(verb, Kind::Tag, &Lake::open(dir).await?, &out).await,
         Verb::Merge(merge) => commands::merge::run(merge, &Lake::open(dir).await?, &out).await,
         Verb::Migrate => commands::migrate::run(dir, &out).await,
+        Verb::Retain(retain) => commands::retain::run(retain, &Lake::open(dir).await?, &out).await,
+        Verb::Maintain(maintain) => commands::maintain::run(maintain, &Lake::open(dir).await?, &out).await,
         Verb::Log(log) => commands::log::run(log, &Lake::open(dir).await?, &out).await,
     }
 }

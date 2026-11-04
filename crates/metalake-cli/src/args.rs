@@ -1,8 +1,9 @@
 //! The grammar, and nothing else: no verb here reads a file or opens a connection.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::out::Format;
 
@@ -46,8 +47,84 @@ pub enum Verb {
     Merge(Merge),
     /// Upgrades the catalog to this binary's protocol, once per upgrade of `metalake`, holding every ref meanwhile.
     Migrate,
+    /// Says what the lake keeps: until a ref is told, it keeps everything, and `maintain` takes nothing away.
+    Retain(Retain),
+    /// Runs the upkeep once: all of it, in order, or one task. For whatever schedules it.
+    Maintain(Maintain),
     /// Lists a ref's own commits, the latest first; their sequences read the past as `"main@1234"`.
     Log(Log),
+}
+
+#[derive(Debug, Args)]
+pub struct Retain {
+    /// The ref the criteria are for.
+    #[arg(value_name = "REF")]
+    pub on: Option<String>,
+
+    /// Keeps what was committed within this long: `30d`, `12h`, `15m`, `45s`.
+    #[arg(long, value_name = "AGE", value_parser = duration)]
+    pub max_age: Option<Duration>,
+
+    /// Keeps at least this many of the latest snapshots.
+    #[arg(long, value_name = "N")]
+    pub min_snapshots: Option<i32>,
+
+    /// Keeps everything from this sequence on.
+    #[arg(long, value_name = "SEQ")]
+    pub min_seq: Option<i64>,
+
+    /// For the whole lake, how long an expired object waits before it is deleted, which reads should end within.
+    #[arg(long, value_name = "AGE", value_parser = duration)]
+    pub grace: Option<Duration>,
+}
+
+/// A duration, in days, hours, minutes or seconds.
+fn duration(text: &str) -> Result<Duration, String> {
+    let unit = text.chars().last().and_then(|unit| match unit {
+        'd' => Some(86_400),
+        'h' => Some(3_600),
+        'm' => Some(60),
+        's' => Some(1),
+        _ => None,
+    });
+    let number = text
+        .get(..text.len().saturating_sub(1))
+        .and_then(|n| n.parse::<u64>().ok());
+    match (number, unit) {
+        (Some(number), Some(unit)) => Ok(Duration::from_secs(number * unit)),
+        _ => Err(format!("{text}: a number and d, h, m or s")),
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct Maintain {
+    /// One task; by default all of them, in this order.
+    #[arg(value_enum)]
+    pub task: Option<Task>,
+
+    /// Only this branch, for `flush` and `compact`.
+    #[arg(long = "ref", value_name = "BRANCH")]
+    pub on: Option<String>,
+
+    /// Only this table, `namespace.table`, for `flush` and `compact`.
+    #[arg(long, value_name = "TABLE")]
+    pub table: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Task {
+    /// Copies commit times before Postgres discards them.
+    Times,
+    /// Moves inline rows that are due to storage.
+    Flush,
+    /// Rewrites small files and those with deleted rows.
+    Compact,
+    /// Takes away the history no ref keeps, and queues its objects.
+    Expire,
+    /// Deletes queued objects past the grace.
+    Sweep,
+    /// Deletes the objects of writes that never committed.
+    Orphans,
 }
 
 #[derive(Debug, Args)]
