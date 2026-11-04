@@ -2,3 +2,8 @@ target/
 *.pyc
 __pycache__/
 .DS_Store
+
+# Internal documents, kept out of the repository.
+/docs/
+/research/
+/README.md
