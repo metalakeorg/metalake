@@ -79,17 +79,6 @@ def test_a_statement_that_cannot_run_says_so_at_once(lake):
         lake.sql("   ")
 
 
-def test_a_second_read_is_refused(lake):
-    result = lake.sql("select k from t")
-    list(result)
-    with pytest.raises(metalake.MetaLakeError, match="already been read"):
-        pl.DataFrame(result)
-    other = lake.sql("select k from t")
-    pl.DataFrame(other)
-    with pytest.raises(metalake.MetaLakeError, match="already been read"):
-        next(iter(other))
-
-
 def interrupted(read, raises=KeyboardInterrupt):
     """How long `read` takes to end when an interrupt comes after a second."""
     timer = threading.Timer(1, _thread.interrupt_main)
@@ -114,7 +103,7 @@ def test_an_interrupt_ends_polars(lake):
 
 def test_a_result_left_half_read_leaves_the_lake_working(lake):
     for _ in range(20):
-        result = lake.sql(f"select value from generate_series(1, {ROWS})")
+        result = iter(lake.sql(f"select value from generate_series(1, {ROWS})"))
         assert next(result).num_rows > 0
         del result
     assert pl.DataFrame(lake.sql("select k from t")).height == 3
@@ -127,8 +116,8 @@ def test_pyarrow_reads_a_result_too(lake):
     assert table.num_columns == 2
 
 
-def test_a_second_thread_is_refused_and_nothing_hangs(lake):
-    result = lake.sql(LONG)
+def test_a_second_thread_on_one_read_is_refused_and_nothing_hangs(lake):
+    result = iter(lake.sql(LONG))
     errors = []
     started = threading.Event()
 

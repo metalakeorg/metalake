@@ -1,34 +1,45 @@
 //! `connect`, `init` and the lake they answer.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use metalake_client::{Lake, Session};
 use pyo3::prelude::*;
 
 use crate::errors::to_python;
 use crate::result::QueryResult;
-use crate::runtime::block;
+use crate::runtime::wait;
 
 /// A lake, reached, with the session its statements run in.
 #[pyclass(name = "Lake", module = "metalake", frozen)]
 pub struct PyLake {
     lake: Lake,
-    session: Session,
+    session: Arc<Session>,
 }
 
 impl PyLake {
-    fn new(py: Python<'_>, lake: Lake) -> PyResult<Self> {
-        let session = block(py, Session::new(&lake)).map_err(|e| to_python(py, e))?;
+    fn new(py: Python<'_>, reached: metalake_client::Result<(Lake, Session)>) -> PyResult<Self> {
+        let (lake, session) = reached.map_err(|e| to_python(py, e))?;
+        let session = Arc::new(session);
         Ok(Self { lake, session })
     }
 }
 
 #[pymethods]
 impl PyLake {
-    /// Runs statements in order, and answers the rows of the last.
-    fn sql(&self, py: Python<'_>, text: &str) -> PyResult<QueryResult> {
-        let stream = block(py, self.session.run(text)).map_err(|e| to_python(py, e))?;
-        Ok(QueryResult::new(stream))
+    /// Runs statements in order, each committed before the next, and answers the rows of the last. A read waits to be
+    /// read, at the point of this call; anything else has happened when this returns.
+    fn sql(&self, py: Python<'_>, text: String) -> PyResult<QueryResult> {
+        let session = self.session.clone();
+        let prepared = wait(py, async move { session.run(&text).await })?;
+        Ok(QueryResult::new(prepared.map_err(|e| to_python(py, e))?))
+    }
+
+    /// Takes a new picture of what `information_schema` shows, for what others changed. A table or a ref named in a
+    /// statement is found without it.
+    fn refresh(&self, py: Python<'_>) -> PyResult<()> {
+        let session = self.session.clone();
+        wait(py, async move { session.refresh().await })?.map_err(|e| to_python(py, e))
     }
 
     fn __repr__(&self) -> String {
@@ -40,25 +51,33 @@ impl PyLake {
     }
 }
 
-fn text(path: &Option<PathBuf>) -> Option<String> {
-    path.as_ref().map(|p| p.to_string_lossy().into_owned())
+fn text(path: Option<PathBuf>) -> Option<String> {
+    path.map(|p| p.to_string_lossy().into_owned())
 }
 
 /// Reaches a lake: a directory, a Postgres, or, naming none, what `metalake` would find from here.
 #[pyfunction]
 #[pyo3(signature = (lake=None, *, schema=None))]
-pub fn connect(py: Python<'_>, lake: Option<PathBuf>, schema: Option<&str>) -> PyResult<PyLake> {
-    let target = text(&lake);
-    let reached = block(py, Lake::connect(target.as_deref(), schema)).map_err(|e| to_python(py, e))?;
+pub fn connect(py: Python<'_>, lake: Option<PathBuf>, schema: Option<String>) -> PyResult<PyLake> {
+    let target = text(lake);
+    let reached = wait(py, async move {
+        let lake = Lake::connect(target.as_deref(), schema.as_deref()).await?;
+        let session = Session::new(&lake).await?;
+        Ok((lake, session))
+    })?;
     PyLake::new(py, reached)
 }
 
-/// Makes a lake: in a directory, with a Postgres of its own, or on a Postgres that exists.
+/// Makes a lake: in a directory, with a Postgres of its own and `metalake.toml` beside it, or on a Postgres that exists.
 #[pyfunction]
 #[pyo3(signature = (catalog, warehouse=None, *, schema=None))]
-pub fn init(py: Python<'_>, catalog: PathBuf, warehouse: Option<PathBuf>, schema: Option<&str>) -> PyResult<PyLake> {
+pub fn init(py: Python<'_>, catalog: PathBuf, warehouse: Option<PathBuf>, schema: Option<String>) -> PyResult<PyLake> {
     let catalog = catalog.to_string_lossy().into_owned();
-    let warehouse = text(&warehouse);
-    let made = block(py, Lake::create(&catalog, warehouse.as_deref(), schema, None, None));
-    PyLake::new(py, made.map_err(|e| to_python(py, e))?)
+    let warehouse = text(warehouse);
+    let made = wait(py, async move {
+        let lake = Lake::init(&catalog, warehouse.as_deref(), schema.as_deref()).await?;
+        let session = Session::new(&lake).await?;
+        Ok((lake, session))
+    })?;
+    PyLake::new(py, made)
 }

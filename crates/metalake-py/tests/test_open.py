@@ -65,6 +65,21 @@ def test_a_password_does_not_go_in_a_file(tmp_path, monkeypatch):
     assert not (tmp_path / "metalake.toml").exists()
 
 
+def test_the_file_goes_beside_the_lake_wherever_the_program_runs(tmp_path, monkeypatch):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    target = tmp_path / "there" / "lake"
+    try:
+        metalake.init(target)
+        assert (target.parent / "metalake.toml").is_file()
+        assert not (elsewhere / "metalake.toml").exists()
+        assert isinstance(metalake.connect(target.parent), metalake.Lake)
+        assert isinstance(metalake.connect(target), metalake.Lake)
+    finally:
+        metalake._cli(["metalake", "--lake", str(target.parent), "stop"])
+
+
 def test_a_lake_is_not_made_twice(made, monkeypatch):
     monkeypatch.chdir(made)
     with pytest.raises(metalake.MetaLakeError, match="already exists"):

@@ -1,20 +1,14 @@
-//! What a statement answers, as a stream of Arrow batches that anything speaking Arrow can read, with no copy.
-//!
-//! The stream runs in a task of the runtime and its batches come through a plain channel. A wait on tokio's timers would
-//! not end while the statement keeps every worker busy, since nothing drives them then, and an interrupt would go
-//! unnoticed.
+//! What a statement answers. A result is a read that has not happened: each read runs it, from the same files, as a stream
+//! of Arrow batches that anything speaking Arrow can take with no copy.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::sync::{Arc, Mutex, TryLockError};
-use std::time::Duration;
 
 use datafusion::arrow::array::{RecordBatch, RecordBatchReader};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::error::ArrowError;
-use datafusion::execution::SendableRecordBatchStream;
 use futures_util::StreamExt;
-use metalake_client::Error;
+use metalake_client::{Error, Prepared};
 use pyo3::exceptions::PyStopIteration;
 use pyo3::prelude::*;
 use pyo3::types::PyCapsule;
@@ -24,16 +18,14 @@ use tokio::sync::Semaphore;
 use tokio::task::AbortHandle;
 
 use crate::errors::to_python;
-use crate::runtime;
+use crate::runtime::{self, PATIENCE};
 
 /// Batches ahead of the reader: a statement waits past these, so a slow reader does not fill memory.
 const AHEAD: usize = 2;
-/// How often a wait looks for an interrupt.
-const PATIENCE: Duration = Duration::from_millis(100);
 
 type Batch = Result<RecordBatch, Error>;
 
-/// The statement at work. Dropping it ends it.
+/// One read at work. Dropping it ends it.
 struct Pump {
     batches: Receiver<Batch>,
     room: Arc<Semaphore>,
@@ -47,11 +39,18 @@ impl Drop for Pump {
 }
 
 impl Pump {
-    fn start(mut stream: SendableRecordBatchStream) -> Self {
+    fn start(prepared: Arc<Prepared>) -> Self {
         let (sender, batches) = channel();
         let room = Arc::new(Semaphore::new(AHEAD));
         let held = room.clone();
         let task = runtime::spawn(async move {
+            let mut stream = match prepared.read() {
+                Ok(stream) => stream,
+                Err(error) => {
+                    let _ = sender.send(Err(error));
+                    return;
+                }
+            };
             while let Some(batch) = stream.next().await {
                 let Ok(permit) = held.acquire().await else {
                     break;
@@ -78,10 +77,10 @@ impl Pump {
     }
 }
 
-/// A failure of the stream, kept for when whoever read it through Arrow comes back.
+/// A failure of a stream, kept for when whoever read it through Arrow comes back.
 type Failure = Arc<Mutex<Option<Error>>>;
 
-/// The stream as Arrow's C interface reads it. It may run under a reader that holds the GIL, as Polars does.
+/// A read as Arrow's C interface takes it. It may run under a reader that holds the GIL, as Polars does.
 struct Reader {
     pump: Pump,
     schema: SchemaRef,
@@ -117,41 +116,18 @@ impl RecordBatchReader for Reader {
     }
 }
 
-enum State {
-    Ready(SendableRecordBatchStream),
-    Reading(Pump),
-    Read,
-}
-
-/// The rows of a statement.
+/// The rows of a statement, at the point it was prepared. It can be read any number of times, and every read is the same.
 #[pyclass(name = "Result", module = "metalake", frozen)]
 pub struct QueryResult {
-    schema: SchemaRef,
-    state: Mutex<State>,
+    prepared: Arc<Prepared>,
     failure: Failure,
-    /// Set while one thread reads, so that another is refused and not left waiting for a lock with the GIL in hand.
-    reading: AtomicBool,
 }
 
 impl QueryResult {
-    pub fn new(stream: SendableRecordBatchStream) -> Self {
+    pub fn new(prepared: Prepared) -> Self {
         Self {
-            schema: stream.schema(),
-            state: Mutex::new(State::Ready(stream)),
+            prepared: Arc::new(prepared),
             failure: Failure::default(),
-            reading: AtomicBool::new(false),
-        }
-    }
-
-    fn already_read(py: Python<'_>) -> PyErr {
-        to_python(py, Error::failed("this result has already been read"))
-    }
-
-    fn state(&self, py: Python<'_>) -> PyResult<std::sync::MutexGuard<'_, State>> {
-        match self.state.try_lock() {
-            Ok(state) => Ok(state),
-            Err(TryLockError::Poisoned(poisoned)) => Ok(poisoned.into_inner()),
-            Err(TryLockError::WouldBlock) => Err(to_python(py, Error::failed("another thread is reading this result"))),
         }
     }
 }
@@ -161,11 +137,12 @@ impl QueryResult {
     /// The names of the columns.
     #[getter]
     fn columns(&self) -> Vec<String> {
-        self.schema.fields().iter().map(|f| f.name().clone()).collect()
+        let schema = self.prepared.schema();
+        schema.fields().iter().map(|f| f.name().clone()).collect()
     }
 
     fn __arrow_c_schema__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyCapsule>> {
-        Ok(to_schema_pycapsule(py, self.schema.as_ref())?)
+        Ok(to_schema_pycapsule(py, self.prepared.schema().as_ref())?)
     }
 
     #[pyo3(signature = (requested_schema=None))]
@@ -174,63 +151,62 @@ impl QueryResult {
         py: Python<'py>,
         requested_schema: Option<Bound<'py, PyCapsule>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let mut state = self.state(py)?;
-        let State::Ready(_) = &*state else {
-            return Err(Self::already_read(py));
-        };
-        let State::Ready(stream) = std::mem::replace(&mut *state, State::Read) else {
-            unreachable!("looked at above");
-        };
         let reader = Reader {
-            pump: Pump::start(stream),
-            schema: self.schema.clone(),
+            pump: Pump::start(self.prepared.clone()),
+            schema: self.prepared.schema(),
             failure: self.failure.clone(),
         };
         let reader = PyRecordBatchReader::new(Box::new(reader));
         Bound::new(py, reader)?.call_method1("__arrow_c_stream__", (requested_schema,))
     }
 
+    /// One read, batch by batch.
+    fn __iter__(&self) -> Batches {
+        Batches {
+            pump: Mutex::new(Some(Pump::start(self.prepared.clone()))),
+        }
+    }
+}
+
+/// One read of a result, batch by batch, from one thread at a time. Another is refused and not left waiting for a lock
+/// with the GIL in hand, which the first would need to go on.
+#[pyclass(name = "Batches", module = "metalake", frozen)]
+pub struct Batches {
+    pump: Mutex<Option<Pump>>,
+}
+
+#[pymethods]
+impl Batches {
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
-    /// The next batch, waiting with the GIL released. An interrupt or a failure ends the statement.
+    /// The next batch, waiting with the GIL released. An interrupt or a failure ends the read.
     fn __next__(&self, py: Python<'_>) -> PyResult<PyBatch> {
-        if self.reading.swap(true, Ordering::AcqRel) {
-            return Err(to_python(py, Error::failed("another thread is reading this result")));
-        }
-        let next = self.next_batch(py);
-        self.reading.store(false, Ordering::Release);
-        next
-    }
-}
-
-impl QueryResult {
-    fn next_batch(&self, py: Python<'_>) -> PyResult<PyBatch> {
-        let mut state = self.state(py)?;
-        if let State::Ready(_) = &*state {
-            let State::Ready(stream) = std::mem::replace(&mut *state, State::Read) else {
-                unreachable!("looked at above");
-            };
-            *state = State::Reading(Pump::start(stream));
-        }
-        let State::Reading(pump) = &mut *state else {
-            return Err(Self::already_read(py));
+        let mut pump = match self.pump.try_lock() {
+            Ok(pump) => pump,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => {
+                return Err(to_python(py, Error::failed("another thread is reading this result")));
+            }
+        };
+        let Some(reading) = pump.as_mut() else {
+            return Err(PyStopIteration::new_err(()));
         };
         loop {
-            match py.detach(|| pump.wait()) {
+            match py.detach(|| reading.wait()) {
                 Ok(Some(Ok(batch))) => return Ok(PyBatch { batch }),
                 Ok(Some(Err(error))) => {
-                    *state = State::Read;
+                    *pump = None;
                     return Err(to_python(py, error));
                 }
                 Ok(None) => {
-                    *state = State::Read;
+                    *pump = None;
                     return Err(PyStopIteration::new_err(()));
                 }
                 Err(_) => {
                     if let Err(interrupted) = py.check_signals() {
-                        *state = State::Read;
+                        *pump = None;
                         return Err(interrupted);
                     }
                 }

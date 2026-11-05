@@ -177,6 +177,18 @@ impl Lake {
         Ok((Self { catalog, location }, format_migration))
     }
 
+    /// A lake a program makes: its file beside it wherever the program runs, with the core's default of connections.
+    pub async fn init(catalog: &str, warehouse: Option<&str>, schema: Option<&str>) -> Result<Self> {
+        if is_postgres(catalog) {
+            return Self::create(catalog, warehouse, schema, None, None).await;
+        }
+        let path = std::path::absolute(catalog)?;
+        let (Some(parent), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
+            return Err(Error::usage(format!("{catalog}: a lake is a directory inside another")));
+        };
+        Self::create(name, warehouse, schema, Some(parent), None).await
+    }
+
     /// Creates a catalog and the file that finds it, on a Postgres that exists or on one of the lake's own. The file
     /// comes first, so that a lake already here is refused before a catalog exists, and it goes if the catalog fails.
     /// A lake's sessions read unqualified tables from `main.default`, so it is born with that namespace.

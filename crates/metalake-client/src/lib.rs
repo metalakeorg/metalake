@@ -13,4 +13,4 @@ pub use lake::Lake;
 pub use maintain::{Done, MaintainRequest, MaintainRun, Task};
 pub use merge::{MergeOutcome, MergeRequest};
 pub use refs::{RefInfo, RefKind, table};
-pub use session::Session;
+pub use session::{Prepared, Session};

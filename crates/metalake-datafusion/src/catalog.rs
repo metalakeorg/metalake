@@ -113,6 +113,7 @@ impl MetaLake {
             }
             plan => return context.execute_logical_plan(plan).await,
         }
+        self.refresh().await.map_err(external)?;
         let done = LogicalPlanBuilder::empty(false).build()?;
         context.execute_logical_plan(done).await
     }

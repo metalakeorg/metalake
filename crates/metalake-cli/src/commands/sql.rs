@@ -11,7 +11,7 @@ pub async fn run(sql: &Sql, lake: &Lake, out: &Out) -> Result<(), Error> {
     let statements = Session::parse(&text(sql)?)?;
     let session = Session::new(lake).await?;
     for statement in statements {
-        out.rows(session.execute(statement).await?).await?;
+        out.rows(session.prepare(statement).await?.read()?).await?;
     }
     Ok(())
 }

@@ -1,12 +1,21 @@
-//! The one runtime of a process. A connection to Postgres lives on a task of the runtime that opened it, so a program
-//! that makes many calls needs them all on the same one.
+//! The one runtime of a process, and the one way Python waits for it. A connection to Postgres lives on a task of the
+//! runtime that opened it, so a program that makes many calls needs them all on the same one.
+//!
+//! The wait is a plain channel. tokio's timers would not fire while a statement keeps every worker busy, since nothing
+//! drives them then, and an interrupt would go unnoticed.
 
 use std::future::Future;
 use std::sync::OnceLock;
+use std::sync::mpsc::{RecvTimeoutError, channel};
+use std::time::Duration;
 
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use tokio::runtime::{Builder, Runtime};
 use tokio::task::AbortHandle;
+
+/// How often a wait looks for an interrupt.
+pub const PATIENCE: Duration = Duration::from_millis(100);
 
 fn runtime() -> &'static Runtime {
     static RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -18,19 +27,36 @@ fn runtime() -> &'static Runtime {
     })
 }
 
-/// Waits for `future` with the GIL released, so that the rest of a Python program goes on.
-pub fn block<F>(py: Python<'_>, future: F) -> F::Output
-where
-    F: Future + Send,
-    F::Output: Send,
-{
-    py.detach(|| runtime().block_on(future))
-}
-
 /// Runs `future` on the runtime, and answers how to end it.
 pub fn spawn<F>(future: F) -> AbortHandle
 where
     F: Future<Output = ()> + Send + 'static,
 {
     runtime().spawn(future).abort_handle()
+}
+
+/// Runs `future` to its end with the GIL released, so that the rest of a Python program goes on. An interrupt ends it. A
+/// write ended before its commit changed nothing, and one ended during it may or may not have taken effect.
+pub fn wait<F>(py: Python<'_>, future: F) -> PyResult<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let (sender, mut receiver) = channel();
+    let task = spawn(async move {
+        let _ = sender.send(future.await);
+    });
+    loop {
+        let waited = &mut receiver;
+        match py.detach(move || waited.recv_timeout(PATIENCE)) {
+            Ok(answer) => return Ok(answer),
+            Err(RecvTimeoutError::Timeout) => {
+                if let Err(interrupted) = py.check_signals() {
+                    task.abort();
+                    return Err(interrupted);
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => return Err(PyRuntimeError::new_err("a task of metalake panicked")),
+        }
+    }
 }
