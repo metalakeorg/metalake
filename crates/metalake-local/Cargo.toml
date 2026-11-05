@@ -1,0 +1,18 @@
+[package]
+name = "metalake-local"
+version = "0.0.0"
+description = "A Postgres of a lake's own: its binaries, its cluster and its life, for a lake on one machine"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+postgresql_archive = { version = "0.22", features = ["blocking"] }
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+metalake.workspace = true
+tokio.workspace = true
