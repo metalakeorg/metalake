@@ -35,5 +35,7 @@ fn _metalake(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<result::Batches>()?;
     module.add_function(wrap_pyfunction!(lake::connect, module)?)?;
     module.add_function(wrap_pyfunction!(lake::init, module)?)?;
+    module.add_function(wrap_pyfunction!(lake::migrate, module)?)?;
+    module.add_function(wrap_pyfunction!(lake::stop, module)?)?;
     module.add_function(wrap_pyfunction!(cli, module)?)
 }

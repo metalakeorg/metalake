@@ -25,6 +25,8 @@ from ._metalake import (  # noqa: E402
     __version__,
     connect,
     init,
+    migrate,
+    stop,
 )
 from ._metalake import cli as _cli  # noqa: E402
 from .errors import ConflictError, MetaLakeError, UnknownOutcomeError, UsageError  # noqa: E402
@@ -48,6 +50,8 @@ __all__ = [
     "__version__",
     "connect",
     "init",
+    "migrate",
+    "stop",
 ]
 
 

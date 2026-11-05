@@ -14,10 +14,18 @@ fn class(kind: Kind) -> &'static str {
     }
 }
 
+/// What a long-lived program needs to hear of a server that went away, which a command never meets: it brings one up.
+fn said(error: &Error) -> String {
+    match error.message.contains("error connecting to server") {
+        true => format!("{}: if its server stopped, `connect` again", error.message),
+        false => error.message.clone(),
+    }
+}
+
 pub fn to_python(py: Python<'_>, error: Error) -> PyErr {
     let raised = (|| -> PyResult<PyErr> {
         let module = py.import("metalake.errors")?;
-        let arguments = (&error.message, &error.rule, &error.code, error.retryable);
+        let arguments = (said(&error), &error.rule, &error.code, error.retryable);
         let exception = module.getattr(class(error.kind))?.call1(arguments)?;
         Ok(PyErr::from_value(exception))
     })();

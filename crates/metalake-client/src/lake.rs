@@ -163,15 +163,31 @@ impl Lake {
 
     /// Stops a lake's own Postgres, and answers where it is. The next command brings it up again.
     pub fn stop(dir: Option<&Path>) -> Result<PathBuf> {
-        let location = Location::find(dir)?;
+        Self::stop_at(Location::find(dir)?)
+    }
+
+    /// Stops the Postgres of the lake a program names, as `connect` names one.
+    pub fn stop_named(target: Option<&str>) -> Result<PathBuf> {
+        Self::stop_at(Location::named(target, None)?)
+    }
+
+    fn stop_at(location: Location) -> Result<PathBuf> {
         location.cluster()?.stop()?;
         Ok(location.local.expect("a cluster has a directory"))
     }
 
     /// Upgrades the catalog of the lake a command means, which `open` refuses, and reaches it.
     pub async fn migrate(dir: Option<&Path>) -> Result<(Self, Option<i64>)> {
-        let location = Location::find(dir)?;
-        let config = location.config(Self::ONE_COMMAND)?;
+        Self::migrate_at(Location::find(dir)?, Self::ONE_COMMAND).await
+    }
+
+    /// Upgrades the catalog of the lake a program names, as `connect` names one, and reaches it.
+    pub async fn migrate_named(target: Option<&str>, schema: Option<&str>) -> Result<(Self, Option<i64>)> {
+        Self::migrate_at(Location::named(target, schema)?, None).await
+    }
+
+    async fn migrate_at(location: Location, connections: Option<usize>) -> Result<(Self, Option<i64>)> {
+        let config = location.config(connections)?;
         let format_migration = Catalog::migrate(&config).await?;
         let catalog = Catalog::connect(config).await?;
         Ok((Self { catalog, location }, format_migration))

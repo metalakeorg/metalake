@@ -259,6 +259,30 @@ pub fn connect(py: Python<'_>, lake: Option<PathBuf>, schema: Option<String>) ->
     PyLake::new(py, reached)
 }
 
+/// Brings a lake's catalog to this package's protocol, once per upgrade, by whoever administers the lake, and reaches it.
+/// `connect` refuses a catalog that needs it, and nothing does it alone: it holds every ref while it runs.
+#[pyfunction]
+#[pyo3(signature = (lake=None, *, schema=None))]
+pub fn migrate(py: Python<'_>, lake: Option<PathBuf>, schema: Option<String>) -> PyResult<PyLake> {
+    let target = text(lake);
+    let reached = wait(py, async move {
+        let (lake, _) = Lake::migrate_named(target.as_deref(), schema.as_deref()).await?;
+        let session = Session::new(&lake).await?;
+        Ok((lake, session))
+    })?;
+    PyLake::new(py, reached)
+}
+
+/// Stops a lake's own Postgres, which otherwise stays up, and answers its directory. A `Lake` open on it stops working;
+/// `connect` brings the server up again.
+#[pyfunction]
+#[pyo3(signature = (lake=None))]
+pub fn stop(py: Python<'_>, lake: Option<PathBuf>) -> PyResult<PathBuf> {
+    let target = text(lake);
+    let stopped = wait(py, async move { Lake::stop_named(target.as_deref()) })?;
+    stopped.map_err(|e| to_python(py, e))
+}
+
 /// Makes a lake: in a directory, with a Postgres of its own and `metalake.toml` beside it, or on a Postgres that exists.
 #[pyfunction]
 #[pyo3(signature = (catalog, warehouse=None, *, schema=None))]
