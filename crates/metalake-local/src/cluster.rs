@@ -38,6 +38,7 @@ const SETTINGS: &str = "
 shared_buffers = 16MB
 max_connections = 20
 track_commit_timestamp = on
+jit = off
 timezone = 'UTC'
 log_timezone = 'UTC'
 include_if_exists = 'where.conf'

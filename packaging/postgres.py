@@ -21,8 +21,10 @@ OUT = Path(__file__).parent.parent / "crates/metalake-cli/metalake.data/data/sha
 # The tools a lake runs. Everything else in `bin` is not, apart from what they link.
 TOOLS = ("postgres", "initdb", "pg_ctl")
 # Nothing a running server opens.
-DROPPED = ("include", "lib/pgxs", "lib/pkgconfig", "lib/cmake")
-DROPPED_FILES = ("*.a", "*.lib", "*.pdb", "plpython*", "python*.dll")
+DROPPED = ("include", "lib/pgxs", "lib/pkgconfig", "lib/cmake", "lib/bitcode")
+# Static libraries and debug symbols; the JIT, which a lake turns off and which is most of the size where it is built;
+# and an embedded Python, for functions written in it.
+DROPPED_FILES = ("*.a", "*.lib", "*.pdb", "libLLVM*", "llvmjit*", "plpython*", "python*", "Python", "libpython*")
 
 
 def fetch(url):
@@ -57,7 +59,10 @@ def main(target):
             path.unlink()
     for pattern in DROPPED_FILES:
         for path in OUT.rglob(pattern):
-            path.unlink()
+            if path.is_dir():
+                shutil.rmtree(path)
+            elif path.exists():
+                path.unlink()
     size = sum(p.stat().st_size for p in OUT.rglob("*") if p.is_file())
     print(f"{OUT}: {size // 1048576} MB")
 

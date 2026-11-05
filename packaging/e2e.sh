@@ -5,6 +5,9 @@
 set -euo pipefail
 
 wheel=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+size=$(python -c "import os, sys; print(os.path.getsize(sys.argv[1]) // 1048576)" "$wheel")
+echo "wheel: $size MB"
+[ "$size" -lt 100 ] || { echo "PyPI takes at most 100 MB per file"; exit 1; }
 work=$(mktemp -d)
 python -m venv "$work/venv"
 bin="$work/venv/bin"

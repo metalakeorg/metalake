@@ -23,8 +23,8 @@ jobs:
       matrix:
         include:
           - { runner: windows-latest, target: x86_64-pc-windows-msvc }
-          - { runner: ubuntu-latest, target: x86_64-unknown-linux-gnu, manylinux: "2_28" }
-          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, manylinux: "2_28" }
+          - { runner: ubuntu-latest, target: x86_64-unknown-linux-gnu, manylinux: "2_34" }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, manylinux: "2_34" }
           - { runner: macos-14, target: aarch64-apple-darwin }
           - { runner: macos-15-intel, target: x86_64-apple-darwin }
     env:
@@ -36,6 +36,7 @@ jobs:
           python-version: "3.12"
       - name: Prepare Postgres
         run: python packaging/postgres.py ${{ matrix.target }}
+      # Must not be above the manylinux tag, which only the command itself is checked against.
       - name: The oldest C library Postgres needs
         if: runner.os == 'Linux'
         run: |
@@ -57,3 +58,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Test a lake's own Postgres
         run: cargo test -p metalake-local
+        env:
+          # What was prepared above: the release listing is rate limited on a runner's shared address.
+          METALAKE_POSTGRES_BIN: ${{ github.workspace }}/crates/metalake-cli/metalake.data/data/share/metalake/postgres/bin
