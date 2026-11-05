@@ -38,8 +38,14 @@ impl Lake {
         Ok(on.snapshots(&table, limit).await?)
     }
 
-    /// Says what a ref keeps, which `maintain` then acts on.
+    /// Says what a ref keeps, which `maintain` then acts on. It replaces all a ref said before, and a ref that says
+    /// nothing keeps everything, so it must say something.
     pub async fn retain(&self, on: &str, retention: &Retention) -> Result<()> {
+        if retention.max_age.is_none() && retention.min_snapshots.is_none() && retention.min_seq.is_none() {
+            return Err(Error::usage(
+                "a ref needs what to keep: an age, a number of snapshots or a sequence",
+            ));
+        }
         Ok(self.find_ref(on).await?.set_retention(retention).await?)
     }
 
