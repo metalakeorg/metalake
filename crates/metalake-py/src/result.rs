@@ -9,7 +9,8 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::error::ArrowError;
 use futures_util::StreamExt;
 use metalake_client::{Error, Prepared};
-use pyo3::exceptions::PyStopIteration;
+use pyo3::exceptions::{PyImportError, PyStopIteration};
+use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::PyCapsule;
 use pyo3_arrow::ffi::to_schema_pycapsule;
@@ -77,14 +78,27 @@ impl Pump {
     }
 }
 
-/// A failure of a stream, kept for when whoever read it through Arrow comes back.
-type Failure = Arc<Mutex<Option<Error>>>;
+/// Why a read stopped. Arrow's interface carries only text, so a library says it in its own words; this is what was
+/// really meant, for whoever called the library.
+enum Stopped {
+    Failed(Error),
+    Interrupted(PyErr),
+}
+
+/// Where one read leaves why it stopped.
+type Slot = Arc<Mutex<Option<Stopped>>>;
 
 /// A read as Arrow's C interface takes it. It may run under a reader that holds the GIL, as Polars does.
 struct Reader {
     pump: Pump,
     schema: SchemaRef,
-    failure: Failure,
+    stopped: Slot,
+}
+
+impl Reader {
+    fn stop(&self, stopped: Stopped) {
+        *self.stopped.lock().expect("a reason is only set") = Some(stopped);
+    }
 }
 
 impl Iterator for Reader {
@@ -97,16 +111,33 @@ impl Iterator for Reader {
                 Ok(Some(Ok(batch))) => return Some(Ok(batch)),
                 Ok(Some(Err(error))) => {
                     let said = ArrowError::ExternalError(error.message.clone().into());
-                    *self.failure.lock().expect("a failure is only set") = Some(error);
+                    self.stop(Stopped::Failed(error));
                     return Some(Err(said));
                 }
                 Err(_) => {
-                    if let Err(interrupted) = Python::attach(|py| py.check_signals()) {
-                        return Some(Err(ArrowError::ExternalError(Box::new(interrupted))));
+                    if let Some(raised) = interrupted() {
+                        self.stop(Stopped::Interrupted(raised));
+                        return Some(Err(ArrowError::ExternalError("interrupted".into())));
                     }
                 }
             }
         }
+    }
+}
+
+/// An interrupt that came, seen from under a library that may have released the GIL. `Python::attach` will not do here:
+/// when `to_polars` is on the stack, PyO3 counts the GIL as held on this thread, and Polars, with a PyO3 of its own, has
+/// released it, so that would touch Python without it. `PyGILState_Ensure` asks Python.
+fn interrupted() -> Option<PyErr> {
+    // Safety: the state is released once, and the error is taken while it is held.
+    unsafe {
+        let state = ffi::PyGILState_Ensure();
+        let raised = match ffi::PyErr_CheckSignals() {
+            0 => None,
+            _ => PyErr::take(Python::assume_attached()),
+        };
+        ffi::PyGILState_Release(state);
+        raised
     }
 }
 
@@ -120,16 +151,48 @@ impl RecordBatchReader for Reader {
 #[pyclass(name = "Result", module = "metalake", frozen)]
 pub struct QueryResult {
     prepared: Arc<Prepared>,
-    failure: Failure,
 }
 
 impl QueryResult {
     pub fn new(prepared: Prepared) -> Self {
         Self {
             prepared: Arc::new(prepared),
-            failure: Failure::default(),
         }
     }
+
+    /// One read, for anything that speaks Arrow.
+    fn reader<'py>(&self, py: Python<'py>, stopped: &Slot) -> PyResult<Bound<'py, PyRecordBatchReader>> {
+        let reader = Reader {
+            pump: Pump::start(self.prepared.clone()),
+            schema: self.prepared.schema(),
+            stopped: stopped.clone(),
+        };
+        Bound::new(py, PyRecordBatchReader::new(Box::new(reader)))
+    }
+
+    /// What `convert` makes of one read. If the read stopped, that is what is raised, and not a library's words for it.
+    fn converted<'py>(
+        &self,
+        py: Python<'py>,
+        convert: impl FnOnce(Bound<'py, PyRecordBatchReader>) -> PyResult<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let stopped = Slot::default();
+        let reader = self.reader(py, &stopped)?;
+        convert(reader).map_err(|theirs| match stopped.lock().expect("a reason is only set").take() {
+            Some(Stopped::Failed(error)) => to_python(py, error),
+            Some(Stopped::Interrupted(interrupted)) => interrupted,
+            None => theirs,
+        })
+    }
+}
+
+/// A library a conversion needs, which only that conversion loads.
+fn library<'py>(py: Python<'py>, method: &str, name: &str, extra: &str) -> PyResult<Bound<'py, PyModule>> {
+    py.import(name)
+        .map_err(|e| match e.is_instance_of::<PyImportError>(py) {
+            true => PyImportError::new_err(format!("{method} needs {name}: pip install metalake[{extra}]")),
+            false => e,
+        })
 }
 
 #[pymethods]
@@ -151,13 +214,28 @@ impl QueryResult {
         py: Python<'py>,
         requested_schema: Option<Bound<'py, PyCapsule>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let reader = Reader {
-            pump: Pump::start(self.prepared.clone()),
-            schema: self.prepared.schema(),
-            failure: self.failure.clone(),
-        };
-        let reader = PyRecordBatchReader::new(Box::new(reader));
-        Bound::new(py, reader)?.call_method1("__arrow_c_stream__", (requested_schema,))
+        let reader = self.reader(py, &Slot::default())?;
+        reader.call_method1("__arrow_c_stream__", (requested_schema,))
+    }
+
+    /// The rows as a `polars.DataFrame`.
+    fn to_polars<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let polars = library(py, "to_polars", "polars", "polars")?;
+        self.converted(py, |read| polars.getattr("DataFrame")?.call1((read,)))
+    }
+
+    /// The rows as a `pyarrow.Table`.
+    fn to_arrow<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let pyarrow = library(py, "to_arrow", "pyarrow", "pyarrow")?;
+        self.converted(py, |read| pyarrow.getattr("table")?.call1((read,)))
+    }
+
+    /// The rows as a `pandas.DataFrame`, which pandas makes through pyarrow.
+    fn to_pandas<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        library(py, "to_pandas", "pandas", "pandas")?;
+        let pyarrow = library(py, "to_pandas", "pyarrow", "pandas")?;
+        let table = self.converted(py, |read| pyarrow.getattr("table")?.call1((read,)))?;
+        table.call_method0("to_pandas")
     }
 
     /// One read, batch by batch.
