@@ -55,6 +55,7 @@ impl Location {
 
     /// Creates the catalog here, and the lake's own Postgres first if it has one.
     async fn install(&self, warehouse: String) -> Result<Catalog, Failure> {
+        check_warehouse(&warehouse).await?;
         if let Some(local) = &self.local {
             Cluster::init(local, Binaries::find()?)?;
         }
@@ -200,6 +201,20 @@ impl Lake {
     pub fn local(&self) -> Option<&Path> {
         self.location.local.as_deref()
     }
+}
+
+/// Writes and deletes an object in a new warehouse, so that a store that cannot be reached or credentials that do not
+/// serve are said now, and not at the first write large enough to leave the catalog.
+async fn check_warehouse(warehouse: &str) -> Result<(), Failure> {
+    let failed = |e: metalake::Error| Failure::failed(format!("the warehouse {warehouse} cannot be written: {e}"));
+    let storage = Storage::new(warehouse, storage_options(env::vars_os())).map_err(failed)?;
+    let probe = format!(
+        "{}/.metalake-{}",
+        warehouse.trim_end_matches('/'),
+        uuid::Uuid::new_v4().simple()
+    );
+    storage.put(&probe, Vec::new().into()).await.map_err(failed)?;
+    storage.delete(&probe).await.map_err(failed)
 }
 
 /// `local`, relative to `directory`, with no `.` in it, which is how a path gets printed.

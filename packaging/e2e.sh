@@ -2,17 +2,23 @@
 # What a person does with a wheel, on a machine that has nothing else: a new environment, an empty home, no Docker.
 #
 #   bash packaging/e2e.sh dist/metalake-*.whl
+#   bash packaging/e2e.sh metalake==0.1.0 --index-url https://test.pypi.org/simple/
 set -euo pipefail
 
-wheel=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
-size=$(python -c "import os, sys; print(os.path.getsize(sys.argv[1]) // 1048576)" "$wheel")
-echo "wheel: $size MB"
-[ "$size" -lt 100 ] || { echo "PyPI takes at most 100 MB per file"; exit 1; }
+if [ -f "$1" ]; then
+  wanted=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+  size=$(python -c "import os, sys; print(os.path.getsize(sys.argv[1]) // 1048576)" "$wanted")
+  echo "wheel: $size MB"
+  [ "$size" -lt 100 ] || { echo "PyPI takes at most 100 MB per file"; exit 1; }
+  source=(--no-index "$wanted")
+else
+  source=("$@")
+fi
 work=$(mktemp -d)
 python -m venv "$work/venv"
 bin="$work/venv/bin"
 [ -d "$bin" ] || bin="$work/venv/Scripts"
-"$bin/python" -m pip install --quiet --no-index "$wheel"
+"$bin/python" -m pip install --quiet "${source[@]}"
 
 export HOME="$work/home" USERPROFILE="$work/home" PATH="$bin:$PATH"
 unset METALAKE_POSTGRES METALAKE_SCHEMA METALAKE_POSTGRES_BIN PGPASSWORD

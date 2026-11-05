@@ -147,19 +147,38 @@ fn many_commands_share_one_server() {
     );
 }
 
+/// `path` as a `file:` URL.
+fn file_url(path: &Path) -> String {
+    let path = path.to_string_lossy().replace('\\', "/");
+    format!("file:///{}", path.trim_start_matches('/'))
+}
+
 #[test]
-fn a_warehouse_can_be_elsewhere_and_a_lake_is_not_made_twice() {
+fn a_warehouse_is_checked_and_a_lake_is_not_made_twice() {
     let dir = directory();
-    ok(&dir, &["init", "./lake", "s3://bucket/prefix"]);
+    let elsewhere = directory();
+    let url = file_url(&elsewhere);
+    ok(&dir, &["init", "./lake", &url]);
     let lake = Lake(dir);
-    assert!(ok(&lake.0, &["status"]).contains("warehouse  s3://bucket/prefix"));
+    assert!(ok(&lake.0, &["status"]).contains(&format!("warehouse  {url}")));
+    assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0, "the check leaves nothing");
 
     let again = run(&lake.0, &["init", "./lake"]);
     assert_eq!(again.status.code(), Some(1));
+    assert!(ok(&lake.0, &["status"]).contains(&url), "the first still stands");
+
+    // A store that cannot be written is said at once, with no cluster and no file left.
+    let bad = directory();
+    let blocked = bad.join("blocked");
+    fs::write(&blocked, "a file where a directory goes").unwrap();
+    let refused = run(&bad, &["init", "./lake", &file_url(&blocked)]);
+    assert_eq!(refused.status.code(), Some(1));
     assert!(
-        ok(&lake.0, &["status"]).contains("s3://bucket"),
-        "the first still stands"
+        text(&refused.stderr).contains("cannot be written"),
+        "{}",
+        text(&refused.stderr)
     );
+    assert!(!bad.join("metalake.toml").exists() && !bad.join("lake").exists());
 
     // A cluster already there leaves no file pointing at it.
     let other = directory();

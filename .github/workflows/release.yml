@@ -1,0 +1,62 @@
+# Publishes a tagged version: every wheel goes to TestPyPI, is installed from there and run, and goes to PyPI only
+# once the `pypi` environment is approved. Publishing uses trusted publishing, so no token is stored anywhere.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  wheels:
+    uses: ./.github/workflows/wheels.yml
+
+  testpypi:
+    needs: wheels
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  from-testpypi:
+    needs: testpypi
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, ubuntu-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install from TestPyPI and run what a person would
+        shell: bash
+        run: |
+          sleep 60
+          bash packaging/e2e.sh "metalake==${GITHUB_REF_NAME#v}" --index-url https://test.pypi.org/simple/
+
+  pypi:
+    needs: from-testpypi
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
