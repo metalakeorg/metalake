@@ -11,6 +11,8 @@ use std::io::Write;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
@@ -28,6 +30,9 @@ const SOCKET_DIR_MAX: usize = 103 - ".s.PGSQL.5432".len() - 1;
 const PORT_ATTEMPTS: usize = 5;
 /// How long `pg_ctl` waits, in seconds.
 const WAIT: &str = "60";
+/// How long a server may take to be ready, recovery included, and how often to look.
+const READY_WAIT: Duration = Duration::from_secs(60);
+const READY_POLL: Duration = Duration::from_millis(20);
 /// Written once: small, since this serves one lake on a machine doing other things.
 const SETTINGS: &str = "
 shared_buffers = 16MB
@@ -104,8 +109,69 @@ impl Cluster {
         Ok(status.success())
     }
 
+    /// The server, up, and how to reach it. It stays up after the caller is gone: at rest it costs little, and starting
+    /// it costs every command half a second where it is slowest. Callers take turns, so one of them starts it, and
+    /// none reads where it listens while that is being written.
+    pub fn ensure(&self) -> Result<String> {
+        let _gate = self.gate()?;
+        let mut stale = None;
+        if !self.is_running()? {
+            stale = fs::read_to_string(self.pid_file()).ok();
+            self.start()?;
+        }
+        self.wait_until_ready(stale.as_deref())?;
+        self.connection()
+    }
+
+    /// Waits for the server to take connections, which its PID file says on its eighth line. `pg_ctl -w` is not enough:
+    /// after a crash it can return on the file the dead server left, `stale`, which says ready and names its port, while
+    /// the new one is still recovering. A server another process started may be at that point too.
+    fn wait_until_ready(&self, stale: Option<&str>) -> Result<()> {
+        let began = Instant::now();
+        while began.elapsed() < READY_WAIT {
+            let pid = fs::read_to_string(self.pid_file()).unwrap_or_default();
+            let ready = pid.lines().nth(7).is_some_and(|status| status.trim() == "ready");
+            if ready && stale != Some(pid.as_str()) {
+                return Ok(());
+            }
+            thread::sleep(READY_POLL);
+        }
+        Err(self.with_log(Error::Failed {
+            what: "starting the lake's Postgres".into(),
+            detail: format!("not ready after {READY_WAIT:?}"),
+        }))
+    }
+
+    /// Stops the server if it is up, ending the sessions it has.
+    pub fn stop(&self) -> Result<()> {
+        let _gate = self.gate()?;
+        if !self.is_running()? {
+            return Ok(());
+        }
+        run(
+            "stopping the lake's Postgres",
+            self.binaries
+                .tool("pg_ctl")
+                .arg("stop")
+                .args(["-w", "-m", "fast", "-t", WAIT])
+                .arg("-D")
+                .arg(self.data()),
+        )
+    }
+
+    /// Whoever holds this is the only one starting or stopping the server. The system lets go of it if they die.
+    fn gate(&self) -> Result<File> {
+        let gate = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.lake.join(".gate"))?;
+        gate.lock()?;
+        Ok(gate)
+    }
+
     /// Starts the server and waits until it takes connections.
-    pub fn start(&self) -> Result<()> {
+    fn start(&self) -> Result<()> {
         if !WINDOWS {
             fs::create_dir_all(self.socket_dir()?)?;
             return self.start_with(&self.socket_settings()?);
@@ -124,37 +190,34 @@ impl Cluster {
 
     fn start_with(&self, settings: &str) -> Result<()> {
         fs::write(self.data().join("where.conf"), settings)?;
-        // The log goes where `pg_ctl` sends it: a server that inherited a pipe would hold it open past this call.
-        let done = run(
-            "starting the lake's Postgres",
-            self.binaries
-                .tool("pg_ctl")
-                .arg("start")
-                .arg("-w")
-                .args(["-t", WAIT])
-                .arg("-D")
-                .arg(self.data())
-                .arg("-l")
-                .arg(self.log()),
-        );
-        done.map_err(|e| self.with_log(e))
-    }
-
-    /// Stops the server, ending the sessions it has. It is for when nobody is meant to be using it.
-    pub fn stop(&self) -> Result<()> {
-        run(
-            "stopping the lake's Postgres",
-            self.binaries
-                .tool("pg_ctl")
-                .arg("stop")
-                .args(["-w", "-m", "fast", "-t", WAIT])
-                .arg("-D")
-                .arg(self.data()),
-        )
+        keep_standard_handles_from_children();
+        // Nothing of ours may reach the server, which outlives us: not even a file for what `pg_ctl` says. It logs.
+        let status = self
+            .binaries
+            .tool("pg_ctl")
+            .arg("start")
+            .arg("-w")
+            .args(["-t", WAIT])
+            .arg("-D")
+            .arg(self.data())
+            .arg("-l")
+            .arg(self.log())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+        if status.success() {
+            return Ok(());
+        }
+        let failure = Error::Failed {
+            what: "starting the lake's Postgres".into(),
+            detail: status.to_string(),
+        };
+        Err(self.with_log(failure))
     }
 
     /// How to reach the server that is up: a libpq connection string.
-    pub fn connection(&self) -> Result<String> {
+    fn connection(&self) -> Result<String> {
         if !WINDOWS {
             let host = quoted(&self.socket_dir()?.to_string_lossy());
             return Ok(format!("host={host} port={SOCKET_PORT} user={USER} dbname={DATABASE}"));
@@ -168,7 +231,7 @@ impl Cluster {
 
     /// The port the server took, which its PID file says on its fourth line.
     fn port(&self) -> Result<String> {
-        let pid = fs::read_to_string(self.data().join("postmaster.pid"))?;
+        let pid = fs::read_to_string(self.pid_file())?;
         let port = pid.lines().nth(3).map(str::trim).filter(|p| !p.is_empty());
         port.map(str::to_string).ok_or_else(|| Error::Failed {
             what: "reading the lake's Postgres".into(),
@@ -178,6 +241,10 @@ impl Cluster {
 
     fn data(&self) -> PathBuf {
         self.lake.join("postgres")
+    }
+
+    fn pid_file(&self) -> PathBuf {
+        self.data().join("postmaster.pid")
     }
 
     fn log(&self) -> PathBuf {
@@ -222,12 +289,38 @@ impl Cluster {
     }
 }
 
+/// On Windows a child inherits every handle that is marked inheritable, whatever it is given as its own stdio, and hands
+/// them on. A server that stays up would then hold our stdout, and whoever reads it, as `$(metalake ...)` does, would
+/// wait for it to end for as long as the server lives. So they stop being inheritable.
+#[cfg(windows)]
+fn keep_standard_handles_from_children() {
+    use std::ffi::c_void;
+
+    const STD_HANDLES: [i32; 3] = [-10, -11, -12];
+    const HANDLE_FLAG_INHERIT: u32 = 1;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetStdHandle(handle: i32) -> *mut c_void;
+        fn SetHandleInformation(handle: *mut c_void, mask: u32, flags: u32) -> i32;
+    }
+    for handle in STD_HANDLES {
+        // Safety: both only read their arguments; a standard handle that is not there is an error here, and ignored.
+        unsafe {
+            SetHandleInformation(GetStdHandle(handle), HANDLE_FLAG_INHERIT, 0);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn keep_standard_handles_from_children() {}
+
 /// A value of a libpq connection string.
 fn quoted(value: &str) -> String {
     format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
 }
 
-/// Runs a tool of Postgres to its end. Nothing it starts may inherit a pipe of ours, so its output goes to a file.
+/// Runs a tool of Postgres that starts nothing to its end, its output kept to explain a failure.
 fn run(what: &str, command: &mut Command) -> Result<()> {
     let output = env::temp_dir().join(format!("metalake-{}.out", Uuid::new_v4().simple()));
     let file = File::create(&output)?;
