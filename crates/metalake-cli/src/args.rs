@@ -51,6 +51,8 @@ pub enum Verb {
     Retain(Retain),
     /// Runs the upkeep once: all of it, in order, or one task. For whatever schedules it.
     Maintain(Maintain),
+    /// Stops a lake's own Postgres, which stays up otherwise: before moving or deleting the lake. The next command starts it.
+    Stop,
     /// Lists a ref's own commits, the latest first; their sequences read the past as `"main@1234"`.
     Log(Log),
 }
@@ -199,11 +201,13 @@ pub struct Sql {
 
 #[derive(Debug, Args)]
 pub struct Init {
-    /// The Postgres of the catalog, with no password: `postgresql://user@host/db`. The password is `PGPASSWORD`.
-    pub postgres: String,
+    /// A directory, for a lake with a Postgres of its own, or a Postgres that exists, with no password:
+    /// `postgresql://user@host/db`, whose password is `PGPASSWORD`.
+    pub catalog: String,
 
-    /// Where tables put their files: a URL, such as `s3://bucket/prefix`, or a local directory.
-    pub warehouse: String,
+    /// Where tables put their files: a URL, such as `s3://bucket/prefix`, or a local directory. In a lake with a Postgres
+    /// of its own, its `data` directory by default.
+    pub warehouse: Option<String>,
 
     /// The Postgres schema of the catalog, for more than one lake in a database.
     #[arg(long)]

@@ -2339,6 +2339,7 @@ dependencies = [
  "futures-util",
  "metalake",
  "metalake-datafusion",
+ "metalake-local",
  "metalake-pg",
  "serde",
  "serde_json",

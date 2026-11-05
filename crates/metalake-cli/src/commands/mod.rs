@@ -9,6 +9,7 @@ pub mod refs;
 pub mod retain;
 pub mod sql;
 pub mod status;
+pub mod stop;
 
 use metalake::{Ref, Table};
 

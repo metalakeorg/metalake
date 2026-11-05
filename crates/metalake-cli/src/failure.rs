@@ -126,6 +126,12 @@ impl From<DataFusionError> for Failure {
     }
 }
 
+impl From<metalake_local::Error> for Failure {
+    fn from(e: metalake_local::Error) -> Self {
+        Failure::failed(e.to_string())
+    }
+}
+
 impl From<ArrowError> for Failure {
     fn from(e: ArrowError) -> Self {
         Failure::failed(e.to_string())

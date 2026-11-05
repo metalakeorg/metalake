@@ -36,7 +36,10 @@ impl Binaries {
             let fetched = thread::spawn(move || fetch(&target)).join();
             fetched.expect("fetching binaries does not panic")?;
         }
-        Self::at(installed.join("bin"))
+        // What this fetched is the version it asked for, and every command comes through here.
+        Ok(Self {
+            bin: installed.join("bin"),
+        })
     }
 
     /// The binaries in `bin`, if they are of the version every lake runs.

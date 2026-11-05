@@ -7,6 +7,7 @@ use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use metalake::{Catalog, CatalogConfig, Storage};
+use metalake_local::{Binaries, Cluster};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -22,11 +23,15 @@ const CONNECTIONS: usize = 4;
 /// The services whose variables `object_store` reads, by the same names in lower case.
 const STORAGE_ENV: [&str; 3] = ["AWS_", "GOOGLE_", "AZURE_"];
 
-/// Where a catalog is: all that a client has to know.
+/// Where a catalog is: all that a client has to know. A lake's own Postgres is a directory, relative to the file, which
+/// holds the cluster, and a lake reaching one is its own concern: nothing past this file can tell it from any other.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Location {
-    postgres: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    postgres: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     schema: Option<String>,
 }
@@ -36,10 +41,32 @@ impl Location {
         self.schema.as_deref().unwrap_or(SCHEMA)
     }
 
-    fn config(&self) -> CatalogConfig {
-        let mut config = CatalogConfig::new(with_password(&self.postgres), self.schema());
+    /// How to connect: a lake's own Postgres is brought up if it is not.
+    fn config(&self) -> Result<CatalogConfig, Failure> {
+        let connection = match (&self.postgres, &self.local) {
+            (Some(postgres), None) => with_password(postgres),
+            (None, Some(_)) => self.cluster()?.ensure()?,
+            _ => return Err(Failure::failed(format!("{FILE} must say either postgres or local"))),
+        };
+        let mut config = CatalogConfig::new(connection, self.schema());
         config.connections = CONNECTIONS;
-        config
+        Ok(config)
+    }
+
+    /// Creates the catalog here, and the lake's own Postgres first if it has one.
+    async fn install(&self, warehouse: String) -> Result<Catalog, Failure> {
+        if let Some(local) = &self.local {
+            Cluster::init(local, Binaries::find()?)?;
+        }
+        Ok(Catalog::init(self.config()?.warehouse(warehouse), None).await?)
+    }
+
+    fn cluster(&self) -> Result<Cluster, Failure> {
+        let local = self
+            .local
+            .as_ref()
+            .ok_or_else(|| Failure::failed("this lake has no Postgres of its own"))?;
+        Ok(Cluster::open(local, Binaries::find()?)?)
     }
 
     /// The lake a command means: the directory it names, the environment, or the nearest file.
@@ -49,7 +76,11 @@ impl Location {
         }
         if let Ok(postgres) = env::var("METALAKE_POSTGRES") {
             let schema = env::var("METALAKE_SCHEMA").ok();
-            return Ok(Self { postgres, schema });
+            return Ok(Self {
+                postgres: Some(postgres),
+                local: None,
+                schema,
+            });
         }
         let here = env::current_dir()?;
         match here.ancestors().map(|d| d.join(FILE)).find(|f| f.is_file()) {
@@ -62,7 +93,11 @@ impl Location {
 
     fn read(file: &Path) -> Result<Self, Failure> {
         let text = fs::read_to_string(file).map_err(|e| Failure::failed(format!("{}: {e}", file.display())))?;
-        toml::from_str(&text).map_err(|e| Failure::failed(format!("{}: {e}", file.display())))
+        let mut location: Self =
+            toml::from_str(&text).map_err(|e| Failure::failed(format!("{}: {e}", file.display())))?;
+        let directory = file.parent().unwrap_or(Path::new("."));
+        location.local = location.local.map(|local| directory.join(local));
+        Ok(location)
     }
 }
 
@@ -77,32 +112,49 @@ impl Lake {
     /// The lake a command means.
     pub async fn open(dir: Option<&Path>) -> Result<Self, Failure> {
         let location = Location::find(dir)?;
-        let catalog = Catalog::connect(location.config()).await?;
+        let catalog = Catalog::connect(location.config()?).await?;
         Ok(Self { catalog, location })
+    }
+
+    /// Stops a lake's own Postgres, and answers where it is. The next command brings it up again.
+    pub fn stop(dir: Option<&Path>) -> Result<PathBuf, Failure> {
+        let location = Location::find(dir)?;
+        location.cluster()?.stop()?;
+        Ok(location.local.expect("a cluster has a directory"))
     }
 
     /// Upgrades the catalog of the lake a command means, which `open` refuses, and reaches it.
     pub async fn migrate(dir: Option<&Path>) -> Result<(Self, Option<i64>), Failure> {
         let location = Location::find(dir)?;
-        let format_migration = Catalog::migrate(&location.config()).await?;
-        let catalog = Catalog::connect(location.config()).await?;
+        let config = location.config()?;
+        let format_migration = Catalog::migrate(&config).await?;
+        let catalog = Catalog::connect(config).await?;
         Ok((Self { catalog, location }, format_migration))
     }
 
-    /// Creates a catalog and the file that finds it. The file comes first, so that a lake already here is refused
-    /// before a catalog exists, and it goes if the catalog fails.
+    /// Creates a catalog and the file that finds it, on a Postgres that exists or on one of the lake's own. The file
+    /// comes first, so that a lake already here is refused before a catalog exists, and it goes if the catalog fails.
     pub async fn create(init: &Init, dir: Option<&Path>) -> Result<Self, Failure> {
-        if has_password(&init.postgres) {
+        if has_password(&init.catalog) {
             return Err(Failure::usage(
                 "a password does not go in the command line or in a file: set PGPASSWORD",
             ));
         }
-        let warehouse = warehouse_url(&init.warehouse)?;
-        let location = Location {
-            postgres: init.postgres.clone(),
+        let dir = dir.unwrap_or(Path::new("."));
+        let own = !is_postgres(&init.catalog);
+        let warehouse = match &init.warehouse {
+            Some(warehouse) => warehouse_url(warehouse)?,
+            None if own => {
+                let data = dir.join(&init.catalog).join("data");
+                warehouse_url(&data.to_string_lossy())?
+            }
+            None => return Err(Failure::usage("a lake on an existing Postgres needs a warehouse")),
+        };
+        let mut location = Location {
+            postgres: (!own).then(|| init.catalog.clone()),
+            local: own.then(|| PathBuf::from(&init.catalog)),
             schema: init.schema.clone().filter(|s| s != SCHEMA),
         };
-        let dir = dir.unwrap_or(Path::new("."));
         fs::create_dir_all(dir)?;
         let file = dir.join(FILE);
         let text = toml::to_string(&location).map_err(|e| Failure::failed(e.to_string()))?;
@@ -115,11 +167,12 @@ impl Lake {
                 ErrorKind::AlreadyExists => Failure::failed(format!("{} already exists", file.display())),
                 _ => Failure::failed(format!("{}: {e}", file.display())),
             })?;
-        match Catalog::init(location.config().warehouse(warehouse), None).await {
+        location.local = location.local.map(|local| dir.join(local));
+        match location.install(warehouse).await {
             Ok(catalog) => Ok(Self { catalog, location }),
             Err(e) => {
                 fs::remove_file(&file)?;
-                Err(e.into())
+                Err(e)
             }
         }
     }
@@ -138,9 +191,14 @@ impl Lake {
         self.location.schema()
     }
 
-    /// Where the catalog is, fit to print.
-    pub fn postgres(&self) -> String {
-        without_password(&self.location.postgres)
+    /// The Postgres of the catalog, fit to print, unless it is the lake's own.
+    pub fn postgres(&self) -> Option<String> {
+        self.location.postgres.as_deref().map(without_password)
+    }
+
+    /// The directory of the lake's own Postgres, if it has one.
+    pub fn local(&self) -> Option<&Path> {
+        self.location.local.as_deref()
     }
 }
 
@@ -165,6 +223,11 @@ fn warehouse_url(warehouse: &str) -> Result<String, Failure> {
     let url = Url::from_directory_path(&path)
         .map_err(|()| Failure::failed(format!("{} is not a directory", path.display())))?;
     Ok(url.to_string())
+}
+
+/// Whether what `init` was given is a connection string, as opposed to a directory for a lake's own Postgres.
+fn is_postgres(catalog: &str) -> bool {
+    as_url(catalog).is_some() || catalog.contains('=')
 }
 
 /// Whether a connection string is a URL, as opposed to libpq's `key=value` pairs.
@@ -233,7 +296,8 @@ mod tests {
     #[test]
     fn a_file_says_only_what_differs() {
         let plain = Location {
-            postgres: "postgresql://host/db".into(),
+            postgres: Some("postgresql://host/db".into()),
+            local: None,
             schema: None,
         };
         assert_eq!(
@@ -241,9 +305,18 @@ mod tests {
             "postgres = \"postgresql://host/db\"\n"
         );
         let named = Location {
-            postgres: "host=h".into(),
+            postgres: Some("host=h".into()),
+            local: None,
             schema: Some("other".into()),
         };
+        let own = Location {
+            postgres: None,
+            local: Some("./lake".into()),
+            schema: None,
+        };
+        assert_eq!(toml::to_string(&own).unwrap(), "local = \"./lake\"\n");
+        assert!(is_postgres("postgresql://h/db") && is_postgres("host=h user=u"));
+        assert!(!is_postgres("./lake") && !is_postgres(r"C:\lake"));
         assert_eq!(
             toml::from_str::<Location>(&toml::to_string(&named).unwrap()).unwrap(),
             named

@@ -1,5 +1,5 @@
 //! The cluster inside a lake, and the calls that start and stop it. Nothing but the tools of Postgres touches its data
-//! directory, and everything that depends on where the lake is now is written at each start, so a lake can be moved.
+//! directory.
 //!
 //! On Linux and macOS it listens on a socket in the lake, closed to other users, with no TCP. Windows has no such
 //! sockets here, so it listens on the loopback, behind a password kept in the lake.

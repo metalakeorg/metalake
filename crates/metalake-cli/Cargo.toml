@@ -20,6 +20,7 @@ path = "src/main.rs"
 metalake = { workspace = true, features = ["s3", "gcs", "azure"] }
 metalake-pg.workspace = true
 metalake-datafusion = { path = "../metalake-datafusion" }
+metalake-local = { path = "../metalake-local" }
 clap = { version = "4", features = ["derive"] }
 datafusion = { version = "55.2", default-features = false, features = [
     "datetime_expressions",
