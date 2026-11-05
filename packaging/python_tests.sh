@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# The Python API's tests against a wheel, installed where nothing else is. `bare` has no pyarrow or arro3, `current` has
+# today's libraries, and `oldest` the oldest that pyproject.toml promises.
+#
+#   bash packaging/python_tests.sh dist/metalake-*.whl bare
+set -euo pipefail
+
+wheel=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+tests=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/crates/metalake-py/tests
+work=$(mktemp -d)
+python -m venv "$work/venv"
+bin="$work/venv/bin"
+[ -d "$bin" ] || bin="$work/venv/Scripts"
+"$bin/python" -m pip install --quiet --no-index "$wheel"
+case "$2" in
+  bare) "$bin/python" -m pip install --quiet pytest polars; export METALAKE_TEST_BARE=1 ;;
+  current) "$bin/python" -m pip install --quiet pytest polars pyarrow pandas ;;
+  oldest) "$bin/python" -m pip install --quiet pytest "polars==1.3.0" "pyarrow==15.0.0" "numpy<2" "pandas<3" ;;
+  *) echo "bare, current or oldest"; exit 2 ;;
+esac
+"$bin/python" --version
+"$bin/python" -m pip list 2>/dev/null | grep -iE '^(polars|pyarrow|pandas) ' || true
+unset METALAKE_POSTGRES METALAKE_SCHEMA METALAKE_POSTGRES_BIN PGPASSWORD
+cd "$work"
+"$bin/python" -m pytest "$tests" -q --tb=short -p no:cacheprovider

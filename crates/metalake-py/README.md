@@ -1,5 +1,7 @@
 # MetaLake
 
+Open-source lakehouse table format & protocol inside a PostgreSQL catalog
+
 ## Cloud storage and your own Postgres
 
 ```

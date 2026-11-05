@@ -56,6 +56,18 @@ jobs:
       - name: Run what a person would
         shell: bash
         run: bash packaging/e2e.sh dist/*.whl
+      - name: The Python API, with no pyarrow
+        shell: bash
+        run: bash packaging/python_tests.sh dist/*.whl bare
+      - name: The Python API, with today's libraries
+        shell: bash
+        run: bash packaging/python_tests.sh dist/*.whl current
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: The Python API, on the oldest Python and libraries it promises
+        shell: bash
+        run: bash packaging/python_tests.sh dist/*.whl oldest
       - uses: dtolnay/rust-toolchain@stable
       - name: Test a lake's own Postgres
         run: cargo test -p metalake-local
