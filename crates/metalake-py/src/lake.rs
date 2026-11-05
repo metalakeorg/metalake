@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use metalake_client::{Lake, Session};
+use metalake_client::{Error, Lake, RefKind, Session};
 use pyo3::prelude::*;
 
 use crate::errors::to_python;
@@ -20,6 +20,26 @@ pub struct PyLake {
 }
 
 impl PyLake {
+    /// A new ref, which `information_schema` shows at once.
+    fn create_ref(&self, py: Python<'_>, kind: RefKind, name: String, start: Option<String>) -> PyResult<PyRef> {
+        let (lake, session) = (self.lake.clone(), self.session.clone());
+        let created = wait(py, async move {
+            let created = lake.create_ref(kind, &name, start.as_deref()).await?;
+            session.refresh().await?;
+            Ok::<_, Error>(created)
+        })?;
+        created.map(PyRef::from).map_err(|e| to_python(py, e))
+    }
+
+    fn delete_ref(&self, py: Python<'_>, kind: RefKind, name: String) -> PyResult<()> {
+        let (lake, session) = (self.lake.clone(), self.session.clone());
+        let deleted = wait(py, async move {
+            lake.delete_ref(kind, &name).await?;
+            session.refresh().await
+        })?;
+        deleted.map_err(|e| to_python(py, e))
+    }
+
     fn new(py: Python<'_>, reached: metalake_client::Result<(Lake, Session)>) -> PyResult<Self> {
         let (lake, session) = reached.map_err(|e| to_python(py, e))?;
         Ok(Self {
@@ -65,6 +85,28 @@ impl PyLake {
         Ok(refs.into_iter().map(PyRef::from).collect())
     }
 
+    /// A new branch, from `main` or from `start`: a ref, or `ref@sequence`. It copies nothing.
+    #[pyo3(signature = (name, start=None))]
+    fn branch(&self, py: Python<'_>, name: String, start: Option<String>) -> PyResult<PyRef> {
+        self.create_ref(py, RefKind::Branch, name, start)
+    }
+
+    /// A new tag, a state that does not change, from `main` or from `start`: a ref, or `ref@sequence`.
+    #[pyo3(signature = (name, start=None))]
+    fn tag(&self, py: Python<'_>, name: String, start: Option<String>) -> PyResult<PyRef> {
+        self.create_ref(py, RefKind::Tag, name, start)
+    }
+
+    /// Deletes a branch. Its name is never used again.
+    fn delete_branch(&self, py: Python<'_>, name: String) -> PyResult<()> {
+        self.delete_ref(py, RefKind::Branch, name)
+    }
+
+    /// Deletes a tag. Its name is never used again.
+    fn delete_tag(&self, py: Python<'_>, name: String) -> PyResult<()> {
+        self.delete_ref(py, RefKind::Tag, name)
+    }
+
     /// The commits of a ref, the latest first, or, with `table`, `namespace.table`, the snapshots of that table.
     #[pyo3(signature = (on="main".to_string(), *, limit=20, table=None))]
     fn log(&self, py: Python<'_>, on: String, limit: i64, table: Option<String>) -> PyResult<History> {
@@ -78,7 +120,7 @@ impl PyLake {
                 None => History::Commits(lake.commits(&on, limit).await?.into_iter().map(Into::into).collect()),
             })
         })?;
-        history.map_err(|e: metalake_client::Error| to_python(py, e))
+        history.map_err(|e: Error| to_python(py, e))
     }
 
     fn __repr__(&self) -> String {
