@@ -7,6 +7,7 @@ use metalake_client::{Lake, Session};
 use pyo3::prelude::*;
 
 use crate::errors::to_python;
+use crate::info::{History, PyRef, PyStatus};
 use crate::result::QueryResult;
 use crate::runtime::wait;
 use crate::table::PyTable;
@@ -48,6 +49,36 @@ impl PyLake {
     fn refresh(&self, py: Python<'_>) -> PyResult<()> {
         let session = self.session.clone();
         wait(py, async move { session.refresh().await })?.map_err(|e| to_python(py, e))
+    }
+
+    /// What the lake is. Printed, it reads as `metalake status` does.
+    fn status(&self, py: Python<'_>) -> PyResult<PyStatus> {
+        let lake = self.lake.clone();
+        let status = wait(py, async move { lake.status().await })?;
+        status.map(PyStatus::from).map_err(|e| to_python(py, e))
+    }
+
+    /// Every branch and tag.
+    fn refs(&self, py: Python<'_>) -> PyResult<Vec<PyRef>> {
+        let lake = self.lake.clone();
+        let refs = wait(py, async move { lake.refs(None).await })?.map_err(|e| to_python(py, e))?;
+        Ok(refs.into_iter().map(PyRef::from).collect())
+    }
+
+    /// The commits of a ref, the latest first, or, with `table`, `namespace.table`, the snapshots of that table.
+    #[pyo3(signature = (on="main".to_string(), *, limit=20, table=None))]
+    fn log(&self, py: Python<'_>, on: String, limit: i64, table: Option<String>) -> PyResult<History> {
+        let lake = self.lake.clone();
+        let history = wait(py, async move {
+            Ok(match table {
+                Some(table) => {
+                    let snapshots = lake.snapshots(&on, &table, limit).await?;
+                    History::Snapshots(snapshots.into_iter().map(Into::into).collect())
+                }
+                None => History::Commits(lake.commits(&on, limit).await?.into_iter().map(Into::into).collect()),
+            })
+        })?;
+        history.map_err(|e: metalake_client::Error| to_python(py, e))
     }
 
     fn __repr__(&self) -> String {

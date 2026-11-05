@@ -2,6 +2,7 @@
 //! both load, since a wheel with a binary beside it would carry the engine twice.
 
 mod errors;
+mod info;
 mod lake;
 mod result;
 mod runtime;
@@ -21,6 +22,10 @@ fn cli(py: Python<'_>, args: Vec<OsString>) -> i32 {
 fn _metalake(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     module.add_class::<lake::PyLake>()?;
+    module.add_class::<info::PyRef>()?;
+    module.add_class::<info::PyCommit>()?;
+    module.add_class::<info::PySnapshot>()?;
+    module.add_class::<info::PyStatus>()?;
     module.add_class::<table::PyTable>()?;
     module.add_class::<table::PyWritten>()?;
     module.add_class::<result::QueryResult>()?;
