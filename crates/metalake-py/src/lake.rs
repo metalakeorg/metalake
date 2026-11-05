@@ -9,19 +9,22 @@ use pyo3::prelude::*;
 use crate::errors::to_python;
 use crate::result::QueryResult;
 use crate::runtime::wait;
+use crate::table::PyTable;
 
 /// A lake, reached, with the session its statements run in.
 #[pyclass(name = "Lake", module = "metalake", frozen)]
 pub struct PyLake {
-    lake: Lake,
+    lake: Arc<Lake>,
     session: Arc<Session>,
 }
 
 impl PyLake {
     fn new(py: Python<'_>, reached: metalake_client::Result<(Lake, Session)>) -> PyResult<Self> {
         let (lake, session) = reached.map_err(|e| to_python(py, e))?;
-        let session = Arc::new(session);
-        Ok(Self { lake, session })
+        Ok(Self {
+            lake: Arc::new(lake),
+            session: Arc::new(session),
+        })
     }
 }
 
@@ -33,6 +36,11 @@ impl PyLake {
         let session = self.session.clone();
         let prepared = wait(py, async move { session.run(&text).await })?;
         Ok(QueryResult::new(prepared.map_err(|e| to_python(py, e))?))
+    }
+
+    /// A table by the name a statement would use: `t`, `namespace.t` or `ref.namespace.t`.
+    fn table(&self, py: Python<'_>, name: &str) -> PyResult<PyTable> {
+        PyTable::open(py, self.lake.clone(), name)
     }
 
     /// Takes a new picture of what `information_schema` shows, for what others changed. A table or a ref named in a

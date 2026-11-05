@@ -5,6 +5,7 @@ mod errors;
 mod lake;
 mod result;
 mod runtime;
+mod table;
 
 use std::ffi::OsString;
 
@@ -20,6 +21,7 @@ fn cli(py: Python<'_>, args: Vec<OsString>) -> i32 {
 fn _metalake(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     module.add_class::<lake::PyLake>()?;
+    module.add_class::<table::PyTable>()?;
     module.add_class::<result::QueryResult>()?;
     module.add_class::<result::PyBatch>()?;
     module.add_class::<result::Batches>()?;
