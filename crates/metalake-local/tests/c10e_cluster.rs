@@ -192,14 +192,14 @@ async fn a_server_that_died_comes_back_with_what_was_committed() -> Result<(), B
         true => Command::new("taskkill").args(["/F", "/T", "/PID", &pid]).output()?,
         false => Command::new("kill").args(["-9", &pid]).output()?,
     };
-    assert!(killed.status.success(), "{}", String::from_utf8_lossy(&killed.stderr));
+    // `taskkill` fails over a child that has already gone, so what counts is that the server is down.
     for _ in 0..100 {
         if !lake.cluster.is_running()? {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(!lake.cluster.is_running()?);
+    assert!(!lake.cluster.is_running()?, "{}", String::from_utf8_lossy(&killed.stderr));
 
     let connection = lake.cluster.ensure()?;
     let catalog = Catalog::connect(CatalogConfig::new(connection, "metalake")).await?;
