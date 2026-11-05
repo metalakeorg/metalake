@@ -9,6 +9,13 @@ use metalake_client::Error;
 use metalake_client::Lake;
 
 pub async fn run(init: &Init, dir: Option<&Path>, out: &Out) -> Result<(), Error> {
-    let lake = Lake::create(&init.catalog, init.warehouse.as_deref(), init.schema.as_deref(), dir).await?;
+    let lake = Lake::create(
+        &init.catalog,
+        init.warehouse.as_deref(),
+        init.schema.as_deref(),
+        dir,
+        Lake::ONE_COMMAND,
+    )
+    .await?;
     out.value(&Status::of(&lake).await?)
 }

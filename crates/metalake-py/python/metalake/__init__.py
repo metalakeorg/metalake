@@ -10,9 +10,19 @@ _POSTGRES = Path(__file__).parent / "postgres" / "bin"
 if _POSTGRES.is_dir():
     os.environ.setdefault("METALAKE_POSTGRES_BIN", str(_POSTGRES))
 
-from ._metalake import __version__, cli as _cli  # noqa: E402
+from ._metalake import Lake, __version__, cli as _cli, connect, init  # noqa: E402
+from .errors import ConflictError, MetaLakeError, UnknownOutcomeError, UsageError  # noqa: E402
 
-__all__ = ["__version__"]
+__all__ = [
+    "ConflictError",
+    "Lake",
+    "MetaLakeError",
+    "UnknownOutcomeError",
+    "UsageError",
+    "__version__",
+    "connect",
+    "init",
+]
 
 
 def _main():

@@ -1,32 +1,5 @@
 # MetaLake
 
-An open lakehouse table format whose metadata lives in Postgres. Tables are Parquet in your storage; snapshots,
-schemas, statistics, branches and deletes are rows in a transactional catalog. SQL runs on Apache DataFusion.
-
-**Status: alpha.** The format and the command line can still change.
-
-```
-pip install metalake
-metalake init ./lake
-metalake sql "create table t (k bigint); insert into t values (1), (2); select * from t"
-```
-
-That is all it takes: the package carries Postgres, which starts when a command needs it and stays up until
-`metalake stop`.
-
-## Branches and time
-
-A branch or a tag covers the whole lake and copies nothing.
-
-```
-metalake branch create dev
-metalake sql "insert into dev.default.t values (3)"
-metalake merge dev --check
-metalake merge dev -m "add a row"
-metalake log
-metalake sql 'select * from "main@4".default.t'
-```
-
 ## Cloud storage and your own Postgres
 
 ```

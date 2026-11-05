@@ -17,8 +17,8 @@ use crate::{Error, Result};
 const FILE: &str = "metalake.toml";
 /// The catalog's schema, unless one Postgres database holds more than one lake.
 const SCHEMA: &str = "metalake";
-/// Enough for one statement: a command runs one at a time, and the core's default is for a long-lived engine.
-const CONNECTIONS: usize = 4;
+/// The cluster's directory in a lake's own directory, which is how one is known without its file.
+const CLUSTER: &str = "postgres";
 /// The services whose variables `object_store` reads, by the same names in lower case.
 const STORAGE_ENV: [&str; 3] = ["AWS_", "GOOGLE_", "AZURE_"];
 
@@ -41,24 +41,26 @@ impl Location {
     }
 
     /// How to connect: a lake's own Postgres is brought up if it is not.
-    fn config(&self) -> Result<CatalogConfig> {
+    fn config(&self, connections: Option<usize>) -> Result<CatalogConfig> {
         let connection = match (&self.postgres, &self.local) {
             (Some(postgres), None) => with_password(postgres),
             (None, Some(_)) => self.cluster()?.ensure()?,
             _ => return Err(Error::failed(format!("{FILE} must say either postgres or local"))),
         };
         let mut config = CatalogConfig::new(connection, self.schema());
-        config.connections = CONNECTIONS;
+        if let Some(connections) = connections {
+            config.connections = connections;
+        }
         Ok(config)
     }
 
     /// Creates the catalog here, and the lake's own Postgres first if it has one.
-    async fn install(&self, warehouse: String) -> Result<Catalog> {
+    async fn install(&self, warehouse: String, connections: Option<usize>) -> Result<Catalog> {
         check_warehouse(&warehouse).await?;
         if let Some(local) = &self.local {
             Cluster::init(local, Binaries::find()?)?;
         }
-        Ok(Catalog::init(self.config()?.warehouse(warehouse), None).await?)
+        Ok(Catalog::init(self.config(connections)?.warehouse(warehouse), None).await?)
     }
 
     fn cluster(&self) -> Result<Cluster> {
@@ -91,6 +93,38 @@ impl Location {
         }
     }
 
+    /// The lake a caller names: a connection string, a directory with the file, a lake's own directory, or, naming
+    /// none, what a command would find. A process may change directory, so what it names is made absolute.
+    fn named(target: Option<&str>, schema: Option<&str>) -> Result<Self> {
+        let mut location = match target {
+            None => Self::find(None)?,
+            Some(postgres) if is_postgres(postgres) => Self {
+                postgres: Some(postgres.to_string()),
+                local: None,
+                schema: None,
+            },
+            Some(directory) => {
+                let directory = std::path::absolute(directory)?;
+                match (directory.join(FILE), directory.join(CLUSTER)) {
+                    (file, _) if file.is_file() => Self::read(&file)?,
+                    (_, cluster) if cluster.is_dir() => Self {
+                        postgres: None,
+                        local: Some(directory),
+                        schema: None,
+                    },
+                    _ => {
+                        return Err(Error::failed(format!(
+                            "{}: neither a {FILE} nor a lake is there",
+                            directory.display()
+                        )));
+                    }
+                }
+            }
+        };
+        location.schema = schema.map(str::to_string).or(location.schema);
+        Ok(location)
+    }
+
     fn read(file: &Path) -> Result<Self> {
         let text = fs::read_to_string(file).map_err(|e| Error::failed(format!("{}: {e}", file.display())))?;
         let mut location: Self =
@@ -109,10 +143,21 @@ pub struct Lake {
 }
 
 impl Lake {
+    /// Enough for one statement: a command runs one at a time, and the core's default is for a long-lived engine.
+    pub const ONE_COMMAND: Option<usize> = Some(4);
+
     /// The lake a command means.
     pub async fn open(dir: Option<&Path>) -> Result<Self> {
         let location = Location::find(dir)?;
-        let catalog = Catalog::connect(location.config()?).await?;
+        let catalog = Catalog::connect(location.config(Self::ONE_COMMAND)?).await?;
+        Ok(Self { catalog, location })
+    }
+
+    /// The lake a long-lived program names, with the core's default of connections. A password may come in the
+    /// connection string, since nothing is written; it is never shown.
+    pub async fn connect(target: Option<&str>, schema: Option<&str>) -> Result<Self> {
+        let location = Location::named(target, schema)?;
+        let catalog = Catalog::connect(location.config(None)?).await?;
         Ok(Self { catalog, location })
     }
 
@@ -126,7 +171,7 @@ impl Lake {
     /// Upgrades the catalog of the lake a command means, which `open` refuses, and reaches it.
     pub async fn migrate(dir: Option<&Path>) -> Result<(Self, Option<i64>)> {
         let location = Location::find(dir)?;
-        let config = location.config()?;
+        let config = location.config(Self::ONE_COMMAND)?;
         let format_migration = Catalog::migrate(&config).await?;
         let catalog = Catalog::connect(config).await?;
         Ok((Self { catalog, location }, format_migration))
@@ -140,6 +185,7 @@ impl Lake {
         warehouse: Option<&str>,
         schema: Option<&str>,
         dir: Option<&Path>,
+        connections: Option<usize>,
     ) -> Result<Self> {
         if has_password(catalog) {
             return Err(Error::usage(
@@ -174,7 +220,7 @@ impl Lake {
                 _ => Error::failed(format!("{}: {e}", file.display())),
             })?;
         location.local = location.local.map(|local| within(dir, &local));
-        let catalog = match location.install(warehouse).await {
+        let catalog = match location.install(warehouse, connections).await {
             Ok(catalog) => catalog,
             Err(e) => {
                 fs::remove_file(&file)?;
@@ -393,6 +439,31 @@ mod tests {
             [("aws_region", "eu"), ("google_service_account", "k"), ("azure_x", "y")]
                 .map(|(k, v)| (k.to_string(), v.to_string()))
         );
+    }
+
+    #[test]
+    fn a_program_names_a_lake_in_each_form() {
+        let postgres = Location::named(Some("postgresql://u@h/db"), Some("other")).unwrap();
+        assert_eq!(postgres.postgres.as_deref(), Some("postgresql://u@h/db"));
+        assert_eq!(postgres.schema(), "other");
+
+        let dir = env::temp_dir().join(format!("metalake-named-{}", std::process::id()));
+        let own = dir.join("lake");
+        fs::create_dir_all(own.join(CLUSTER)).unwrap();
+        let found = Location::named(own.to_str(), None).unwrap();
+        assert_eq!(found.local.as_deref(), Some(own.as_path()));
+        assert_eq!(found.schema(), SCHEMA);
+
+        let empty = dir.join("empty");
+        fs::create_dir_all(&empty).unwrap();
+        let refused = Location::named(empty.to_str(), None).unwrap_err();
+        assert!(refused.message.contains("neither"), "{refused}");
+
+        fs::write(dir.join(FILE), "local = \"./lake\"\nschema = \"named\"\n").unwrap();
+        let from_file = Location::named(dir.to_str(), None).unwrap();
+        assert_eq!(from_file.local.as_deref(), Some(own.as_path()));
+        assert_eq!(from_file.schema(), "named");
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

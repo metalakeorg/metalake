@@ -14,4 +14,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 metalake-cli = { path = "../metalake-cli" }
+metalake-client = { path = "../metalake-client" }
+tokio.workspace = true
 pyo3 = { version = "0.30", features = ["extension-module", "abi3-py311"] }
