@@ -1,0 +1,59 @@
+# Builds the wheel of each platform, installs it where nothing else is, and runs what a person would.
+name: wheels
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wheels-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wheel:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-latest, target: x86_64-pc-windows-msvc }
+          - { runner: ubuntu-latest, target: x86_64-unknown-linux-gnu, manylinux: "2_28" }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, manylinux: "2_28" }
+          - { runner: macos-14, target: aarch64-apple-darwin }
+          - { runner: macos-15-intel, target: x86_64-apple-darwin }
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Prepare Postgres
+        run: python packaging/postgres.py ${{ matrix.target }}
+      - name: The oldest C library Postgres needs
+        if: runner.os == 'Linux'
+        run: |
+          objdump -T crates/metalake-cli/metalake.data/data/share/metalake/postgres/bin/postgres \
+            | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+      - name: Build the wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux || 'auto' }}
+          args: --release --out dist -m crates/metalake-cli/Cargo.toml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.target }}
+          path: dist/*.whl
+      - name: Run what a person would
+        shell: bash
+        run: bash packaging/e2e.sh dist/*.whl
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test a lake's own Postgres
+        run: cargo test -p metalake-local
