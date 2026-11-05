@@ -2,39 +2,31 @@
 
 use std::io::{self, IsTerminal, Read};
 
-use datafusion::sql::parser::DFParser;
-use metalake_datafusion::MetaLake;
+use metalake_client::{Error, Lake, Session};
 
 use crate::args::Sql;
-use crate::failure::Failure;
-use crate::lake::Lake;
 use crate::out::Out;
 
-pub async fn run(sql: &Sql, lake: &Lake, out: &Out) -> Result<(), Failure> {
-    let statements = DFParser::parse_sql(&text(sql)?)?;
-    if statements.is_empty() {
-        return Err(Failure::usage("no statement to run"));
-    }
-    let engine = MetaLake::new(lake.catalog.clone(), lake.storage()?).await?;
-    let context = engine.context()?;
+pub async fn run(sql: &Sql, lake: &Lake, out: &Out) -> Result<(), Error> {
+    let statements = Session::parse(&text(sql)?)?;
+    let session = Session::new(lake).await?;
     for statement in statements {
-        let frame = engine.execute(&context, statement).await?;
-        out.rows(frame.execute_stream().await?).await?;
+        out.rows(session.execute(statement).await?).await?;
     }
     Ok(())
 }
 
 /// The statements, from the argument, the file or stdin.
-fn text(sql: &Sql) -> Result<String, Failure> {
+fn text(sql: &Sql) -> Result<String, Error> {
     if let Some(text) = &sql.sql {
         return Ok(text.clone());
     }
     if let Some(file) = &sql.file {
-        return std::fs::read_to_string(file).map_err(|e| Failure::failed(format!("{}: {e}", file.display())));
+        return std::fs::read_to_string(file).map_err(|e| Error::failed(format!("{}: {e}", file.display())));
     }
     let mut stdin = io::stdin();
     if stdin.is_terminal() {
-        return Err(Failure::usage("give a statement, or --file, or pipe them in"));
+        return Err(Error::usage("give a statement, or --file, or pipe them in"));
     }
     let mut text = String::new();
     stdin.read_to_string(&mut text)?;

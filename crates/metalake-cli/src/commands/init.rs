@@ -4,13 +4,11 @@ use std::path::Path;
 
 use crate::args::Init;
 use crate::commands::status::Status;
-use crate::failure::Failure;
-use crate::lake::Lake;
 use crate::out::Out;
+use metalake_client::Error;
+use metalake_client::Lake;
 
-pub async fn run(init: &Init, dir: Option<&Path>, out: &Out) -> Result<(), Failure> {
-    let lake = Lake::create(init, dir).await?;
-    let main = lake.catalog.branch("main").await?;
-    main.transaction().create_namespace(&["default"]).commit().await?;
+pub async fn run(init: &Init, dir: Option<&Path>, out: &Out) -> Result<(), Error> {
+    let lake = Lake::create(&init.catalog, init.warehouse.as_deref(), init.schema.as_deref(), dir).await?;
     out.value(&Status::of(&lake).await?)
 }

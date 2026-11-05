@@ -1,0 +1,29 @@
+[package]
+name = "metalake-client"
+version = "0.1.0"
+description = "What MetaLake's faces share: reaching a lake, and every verb as a call that answers values"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+metalake = { workspace = true, features = ["s3", "gcs", "azure"] }
+metalake-pg.workspace = true
+metalake-datafusion = { path = "../metalake-datafusion" }
+metalake-local = { path = "../metalake-local" }
+datafusion = { version = "55.2", default-features = false, features = [
+    "datetime_expressions",
+    "encoding_expressions",
+    "math_expressions",
+    "nested_expressions",
+    "regex_expressions",
+    "string_expressions",
+    "unicode_expressions",
+] }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+toml = "1"
+url.workspace = true

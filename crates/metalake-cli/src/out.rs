@@ -18,7 +18,7 @@ use futures_util::{TryStreamExt, stream};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::failure::Failure;
+use metalake_client::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Format {
@@ -43,9 +43,9 @@ impl Out {
     }
 
     /// What a verb answers: one object per line in `json`, its text otherwise.
-    pub fn value<T: Serialize + Display>(&self, value: &T) -> Result<(), Failure> {
+    pub fn value<T: Serialize + Display>(&self, value: &T) -> Result<(), Error> {
         let mut text = match self.format {
-            Format::Json => serde_json::to_string(value).map_err(|e| Failure::failed(e.to_string()))?,
+            Format::Json => serde_json::to_string(value).map_err(|e| Error::failed(e.to_string()))?,
             Format::Table | Format::Csv => value.to_string(),
         };
         text.push('\n');
@@ -54,9 +54,9 @@ impl Out {
 
     /// A list of what a verb answers, under `columns`: as its own values in `json`, and otherwise through what prints a
     /// statement's rows, so that there is one way to print a table.
-    pub async fn records<T: Serialize>(&self, columns: &[&str], rows: &[T]) -> Result<(), Failure> {
-        let to_value = |row| serde_json::to_value(row).map_err(|e| Failure::failed(e.to_string()));
-        let values = rows.iter().map(to_value).collect::<Result<Vec<Value>, Failure>>()?;
+    pub async fn records<T: Serialize>(&self, columns: &[&str], rows: &[T]) -> Result<(), Error> {
+        let to_value = |row| serde_json::to_value(row).map_err(|e| Error::failed(e.to_string()));
+        let values = rows.iter().map(to_value).collect::<Result<Vec<Value>, Error>>()?;
         if self.format == Format::Json {
             let lines: Vec<String> = values.iter().map(|v| format!("{v}\n")).collect();
             return write(lines.concat().as_bytes());
@@ -73,7 +73,7 @@ impl Out {
 
     /// What a statement returns, as it arrives: only a table, which sizes its columns by every row, holds it all. A
     /// statement that returns no columns prints nothing.
-    pub async fn rows(&self, stream: SendableRecordBatchStream) -> Result<(), Failure> {
+    pub async fn rows(&self, stream: SendableRecordBatchStream) -> Result<(), Error> {
         let schema = stream.schema();
         if schema.fields().is_empty() {
             let _: Vec<RecordBatch> = stream.try_collect().await?;
@@ -117,14 +117,14 @@ async fn each<W>(
     mut stream: SendableRecordBatchStream,
     mut writer: W,
     write: impl Fn(&mut W, &RecordBatch) -> Result<(), ArrowError>,
-) -> Result<(), Failure> {
+) -> Result<(), Error> {
     while let Some(batch) = stream.try_next().await? {
         ignoring_a_gone_reader(write(&mut writer, &batch))?;
     }
     Ok(())
 }
 
-fn ignoring_a_gone_reader(done: Result<(), ArrowError>) -> Result<(), Failure> {
+fn ignoring_a_gone_reader(done: Result<(), ArrowError>) -> Result<(), Error> {
     match done {
         Err(ArrowError::IoError(_, e)) if e.kind() == io::ErrorKind::BrokenPipe => Ok(()),
         done => Ok(done?),
@@ -132,7 +132,7 @@ fn ignoring_a_gone_reader(done: Result<(), ArrowError>) -> Result<(), Failure> {
 }
 
 /// Writes to stdout. A reader that went away, as `head` does, is not a failure.
-fn write(bytes: &[u8]) -> Result<(), Failure> {
+fn write(bytes: &[u8]) -> Result<(), Error> {
     let mut stdout = io::stdout().lock();
     match stdout.write_all(bytes).and_then(|()| stdout.flush()) {
         Err(e) if e.kind() != io::ErrorKind::BrokenPipe => Err(e.into()),

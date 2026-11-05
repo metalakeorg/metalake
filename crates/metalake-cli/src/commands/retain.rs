@@ -5,19 +5,19 @@ use metalake::Retention;
 use serde_json::json;
 
 use crate::args::Retain;
-use crate::failure::Failure;
-use crate::lake::Lake;
 use crate::out::Out;
+use metalake_client::Error;
+use metalake_client::Lake;
 
-pub async fn run(args: &Retain, lake: &Lake, out: &Out) -> Result<(), Failure> {
+pub async fn run(args: &Retain, lake: &Lake, out: &Out) -> Result<(), Error> {
     let criteria = args.max_age.is_some() || args.min_snapshots.is_some() || args.min_seq.is_some();
     if args.on.is_some() && !criteria {
-        return Err(Failure::usage(
+        return Err(Error::usage(
             "a ref needs what to keep: --max-age, --min-snapshots or --min-seq",
         ));
     }
     if args.on.is_none() && (criteria || args.grace.is_none()) {
-        return Err(Failure::usage(
+        return Err(Error::usage(
             "--max-age, --min-snapshots and --min-seq are of a ref; --grace alone is of the lake",
         ));
     }
@@ -30,7 +30,7 @@ pub async fn run(args: &Retain, lake: &Lake, out: &Out) -> Result<(), Failure> {
         let on = refs
             .iter()
             .find(|r| r.name() == name)
-            .ok_or_else(|| Failure::failed(format!("no ref {name}")))?;
+            .ok_or_else(|| Error::failed(format!("no ref {name}")))?;
         on.set_retention(&Retention {
             min_seq: args.min_seq,
             max_age: args.max_age,

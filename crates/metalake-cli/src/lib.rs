@@ -7,19 +7,16 @@
 mod args;
 mod commands;
 mod failure;
-mod lake;
 mod out;
 
 use std::ffi::OsString;
 
 use clap::Parser;
+use metalake_client::{Error, Lake, RefKind};
 
 pub use failure::Exit;
 
 use args::{Cli, Verb};
-use commands::refs::Kind;
-use failure::Failure;
-use lake::Lake;
 use out::Out;
 
 /// Runs a command line, its first argument being the program's name, and answers the code to exit with.
@@ -39,18 +36,18 @@ where
     let done = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .map_err(Failure::from)
+        .map_err(Error::from)
         .and_then(|runtime| runtime.block_on(run(cli)));
     match done {
         Ok(()) => 0,
         Err(failure) => {
-            failure.report(format);
-            failure.exit as i32
+            failure::report(&failure, format);
+            Exit::from(failure.kind) as i32
         }
     }
 }
 
-async fn run(cli: Cli) -> Result<(), Failure> {
+async fn run(cli: Cli) -> Result<(), Error> {
     let out = Out::new(cli.format);
     let dir = cli.lake.as_deref();
     match &cli.verb {
@@ -58,8 +55,8 @@ async fn run(cli: Cli) -> Result<(), Failure> {
         Verb::Status => commands::status::run(&Lake::open(dir).await?, &out).await,
         Verb::Sql(sql) => commands::sql::run(sql, &Lake::open(dir).await?, &out).await,
         Verb::Refs => commands::refs::list(&Lake::open(dir).await?, &out, None).await,
-        Verb::Branch { verb } => commands::refs::run(verb, Kind::Branch, &Lake::open(dir).await?, &out).await,
-        Verb::Tag { verb } => commands::refs::run(verb, Kind::Tag, &Lake::open(dir).await?, &out).await,
+        Verb::Branch { verb } => commands::refs::run(verb, RefKind::Branch, &Lake::open(dir).await?, &out).await,
+        Verb::Tag { verb } => commands::refs::run(verb, RefKind::Tag, &Lake::open(dir).await?, &out).await,
         Verb::Merge(merge) => commands::merge::run(merge, &Lake::open(dir).await?, &out).await,
         Verb::Migrate => commands::migrate::run(dir, &out).await,
         Verb::Retain(retain) => commands::retain::run(retain, &Lake::open(dir).await?, &out).await,

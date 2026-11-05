@@ -2366,12 +2366,23 @@ dependencies = [
  "datafusion",
  "futures-util",
  "metalake",
+ "metalake-client",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "metalake-client"
+version = "0.1.0"
+dependencies = [
+ "datafusion",
+ "metalake",
  "metalake-datafusion",
  "metalake-local",
  "metalake-pg",
  "serde",
  "serde_json",
- "tokio",
  "toml",
  "url",
  "uuid",

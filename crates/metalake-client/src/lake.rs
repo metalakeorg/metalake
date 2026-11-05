@@ -11,8 +11,7 @@ use metalake_local::{Binaries, Cluster};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::args::Init;
-use crate::failure::Failure;
+use crate::{Error, Result};
 
 /// The file `init` writes, which a command finds in its directory or the nearest above it.
 const FILE: &str = "metalake.toml";
@@ -42,11 +41,11 @@ impl Location {
     }
 
     /// How to connect: a lake's own Postgres is brought up if it is not.
-    fn config(&self) -> Result<CatalogConfig, Failure> {
+    fn config(&self) -> Result<CatalogConfig> {
         let connection = match (&self.postgres, &self.local) {
             (Some(postgres), None) => with_password(postgres),
             (None, Some(_)) => self.cluster()?.ensure()?,
-            _ => return Err(Failure::failed(format!("{FILE} must say either postgres or local"))),
+            _ => return Err(Error::failed(format!("{FILE} must say either postgres or local"))),
         };
         let mut config = CatalogConfig::new(connection, self.schema());
         config.connections = CONNECTIONS;
@@ -54,7 +53,7 @@ impl Location {
     }
 
     /// Creates the catalog here, and the lake's own Postgres first if it has one.
-    async fn install(&self, warehouse: String) -> Result<Catalog, Failure> {
+    async fn install(&self, warehouse: String) -> Result<Catalog> {
         check_warehouse(&warehouse).await?;
         if let Some(local) = &self.local {
             Cluster::init(local, Binaries::find()?)?;
@@ -62,16 +61,16 @@ impl Location {
         Ok(Catalog::init(self.config()?.warehouse(warehouse), None).await?)
     }
 
-    fn cluster(&self) -> Result<Cluster, Failure> {
+    fn cluster(&self) -> Result<Cluster> {
         let local = self
             .local
             .as_ref()
-            .ok_or_else(|| Failure::failed("this lake has no Postgres of its own"))?;
+            .ok_or_else(|| Error::failed("this lake has no Postgres of its own"))?;
         Ok(Cluster::open(local, Binaries::find()?)?)
     }
 
     /// The lake a command means: the directory it names, the environment, or the nearest file.
-    fn find(dir: Option<&Path>) -> Result<Self, Failure> {
+    fn find(dir: Option<&Path>) -> Result<Self> {
         if let Some(dir) = dir {
             return Self::read(&dir.join(FILE));
         }
@@ -86,16 +85,16 @@ impl Location {
         let here = env::current_dir()?;
         match here.ancestors().map(|d| d.join(FILE)).find(|f| f.is_file()) {
             Some(file) => Self::read(&file),
-            None => Err(Failure::failed(format!(
+            None => Err(Error::failed(format!(
                 "no {FILE} here or above: run `metalake init`, or set METALAKE_POSTGRES"
             ))),
         }
     }
 
-    fn read(file: &Path) -> Result<Self, Failure> {
-        let text = fs::read_to_string(file).map_err(|e| Failure::failed(format!("{}: {e}", file.display())))?;
+    fn read(file: &Path) -> Result<Self> {
+        let text = fs::read_to_string(file).map_err(|e| Error::failed(format!("{}: {e}", file.display())))?;
         let mut location: Self =
-            toml::from_str(&text).map_err(|e| Failure::failed(format!("{}: {e}", file.display())))?;
+            toml::from_str(&text).map_err(|e| Error::failed(format!("{}: {e}", file.display())))?;
         let directory = file.parent().unwrap_or(Path::new("."));
         location.local = location.local.map(|local| within(directory, &local));
         Ok(location)
@@ -111,21 +110,21 @@ pub struct Lake {
 
 impl Lake {
     /// The lake a command means.
-    pub async fn open(dir: Option<&Path>) -> Result<Self, Failure> {
+    pub async fn open(dir: Option<&Path>) -> Result<Self> {
         let location = Location::find(dir)?;
         let catalog = Catalog::connect(location.config()?).await?;
         Ok(Self { catalog, location })
     }
 
     /// Stops a lake's own Postgres, and answers where it is. The next command brings it up again.
-    pub fn stop(dir: Option<&Path>) -> Result<PathBuf, Failure> {
+    pub fn stop(dir: Option<&Path>) -> Result<PathBuf> {
         let location = Location::find(dir)?;
         location.cluster()?.stop()?;
         Ok(location.local.expect("a cluster has a directory"))
     }
 
     /// Upgrades the catalog of the lake a command means, which `open` refuses, and reaches it.
-    pub async fn migrate(dir: Option<&Path>) -> Result<(Self, Option<i64>), Failure> {
+    pub async fn migrate(dir: Option<&Path>) -> Result<(Self, Option<i64>)> {
         let location = Location::find(dir)?;
         let config = location.config()?;
         let format_migration = Catalog::migrate(&config).await?;
@@ -135,56 +134,65 @@ impl Lake {
 
     /// Creates a catalog and the file that finds it, on a Postgres that exists or on one of the lake's own. The file
     /// comes first, so that a lake already here is refused before a catalog exists, and it goes if the catalog fails.
-    pub async fn create(init: &Init, dir: Option<&Path>) -> Result<Self, Failure> {
-        if has_password(&init.catalog) {
-            return Err(Failure::usage(
+    /// A lake's sessions read unqualified tables from `main.default`, so it is born with that namespace.
+    pub async fn create(
+        catalog: &str,
+        warehouse: Option<&str>,
+        schema: Option<&str>,
+        dir: Option<&Path>,
+    ) -> Result<Self> {
+        if has_password(catalog) {
+            return Err(Error::usage(
                 "a password does not go in the command line or in a file: set PGPASSWORD",
             ));
         }
         let dir = dir.unwrap_or(Path::new("."));
-        let own = !is_postgres(&init.catalog);
-        let warehouse = match &init.warehouse {
+        let own = !is_postgres(catalog);
+        let warehouse = match warehouse {
             Some(warehouse) => warehouse_url(warehouse)?,
             None if own => {
-                let data = dir.join(&init.catalog).join("data");
+                let data = dir.join(catalog).join("data");
                 warehouse_url(&data.to_string_lossy())?
             }
-            None => return Err(Failure::usage("a lake on an existing Postgres needs a warehouse")),
+            None => return Err(Error::usage("a lake on an existing Postgres needs a warehouse")),
         };
         let mut location = Location {
-            postgres: (!own).then(|| init.catalog.clone()),
-            local: own.then(|| PathBuf::from(&init.catalog)),
-            schema: init.schema.clone().filter(|s| s != SCHEMA),
+            postgres: (!own).then(|| catalog.to_string()),
+            local: own.then(|| PathBuf::from(catalog)),
+            schema: schema.filter(|s| *s != SCHEMA).map(str::to_string),
         };
         fs::create_dir_all(dir)?;
         let file = dir.join(FILE);
-        let text = toml::to_string(&location).map_err(|e| Failure::failed(e.to_string()))?;
+        let text = toml::to_string(&location).map_err(|e| Error::failed(e.to_string()))?;
         OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&file)
             .and_then(|mut f| f.write_all(text.as_bytes()))
             .map_err(|e| match e.kind() {
-                ErrorKind::AlreadyExists => Failure::failed(format!("{} already exists", file.display())),
-                _ => Failure::failed(format!("{}: {e}", file.display())),
+                ErrorKind::AlreadyExists => Error::failed(format!("{} already exists", file.display())),
+                _ => Error::failed(format!("{}: {e}", file.display())),
             })?;
         location.local = location.local.map(|local| within(dir, &local));
-        match location.install(warehouse).await {
-            Ok(catalog) => Ok(Self { catalog, location }),
+        let catalog = match location.install(warehouse).await {
+            Ok(catalog) => catalog,
             Err(e) => {
                 fs::remove_file(&file)?;
-                Err(e)
+                return Err(e);
             }
-        }
+        };
+        let main = catalog.branch("main").await?;
+        main.transaction().create_namespace(&["default"]).commit().await?;
+        Ok(Self { catalog, location })
     }
 
     /// The store of the catalog's warehouse, with the credentials of the environment. Only a verb that moves bytes
     /// asks for it.
-    pub fn storage(&self) -> Result<Storage, Failure> {
+    pub fn storage(&self) -> Result<Storage> {
         let warehouse = self
             .catalog
             .warehouse()
-            .ok_or_else(|| Failure::failed("the catalog has no warehouse"))?;
+            .ok_or_else(|| Error::failed("the catalog has no warehouse"))?;
         Ok(Storage::new(warehouse, storage_options(env::vars_os()))?)
     }
 
@@ -205,8 +213,8 @@ impl Lake {
 
 /// Writes and deletes an object in a new warehouse, so that a store that cannot be reached or credentials that do not
 /// serve are said now, and not at the first write large enough to leave the catalog.
-async fn check_warehouse(warehouse: &str) -> Result<(), Failure> {
-    let failed = |e: metalake::Error| Failure::failed(format!("the warehouse {warehouse} cannot be written: {e}"));
+async fn check_warehouse(warehouse: &str) -> Result<()> {
+    let failed = |e: metalake::Error| Error::failed(format!("the warehouse {warehouse} cannot be written: {e}"));
     let storage = Storage::new(warehouse, storage_options(env::vars_os())).map_err(failed)?;
     let probe = format!(
         "{}/.metalake-{}",
@@ -231,7 +239,7 @@ fn storage_options(vars: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsS
 }
 
 /// A URL of a warehouse: as given if it is one, and a local directory, made if need be, as a `file:` URL.
-fn warehouse_url(warehouse: &str) -> Result<String, Failure> {
+fn warehouse_url(warehouse: &str) -> Result<String> {
     // A scheme of one letter is a Windows drive.
     if let Ok(url) = Url::parse(warehouse)
         && url.scheme().len() > 1
@@ -241,7 +249,7 @@ fn warehouse_url(warehouse: &str) -> Result<String, Failure> {
     fs::create_dir_all(warehouse)?;
     let path: PathBuf = std::path::absolute(warehouse)?;
     let url = Url::from_directory_path(&path)
-        .map_err(|()| Failure::failed(format!("{} is not a directory", path.display())))?;
+        .map_err(|()| Error::failed(format!("{} is not a directory", path.display())))?;
     Ok(url.to_string())
 }
 

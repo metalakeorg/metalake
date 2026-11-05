@@ -3,19 +3,19 @@
 use serde_json::{Value, json};
 
 use crate::args::Log;
-use crate::failure::Failure;
-use crate::lake::Lake;
 use crate::out::Out;
+use metalake_client::Error;
+use metalake_client::Lake;
 
-pub async fn run(log: &Log, lake: &Lake, out: &Out) -> Result<(), Failure> {
+pub async fn run(log: &Log, lake: &Lake, out: &Out) -> Result<(), Error> {
     let refs = lake.catalog.refs().await?;
     let on = refs
         .iter()
         .find(|r| r.name() == log.on)
-        .ok_or_else(|| Failure::failed(format!("no ref {}", log.on)))?;
+        .ok_or_else(|| Error::failed(format!("no ref {}", log.on)))?;
     let limit = i64::from(log.limit);
     if let Some(table) = &log.table {
-        let table = super::table(on, table).await?;
+        let table = metalake_client::table(on, table).await?;
         let snapshots = on.snapshots(&table, limit).await?;
         let rows: Vec<Value> = snapshots
             .iter()

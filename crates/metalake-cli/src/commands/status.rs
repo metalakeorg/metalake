@@ -5,9 +5,9 @@ use std::fmt;
 
 use serde::Serialize;
 
-use crate::failure::Failure;
-use crate::lake::Lake;
 use crate::out::Out;
+use metalake_client::Error;
+use metalake_client::Lake;
 
 #[derive(Debug, Serialize)]
 pub struct Status {
@@ -28,7 +28,7 @@ struct Named {
 }
 
 impl Status {
-    pub async fn of(lake: &Lake) -> Result<Self, Failure> {
+    pub async fn of(lake: &Lake) -> Result<Self, Error> {
         let versions = lake.catalog.versions();
         let refs = lake.catalog.refs().await?;
         Ok(Self {
@@ -66,6 +66,6 @@ impl fmt::Display for Status {
     }
 }
 
-pub async fn run(lake: &Lake, out: &Out) -> Result<(), Failure> {
+pub async fn run(lake: &Lake, out: &Out) -> Result<(), Error> {
     out.value(&Status::of(lake).await?)
 }
