@@ -1,0 +1,14 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "metalake"
+description = "An open lakehouse table format whose metadata lives in Postgres"
+requires-python = ">=3.9"
+license = "Apache-2.0"
+dynamic = ["version"]
+
+[tool.maturin]
+bindings = "bin"
+data = "metalake.data"

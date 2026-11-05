@@ -96,7 +96,7 @@ impl Location {
         let mut location: Self =
             toml::from_str(&text).map_err(|e| Failure::failed(format!("{}: {e}", file.display())))?;
         let directory = file.parent().unwrap_or(Path::new("."));
-        location.local = location.local.map(|local| directory.join(local));
+        location.local = location.local.map(|local| within(directory, &local));
         Ok(location)
     }
 }
@@ -167,7 +167,7 @@ impl Lake {
                 ErrorKind::AlreadyExists => Failure::failed(format!("{} already exists", file.display())),
                 _ => Failure::failed(format!("{}: {e}", file.display())),
             })?;
-        location.local = location.local.map(|local| dir.join(local));
+        location.local = location.local.map(|local| within(dir, &local));
         match location.install(warehouse).await {
             Ok(catalog) => Ok(Self { catalog, location }),
             Err(e) => {
@@ -200,6 +200,11 @@ impl Lake {
     pub fn local(&self) -> Option<&Path> {
         self.location.local.as_deref()
     }
+}
+
+/// `local`, relative to `directory`, with no `.` in it, which is how a path gets printed.
+fn within(directory: &Path, local: &Path) -> PathBuf {
+    directory.join(local).components().collect()
 }
 
 /// The options of `object_store` among these variables, which it names in lower case.
