@@ -22,6 +22,7 @@ fn _metalake(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     module.add_class::<lake::PyLake>()?;
     module.add_class::<table::PyTable>()?;
+    module.add_class::<table::PyWritten>()?;
     module.add_class::<result::QueryResult>()?;
     module.add_class::<result::PyBatch>()?;
     module.add_class::<result::Batches>()?;

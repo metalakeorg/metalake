@@ -186,6 +186,24 @@ impl QueryResult {
     }
 }
 
+/// The oldest Polars that takes a result for what it is. An older one sees something it can iterate, tries that first,
+/// and makes an empty frame with no error.
+const POLARS: (u32, u32) = (1, 22);
+
+/// Refuses a Polars that would answer an empty frame.
+fn recent(polars: &Bound<'_, PyModule>) -> PyResult<()> {
+    let version: String = polars.getattr("__version__")?.extract()?;
+    let mut parts = version.split('.').map(|part| part.parse::<u32>().unwrap_or(0));
+    let found = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+    if found < POLARS {
+        let (major, minor) = POLARS;
+        return Err(PyImportError::new_err(format!(
+            "to_polars needs polars {major}.{minor} or later, and this is {version}: pip install metalake[polars]"
+        )));
+    }
+    Ok(())
+}
+
 /// A library a conversion needs, which only that conversion loads.
 fn library<'py>(py: Python<'py>, method: &str, name: &str, extra: &str) -> PyResult<Bound<'py, PyModule>> {
     py.import(name)
@@ -221,6 +239,7 @@ impl QueryResult {
     /// The rows as a `polars.DataFrame`.
     fn to_polars<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let polars = library(py, "to_polars", "polars", "polars")?;
+        recent(&polars)?;
         self.converted(py, |read| polars.getattr("DataFrame")?.call1((read,)))
     }
 

@@ -64,7 +64,7 @@ impl Lake {
         if let Some(message) = &request.message {
             merge = merge.message(message);
         }
-        if let Some(author) = author(request) {
+        if let Some(author) = person(request.author.clone()) {
             merge = merge.author(author);
         }
         if self.catalog.warehouse().is_some() {
@@ -130,11 +130,8 @@ async fn selection(branch: &Ref, tables: &[String]) -> Result<Vec<Table>> {
     Ok(selected)
 }
 
-/// Who the commit names: as asked, or the person at the machine.
-fn author(request: &MergeRequest) -> Option<String> {
+/// Who a commit names: as asked, or the person at the machine.
+pub(crate) fn person(asked: Option<String>) -> Option<String> {
     let named = ["METALAKE_AUTHOR", "USER", "USERNAME"];
-    request
-        .author
-        .clone()
-        .or_else(|| named.iter().find_map(|v| env::var(v).ok()))
+    asked.or_else(|| named.iter().find_map(|v| env::var(v).ok()))
 }

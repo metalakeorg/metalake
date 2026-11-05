@@ -15,4 +15,4 @@ pub use maintain::{Done, MaintainRequest, MaintainRun, Task};
 pub use merge::{MergeOutcome, MergeRequest};
 pub use refs::{RefInfo, RefKind, table};
 pub use session::{Prepared, Session};
-pub use write::TablePath;
+pub use write::{Details, TablePath, Written};

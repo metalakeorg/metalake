@@ -15,7 +15,7 @@ bin="$work/venv/bin"
 case "$2" in
   bare) "$bin/python" -m pip install --quiet pytest polars; export METALAKE_TEST_BARE=1 ;;
   current) "$bin/python" -m pip install --quiet pytest polars pyarrow pandas ;;
-  oldest) "$bin/python" -m pip install --quiet pytest "polars==1.3.0" "pyarrow==15.0.0" "numpy<2" "pandas<3" ;;
+  oldest) "$bin/python" -m pip install --quiet pytest "polars==1.22.0" "pyarrow==15.0.0" "numpy<2" "pandas<3" ;;
   *) echo "bare, current or oldest"; exit 2 ;;
 esac
 "$bin/python" --version

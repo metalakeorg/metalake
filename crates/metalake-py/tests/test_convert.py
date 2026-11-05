@@ -114,6 +114,13 @@ def test_a_library_that_is_missing_says_what_to_install(lake, monkeypatch, metho
         getattr(lake.sql("select 1"), method)()
 
 
+def test_a_polars_that_would_answer_an_empty_frame_is_refused(lake, monkeypatch):
+    pl = pytest.importorskip("polars")
+    monkeypatch.setattr(pl, "__version__", "1.21.0")
+    with pytest.raises(ImportError, match="1.22"):
+        lake.sql("select 1").to_polars()
+
+
 def test_importing_loads_no_library():
     code = "import sys, metalake; print([m for m in ('polars', 'pyarrow', 'pandas') if m in sys.modules])"
     import subprocess
