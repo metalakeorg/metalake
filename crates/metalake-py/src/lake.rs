@@ -40,7 +40,7 @@ impl PyLake {
 
     /// A table by the name a statement would use: `t`, `namespace.t` or `ref.namespace.t`.
     fn table(&self, py: Python<'_>, name: &str) -> PyResult<PyTable> {
-        PyTable::open(py, self.lake.clone(), name)
+        PyTable::open(py, self.lake.clone(), self.session.clone(), name)
     }
 
     /// Takes a new picture of what `information_schema` shows, for what others changed. A table or a ref named in a

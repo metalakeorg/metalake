@@ -21,6 +21,7 @@ use metalake::vectors::{Deletes, FILE_ID, POSITION};
 use metalake::{Scan, TableWriter, WriteOptions};
 
 use crate::catalog::external;
+use crate::details;
 use crate::table::MetaTable;
 
 /// An `insert`: the rows of its stream, in new files, in one commit. An `insert overwrite` removes in that commit the
@@ -43,7 +44,7 @@ impl DataSink for Insert {
         self.table.table.schema()
     }
 
-    async fn write_all(&self, mut data: SendableRecordBatchStream, _: &Arc<TaskContext>) -> Result<u64> {
+    async fn write_all(&self, mut data: SendableRecordBatchStream, context: &Arc<TaskContext>) -> Result<u64> {
         let MetaTable {
             on,
             catalog,
@@ -63,7 +64,7 @@ impl DataSink for Insert {
         if self.overwrite {
             transaction = transaction.replaces(table).await.map_err(external)?;
         }
-        transaction.commit().await.map_err(external)?;
+        details::commit(transaction, context).await.map_err(external)?;
         Ok(rows)
     }
 }
@@ -130,7 +131,7 @@ impl DataSink for Delete {
         self.rows.scan.schema()
     }
 
-    async fn write_all(&self, _: SendableRecordBatchStream, _: &Arc<TaskContext>) -> Result<u64> {
+    async fn write_all(&self, _: SendableRecordBatchStream, context: &Arc<TaskContext>) -> Result<u64> {
         let MetaTable { on, storage, table, .. } = &self.rows.table;
         let mut batches = self.rows.rows().await?;
         let mut deletes = Deletes::new();
@@ -140,8 +141,8 @@ impl DataSink for Delete {
             mark(&mut deletes, &batch);
         }
         if !deletes.is_empty() {
-            let commit = on.transaction().delete(table, storage, deletes).commit();
-            commit.await.map_err(external)?;
+            let transaction = on.transaction().delete(table, storage, deletes);
+            details::commit(transaction, context).await.map_err(external)?;
         }
         Ok(rows)
     }
@@ -183,7 +184,7 @@ impl DataSink for Update {
         self.rows.scan.schema()
     }
 
-    async fn write_all(&self, _: SendableRecordBatchStream, _: &Arc<TaskContext>) -> Result<u64> {
+    async fn write_all(&self, _: SendableRecordBatchStream, context: &Arc<TaskContext>) -> Result<u64> {
         let MetaTable {
             on,
             catalog,
@@ -206,8 +207,8 @@ impl DataSink for Update {
         }
         let files = writer.finish().await.map_err(external)?;
         if !deletes.is_empty() {
-            let commit = on.transaction().append(files).delete(table, storage, deletes).commit();
-            commit.await.map_err(external)?;
+            let transaction = on.transaction().append(files).delete(table, storage, deletes);
+            details::commit(transaction, context).await.map_err(external)?;
         }
         Ok(rows)
     }

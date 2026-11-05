@@ -6,6 +6,7 @@ use datafusion::arrow::compute::{CastOptions, cast_with_options};
 use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef, TimeUnit};
 use futures_util::{Stream, TryStreamExt};
 use metalake::{FileAdd, Outcome, Ref, Table, TableWriter, Transaction, WriteOptions};
+use metalake_datafusion::CommitDetails;
 use serde::Serialize;
 
 use crate::merge::person;
@@ -42,6 +43,15 @@ impl TablePath {
     }
 }
 
+impl TablePath {
+    /// As a statement names it, whatever its names hold. A namespace of several parts is one identifier in a statement.
+    pub(crate) fn quoted(&self) -> String {
+        let quoted = |name: &str| format!("\"{}\"", name.replace('"', "\"\""));
+        let namespace = self.namespace.join(".");
+        format!("{}.{}.{}", quoted(&self.on), quoted(&namespace), quoted(&self.name))
+    }
+}
+
 impl std::fmt::Display for TablePath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}.{}.{}", self.on, self.namespace.join("."), self.name)
@@ -58,6 +68,10 @@ pub struct Details {
 }
 
 impl Details {
+    pub(crate) fn into_commit(self) -> CommitDetails {
+        CommitDetails::new(person(self.author), self.message, self.idempotent)
+    }
+
     fn on(self, mut transaction: Transaction) -> Transaction {
         if let Some(author) = person(self.author) {
             transaction = transaction.author(author);
@@ -82,6 +96,18 @@ pub struct Written {
 }
 
 impl Written {
+    /// What a statement left, which has no commit when it changed no row.
+    pub(crate) fn of_statement(outcome: Option<Outcome>, rows: u64) -> Self {
+        match outcome {
+            Some(outcome) => Self::of(outcome, rows),
+            None => Self {
+                commit: None,
+                rows: 0,
+                applied: false,
+            },
+        }
+    }
+
     fn of(outcome: Outcome, rows: u64) -> Self {
         match outcome {
             Outcome::Committed(seq) => Self {

@@ -68,7 +68,8 @@ def test_a_failure_in_the_stream_reaches_iteration(lake):
 
 
 def test_a_failure_in_the_stream_reaches_polars(lake):
-    with pytest.raises(Exception, match="(?i)divide"):
+    # An old Polars panics on it, which is no `Exception`; `to_polars` gives back ours whatever the version.
+    with pytest.raises(BaseException, match="(?i)divide"):
         pl.DataFrame(lake.sql("select 1 / (k - k) from t"))
 
 

@@ -6,7 +6,7 @@ use std::thread;
 use datafusion::arrow::array::{RecordBatch, RecordBatchReader};
 use datafusion::arrow::datatypes::SchemaRef;
 use futures_util::{Stream, stream};
-use metalake_client::{Details, Error, Lake, TablePath, Written};
+use metalake_client::{Details, Error, Lake, Session, TablePath, Written};
 use pyo3::prelude::*;
 use pyo3::types::PyCapsule;
 use pyo3_arrow::ffi::to_schema_pycapsule;
@@ -74,16 +74,17 @@ impl PyWritten {
 #[pyclass(name = "Table", module = "metalake", frozen)]
 pub struct PyTable {
     lake: Arc<Lake>,
+    session: Arc<Session>,
     path: TablePath,
 }
 
 impl PyTable {
     /// The table named, which must exist.
-    pub fn open(py: Python<'_>, lake: Arc<Lake>, name: &str) -> PyResult<Self> {
+    pub fn open(py: Python<'_>, lake: Arc<Lake>, session: Arc<Session>, name: &str) -> PyResult<Self> {
         let path = TablePath::parse(name).map_err(|e| to_python(py, e))?;
         let (reached, wanted) = (lake.clone(), path.clone());
         wait(py, async move { reached.table(&wanted).await.map(|_| ()) })?.map_err(|e| to_python(py, e))?;
-        Ok(Self { lake, path })
+        Ok(Self { lake, session, path })
     }
 
     fn schema(&self, py: Python<'_>) -> PyResult<SchemaRef> {
@@ -146,6 +147,23 @@ impl PyTable {
         let details = details(message, author, idempotent);
         let (lake, path) = (self.lake.clone(), self.path.clone());
         let written = wait(py, async move { lake.overwrite(&path, &given, batches, details).await })?;
+        written.map(PyWritten::from).map_err(|e| to_python(py, e))
+    }
+
+    /// Deletes the rows that a filter matches, in one commit. The filter is a SQL expression, and is required: `"true"`
+    /// says every row.
+    #[pyo3(signature = (filter, *, message=None, author=None, idempotent=None))]
+    fn delete(
+        &self,
+        py: Python<'_>,
+        filter: String,
+        message: Option<String>,
+        author: Option<String>,
+        idempotent: Option<(String, i64)>,
+    ) -> PyResult<PyWritten> {
+        let details = details(message, author, idempotent);
+        let (session, path) = (self.session.clone(), self.path.clone());
+        let written = wait(py, async move { session.delete(&path, &filter, details).await })?;
         written.map(PyWritten::from).map_err(|e| to_python(py, e))
     }
 

@@ -17,6 +17,7 @@
 mod adapter;
 mod catalog;
 mod ddl;
+mod details;
 mod filters;
 mod merge;
 mod point;
@@ -26,4 +27,5 @@ mod stats;
 mod table;
 
 pub use catalog::MetaLake;
+pub use details::CommitDetails;
 pub use table::MetaTable;

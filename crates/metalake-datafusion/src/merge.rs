@@ -36,6 +36,7 @@ use metalake::vectors::{Deletes, FILE_ID, POSITION};
 use metalake::{Scan, TableWriter, WriteOptions};
 
 use crate::catalog::external;
+use crate::details;
 use crate::sink::mark;
 use crate::table::{MetaTable, no_input};
 
@@ -374,7 +375,7 @@ impl DataSink for Merge {
             if self.inserts {
                 transaction = transaction.expect_unchanged(table);
             }
-            transaction.commit().await.map_err(external)?;
+            details::commit(transaction, context).await.map_err(external)?;
         }
         Ok(affected)
     }
