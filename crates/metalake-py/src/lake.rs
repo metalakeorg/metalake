@@ -3,11 +3,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use metalake_client::{Error, Lake, RefKind, Session};
+use metalake_client::{Error, Lake, MergeRequest, RefKind, Session};
 use pyo3::prelude::*;
 
 use crate::errors::to_python;
-use crate::info::{History, PyRef, PyStatus};
+use crate::info::{History, PyMerged, PyRef, PyStatus};
 use crate::result::QueryResult;
 use crate::runtime::wait;
 use crate::table::PyTable;
@@ -105,6 +105,39 @@ impl PyLake {
     /// Deletes a tag. Its name is never used again.
     fn delete_tag(&self, py: Python<'_>, name: String) -> PyResult<()> {
         self.delete_ref(py, RefKind::Tag, name)
+    }
+
+    /// Merges a branch into its parent, every table or those of `tables`, as `namespace.table`. With `check`, says what
+    /// that would do and changes nothing. What cannot merge is a `ConflictError`, and leaves both as they were. `split`
+    /// allows a selection of tables that one of the branch's commits crossed, by splitting that commit.
+    #[pyo3(signature = (branch, *, check=false, tables=None, split=false, message=None, author=None))]
+    #[allow(clippy::too_many_arguments, reason = "each is a keyword of Python")]
+    fn merge(
+        &self,
+        py: Python<'_>,
+        branch: String,
+        check: bool,
+        tables: Option<Vec<String>>,
+        split: bool,
+        message: Option<String>,
+        author: Option<String>,
+    ) -> PyResult<PyMerged> {
+        let request = MergeRequest {
+            branch,
+            tables: tables.unwrap_or_default(),
+            split,
+            message,
+            author,
+            check,
+        };
+        let (lake, session) = (self.lake.clone(), self.session.clone());
+        let merged = wait(py, async move {
+            let merged = lake.merge(&request).await?;
+            // A table new to the parent shows in `information_schema` at once.
+            session.refresh().await?;
+            Ok::<_, Error>(merged)
+        })?;
+        merged.map(PyMerged::from).map_err(|e| to_python(py, e))
     }
 
     /// The commits of a ref, the latest first, or, with `table`, `namespace.table`, the snapshots of that table.

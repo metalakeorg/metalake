@@ -1,6 +1,6 @@
 //! What a lake says of itself, as objects with attributes: short lists of metadata, not data to analyse.
 
-use metalake_client::{CommitEntry, RefInfo, SnapshotEntry, Status};
+use metalake_client::{CommitEntry, MergeOutcome, RefInfo, SnapshotEntry, Status};
 use pyo3::prelude::*;
 
 /// A branch or a tag.
@@ -87,6 +87,39 @@ impl From<SnapshotEntry> for PySnapshot {
 impl PySnapshot {
     fn __repr__(&self) -> String {
         format!("Snapshot({}, {:?})", self.id, self.operation)
+    }
+}
+
+/// What a merge did, or, checked, what it would do. `outcome` is `merged`, `nothing` or `would merge`, and `merged` and
+/// `rebased` name tables as `namespace.table`.
+#[pyclass(name = "Merged", module = "metalake", frozen, get_all)]
+pub struct PyMerged {
+    branch: String,
+    outcome: String,
+    commit: Option<i64>,
+    merged: Vec<String>,
+    rebased: Vec<String>,
+}
+
+impl From<MergeOutcome> for PyMerged {
+    fn from(merge: MergeOutcome) -> Self {
+        Self {
+            branch: merge.branch,
+            outcome: merge.outcome.to_string(),
+            commit: merge.commit,
+            merged: merge.merged,
+            rebased: merge.rebased,
+        }
+    }
+}
+
+#[pymethods]
+impl PyMerged {
+    fn __repr__(&self) -> String {
+        format!(
+            "Merged({:?}, {:?}, commit={:?})",
+            self.branch, self.outcome, self.commit
+        )
     }
 }
 
