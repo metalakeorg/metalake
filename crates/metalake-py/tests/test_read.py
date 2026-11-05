@@ -97,8 +97,8 @@ def test_an_interrupt_ends_iteration(lake):
 
 
 def test_an_interrupt_ends_polars(lake):
-    # Polars says it in its own words: `to_polars` is what can give the interrupt back.
-    assert interrupted(lambda: pl.DataFrame(lake.sql(LONG)), pl.exceptions.ComputeError) < 5
+    # Polars says it in its own words, which depend on its version: `to_polars` is what gives the interrupt back.
+    assert interrupted(lambda: pl.DataFrame(lake.sql(LONG)), (pl.exceptions.ComputeError, KeyboardInterrupt)) < 5
     assert pl.DataFrame(lake.sql("select k from t")).height == 3
 
 
