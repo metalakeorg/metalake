@@ -6,13 +6,13 @@ use metalake_client::{Lake, Session};
 use pyo3::prelude::*;
 
 use crate::errors::to_python;
+use crate::result::QueryResult;
 use crate::runtime::block;
 
 /// A lake, reached, with the session its statements run in.
 #[pyclass(name = "Lake", module = "metalake", frozen)]
 pub struct PyLake {
     lake: Lake,
-    #[allow(dead_code, reason = "statements come with `sql`")]
     session: Session,
 }
 
@@ -25,6 +25,12 @@ impl PyLake {
 
 #[pymethods]
 impl PyLake {
+    /// Runs statements in order, and answers the rows of the last.
+    fn sql(&self, py: Python<'_>, text: &str) -> PyResult<QueryResult> {
+        let stream = block(py, self.session.run(text)).map_err(|e| to_python(py, e))?;
+        Ok(QueryResult::new(stream))
+    }
+
     fn __repr__(&self) -> String {
         match (self.lake.postgres(), self.lake.local()) {
             (Some(postgres), _) => format!("Lake(postgres={postgres:?})"),

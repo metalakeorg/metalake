@@ -3,6 +3,7 @@
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::parser::{DFParser, Statement};
+use futures_util::TryStreamExt;
 use metalake_datafusion::MetaLake;
 
 use crate::{Error, Lake, Result};
@@ -27,6 +28,17 @@ impl Session {
             return Err(Error::usage("no statement to run"));
         }
         Ok(statements.into())
+    }
+
+    /// Runs the statements of a text, each to its end before the next, and answers the rows of the last.
+    pub async fn run(&self, text: &str) -> Result<SendableRecordBatchStream> {
+        let mut statements = Self::parse(text)?;
+        let last = statements.pop().expect("parse refuses a text with none");
+        for statement in statements {
+            let mut rows = self.execute(statement).await?;
+            while rows.try_next().await?.is_some() {}
+        }
+        self.execute(last).await
     }
 
     /// Runs one statement, what creates a namespace or a table included, and answers its rows.

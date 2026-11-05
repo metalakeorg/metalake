@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 
 use pyo3::prelude::*;
 use tokio::runtime::{Builder, Runtime};
+use tokio::task::AbortHandle;
 
 fn runtime() -> &'static Runtime {
     static RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -24,4 +25,12 @@ where
     F::Output: Send,
 {
     py.detach(|| runtime().block_on(future))
+}
+
+/// Runs `future` on the runtime, and answers how to end it.
+pub fn spawn<F>(future: F) -> AbortHandle
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    runtime().spawn(future).abort_handle()
 }
