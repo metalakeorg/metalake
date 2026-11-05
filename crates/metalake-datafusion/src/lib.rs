@@ -26,6 +26,6 @@ mod sink;
 mod stats;
 mod table;
 
-pub use catalog::MetaLake;
+pub use catalog::{MetaLake, Source};
 pub use details::CommitDetails;
 pub use table::MetaTable;

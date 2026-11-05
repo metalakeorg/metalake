@@ -4,7 +4,8 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 
 use async_trait::async_trait;
 use datafusion::catalog::{CatalogProvider, CatalogProviderList, SchemaProvider, TableProvider};
@@ -26,6 +27,10 @@ const DEFAULT_CATALOG: &str = "main";
 const DEFAULT_SCHEMA: &str = "default";
 /// What separates the levels of a nested namespace in a schema's name.
 const SEPARATOR: char = '.';
+/// The catalog of what a statement brings with it, which cannot be a ref's name, since those have no leading dot.
+const SOURCES: &str = ".source";
+/// The name of the next source.
+static NEXT_SOURCE: AtomicU64 = AtomicU64::new(0);
 
 /// Each ref's namespaces, each with its tables.
 type Listing = BTreeMap<String, BTreeMap<String, Vec<String>>>;
@@ -40,6 +45,7 @@ struct Shared {
     catalog: Catalog,
     storage: Storage,
     listing: RwLock<Listing>,
+    sources: Mutex<BTreeMap<u64, Arc<dyn TableProvider>>>,
 }
 
 impl fmt::Debug for MetaLake {
@@ -55,10 +61,25 @@ impl MetaLake {
                 catalog,
                 storage,
                 listing: RwLock::default(),
+                sources: Mutex::default(),
             }),
         };
         lake.refresh().await?;
         Ok(lake)
+    }
+
+    /// Lets statements read `provider` as long as what this answers lives, by the name it gives.
+    pub fn source(&self, provider: Arc<dyn TableProvider>) -> Source {
+        let name = NEXT_SOURCE.fetch_add(1, Ordering::Relaxed);
+        let sources = &self.shared.sources;
+        sources
+            .lock()
+            .expect("a source is only added or taken")
+            .insert(name, provider);
+        Source {
+            shared: self.shared.clone(),
+            name,
+        }
     }
 
     /// Takes a new picture of what listings show. A table is found without it.
@@ -144,6 +165,29 @@ impl Shared {
     }
 }
 
+/// A table that lives in memory for as long as this does, however what uses it ends.
+pub struct Source {
+    shared: Arc<Shared>,
+    name: u64,
+}
+
+impl Source {
+    /// How a statement names it.
+    pub fn name(&self) -> String {
+        format!("\"{SOURCES}\".\"{DEFAULT_SCHEMA}\".\"{}\"", self.name)
+    }
+}
+
+impl Drop for Source {
+    fn drop(&mut self) {
+        let sources = &self.shared.sources;
+        sources
+            .lock()
+            .expect("a source is only added or taken")
+            .remove(&self.name);
+    }
+}
+
 impl CatalogProviderList for MetaLake {
     fn register_catalog(&self, name: String, _: Arc<dyn CatalogProvider>) -> Option<Arc<dyn CatalogProvider>> {
         panic!("{name}: the catalogs of a MetaLake session are its refs")
@@ -211,6 +255,10 @@ impl SchemaProvider for Namespace {
 
     async fn table(&self, name: &str) -> DataFusionResult<Option<Arc<dyn TableProvider>>> {
         let shared = &self.shared;
+        if self.on == SOURCES {
+            let sources = shared.sources.lock().expect("a source is only added or taken");
+            return Ok(name.parse().ok().and_then(|name: u64| sources.get(&name).cloned()));
+        }
         let Some(on) = shared.find(&self.on).await.map_err(external)? else {
             return Ok(None);
         };

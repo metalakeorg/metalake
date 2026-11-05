@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 use datafusion::arrow::array::{AsArray, RecordBatch};
 use datafusion::arrow::datatypes::{SchemaRef, UInt64Type};
+use datafusion::dataframe::DataFrame;
+use datafusion::datasource::MemTable;
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::{LogicalPlan, WriteOp};
@@ -13,7 +15,7 @@ use datafusion::physical_plan::execution_plan::reset_plan_states;
 use datafusion::physical_plan::{ExecutionPlan, collect, execute_stream};
 use datafusion::prelude::SessionContext;
 use datafusion::sql::parser::{DFParser, Statement};
-use metalake_datafusion::MetaLake;
+use metalake_datafusion::{CommitDetails, MetaLake, Source};
 
 use crate::write::{Details, TablePath, Written};
 use crate::{Error, Lake, Result};
@@ -124,12 +126,39 @@ impl Session {
             return Err(Error::usage(format!("{filter}: a filter is one expression")));
         }
         let details = Arc::new(details.into_commit());
+        let rows = self.run_with(frame, details.clone()).await?;
+        Ok(Written::of_statement(details.outcome(), rows))
+    }
+
+    /// Runs what writes, with what its commit should say.
+    async fn run_with(&self, frame: DataFrame, details: Arc<CommitDetails>) -> Result<u64> {
         let task = frame.task_ctx();
-        let config = task.session_config().clone().with_extension(details.clone());
+        let config = task.session_config().clone().with_extension(details);
         let task = Arc::new(task.with_session_config(config));
         let plan = frame.create_physical_plan().await?;
-        let answer = collect(plan, task).await?;
-        Ok(Written::of_statement(details.outcome(), rows_of(&answer)))
+        Ok(rows_of(&collect(plan, task).await?))
+    }
+
+    /// Rows in memory that statements can read as long as what this answers lives.
+    pub(crate) fn source(&self, schema: SchemaRef, batches: Vec<RecordBatch>) -> Result<Source> {
+        Ok(self.engine.source(Arc::new(MemTable::try_new(schema, vec![batches])?)))
+    }
+
+    /// Whether a query has a row.
+    pub(crate) async fn has_rows(&self, text: &str) -> Result<bool> {
+        let frame = self.context.sql(text).await?;
+        Ok(frame.limit(0, Some(1))?.count().await? > 0)
+    }
+
+    /// Runs one `merge into`, and says how many rows it inserted and updated.
+    pub(crate) async fn merge(&self, text: &str, details: Details) -> Result<Written> {
+        let [statement] =
+            <[Statement; 1]>::try_from(Self::parse(text)?).map_err(|_| Error::failed("a merge is one statement"))?;
+        let frame = self.engine.execute(&self.context, statement).await?;
+        let details = Arc::new(details.into_commit());
+        let rows = self.run_with(frame, details.clone()).await?;
+        let (inserted, updated) = details.merged();
+        Ok(Written::of_statement(details.outcome(), rows).merged(inserted, updated))
     }
 
     /// Prepares the statements of a text, each committed before the next, and answers the last.

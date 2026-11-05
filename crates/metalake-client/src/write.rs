@@ -10,7 +10,7 @@ use metalake_datafusion::CommitDetails;
 use serde::Serialize;
 
 use crate::merge::person;
-use crate::{Error, Lake, Result};
+use crate::{Error, Lake, Result, Session};
 
 const MAIN: &str = "main";
 const DEFAULT_NAMESPACE: &str = "default";
@@ -43,10 +43,37 @@ impl TablePath {
     }
 }
 
+/// A name as a statement says it, whatever it holds.
+fn quoted(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// The `merge into` of an upsert. A table of nothing but its key has nothing to update.
+fn merge_text(table: &str, source: &str, schema: &Schema, on: &[String]) -> String {
+    let columns: Vec<String> = schema.fields().iter().map(|f| quoted(f.name())).collect();
+    let matching: Vec<String> = on.iter().map(|k| format!("t.{0} = s.{0}", quoted(k))).collect();
+    let assigned: Vec<String> = schema
+        .fields()
+        .iter()
+        .filter(|f| !on.contains(f.name()))
+        .map(|f| format!("{0} = s.{0}", quoted(f.name())))
+        .collect();
+    let values: Vec<String> = columns.iter().map(|c| format!("s.{c}")).collect();
+    let update = match assigned.is_empty() {
+        true => String::new(),
+        false => format!(" when matched then update set {}", assigned.join(", ")),
+    };
+    format!(
+        "merge into {table} t using {source} s on {}{update} when not matched then insert ({}) values ({})",
+        matching.join(" and "),
+        columns.join(", "),
+        values.join(", ")
+    )
+}
+
 impl TablePath {
     /// As a statement names it, whatever its names hold. A namespace of several parts is one identifier in a statement.
     pub(crate) fn quoted(&self) -> String {
-        let quoted = |name: &str| format!("\"{}\"", name.replace('"', "\"\""));
         let namespace = self.namespace.join(".");
         format!("{}.{}.{}", quoted(&self.on), quoted(&namespace), quoted(&self.name))
     }
@@ -93,6 +120,9 @@ pub struct Written {
     pub commit: Option<i64>,
     pub rows: u64,
     pub applied: bool,
+    /// Of `rows`, those new to the table and those that replaced one by its key.
+    pub inserted: u64,
+    pub updated: u64,
 }
 
 impl Written {
@@ -100,11 +130,25 @@ impl Written {
     pub(crate) fn of_statement(outcome: Option<Outcome>, rows: u64) -> Self {
         match outcome {
             Some(outcome) => Self::of(outcome, rows),
-            None => Self {
-                commit: None,
-                rows: 0,
-                applied: false,
-            },
+            None => Self::nothing(),
+        }
+    }
+
+    fn nothing() -> Self {
+        Self {
+            commit: None,
+            rows: 0,
+            applied: false,
+            inserted: 0,
+            updated: 0,
+        }
+    }
+
+    pub(crate) fn merged(self, inserted: u64, updated: u64) -> Self {
+        Self {
+            inserted,
+            updated,
+            ..self
         }
     }
 
@@ -114,11 +158,12 @@ impl Written {
                 commit: Some(seq),
                 rows,
                 applied: true,
+                inserted: rows,
+                updated: 0,
             },
             Outcome::AlreadyApplied(seq) => Self {
                 commit: Some(seq),
-                rows: 0,
-                applied: false,
+                ..Self::nothing()
             },
         }
     }
@@ -257,11 +302,7 @@ impl Lake {
     {
         let staged = self.stage(path, given, batches).await?;
         if staged.files.is_empty() {
-            return Ok(Written {
-                commit: None,
-                rows: 0,
-                applied: false,
-            });
+            return Ok(Written::nothing());
         }
         let transaction = staged.on.transaction().append(staged.files);
         Ok(Written::of(details.on(transaction).commit().await?, staged.rows))
@@ -277,6 +318,64 @@ impl Lake {
         let transaction = staged.on.transaction().append(staged.files);
         let transaction = transaction.replaces(&staged.table).await?;
         Ok(Written::of(details.on(transaction).commit().await?, staged.rows))
+    }
+
+    /// Replaces the rows of a table whose key is among these rows, and adds the others, in one commit. `on` is that key:
+    /// a table has none of its own. Its values must be there and be unique here, since two rows for one key would make
+    /// the outcome depend on their order, or, for a new key, leave it twice. All the rows are held in memory, for the join.
+    /// A table that changes meanwhile refuses it, since a row's absence is what it decides on.
+    pub async fn upsert<S>(
+        &self,
+        session: &Session,
+        path: &TablePath,
+        given: &Schema,
+        mut batches: S,
+        on: &[String],
+        details: Details,
+    ) -> Result<Written>
+    where
+        S: Stream<Item = Result<RecordBatch>> + Unpin + Send,
+    {
+        if on.is_empty() {
+            return Err(Error::usage("an upsert needs the columns of its key"));
+        }
+        let (branch, table) = self.table(path).await?;
+        branch.writable()?;
+        let schema = table.schema().clone();
+        if let Some(unknown) = on.iter().find(|k| schema.column_with_name(k).is_none()) {
+            return Err(Error::usage(format!("{unknown} is not a column of the table")));
+        }
+        let adapter = Adapter::new(given, &schema)?;
+        let mut rows = Vec::new();
+        while let Some(batch) = batches.try_next().await? {
+            if batch.num_rows() > 0 {
+                rows.push(adapter.adapt(&batch)?);
+            }
+        }
+        if rows.is_empty() {
+            return Ok(Written::nothing());
+        }
+        for key in on {
+            if rows
+                .iter()
+                .any(|b| b.column_by_name(key).is_some_and(|c| c.null_count() > 0))
+            {
+                return Err(Error::usage(format!("{key} is part of the key and has nulls")));
+            }
+        }
+
+        let source = session.source(schema.clone(), rows)?;
+        let keys: Vec<String> = on.iter().map(|k| quoted(k)).collect();
+        let repeated = format!(
+            "select 1 from {} group by {} having count(*) > 1",
+            source.name(),
+            keys.join(", ")
+        );
+        if session.has_rows(&repeated).await? {
+            return Err(Error::usage(format!("a key of {on:?} is there more than once")));
+        }
+        let text = merge_text(&path.quoted(), &source.name(), &schema, on);
+        session.merge(&text, details).await
     }
 
     /// A table as it is now, on its ref, which Postgres says. A write takes it anew, so that it sees the table's schema

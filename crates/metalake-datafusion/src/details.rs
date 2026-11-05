@@ -13,6 +13,7 @@ pub struct CommitDetails {
     pub message: Option<String>,
     pub idempotent: Option<(String, i64)>,
     outcome: Mutex<Option<Outcome>>,
+    merged: Mutex<(u64, u64)>,
 }
 
 impl CommitDetails {
@@ -22,12 +23,25 @@ impl CommitDetails {
             message,
             idempotent,
             outcome: Mutex::default(),
+            merged: Mutex::default(),
         }
+    }
+
+    /// How many rows a merge inserted and how many it updated.
+    pub fn merged(&self) -> (u64, u64) {
+        *self.merged.lock().expect("a count is only set")
     }
 
     /// What the statement's commit did, if it had one: a statement that changed no row has none.
     pub fn outcome(&self) -> Option<Outcome> {
         *self.outcome.lock().expect("an outcome is only set")
+    }
+}
+
+/// Says how many rows a merge inserted and how many it updated.
+pub(crate) fn merged(context: &TaskContext, inserted: u64, updated: u64) {
+    if let Some(details) = context.session_config().get_extension::<CommitDetails>() {
+        *details.merged.lock().expect("a count is only set") = (inserted, updated);
     }
 }
 

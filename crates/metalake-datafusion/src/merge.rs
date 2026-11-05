@@ -376,6 +376,7 @@ impl DataSink for Merge {
                 transaction = transaction.expect_unchanged(table);
             }
             details::commit(transaction, context).await.map_err(external)?;
+            details::merged(context, affected - marked, marked);
         }
         Ok(affected)
     }

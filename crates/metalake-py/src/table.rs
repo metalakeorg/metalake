@@ -49,6 +49,8 @@ pub struct PyWritten {
     commit: Option<i64>,
     rows: u64,
     applied: bool,
+    inserted: u64,
+    updated: u64,
 }
 
 impl From<Written> for PyWritten {
@@ -57,6 +59,8 @@ impl From<Written> for PyWritten {
             commit: written.commit,
             rows: written.rows,
             applied: written.applied,
+            inserted: written.inserted,
+            updated: written.updated,
         }
     }
 }
@@ -147,6 +151,29 @@ impl PyTable {
         let details = details(message, author, idempotent);
         let (lake, path) = (self.lake.clone(), self.path.clone());
         let written = wait(py, async move { lake.overwrite(&path, &given, batches, details).await })?;
+        written.map(PyWritten::from).map_err(|e| to_python(py, e))
+    }
+
+    /// Replaces the rows whose key `on` is among these rows, and adds the others, in one commit. The key's values must be
+    /// there and be unique. A table that changes meanwhile is a `ConflictError`, and trying again is safe.
+    #[pyo3(signature = (data, on, *, message=None, author=None, idempotent=None))]
+    fn upsert(
+        &self,
+        py: Python<'_>,
+        data: AnyRecordBatch,
+        on: Vec<String>,
+        message: Option<String>,
+        author: Option<String>,
+        idempotent: Option<(String, i64)>,
+    ) -> PyResult<PyWritten> {
+        let reader = data.into_reader()?;
+        let given = reader.schema();
+        let batches = batches_of(reader);
+        let details = details(message, author, idempotent);
+        let (lake, session, path) = (self.lake.clone(), self.session.clone(), self.path.clone());
+        let written = wait(py, async move {
+            lake.upsert(&session, &path, &given, batches, &on, details).await
+        })?;
         written.map(PyWritten::from).map_err(|e| to_python(py, e))
     }
 
