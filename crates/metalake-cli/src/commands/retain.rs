@@ -1,7 +1,7 @@
 //! `metalake retain`: what a lake keeps, a policy declared once, which `maintain` then acts on. With none, a ref keeps
 //! every snapshot (RET-1), and nothing is ever taken away.
 
-use metalake::Retention;
+use metalake_client::Retention;
 use serde_json::json;
 
 use crate::args::Retain;
@@ -23,20 +23,15 @@ pub async fn run(args: &Retain, lake: &Lake, out: &Out) -> Result<(), Error> {
     }
 
     if let Some(grace) = args.grace {
-        lake.catalog.set_collect_grace(grace).await?;
+        lake.set_grace(grace).await?;
     }
     if let Some(name) = &args.on {
-        let refs = lake.catalog.refs().await?;
-        let on = refs
-            .iter()
-            .find(|r| r.name() == name)
-            .ok_or_else(|| Error::failed(format!("no ref {name}")))?;
-        on.set_retention(&Retention {
+        let retention = Retention {
             min_seq: args.min_seq,
             max_age: args.max_age,
             min_snapshots: args.min_snapshots,
-        })
-        .await?;
+        };
+        lake.retain(name, &retention).await?;
     }
 
     let seconds = |d: Option<std::time::Duration>| d.map(|d| d.as_secs());

@@ -3,7 +3,6 @@
 use std::path::Path;
 
 use crate::args::Init;
-use crate::commands::status::Status;
 use crate::out::Out;
 use metalake_client::Error;
 use metalake_client::Lake;
@@ -17,5 +16,5 @@ pub async fn run(init: &Init, dir: Option<&Path>, out: &Out) -> Result<(), Error
         Lake::ONE_COMMAND,
     )
     .await?;
-    out.value(&Status::of(&lake).await?)
+    out.value(&lake.status().await?)
 }

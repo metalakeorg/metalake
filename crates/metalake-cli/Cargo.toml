@@ -17,7 +17,6 @@ name = "metalake"
 path = "src/main.rs"
 
 [dependencies]
-metalake.workspace = true
 metalake-client = { path = "../metalake-client" }
 clap = { version = "4", features = ["derive"] }
 datafusion = { version = "55.2", default-features = false }

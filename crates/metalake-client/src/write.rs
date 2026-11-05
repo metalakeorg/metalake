@@ -381,11 +381,7 @@ impl Lake {
     /// A table as it is now, on its ref, which Postgres says. A write takes it anew, so that it sees the table's schema
     /// of that moment and not of when a program first named it.
     pub async fn table(&self, path: &TablePath) -> Result<(Ref, Table)> {
-        let refs = self.catalog.refs().await?;
-        let on = refs
-            .into_iter()
-            .find(|r| r.name() == path.on)
-            .ok_or_else(|| Error::failed(format!("no ref {}", path.on)))?;
+        let on = self.find_ref(&path.on).await?;
         let namespace: Vec<&str> = path.namespace.iter().map(String::as_str).collect();
         let table = on.table(&namespace, &path.name).await?;
         Ok((on, table))

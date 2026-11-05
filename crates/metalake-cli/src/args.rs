@@ -80,22 +80,8 @@ pub struct Retain {
     pub grace: Option<Duration>,
 }
 
-/// A duration, in days, hours, minutes or seconds.
 fn duration(text: &str) -> Result<Duration, String> {
-    let unit = text.chars().last().and_then(|unit| match unit {
-        'd' => Some(86_400),
-        'h' => Some(3_600),
-        'm' => Some(60),
-        's' => Some(1),
-        _ => None,
-    });
-    let number = text
-        .get(..text.len().saturating_sub(1))
-        .and_then(|n| n.parse::<u64>().ok());
-    match (number, unit) {
-        (Some(number), Some(unit)) => Ok(Duration::from_secs(number * unit)),
-        _ => Err(format!("{text}: a number and d, h, m or s")),
-    }
+    metalake_client::duration(text).map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Args)]

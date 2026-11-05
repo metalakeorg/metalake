@@ -2377,7 +2377,6 @@ dependencies = [
  "clap",
  "datafusion",
  "futures-util",
- "metalake",
  "metalake-client",
  "serde",
  "serde_json",

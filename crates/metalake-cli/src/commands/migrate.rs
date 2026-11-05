@@ -6,10 +6,9 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use crate::commands::status::Status;
 use crate::out::Out;
-use metalake_client::Error;
 use metalake_client::Lake;
+use metalake_client::{Error, Status};
 
 #[derive(Debug, Serialize)]
 struct Migrated {
@@ -32,6 +31,6 @@ pub async fn run(dir: Option<&Path>, out: &Out) -> Result<(), Error> {
     let (lake, format_migration) = Lake::migrate(dir).await?;
     out.value(&Migrated {
         format_migration,
-        status: Status::of(&lake).await?,
+        status: lake.status().await?,
     })
 }

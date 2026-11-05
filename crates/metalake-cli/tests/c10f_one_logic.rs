@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::Path;
 
-const REACHES_BELOW: [&str; 3] = ["metalake-local", "metalake-datafusion", "metalake-pg"];
+const REACHES_BELOW: [&str; 4] = ["metalake.", "metalake-local", "metalake-datafusion", "metalake-pg"];
 const DECIDES: [&str; 6] = [
     "CatalogConfig",
     "Cluster",

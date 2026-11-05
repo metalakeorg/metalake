@@ -8,15 +8,9 @@ use metalake_client::Error;
 use metalake_client::Lake;
 
 pub async fn run(log: &Log, lake: &Lake, out: &Out) -> Result<(), Error> {
-    let refs = lake.catalog.refs().await?;
-    let on = refs
-        .iter()
-        .find(|r| r.name() == log.on)
-        .ok_or_else(|| Error::failed(format!("no ref {}", log.on)))?;
     let limit = i64::from(log.limit);
     if let Some(table) = &log.table {
-        let table = metalake_client::table(on, table).await?;
-        let snapshots = on.snapshots(&table, limit).await?;
+        let snapshots = lake.snapshots(&log.on, table, limit).await?;
         let rows: Vec<Value> = snapshots
             .iter()
             .map(|s| {
@@ -31,7 +25,7 @@ pub async fn run(log: &Log, lake: &Lake, out: &Out) -> Result<(), Error> {
         let columns = ["snapshot_id", "parent_snapshot_id", "operation", "committed_at"];
         return out.records(&columns, &rows).await;
     }
-    let commits = on.history(limit).await?;
+    let commits = lake.commits(&log.on, limit).await?;
     let rows: Vec<Value> = commits
         .iter()
         .map(|c| {

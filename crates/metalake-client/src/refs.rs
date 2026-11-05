@@ -55,6 +55,13 @@ impl Lake {
         Ok(refs)
     }
 
+    /// A ref by its name, which must exist.
+    pub async fn find_ref(&self, name: &str) -> Result<Ref> {
+        let refs = self.catalog.refs().await?;
+        let found = refs.into_iter().find(|r| r.name() == name);
+        found.ok_or_else(|| Error::failed(format!("no ref {name}")))
+    }
+
     /// A new ref, from `main` unless it says otherwise.
     pub async fn create_ref(&self, kind: RefKind, name: &str, from: Option<&str>) -> Result<RefInfo> {
         let from = self.source(from.unwrap_or("main")).await?;
