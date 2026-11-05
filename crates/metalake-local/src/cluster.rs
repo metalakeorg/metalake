@@ -5,6 +5,7 @@
 //! sockets here, so it listens on the loopback, behind a password kept in the lake.
 
 use std::env;
+use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Write;
@@ -191,30 +192,32 @@ impl Cluster {
 
     fn start_with(&self, settings: &str) -> Result<()> {
         fs::write(self.data().join("where.conf"), settings)?;
-        keep_standard_handles_from_children();
-        // Nothing of ours may reach the server, which outlives us: not even a file for what `pg_ctl` says. It logs.
-        let status = self
-            .binaries
-            .tool("pg_ctl")
-            .arg("start")
-            .arg("-w")
-            .args(["-t", WAIT])
-            .arg("-D")
-            .arg(self.data())
-            .arg("-l")
-            .arg(self.log())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()?;
-        if status.success() {
+        let code = self.pg_ctl_start()?;
+        if code == 0 {
             return Ok(());
         }
         let failure = Error::Failed {
             what: "starting the lake's Postgres".into(),
-            detail: status.to_string(),
+            detail: format!("exit code {code}"),
         };
         Err(self.with_log(failure))
+    }
+
+    /// Runs `pg_ctl start`, and answers its exit code. Nothing of ours may reach the server, which outlives us: not
+    /// even a file for what `pg_ctl` says. It logs.
+    fn pg_ctl_start(&self) -> Result<i32> {
+        let (data, log) = (self.data(), self.log());
+        let args = [
+            "start".as_ref(),
+            "-w".as_ref(),
+            "-t".as_ref(),
+            WAIT.as_ref(),
+            "-D".as_ref(),
+            data.as_os_str(),
+            "-l".as_ref(),
+            log.as_os_str(),
+        ];
+        run_inheriting_nothing(&self.binaries.directory().join("pg_ctl"), &args)
     }
 
     /// How to reach the server that is up: a libpq connection string.
@@ -290,31 +293,112 @@ impl Cluster {
     }
 }
 
-/// On Windows a child inherits every handle that is marked inheritable, whatever it is given as its own stdio, and hands
-/// them on. A server that stays up would then hold our stdout, and whoever reads it, as `$(metalake ...)` does, would
-/// wait for it to end for as long as the server lives. So they stop being inheritable.
+/// Runs a program that inherits no handle. A launcher above us, such as Python's, can leave copies of a pipe of stdout
+/// that we cannot name, and a server holding one keeps whoever reads that pipe waiting. `Command` always inherits.
 #[cfg(windows)]
-fn keep_standard_handles_from_children() {
+fn run_inheriting_nothing(program: &Path, args: &[&OsStr]) -> Result<i32> {
     use std::ffi::c_void;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr::{null, null_mut};
 
-    const STD_HANDLES: [i32; 3] = [-10, -11, -12];
-    const HANDLE_FLAG_INHERIT: u32 = 1;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const INFINITE: u32 = 0xFFFF_FFFF;
 
+    #[repr(C)]
+    struct StartupInfo {
+        size: u32,
+        reserved: *mut u16,
+        desktop: *mut u16,
+        title: *mut u16,
+        numbers: [u32; 7],
+        flags: u32,
+        show: u16,
+        reserved2: u16,
+        reserved3: *mut u8,
+        handles: [*mut c_void; 3],
+    }
+    #[repr(C)]
+    struct ProcessInformation {
+        process: *mut c_void,
+        thread: *mut c_void,
+        ids: [u32; 2],
+    }
     #[link(name = "kernel32")]
     unsafe extern "system" {
-        fn GetStdHandle(handle: i32) -> *mut c_void;
-        fn SetHandleInformation(handle: *mut c_void, mask: u32, flags: u32) -> i32;
+        fn CreateProcessW(
+            application: *const u16,
+            line: *mut u16,
+            process_attributes: *const c_void,
+            thread_attributes: *const c_void,
+            inherit: i32,
+            flags: u32,
+            environment: *const c_void,
+            directory: *const u16,
+            startup: *const StartupInfo,
+            process: *mut ProcessInformation,
+        ) -> i32;
+        fn WaitForSingleObject(handle: *mut c_void, milliseconds: u32) -> u32;
+        fn GetExitCodeProcess(handle: *mut c_void, code: *mut u32) -> i32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
     }
-    for handle in STD_HANDLES {
-        // Safety: both only read their arguments; a standard handle that is not there is an error here, and ignored.
-        unsafe {
-            SetHandleInformation(GetStdHandle(handle), HANDLE_FLAG_INHERIT, 0);
+
+    let mut line: Vec<u16> = Vec::new();
+    for arg in std::iter::once(program.as_os_str()).chain(args.iter().copied()) {
+        line.push(b'"'.into());
+        line.extend(arg.encode_wide());
+        line.extend([u16::from(b'"'), u16::from(b' ')]);
+    }
+    line.push(0);
+    let startup = StartupInfo {
+        size: size_of::<StartupInfo>() as u32,
+        reserved: null_mut(),
+        desktop: null_mut(),
+        title: null_mut(),
+        numbers: [0; 7],
+        flags: 0,
+        show: 0,
+        reserved2: 0,
+        reserved3: null_mut(),
+        handles: [null_mut(); 3],
+    };
+    // Safety: every pointer is to a value of this frame, or null where the call allows it, and each handle is closed
+    // once.
+    unsafe {
+        let mut process: ProcessInformation = std::mem::zeroed();
+        let created = CreateProcessW(
+            null(),
+            line.as_mut_ptr(),
+            null(),
+            null(),
+            0,
+            CREATE_NO_WINDOW,
+            null(),
+            null(),
+            &startup,
+            &mut process,
+        );
+        if created == 0 {
+            return Err(std::io::Error::last_os_error().into());
         }
+        WaitForSingleObject(process.process, INFINITE);
+        let mut code = 1;
+        GetExitCodeProcess(process.process, &mut code);
+        CloseHandle(process.thread);
+        CloseHandle(process.process);
+        Ok(code as i32)
     }
 }
 
 #[cfg(not(windows))]
-fn keep_standard_handles_from_children() {}
+fn run_inheriting_nothing(program: &Path, args: &[&OsStr]) -> Result<i32> {
+    let status = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    Ok(status.code().unwrap_or(-1))
+}
 
 /// A value of a libpq connection string.
 fn quoted(value: &str) -> String {

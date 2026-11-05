@@ -199,7 +199,11 @@ async fn a_server_that_died_comes_back_with_what_was_committed() -> Result<(), B
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(!lake.cluster.is_running()?, "{}", String::from_utf8_lossy(&killed.stderr));
+    assert!(
+        !lake.cluster.is_running()?,
+        "{}",
+        String::from_utf8_lossy(&killed.stderr)
+    );
 
     let connection = lake.cluster.ensure()?;
     let catalog = Catalog::connect(CatalogConfig::new(connection, "metalake")).await?;

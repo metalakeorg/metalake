@@ -10,4 +10,4 @@ __pycache__/
 
 # What a wheel is built from and into.
 /dist/
-/crates/metalake-cli/metalake.data/
+/crates/metalake-py/python/metalake/postgres/

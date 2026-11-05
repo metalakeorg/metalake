@@ -1,0 +1,17 @@
+[package]
+name = "metalake-py"
+version = "0.1.0"
+description = "MetaLake's Python package: the command line and the Python API, in one library"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "_metalake"
+crate-type = ["cdylib"]
+
+[dependencies]
+metalake-cli = { path = "../metalake-cli" }
+pyo3 = { version = "0.30", features = ["extension-module", "abi3-py311"] }

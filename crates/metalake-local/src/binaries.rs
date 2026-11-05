@@ -24,15 +24,11 @@ pub struct Binaries {
 }
 
 impl Binaries {
-    /// The binaries the environment names; those a wheel installed beside the command; failing both, this machine's,
+    /// The binaries the environment names, which is how a package says it ships them; failing that, this machine's,
     /// fetched the first time, with their hash checked.
     pub fn find() -> Result<Self> {
         if let Some(bin) = env::var_os(ENVIRONMENT) {
             return Self::at(PathBuf::from(bin));
-        }
-        // A wheel leaves them in the environment, beside the command: `<prefix>/bin` and `<prefix>/share`.
-        if let Some(bin) = beside_the_command().filter(|bin| bin.is_dir()) {
-            return Ok(Self { bin });
         }
         let installed = home()?.join(".metalake").join("postgres").join(MAJOR.to_string());
         if !installed.is_dir() {
@@ -83,12 +79,6 @@ impl Binaries {
             .and_then(|v| v.parse().ok());
         major.ok_or_else(|| Error::Binaries(format!("{}: pg_ctl says {version}", self.bin.display())))
     }
-}
-
-fn beside_the_command() -> Option<PathBuf> {
-    let command = env::current_exe().ok()?;
-    let prefix = command.parent()?.parent()?;
-    Some(prefix.join("share").join("metalake").join("postgres").join("bin"))
 }
 
 /// Fetches the binaries into `target`, which appears whole or not at all.

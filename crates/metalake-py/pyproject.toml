@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "metalake"
 description = "An open lakehouse table format whose metadata lives in Postgres"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 keywords = ["lakehouse", "parquet", "postgres", "datafusion", "table-format"]
@@ -17,9 +17,13 @@ classifiers = [
 ]
 dynamic = ["version"]
 
+[project.scripts]
+metalake = "metalake:_main"
+
 [project.urls]
 Repository = "https://github.com/metalakeorg/metalake"
 
 [tool.maturin]
-bindings = "bin"
-data = "metalake.data"
+module-name = "metalake._metalake"
+python-source = "python"
+include = [{ path = "python/metalake/postgres/**/*", format = "wheel" }]

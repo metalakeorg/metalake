@@ -3,8 +3,8 @@
 
     python packaging/postgres.py x86_64-pc-windows-msvc
 
-The result goes to the wheel's data directory, which `crates/metalake-cli/pyproject.toml` names. pip installs it under
-`share/metalake/postgres` of the environment, where `metalake` finds it from its own path.
+The result goes inside the Python package, which `crates/metalake-py/pyproject.toml` includes in the wheel, and where
+`import metalake` finds it from its own path, however the package was installed.
 """
 
 import hashlib
@@ -17,7 +17,7 @@ from pathlib import Path
 
 VERSION = "17.11.1"
 RELEASES = "https://github.com/theseus-rs/postgresql-binaries/releases/download"
-OUT = Path(__file__).parent.parent / "crates/metalake-cli/metalake.data/data/share/metalake/postgres"
+OUT = Path(__file__).parent.parent / "crates/metalake-py/python/metalake/postgres"
 # The tools a lake runs. Everything else in `bin` is not, apart from what they link.
 TOOLS = ("postgres", "initdb", "pg_ctl")
 # Nothing a running server opens.

@@ -41,14 +41,14 @@ jobs:
       - name: The oldest C library Postgres needs
         if: runner.os == 'Linux'
         run: |
-          objdump -T crates/metalake-cli/metalake.data/data/share/metalake/postgres/bin/postgres \
+          objdump -T crates/metalake-py/python/metalake/postgres/bin/postgres \
             | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
       - name: Build the wheel
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'auto' }}
-          args: --release --out dist -m crates/metalake-cli/Cargo.toml
+          args: --release --out dist -m crates/metalake-py/Cargo.toml
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ matrix.target }}
@@ -61,4 +61,4 @@ jobs:
         run: cargo test -p metalake-local
         env:
           # What was prepared above: the release listing is rate limited on a runner's shared address.
-          METALAKE_POSTGRES_BIN: ${{ github.workspace }}/crates/metalake-cli/metalake.data/data/share/metalake/postgres/bin
+          METALAKE_POSTGRES_BIN: ${{ github.workspace }}/crates/metalake-py/python/metalake/postgres/bin
