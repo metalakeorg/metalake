@@ -3,13 +3,14 @@
 
 class MetaLakeError(Exception):
     """A failure. `rule` is the protocol's rule it broke, `code` its SQLSTATE, and `retryable` whether trying again may
-    work."""
+    work. From `maintain`, `done` is what had been done."""
 
     def __init__(self, message, rule=None, code=None, retryable=False):
         super().__init__(message)
         self.rule = rule
         self.code = code
         self.retryable = retryable
+        self.done = []
 
 
 class UsageError(MetaLakeError, ValueError):

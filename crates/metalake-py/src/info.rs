@@ -1,6 +1,6 @@
 //! What a lake says of itself, as objects with attributes: short lists of metadata, not data to analyse.
 
-use metalake_client::{CommitEntry, MergeOutcome, RefInfo, SnapshotEntry, Status};
+use metalake_client::{CommitEntry, Done, MergeOutcome, RefInfo, SnapshotEntry, Status};
 use pyo3::prelude::*;
 
 /// A branch or a tag.
@@ -119,6 +119,36 @@ impl PyMerged {
         format!(
             "Merged({:?}, {:?}, commit={:?})",
             self.branch, self.outcome, self.commit
+        )
+    }
+}
+
+/// What a task of `maintain` did. `result` is how many rows or objects went, or the commit of a rewrite, if it wrote one.
+#[pyclass(name = "Done", module = "metalake", frozen, get_all)]
+pub struct PyDone {
+    task: String,
+    on: Option<String>,
+    table: Option<String>,
+    result: Option<u64>,
+}
+
+impl From<Done> for PyDone {
+    fn from(done: Done) -> Self {
+        Self {
+            task: done.task.to_string(),
+            on: done.on,
+            table: done.table,
+            result: done.result,
+        }
+    }
+}
+
+#[pymethods]
+impl PyDone {
+    fn __repr__(&self) -> String {
+        format!(
+            "Done({:?}, on={:?}, table={:?}, result={:?})",
+            self.task, self.on, self.table, self.result
         )
     }
 }

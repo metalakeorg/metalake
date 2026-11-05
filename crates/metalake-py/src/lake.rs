@@ -4,11 +4,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use metalake_client::{Error, Lake, MergeRequest, RefKind, Retention, Session, duration};
+use metalake_client::{Error, Lake, MaintainRequest, MergeRequest, RefKind, Retention, Session, Task, duration};
 use pyo3::prelude::*;
 
 use crate::errors::to_python;
-use crate::info::{History, PyMerged, PyRef, PyStatus};
+use crate::info::{History, PyDone, PyMerged, PyRef, PyStatus};
 use crate::result::QueryResult;
 use crate::runtime::wait;
 use crate::table::PyTable;
@@ -151,6 +151,37 @@ impl PyLake {
         let age = age.duration().map_err(|e| to_python(py, e))?;
         let lake = self.lake.clone();
         wait(py, async move { lake.set_grace(age).await })?.map_err(|e| to_python(py, e))
+    }
+
+    /// Runs the core's tasks once, for whatever schedules it, and answers what was done. Every task is safe to repeat and
+    /// to run beside commits. In order, they are `times`, `flush`, `compact`, `expire`, `sweep` and `orphans`; `task` runs
+    /// one, and `on`, a branch, and `table`, `namespace.table`, narrow a `flush` or a `compact`. If a task fails, the
+    /// exception's `done` says what had been done, and running it again goes on from there.
+    #[pyo3(signature = (task=None, *, on=None, table=None))]
+    fn maintain(
+        &self,
+        py: Python<'_>,
+        task: Option<String>,
+        on: Option<String>,
+        table: Option<String>,
+    ) -> PyResult<Vec<PyDone>> {
+        let task = task.as_deref().map(Task::parse).transpose();
+        let request = MaintainRequest {
+            task: task.map_err(|e| to_python(py, e))?,
+            on,
+            table,
+        };
+        let lake = self.lake.clone();
+        let run = wait(py, async move { lake.maintain(&request).await })?.map_err(|e| to_python(py, e))?;
+        let done: Vec<PyDone> = run.done.into_iter().map(PyDone::from).collect();
+        match run.failed {
+            None => Ok(done),
+            Some(failed) => {
+                let raised = to_python(py, failed);
+                raised.value(py).setattr("done", done)?;
+                Err(raised)
+            }
+        }
     }
 
     /// Merges a branch into its parent, every table or those of `tables`, as `namespace.table`. With `check`, says what

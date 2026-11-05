@@ -29,10 +29,6 @@ def stored(directory):
     return set((directory / "lake" / "data").rglob("*.parquet"))
 
 
-def maintain(directory):
-    assert metalake._cli(["metalake", "--lake", str(directory), "maintain"]) == 0
-
-
 def big(start):
     return pl.DataFrame({"k": range(start, start + ROWS)})
 
@@ -69,7 +65,7 @@ def test_with_no_policy_nothing_goes(lake, directory):
     t.overwrite(big(ROWS))
     before = stored(directory)
     lake.grace("0s")
-    maintain(directory)
+    lake.maintain()
     assert stored(directory) >= before
 
 
@@ -85,7 +81,7 @@ def test_what_a_policy_lets_go_goes_from_the_store(lake, directory):
     lake.grace("0s")
     lake.retain("main", min_seq=point, min_snapshots=1)
     lake.retain("kept", min_seq=point, min_snapshots=1)
-    maintain(directory)
+    lake.maintain()
 
     after = stored(directory)
     assert new <= after, "what is kept stays"

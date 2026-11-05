@@ -2,7 +2,7 @@
 //! order, what rewrites comes before what takes away: a compaction's old files are collectable only once expiring queues
 //! them, and only then can a sweep delete them.
 
-use metalake::{Ref, Storage, Table};
+use metalake::{Ref, Storage, Table, TableName};
 use serde::Serialize;
 
 use crate::{Error, Lake, Result, table};
@@ -27,6 +27,15 @@ const ORDER: [Task; 6] = [
 ];
 
 impl Task {
+    /// A task by the name it goes by.
+    pub fn parse(name: &str) -> Result<Self> {
+        let found = ORDER.into_iter().find(|task| task.name() == name);
+        found.ok_or_else(|| {
+            let names: Vec<&str> = ORDER.iter().map(|task| task.name()).collect();
+            Error::usage(format!("{name} is not a task: {}", names.join(", ")))
+        })
+    }
+
     fn name(self) -> &'static str {
         match self {
             Task::Times => "times",
@@ -103,8 +112,10 @@ impl Lake {
             Task::Orphans => done.push(whole(maintenance.orphans(&self.storage()?).await?)),
             Task::Flush | Task::Compact => {
                 let storage = self.storage()?;
+                let mut found = false;
                 for on in self.branches(request).await? {
                     for table in tables(request, &on).await? {
+                        found = true;
                         let commit = self.rewrite(task, &table, &storage).await?;
                         done.push(Done {
                             task: task.name(),
@@ -113,6 +124,9 @@ impl Lake {
                             result: commit.map(|seq| seq as u64),
                         });
                     }
+                }
+                if let (false, Some(name)) = (found, &request.table) {
+                    return Err(Error::failed(format!("no branch has the table {name}")));
                 }
             }
         }
@@ -144,6 +158,11 @@ impl Lake {
 /// The tables of a branch to rewrite, read now, since a rewrite is refused if what it read has changed.
 async fn tables(request: &MaintainRequest, on: &Ref) -> Result<Vec<Table>> {
     if let Some(name) = &request.table {
+        // Over every branch, a table need not be on each. On a branch that was named, it must.
+        let here = |t: &TableName| format!("{}.{}", t.namespace.join("."), t.name) == *name;
+        if request.on.is_none() && !on.tables().await?.iter().any(here) {
+            return Ok(vec![]);
+        }
         return Ok(vec![table(on, name).await?]);
     }
     let mut tables = Vec::new();

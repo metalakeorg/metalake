@@ -24,6 +24,7 @@ fn _metalake(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<lake::PyLake>()?;
     module.add_class::<info::PyRef>()?;
     module.add_class::<info::PyCommit>()?;
+    module.add_class::<info::PyDone>()?;
     module.add_class::<info::PyMerged>()?;
     module.add_class::<info::PySnapshot>()?;
     module.add_class::<info::PyStatus>()?;

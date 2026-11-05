@@ -13,6 +13,7 @@ if _POSTGRES.is_dir():
 from ._metalake import (  # noqa: E402
     Batch,
     Commit,
+    Done,
     Lake,
     Merged,
     Ref,
@@ -32,6 +33,7 @@ __all__ = [
     "Batch",
     "Commit",
     "ConflictError",
+    "Done",
     "Lake",
     "Merged",
     "MetaLakeError",
