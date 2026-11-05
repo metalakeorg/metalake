@@ -5,7 +5,7 @@ use datafusion::arrow::array::{ArrayRef, RecordBatch};
 use datafusion::arrow::compute::{CastOptions, cast_with_options};
 use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef, TimeUnit};
 use futures_util::{Stream, TryStreamExt};
-use metalake::{Outcome, Ref, Table, TableWriter, Transaction, WriteOptions};
+use metalake::{FileAdd, Outcome, Ref, Table, TableWriter, Transaction, WriteOptions};
 use serde::Serialize;
 
 use crate::merge::person;
@@ -194,9 +194,17 @@ impl Adapter {
     }
 }
 
+/// Rows in the store, not yet committed, and where they go.
+struct Staged {
+    on: Ref,
+    table: Table,
+    files: Vec<FileAdd>,
+    rows: u64,
+}
+
 impl Lake {
-    /// Adds rows to a table in one commit. Rows that do not suit the table are refused before anything is written.
-    pub async fn append<S>(&self, path: &TablePath, given: &Schema, mut batches: S, details: Details) -> Result<Written>
+    /// Writes rows to a table's store. Rows that do not suit the table are refused before anything is written.
+    async fn stage<S>(&self, path: &TablePath, given: &Schema, mut batches: S) -> Result<Staged>
     where
         S: Stream<Item = Result<RecordBatch>> + Unpin + Send,
     {
@@ -213,15 +221,36 @@ impl Lake {
             writer.write(&adapter.adapt(&batch)?).await?;
         }
         let files = writer.finish().await?;
-        if files.is_empty() {
+        Ok(Staged { on, table, files, rows })
+    }
+
+    /// Adds rows to a table in one commit. No rows commit nothing.
+    pub async fn append<S>(&self, path: &TablePath, given: &Schema, batches: S, details: Details) -> Result<Written>
+    where
+        S: Stream<Item = Result<RecordBatch>> + Unpin + Send,
+    {
+        let staged = self.stage(path, given, batches).await?;
+        if staged.files.is_empty() {
             return Ok(Written {
                 commit: None,
                 rows: 0,
                 applied: false,
             });
         }
-        let outcome = details.on(on.transaction().append(files)).commit().await?;
-        Ok(Written::of(outcome, rows))
+        let transaction = staged.on.transaction().append(staged.files);
+        Ok(Written::of(details.on(transaction).commit().await?, staged.rows))
+    }
+
+    /// Replaces what a table holds with these rows, in one commit, so that no rows leave it empty. What it held stays
+    /// readable at its earlier points, for as long as a ref keeps them. It is refused if the table changes meanwhile.
+    pub async fn overwrite<S>(&self, path: &TablePath, given: &Schema, batches: S, details: Details) -> Result<Written>
+    where
+        S: Stream<Item = Result<RecordBatch>> + Unpin + Send,
+    {
+        let staged = self.stage(path, given, batches).await?;
+        let transaction = staged.on.transaction().append(staged.files);
+        let transaction = transaction.replaces(&staged.table).await?;
+        Ok(Written::of(details.on(transaction).commit().await?, staged.rows))
     }
 
     /// A table as it is now, on its ref, which Postgres says. A write takes it anew, so that it sees the table's schema

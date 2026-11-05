@@ -61,9 +61,7 @@ impl DataSink for Insert {
         let files = writer.finish().await.map_err(external)?;
         let mut transaction = on.transaction().append(files);
         if self.overwrite {
-            let tasks = Scan::new(catalog, table).plan().await.map_err(external)?;
-            let ids: Vec<i64> = tasks.map_ok(|t| t.file_id).try_collect().await.map_err(external)?;
-            transaction = transaction.remove(table, ids).expect_unchanged(table);
+            transaction = transaction.replaces(table).await.map_err(external)?;
         }
         transaction.commit().await.map_err(external)?;
         Ok(rows)

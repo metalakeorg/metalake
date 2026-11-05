@@ -2,6 +2,7 @@
 //! tables, create tables and namespaces, and carry an idempotency key that makes repeating it safe.
 
 use arrow_schema::Schema;
+use futures_util::TryStreamExt;
 use metalake_pg::records::{FileAdd, FileRef, TableExpect};
 use metalake_pg::{Commit, ErrorKind};
 use serde_json::{Map, Value, json};
@@ -10,6 +11,7 @@ use uuid::Uuid;
 use crate::catalog::Ref;
 use crate::error::{Error, Result};
 use crate::partition::Transform;
+use crate::scan::Scan;
 use crate::schema::spec_fields;
 use crate::storage::Storage;
 use crate::table::Table;
@@ -96,6 +98,14 @@ impl Transaction {
         self.removed
             .extend(file_ids.into_iter().map(|file_id| FileRef { table_id, file_id }));
         self
+    }
+
+    /// Takes away everything `table` holds, so that it has only what this commit adds. It is refused if the table changed
+    /// since `table` was read, since what changed would go with it unseen.
+    pub async fn replaces(self, table: &Table) -> Result<Self> {
+        let tasks = Scan::new(self.on.catalog(), table).plan().await?;
+        let ids: Vec<i64> = tasks.map_ok(|task| task.file_id).try_collect().await?;
+        Ok(self.remove(table, ids).expect_unchanged(table))
     }
 
     /// Deletes rows of a table's files, which `storage` holds, as `table` read them: each file's vector becomes the

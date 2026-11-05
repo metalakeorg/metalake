@@ -35,6 +35,14 @@ fn batches_of(
     stream::poll_fn(move |cx| receiver.poll_recv(cx))
 }
 
+fn details(message: Option<String>, author: Option<String>, idempotent: Option<(String, i64)>) -> Details {
+    Details {
+        author,
+        message,
+        idempotent,
+    }
+}
+
 /// What a write left.
 #[pyclass(name = "Written", module = "metalake", frozen, get_all)]
 pub struct PyWritten {
@@ -115,13 +123,29 @@ impl PyTable {
         let reader = data.into_reader()?;
         let given = reader.schema();
         let batches = batches_of(reader);
-        let details = Details {
-            author,
-            message,
-            idempotent,
-        };
+        let details = details(message, author, idempotent);
         let (lake, path) = (self.lake.clone(), self.path.clone());
         let written = wait(py, async move { lake.append(&path, &given, batches, details).await })?;
+        written.map(PyWritten::from).map_err(|e| to_python(py, e))
+    }
+
+    /// Replaces what the table holds with these rows, in one commit: no rows leave it empty. What it held stays readable
+    /// at its earlier points. A write that lands meanwhile makes this a `ConflictError`, and nothing is lost.
+    #[pyo3(signature = (data, *, message=None, author=None, idempotent=None))]
+    fn overwrite(
+        &self,
+        py: Python<'_>,
+        data: AnyRecordBatch,
+        message: Option<String>,
+        author: Option<String>,
+        idempotent: Option<(String, i64)>,
+    ) -> PyResult<PyWritten> {
+        let reader = data.into_reader()?;
+        let given = reader.schema();
+        let batches = batches_of(reader);
+        let details = details(message, author, idempotent);
+        let (lake, path) = (self.lake.clone(), self.path.clone());
+        let written = wait(py, async move { lake.overwrite(&path, &given, batches, details).await })?;
         written.map(PyWritten::from).map_err(|e| to_python(py, e))
     }
 
