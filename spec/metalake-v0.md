@@ -700,9 +700,10 @@ A MetaLake table is served to Iceberg clients as an Iceberg table: metadata, man
 from the catalog, and an Iceberg REST `updateTable` turned into a MetaLake commit. The projection is a mapping,
 not a copy: nothing in it is a source of truth. It follows the Iceberg table specification, format version 2,
 and the REST catalog API
-([`open-api/rest-catalog-open-api.yaml`](https://github.com/apache/iceberg/blob/apache-iceberg-1.10.0/open-api/rest-catalog-open-api.yaml)),
-as published with Apache Iceberg 1.10.0. Server-side scan planning (`planTableScan`) is not in v0. Rules prefixed
-`ICE` are checked by the Iceberg harness (`v0/conformance/iceberg/`), with PyIceberg.
+([`open-api/rest-catalog-open-api.yaml`](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/open-api/rest-catalog-open-api.yaml)),
+as published with Apache Iceberg 1.11.0. Server-side scan planning (`planTableScan`) is not in v0. Rules prefixed
+`ICE` are checked by the Iceberg harness (`v0/conformance/iceberg/`), with PyIceberg; rules prefixed `SRV` bind a
+service that serves the projection, and are checked by that service's tests.
 
 ### 16.1 Outbound
 
@@ -751,8 +752,38 @@ as published with Apache Iceberg 1.10.0. Server-side scan planning (`planTableSc
     409 `CommitFailedException`;
   - the `ADDED` entries of the manifests the new snapshot added become added files, their bounds converted back
     from Iceberg's serialization to MetaLake's (STA-5); its `DELETED` entries become removed files;
-  - other updates are refused in v0;
+  - other updates are refused in v0, but for what §16.3 allows;
   - the answer is the projection after the commit, in which the snapshot carries MetaLake's id.
+
+### 16.3 The service
+
+*0.3.*
+
+- **SRV-1.** `/v1/config` lists in `endpoints` what the service serves, and nothing else: namespaces, tables,
+  `renameTable` and `transactions/commit`. Scan planning, credentials, signing, metrics, views, `register` and
+  `unregister` are not in v0.
+- **SRV-2.** 409 means nothing was applied. An outcome that is not known is a 5xx, which a client takes as
+  `CommitStateUnknownException`. A commit the protocol refuses as invalid is 400, a role without the right 403.
+- **SRV-3.** `updateTable` requires `assert-table-uuid`, when sent, to match, and commits with `app_id`
+  `iceberg:<table_id>:<snapshot-id>` of the snapshot the client proposed, at `app_version` 1 (CMT-5). A client keeps
+  that id across attempts, so a commit whose answer was lost is not applied twice: the repeat answers 200.
+- **SRV-4.** Every table is served with `write.delete.mode`, `write.update.mode` and `write.merge.mode` as
+  `copy-on-write`. A manifest of deletes in `updateTable` is refused with 400, naming this limit.
+- **SRV-5.** A load serves at least each ref's current snapshot and its last ten ancestors that remain, and MAY
+  serve no more than that, in place of ICE-2's every remaining snapshot, whatever `snapshots` asks for: a client
+  that rebases needs its base. Time travel through Iceberg goes as far as that.
+- **SRV-6.** A table has no manifests until a client asks. An answer names only files that exist. A commit of a
+  table that has them changes only the blocks it touches. What is generated lies under `<location>/metalake-*`, and
+  can always be generated again.
+- **SRV-7.** `createTable` is a commit that creates the table. With `stage-create` it writes nothing and answers
+  the metadata, and the `updateTable` that follows, with `assert-create`, is one commit of the definition and the
+  first files, so that a table and its rows appear together.
+- **SRV-8.** `dropTable` and `renameTable` are commits. Objects follow retention (§13), as another ref may read
+  them, so `purgeRequested` changes nothing.
+- **SRV-9.** `set-properties` and `remove-properties` are honoured, but for the keys of SRV-4. `transactions/commit`
+  is one commit of several tables, and is refused across refs.
+- **SRV-10.** A request carries `Authorization: Bearer`. A token names the protocol's `reader` or `writer` role
+  (§2), and the catalog's rights decide. The service keeps tokens as hashes.
 
 ## 17. Conformance
 
@@ -794,8 +825,11 @@ shows conformance by running them with its own operations in place of the refere
   it. Without it there is no projection to Iceberg format 3 and no native v3 deletion vector (§16).
 - **Equality deletes**, in the catalog or from Iceberg writers: an inbound Iceberg delete file is refused.
 - **Server-side scan planning** in the projection (`planTableScan`).
-- **Inbound Iceberg updates** other than files (ICE-6): schema, spec, sort order and properties change through
-  MetaLake commits only.
+- **Inbound Iceberg updates** beyond §16.3: the schema, spec and sort order of an existing table change through
+  MetaLake commits only, and a table is not replaced.
+- **Position deletes from Iceberg writers,** so that Trino's row-level `DELETE`, `UPDATE` and `MERGE` are refused,
+  while its `INSERT` and deletes of whole partitions are not. Turning them into vectors is the first thing after v0.
+- **Storage credentials** from the service: clients bring their own.
 - **Merges** into a ref other than the parent, and merges that check rows or predicates rather than files and
   keys (§12).
 - **`variant` bounds** (STA-9).
