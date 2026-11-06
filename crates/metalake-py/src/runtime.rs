@@ -11,10 +11,12 @@ use std::sync::Mutex;
 use std::sync::mpsc::{RecvTimeoutError, channel};
 use std::time::Duration;
 
-use pyo3::exceptions::PyRuntimeError;
+use metalake_client::Error;
 use pyo3::prelude::*;
 use tokio::runtime::{Builder, Runtime};
 use tokio::task::AbortHandle;
+
+use crate::errors::to_python;
 
 /// How often a wait looks for an interrupt.
 pub const PATIENCE: Duration = Duration::from_millis(100);
@@ -65,7 +67,13 @@ where
                     return Err(interrupted);
                 }
             }
-            Err(RecvTimeoutError::Disconnected) => return Err(PyRuntimeError::new_err("a task of metalake panicked")),
+            // A panic ends its task, and an `except Exception` must see it, which a panic that reached Python would pass.
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(to_python(
+                    py,
+                    Error::failed("a task of metalake panicked: this is a bug"),
+                ));
+            }
         }
     }
 }

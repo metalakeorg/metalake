@@ -19,6 +19,10 @@ class MetaLakeError(Exception):
         self.retryable = retryable
         self.done: list[Done] = []
 
+    def __reduce__(self):
+        # Across processes, as `multiprocessing` sends it. What `maintain` had done stays behind.
+        return (type(self), (self.args[0], self.rule, self.code, self.retryable))
+
 
 class UsageError(MetaLakeError, ValueError):
     """A wrong use: nothing was tried."""
