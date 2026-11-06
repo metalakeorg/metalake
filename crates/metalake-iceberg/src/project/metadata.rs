@@ -198,7 +198,7 @@ pub fn served(snapshots: Vec<TableSnapshot>, refs: &[(String, String, Option<i64
 }
 
 /// The write modes every table is served with: a client that wrote position deletes would be refused (REST-4).
-const COPY_ON_WRITE: [&str; 3] = ["write.delete.mode", "write.update.mode", "write.merge.mode"];
+pub const COPY_ON_WRITE: [&str; 3] = ["write.delete.mode", "write.update.mode", "write.merge.mode"];
 
 /// The table's metadata, each snapshot naming the manifest list `manifest_list` gives it.
 pub fn metadata(rows: &Rows, manifest_list: impl Fn(i64) -> String) -> TableMetadata {

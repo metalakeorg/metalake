@@ -1,6 +1,7 @@
 //! MetaLake's Iceberg REST server: what an Iceberg client asks of a catalog, answered from the catalog's rows, and what it
 //! commits turned into one commit of the protocol (§16 of the specification). Postgres decides, and this translates.
 
+pub mod apply;
 mod load;
 pub mod project;
 mod rest;

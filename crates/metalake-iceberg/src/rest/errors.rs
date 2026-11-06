@@ -8,6 +8,8 @@ use axum::response::{IntoResponse, Response};
 use metalake_pg::ErrorKind;
 use serde_json::json;
 
+use crate::apply::Refused;
+
 /// What a request failed with: its code, the name of the exception a client raises, and what to tell the person.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Failure {
@@ -41,7 +43,7 @@ fn of_protocol(kind: ErrorKind) -> (StatusCode, &'static str) {
         ErrorKind::Conflict | ErrorKind::Serialization => (StatusCode::CONFLICT, "CommitFailedException"),
         ErrorKind::Invalid | ErrorKind::Unsupported => (StatusCode::BAD_REQUEST, "BadRequestException"),
         ErrorKind::Permission => (StatusCode::FORBIDDEN, "ForbiddenException"),
-        ErrorKind::Unknown => (StatusCode::SERVICE_UNAVAILABLE, "ServiceUnavailableException"),
+        ErrorKind::Unknown => (StatusCode::GATEWAY_TIMEOUT, "CommitStateUnknownException"),
         _ => (StatusCode::INTERNAL_SERVER_ERROR, "ServerErrorException"),
     }
 }
@@ -56,6 +58,15 @@ impl From<metalake::Error> for Failure {
             _ => (StatusCode::INTERNAL_SERVER_ERROR, "ServerErrorException"),
         };
         Self::new(code, kind, error.to_string())
+    }
+}
+
+impl From<Refused> for Failure {
+    fn from(refused: Refused) -> Self {
+        match refused {
+            Refused::Invalid(message) => Self::new(StatusCode::BAD_REQUEST, "BadRequestException", message),
+            Refused::Conflict(message) => Self::new(StatusCode::CONFLICT, "CommitFailedException", message),
+        }
     }
 }
 
@@ -78,12 +89,20 @@ mod tests {
             (ErrorKind::Invalid, 400),
             (ErrorKind::Unsupported, 400),
             (ErrorKind::Permission, 403),
-            (ErrorKind::Unknown, 503),
+            (ErrorKind::Unknown, 504),
             (ErrorKind::Corrupt, 500),
             (ErrorKind::Postgres, 500),
         ] {
             assert_eq!(of_protocol(kind).0.as_u16(), code, "{kind:?}");
         }
+    }
+
+    #[test]
+    fn a_refusal_before_the_commit_is_answered_as_one_after_it() {
+        let conflict = Failure::from(Refused::Conflict("moved".into()));
+        assert_eq!((conflict.code, conflict.kind), of_protocol(ErrorKind::Conflict));
+        let invalid = Failure::from(Refused::Invalid("no".into()));
+        assert_eq!((invalid.code, invalid.kind), of_protocol(ErrorKind::Invalid));
     }
 
     #[tokio::test]
