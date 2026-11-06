@@ -138,7 +138,7 @@ async fn pyiceberg_reads_a_table_and_what_it_is_told_is_what_the_reference_says(
     assert_eq!(said["pruned"], 1, "the bounds of the manifest prune");
     assert_eq!(said["small"], 3, "an inline file is materialized");
     assert!(said["nowhere"].as_str().unwrap().contains("nowhere"), "{said}");
-    let (older, current) = (&said["entries"][0], &said["entries"][1]);
+    let (current, older) = (&said["entries"][0], &said["entries"][1]);
     assert_eq!(said["entries"].as_array().unwrap().len(), 2);
     assert_eq!(current, &json!(["ADDED", said["current"]]), "what the snapshot added");
     assert_eq!(older[0], "EXISTING");

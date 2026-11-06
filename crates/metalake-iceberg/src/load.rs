@@ -1,6 +1,7 @@
 //! What a `loadTable` takes: gathering a table's rows, and generating its files the first time a client asks (REST-6). A
 //! snapshot's files never change, so what is there is there for good, and a repeat writes the same bytes.
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 
 use futures_util::TryStreamExt;
@@ -33,10 +34,10 @@ async fn rows(state: &State, table: &Table) -> Result<Rows> {
     snapshots.retain(|s| live.iter().any(|r| r.name == s.ref_name));
     let mut schemas = BTreeMap::new();
     for snapshot in &snapshots {
-        if !schemas.contains_key(&snapshot.schema_seq) {
+        if let Entry::Vacant(schema) = schemas.entry(snapshot.schema_seq) {
             let on = state.named(&snapshot.ref_name).await?;
             let at = on.definition(table, Some(snapshot.snapshot_id)).await?;
-            schemas.insert(snapshot.schema_seq, at["fields"].clone());
+            schema.insert(at["fields"].clone());
         }
     }
     let mut refs = Vec::new();

@@ -17,7 +17,8 @@ pub fn to_iceberg(ty: &str, bound: &[u8]) -> Option<Vec<u8>> {
         "double" => Some(double(bound)?.to_le_bytes().to_vec()),
         "decimal" => Some(shortest(decimal(bound)?)),
         "geometry" | "geography" => {
-            let points = bound.chunks_exact(8).map(double).collect::<Option<Vec<f64>>>()?;
+            let (points, _) = bound.as_chunks::<8>();
+            let points = points.iter().map(|p| double(p)).collect::<Option<Vec<f64>>>()?;
             Some(points.iter().flat_map(|p| p.to_le_bytes()).collect())
         }
         "string" | "uuid" | "fixed" | "binary" => Some(bound.to_vec()),
