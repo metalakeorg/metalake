@@ -6,8 +6,16 @@ import urllib.request
 
 import pyarrow
 from pyiceberg.catalog import load_catalog
-from pyiceberg.exceptions import NoSuchNamespaceError, NoSuchTableError
+from pyiceberg.exceptions import (
+    NamespaceAlreadyExistsError,
+    NamespaceNotEmptyError,
+    NoSuchNamespaceError,
+    NoSuchTableError,
+    TableAlreadyExistsError,
+)
 from pyiceberg.io.pyarrow import PyArrowFileIO
+from pyiceberg.schema import Schema
+from pyiceberg.types import LongType, NestedField, StringType
 
 
 class LocalIO(PyArrowFileIO):
@@ -131,6 +139,85 @@ def retry(uri):
     }
 
 
+def lifecycle(uri):
+    """Everything a client changes, from an empty catalog."""
+    catalog = connect(uri)
+    said = {}
+    keys = lambda table: sorted(row["k"] for row in table.scan().to_arrow().to_pylist())
+
+    catalog.create_namespace("flow", {"owner": "a"})
+    said["namespace_exists"] = catalog.namespace_exists("flow")
+    said["namespace_missing"] = catalog.namespace_exists("nowhere")
+    summary = catalog.update_namespace_properties("flow", {"owner"}, {"team": "b"})
+    said["namespace_summary"] = [sorted(summary.removed), sorted(summary.updated), sorted(summary.missing)]
+    said["namespace_properties"] = catalog.load_namespace_properties("flow")
+    try:
+        catalog.create_namespace("flow")
+        said["namespace_again"] = "created"
+    except NamespaceAlreadyExistsError:
+        said["namespace_again"] = "refused"
+
+    schema = Schema(NestedField(1, "k", LongType(), required=False), NestedField(2, "s", StringType(), required=False))
+    table = catalog.create_table("flow.t", schema, properties={"a": "1"})
+    said["table_exists"] = catalog.table_exists("flow.t")
+    try:
+        catalog.create_table("flow.t", schema)
+        said["table_again"] = "created"
+    except TableAlreadyExistsError:
+        said["table_again"] = "refused"
+
+    data = lambda rows: pyarrow.Table.from_pylist(
+        [{"k": k, "s": str(k)} for k in rows], schema=table.schema().as_arrow()
+    )
+    table.append(data([1, 2, 3]))
+    said["appended"] = keys(table)
+    table.overwrite(data([7, 8]), overwrite_filter="k = 2")
+    said["overwritten"] = keys(catalog.load_table("flow.t"))
+    table = catalog.load_table("flow.t")
+    table.delete("k = 3")
+    said["deleted"] = keys(catalog.load_table("flow.t"))
+    table = catalog.load_table("flow.t")
+    table.overwrite(data([9]))
+    said["replaced"] = keys(catalog.load_table("flow.t"))
+
+    with catalog.load_table("flow.t").transaction() as transaction:
+        transaction.set_properties(b="2")
+        transaction.remove_properties("a")
+    said["properties"] = {
+        k: v for k, v in catalog.load_table("flow.t").properties.items() if not k.startswith("write.")
+    }
+
+    staged = catalog.create_table_transaction("flow.staged", schema)
+    staged.append(pyarrow.Table.from_pylist([{"k": 5, "s": "5"}], schema=schema.as_arrow()))
+    staged.commit_transaction()
+    said["staged"] = keys(catalog.load_table("flow.staged"))
+
+    catalog.rename_table("flow.staged", "flow.moved")
+    said["renamed"] = sorted(name for _, name in catalog.list_tables("flow"))
+    said["moved"] = keys(catalog.load_table("flow.moved"))
+
+    body = {"table-changes": [
+        {"identifier": {"namespace": ["flow"], "name": name}, "requirements": [],
+         "updates": [{"action": "set-properties", "updates": {"both": "yes"}}]}
+        for name in ("t", "moved")
+    ]}
+    request = urllib.request.Request(f"{uri}/v1/transactions/commit", json.dumps(body).encode(), method="POST")
+    said["transaction"] = urllib.request.urlopen(request).status
+    said["both"] = [catalog.load_table(f"flow.{n}").properties.get("both") for n in ("t", "moved")]
+
+    try:
+        catalog.drop_namespace("flow")
+        said["not_empty"] = "dropped"
+    except NamespaceNotEmptyError:
+        said["not_empty"] = "refused"
+    catalog.drop_table("flow.moved")
+    catalog.purge_table("flow.t")
+    said["dropped"] = catalog.table_exists("flow.t")
+    catalog.drop_namespace("flow")
+    said["namespace_dropped"] = catalog.namespace_exists("flow")
+    return said
+
+
 def wide(uri):
     catalog = connect(uri)
     table = catalog.load_table("db.wide")
@@ -148,4 +235,4 @@ def wide(uri):
 
 
 if __name__ == "__main__":
-    print(json.dumps({"namespaces": namespaces, "read": read, "wide": wide, "append": append, "retry": retry}[sys.argv[1]](sys.argv[2])))
+    print(json.dumps({"namespaces": namespaces, "read": read, "wide": wide, "append": append, "retry": retry, "lifecycle": lifecycle}[sys.argv[1]](sys.argv[2])))

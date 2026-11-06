@@ -188,6 +188,37 @@ async fn rest3_conflict_rebase_and_repeat() -> Result<(), Failure> {
 }
 
 #[tokio::test]
+async fn pyiceberg_lifecycle() -> Result<(), Failure> {
+    let schema = fresh_schema();
+    let (catalog, _storage, directory) = local_catalog(&schema).await?;
+    let (_server, uri) = server(&schema)?;
+    let said = client("lifecycle", &uri)?;
+    catalog.close();
+    let _ = std::fs::remove_dir_all(&directory);
+    assert_eq!(said["namespace_exists"], true);
+    assert_eq!(said["namespace_missing"], false);
+    assert_eq!(said["namespace_summary"], json!([["owner"], ["team"], []]));
+    assert_eq!(said["namespace_properties"], json!({"team": "b"}));
+    assert_eq!(said["namespace_again"], "refused");
+    assert_eq!(said["table_exists"], true);
+    assert_eq!(said["table_again"], "refused");
+    assert_eq!(said["appended"], json!([1, 2, 3]));
+    assert_eq!(said["overwritten"], json!([1, 3, 7, 8]));
+    assert_eq!(said["deleted"], json!([1, 7, 8]));
+    assert_eq!(said["replaced"], json!([9]));
+    assert_eq!(said["properties"], json!({"b": "2"}));
+    assert_eq!(said["staged"], json!([5]));
+    assert_eq!(said["renamed"], json!(["moved", "t"]));
+    assert_eq!(said["moved"], json!([5]));
+    assert_eq!(said["transaction"], 204);
+    assert_eq!(said["both"], json!(["yes", "yes"]));
+    assert_eq!(said["not_empty"], "refused");
+    assert_eq!(said["dropped"], false);
+    assert_eq!(said["namespace_dropped"], false);
+    Ok(())
+}
+
+#[tokio::test]
 async fn ice3_bounds_match_reference() -> Result<(), Failure> {
     let schema = fresh_schema();
     let catalog = Catalog::init(CatalogConfig::new(url(), &schema).warehouse("memory:///wh"), None).await?;

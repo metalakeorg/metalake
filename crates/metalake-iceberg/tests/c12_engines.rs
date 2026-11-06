@@ -83,6 +83,28 @@ async fn spark_insert() -> Result<(), Failure> {
 }
 
 #[tokio::test]
+async fn spark_lifecycle() -> Result<(), Failure> {
+    if !wanted("spark") {
+        return Ok(());
+    }
+    let schema = fresh_schema();
+    let directory = wide(&schema).await?;
+    let (_server, uri) = server(&schema)?;
+    let said = run("spark_lifecycle", &uri)?;
+    let _ = std::fs::remove_dir_all(&directory);
+    assert_eq!(said["inserted"], json!([1, 2, 3]));
+    assert_eq!(said["deleted"], json!([1, 3]));
+    assert_eq!(said["updated"], json!([1, 30]));
+    assert_eq!(said["merged"], json!([1, 5, 30]));
+    assert_eq!(said["merged_s"], json!(["z"]));
+    assert_eq!(said["property"], json!(["data"]));
+    assert_eq!(said["created_as"], json!([1, 5]));
+    assert_eq!(said["renamed"], json!(["d", "t"]));
+    assert_eq!(said["namespaces"], json!(["db"]));
+    Ok(())
+}
+
+#[tokio::test]
 async fn duckdb_read_partition_vector() -> Result<(), Failure> {
     if !wanted("duckdb") {
         return Ok(());

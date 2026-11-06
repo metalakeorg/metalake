@@ -50,5 +50,34 @@ def spark_insert(uri):
     return {"rows": [row[0] for row in session.sql("select k from lake.db.wide order by k").collect()]}
 
 
+def spark_lifecycle(uri):
+    """Everything a client changes, from a catalog with no namespace of this name."""
+    session = spark_session(uri)
+    keys = lambda query: [row[0] for row in session.sql(query).collect()]
+    session.sql("create namespace lake.flow")
+    session.sql("create table lake.flow.t (k bigint, s string) using iceberg partitioned by (bucket(4, k))")
+    session.sql("insert into lake.flow.t values (1, 'a'), (2, 'b'), (3, 'c')")
+    said = {"inserted": keys("select k from lake.flow.t order by k")}
+    session.sql("delete from lake.flow.t where k = 2")
+    said["deleted"] = keys("select k from lake.flow.t order by k")
+    session.sql("update lake.flow.t set k = 30 where k = 3")
+    said["updated"] = keys("select k from lake.flow.t order by k")
+    session.sql("""merge into lake.flow.t t using (select 1 as k, 'z' as s union all select 5, 'y') u on t.k = u.k
+                   when matched then update set s = u.s when not matched then insert *""")
+    said["merged"] = keys("select k from lake.flow.t order by k")
+    said["merged_s"] = keys("select s from lake.flow.t where k = 1")
+    session.sql("alter table lake.flow.t set tblproperties ('team' = 'data')")
+    said["property"] = keys("select value from (show tblproperties lake.flow.t ('team'))")
+    session.sql("create table lake.flow.c using iceberg as select k from lake.flow.t where k < 10")
+    said["created_as"] = keys("select k from lake.flow.c order by k")
+    session.sql("alter table lake.flow.c rename to flow.d")
+    said["renamed"] = sorted(row[1] for row in session.sql("show tables in lake.flow").collect())
+    session.sql("drop table lake.flow.d")
+    session.sql("drop table lake.flow.t purge")
+    session.sql("drop namespace lake.flow")
+    said["namespaces"] = [row[0] for row in session.sql("show namespaces in lake").collect()]
+    return said
+
+
 if __name__ == "__main__":
-    print("\n" + json.dumps({"duckdb": duckdb, "spark": spark, "spark_insert": spark_insert}[sys.argv[1]](sys.argv[2])))
+    print("\n" + json.dumps({"duckdb": duckdb, "spark": spark, "spark_insert": spark_insert, "spark_lifecycle": spark_lifecycle}[sys.argv[1]](sys.argv[2])))
