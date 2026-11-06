@@ -95,7 +95,7 @@ async fn plan(context: &SessionContext, sql: &str) -> Result<String, Box<dyn std
 }
 
 #[tokio::test]
-async fn it_reads_what_the_core_reads_with_vectors_and_inline_files() -> Result<(), Box<dyn std::error::Error>> {
+async fn scan_matches_core_with_vectors_and_inline() -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(Counting::default());
     let (catalog, main, storage, _) = lake(store.clone()).await?;
     let shape = simple(0..1).schema();
@@ -212,7 +212,7 @@ fn field(f: &metalake::Field, name: &str, ty: &str) -> Value {
 }
 
 #[tokio::test]
-async fn a_file_is_read_under_the_table_as_it_is_now() -> Result<(), Box<dyn std::error::Error>> {
+async fn schema_evolution_old_files() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, main, storage, schema) = lake(Arc::default()).await?;
     let first = before();
     let (tx, table_id) = main.transaction().create_namespace(&["db"]).create_table(new_table(
@@ -290,7 +290,7 @@ async fn a_file_is_read_under_the_table_as_it_is_now() -> Result<(), Box<dyn std
 }
 
 #[tokio::test]
-async fn postgres_leaves_files_out_and_a_join_spares_requests() -> Result<(), Box<dyn std::error::Error>> {
+async fn filter_pushdown_and_dynamic_join_filter() -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(Counting::default());
     let (catalog, main, storage, _) = lake(store.clone()).await?;
     let shape = simple(0..1).schema();

@@ -76,7 +76,7 @@ fn rfc3339(time: std::time::SystemTime) -> String {
 }
 
 #[tokio::test]
-async fn branches_tags_and_the_past_through_sql() -> Result<(), Box<dyn std::error::Error>> {
+async fn sql_branches_tags_time_travel() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, main, storage, schema) = lake(&["t"]).await?;
     let context = MetaLake::new(catalog.clone(), storage).await?.context()?;
     context
@@ -136,7 +136,7 @@ async fn branches_tags_and_the_past_through_sql() -> Result<(), Box<dyn std::err
 }
 
 #[tokio::test]
-async fn a_statement_reads_one_point() -> Result<(), Box<dyn std::error::Error>> {
+async fn statement_snapshot_isolation() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, main, storage, _) = lake(&["a", "b"]).await?;
     let context = MetaLake::new(catalog.clone(), storage.clone()).await?.context()?;
 
@@ -182,7 +182,7 @@ async fn a_statement_reads_one_point() -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[tokio::test]
-async fn a_branch_reads_what_it_inherited_and_two_refs_agree() -> Result<(), Box<dyn std::error::Error>> {
+async fn branch_inherited_read_and_cross_ref_join() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, main, storage, _) = lake(&["a"]).await?;
     let context = MetaLake::new(catalog.clone(), storage).await?.context()?;
     context

@@ -102,7 +102,7 @@ impl Lake {
 }
 
 #[tokio::test]
-async fn an_insert_is_one_commit_read_back_at_once() -> Result<(), Box<dyn std::error::Error>> {
+async fn insert_single_commit() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
     assert_eq!(lake.run("insert into main.db.t values (1, 'a'), (2, null)").await?, 2);
     assert_eq!(lake.keys("main.db.t").await?, [1, 2]);
@@ -152,7 +152,7 @@ async fn an_insert_is_one_commit_read_back_at_once() -> Result<(), Box<dyn std::
 }
 
 #[tokio::test]
-async fn a_refused_commit_shows_nothing() -> Result<(), Box<dyn std::error::Error>> {
+async fn refused_commit_rolls_back() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
     let t = lake.table("t").await?;
     // Planned, not yet run; then the table goes, and the commit has nowhere to land.
@@ -178,7 +178,7 @@ async fn a_refused_commit_shows_nothing() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[tokio::test]
-async fn a_delete_takes_what_it_matches_on_the_ref_it_names() -> Result<(), Box<dyn std::error::Error>> {
+async fn delete_by_predicate_on_ref() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
     lake.run("insert into main.db.t values (1, 'a'), (2, 'b'), (3, null)")
         .await?;
@@ -218,7 +218,7 @@ async fn a_delete_takes_what_it_matches_on_the_ref_it_names() -> Result<(), Box<
 }
 
 #[tokio::test]
-async fn a_tag_takes_no_statement() -> Result<(), Box<dyn std::error::Error>> {
+async fn tag_refuses_writes() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
     lake.run("insert into main.db.t values (1, 'a')").await?;
     lake.main.create_tag("v1").await?;

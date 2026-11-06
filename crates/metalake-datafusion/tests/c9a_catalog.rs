@@ -109,7 +109,7 @@ async fn names(context: &SessionContext) -> Result<Vec<String>, Box<dyn std::err
 }
 
 #[tokio::test]
-async fn refs_are_catalogs_and_a_table_is_found_at_once() -> Result<(), Box<dyn std::error::Error>> {
+async fn ref_catalogs_and_table_resolution() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, main, storage, _) = lake(Arc::default()).await?;
     let shape = shape();
     let (tx, _) = main
@@ -154,7 +154,7 @@ async fn refs_are_catalogs_and_a_table_is_found_at_once() -> Result<(), Box<dyn 
 }
 
 #[tokio::test]
-async fn counts_and_bounds_are_answered_without_opening_a_file() -> Result<(), Box<dyn std::error::Error>> {
+async fn aggregates_from_statistics() -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(Counting::default());
     let (catalog, main, storage, _) = lake(store.clone()).await?;
     let shape = shape();
@@ -221,7 +221,7 @@ fn text(column: &ArrayRef) -> String {
 }
 
 #[tokio::test]
-async fn a_statistic_that_may_not_hold_is_not_an_answer() -> Result<(), Box<dyn std::error::Error>> {
+async fn inexact_statistics_not_used() -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(Counting::default());
     let (catalog, main, storage, schema) = lake(store.clone()).await?;
     let shape = shape();

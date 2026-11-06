@@ -106,7 +106,7 @@ impl Lake {
 }
 
 #[tokio::test]
-async fn a_small_merge_opens_few_files() -> Result<(), Box<dyn std::error::Error>> {
+async fn merge_into_prunes_files() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
     for at in 0..20 {
         lake.write(at * 1000..at * 1000 + 100, 1024).await?;
@@ -125,7 +125,7 @@ async fn a_small_merge_opens_few_files() -> Result<(), Box<dyn std::error::Error
 }
 
 #[tokio::test]
-async fn a_merge_marks_the_right_row() -> Result<(), Box<dyn std::error::Error>> {
+async fn merge_into_row_positions() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
     lake.write(0..100, 10).await?;
 

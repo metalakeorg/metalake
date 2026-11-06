@@ -86,7 +86,7 @@ impl Lake {
 }
 
 #[tokio::test]
-async fn an_overwrite_replaces_the_table_whole() -> Result<(), Box<dyn std::error::Error>> {
+async fn overwrite_replaces_all_rows() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
     lake.run("insert into main.db.t values (1, 1, 'a'), (2, 2, 'b')")
         .await?;
@@ -129,7 +129,7 @@ async fn an_overwrite_replaces_the_table_whole() -> Result<(), Box<dyn std::erro
 }
 
 #[tokio::test]
-async fn an_update_is_a_delete_and_a_write_in_one_commit() -> Result<(), Box<dyn std::error::Error>> {
+async fn update_single_commit() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
     lake.run("insert into main.db.t values (1, 10, 'a'), (2, 20, 'b'), (3, null, 'c')")
         .await?;
@@ -189,7 +189,7 @@ async fn an_update_is_a_delete_and_a_write_in_one_commit() -> Result<(), Box<dyn
 }
 
 #[tokio::test]
-async fn a_rewrite_loses_to_a_commit_that_got_in_first() -> Result<(), Box<dyn std::error::Error>> {
+async fn update_conflicts_with_earlier_commit() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
     lake.run("insert into main.db.t values (1, 1, 'a'), (2, 2, 'b')")
         .await?;
@@ -228,7 +228,7 @@ async fn a_rewrite_loses_to_a_commit_that_got_in_first() -> Result<(), Box<dyn s
 
 /// In the core itself: a stale delete alone takes the union again; one that also adds files does not.
 #[tokio::test]
-async fn only_a_commit_that_adds_nothing_takes_the_union_again() -> Result<(), Box<dyn std::error::Error>> {
+async fn delete_retries_vector_union() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
     lake.run("insert into main.db.t values (1, 1, 'a'), (2, 2, 'b'), (3, 3, 'c'), (4, 4, 'd')")
         .await?;

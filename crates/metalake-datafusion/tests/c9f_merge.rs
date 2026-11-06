@@ -64,7 +64,7 @@ impl Lake {
 }
 
 #[tokio::test]
-async fn each_source_row_takes_its_first_clause_in_one_commit() -> Result<(), Box<dyn std::error::Error>> {
+async fn merge_into_single_commit() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
     lake.run("insert into main.db.t values (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c')")
         .await?;
@@ -101,7 +101,7 @@ async fn each_source_row_takes_its_first_clause_in_one_commit() -> Result<(), Bo
 }
 
 #[tokio::test]
-async fn the_order_of_the_clauses_decides() -> Result<(), Box<dyn std::error::Error>> {
+async fn merge_into_clause_order() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
     lake.run("insert into main.db.t values (1, 1, 'a'), (2, 2, 'b'), (3, 3, null)")
         .await?;
@@ -122,7 +122,7 @@ async fn the_order_of_the_clauses_decides() -> Result<(), Box<dyn std::error::Er
 }
 
 #[tokio::test]
-async fn nothing_to_do_is_no_commit_and_a_branch_is_apart() -> Result<(), Box<dyn std::error::Error>> {
+async fn merge_into_noop_skips_commit() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
     lake.run("insert into main.db.t values (1, 1, 'a')").await?;
     lake.main.create_branch("dev").await?;
@@ -155,7 +155,7 @@ async fn nothing_to_do_is_no_commit_and_a_branch_is_apart() -> Result<(), Box<dy
 }
 
 #[tokio::test]
-async fn a_row_matched_twice_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+async fn merge_into_duplicate_match_refused() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
     lake.run("insert into main.db.t values (1, 1, 'a'), (2, 2, 'b')")
         .await?;
@@ -181,7 +181,7 @@ async fn a_row_matched_twice_is_refused() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[tokio::test]
-async fn rows_the_source_lacks_are_for_their_own_clause() -> Result<(), Box<dyn std::error::Error>> {
+async fn merge_into_not_matched_by_source() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
     lake.run("insert into main.db.t values (1, 1, 'a'), (2, 2, 'b'), (3, 3, 'c'), (4, 4, 'd')")
         .await?;
@@ -204,7 +204,7 @@ async fn rows_the_source_lacks_are_for_their_own_clause() -> Result<(), Box<dyn 
 }
 
 #[tokio::test]
-async fn a_merge_loses_to_a_commit_that_got_in_first() -> Result<(), Box<dyn std::error::Error>> {
+async fn merge_into_conflicts_with_earlier_commit() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
     lake.run("insert into main.db.t values (1, 1, 'a')").await?;
     lake.run("insert into main.db.t values (2, 2, 'b')").await?;
