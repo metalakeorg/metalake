@@ -140,7 +140,9 @@ def trino_lifecycle(uri):
         run("create schema lake.flow")
         run("create table lake.flow.t (k bigint, s varchar)")
         run("insert into lake.flow.t values (1, 'a'), (2, 'b')")
+        said["table_rows"] = keys("select k from lake.flow.t order by k")
         run("create table lake.flow.c as select k from lake.flow.t")
+        said["created_snapshots"] = keys("""select operation from lake.flow."c$snapshots" order by committed_at""")
         said["created_as"] = keys("select k from lake.flow.c order by k")
         run("alter table lake.flow.c rename to lake.flow.d")
         said["renamed"] = sorted(row[0] for row in run("show tables from lake.flow"))
@@ -186,4 +188,8 @@ def flink_lifecycle(uri):
 
 
 if __name__ == "__main__":
-    print("\n" + json.dumps({"duckdb": duckdb, "spark": spark, "spark_insert": spark_insert, "spark_lifecycle": spark_lifecycle, "trino": trino_lifecycle, "flink": flink_lifecycle}[sys.argv[1]](sys.argv[2])))
+    said = "\n" + json.dumps({"duckdb": duckdb, "spark": spark, "spark_insert": spark_insert, "spark_lifecycle": spark_lifecycle, "trino": trino_lifecycle, "flink": flink_lifecycle}[sys.argv[1]](sys.argv[2]))
+    print(said, flush=True)
+    # A JVM an engine left behind may fail the interpreter's exit, after the answer is out.
+    sys.stderr.flush()
+    os._exit(0)

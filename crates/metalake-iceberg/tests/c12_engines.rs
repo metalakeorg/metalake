@@ -129,7 +129,7 @@ async fn trino_lifecycle() -> Result<(), Failure> {
         said["after_delete"], said["inserted"],
         "a refused delete changes nothing"
     );
-    assert_eq!(said["created_as"], json!([1, 2]));
+    assert_eq!(said["created_as"], json!([1, 2]), "{said}");
     assert_eq!(said["renamed"], json!(["d", "t"]));
     assert_eq!(said["schemas"].as_array().map(Vec::len), Some(2), "{said}");
     Ok(())
