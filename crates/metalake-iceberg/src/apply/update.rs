@@ -114,7 +114,7 @@ impl Definition {
 }
 
 /// One value of a definition, which a table has one of when it is created.
-fn once<T>(slot: &mut Option<T>, value: T, name: &str, creates: bool) -> Result<(), Refused> {
+fn set_once<T>(slot: &mut Option<T>, value: T, name: &str, creates: bool) -> Result<(), Refused> {
     if !creates {
         return invalid(format!(
             "{name} is not served: a definition changes only when a table is created"
@@ -127,13 +127,13 @@ fn once<T>(slot: &mut Option<T>, value: T, name: &str, creates: bool) -> Result<
 }
 
 /// REST-4 and REST-9: a table's write modes are the server's.
-fn is_served(key: &str) -> bool {
+fn is_reserved_property(key: &str) -> bool {
     COPY_ON_WRITE.contains(&key)
 }
 
 /// The ref a commit moves. Its snapshots must end at what the ref is set to, each the parent of the next: anything else
 /// is a stage, a rollback or a fast-forward, which ICE-6 does not make a commit of files.
-fn moved(snapshots: &[ProposedSnapshot], moves: &[(String, i64)]) -> Result<Option<String>, Refused> {
+fn target_ref(snapshots: &[ProposedSnapshot], moves: &[(String, i64)]) -> Result<Option<String>, Refused> {
     let (Some((name, to)), Some(last)) = (moves.last(), snapshots.last()) else {
         return match (moves.is_empty(), snapshots.is_empty()) {
             (true, true) => Ok(None),
@@ -164,15 +164,15 @@ pub fn change(request: CommitTableRequest) -> Result<Change, Refused> {
     for entry in request.updates {
         let name = entry.name.as_str();
         match entry.known {
-            Update::AssignUuid { uuid } => once(&mut definition.uuid, uuid, name, creates)?,
+            Update::AssignUuid { uuid } => set_once(&mut definition.uuid, uuid, name, creates)?,
             Update::UpgradeFormatVersion { format_version } if !creates || format_version != FORMAT_VERSION => {
                 return invalid(format!("tables are served in format {FORMAT_VERSION}"));
             }
             Update::UpgradeFormatVersion { .. } => {}
-            Update::AddSchema { schema } => once(&mut definition.schema, schema, name, creates)?,
-            Update::AddSpec { spec } => once(&mut definition.spec, spec, name, creates)?,
-            Update::AddSortOrder { sort_order } => once(&mut definition.sort_order, sort_order, name, creates)?,
-            Update::SetLocation { location } => once(&mut definition.location, location, name, creates)?,
+            Update::AddSchema { schema } => set_once(&mut definition.schema, schema, name, creates)?,
+            Update::AddSpec { spec } => set_once(&mut definition.spec, spec, name, creates)?,
+            Update::AddSortOrder { sort_order } => set_once(&mut definition.sort_order, sort_order, name, creates)?,
+            Update::SetLocation { location } => set_once(&mut definition.location, location, name, creates)?,
             // With one of each, there is only the one to make current.
             Update::SetCurrentSchema {} | Update::SetDefaultSpec {} | Update::SetDefaultSortOrder {} if creates => {}
             Update::SetCurrentSchema {} | Update::SetDefaultSpec {} | Update::SetDefaultSortOrder {} => {
@@ -182,7 +182,7 @@ pub fn change(request: CommitTableRequest) -> Result<Change, Refused> {
             }
             Update::SetProperties { updates } => {
                 for (key, value) in updates {
-                    if is_served(&key) && value != "copy-on-write" {
+                    if is_reserved_property(&key) && value != "copy-on-write" {
                         return invalid(format!("{key} is copy-on-write: Iceberg clients write no deletes here"));
                     }
                     properties.insert(key, Some(value));
@@ -190,7 +190,7 @@ pub fn change(request: CommitTableRequest) -> Result<Change, Refused> {
             }
             Update::RemoveProperties { removals } => {
                 for key in removals {
-                    if is_served(&key) {
+                    if is_reserved_property(&key) {
                         return invalid(format!("{key} is the server's, and stays"));
                     }
                     properties.insert(key, None);
@@ -206,7 +206,7 @@ pub fn change(request: CommitTableRequest) -> Result<Change, Refused> {
             Update::Other => return invalid(format!("{name} is not served")),
         }
     }
-    let target = moved(&snapshots, &moves)?;
+    let target = target_ref(&snapshots, &moves)?;
     let (expected_ref, expected) = expected.unzip();
     if target.is_some() && expected_ref.is_some() && target != expected_ref {
         return invalid("a commit asserts the ref it moves");

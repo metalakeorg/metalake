@@ -84,6 +84,12 @@ impl Storage {
         Ok(self.store.get(&self.path(url)?).await?.bytes().await?)
     }
 
+    /// The last `length` bytes of an object of `size` bytes.
+    pub async fn tail(&self, url: &str, size: u64, length: u64) -> Result<Bytes> {
+        let range = size.saturating_sub(length)..size;
+        Ok(self.store.get_range(&self.path(url)?, range).await?)
+    }
+
     /// Whether an object is there.
     pub async fn exists(&self, url: &str) -> Result<bool> {
         match self.store.head(&self.path(url)?).await {

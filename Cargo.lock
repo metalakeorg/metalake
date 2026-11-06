@@ -2583,6 +2583,7 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "axum",
+ "bytes",
  "clap",
  "futures-util",
  "metalake",
@@ -2591,6 +2592,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

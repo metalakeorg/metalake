@@ -8,7 +8,7 @@ use axum::response::{IntoResponse, Response};
 use metalake_pg::ErrorKind;
 use serde_json::json;
 
-use crate::apply::Refused;
+use crate::apply::{ApplyError, Refused};
 
 /// What a request failed with: its code, the name of the exception a client raises, and what to tell the person.
 #[derive(Debug, PartialEq, Eq)]
@@ -66,6 +66,15 @@ impl From<Refused> for Failure {
         match refused {
             Refused::Invalid(message) => Self::new(StatusCode::BAD_REQUEST, "BadRequestException", message),
             Refused::Conflict(message) => Self::new(StatusCode::CONFLICT, "CommitFailedException", message),
+        }
+    }
+}
+
+impl From<ApplyError> for Failure {
+    fn from(error: ApplyError) -> Self {
+        match error {
+            ApplyError::Refused(refused) => refused.into(),
+            ApplyError::Core(core) => core.into(),
         }
     }
 }

@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use apache_avro::schema::RecordField;
 use apache_avro::types::Value;
 use apache_avro::{Codec, DeflateSettings, Schema, Writer};
+use metalake::partition::{Scalar, Transform};
 use metalake::{Error, ListedFile, Result};
 use serde_json::{Value as Json, json};
 
@@ -105,7 +106,7 @@ pub fn served_path(location: &str, file: &ListedFile) -> String {
 
 /// The type a partition field's values have in a manifest: the source's for `identity` and `truncate`, Iceberg's `date`
 /// for `day`, as clients read it, and `int` for the others (PAR-2).
-fn result_type<'a>(field: &Json, types: &'a HashMap<i32, String>) -> Result<&'a str> {
+pub(crate) fn result_type<'a>(field: &Json, types: &'a HashMap<i32, String>) -> Result<&'a str> {
     let transform = field["transform"].as_str().unwrap_or_default();
     if transform == "identity" || transform.starts_with("truncate") {
         let source = field["source_ids"][0].as_i64().unwrap_or(0) as i32;
@@ -146,6 +147,30 @@ fn partition_value(ty: &str, value: &Json) -> Option<Value> {
             Some(text) => Value::Date(metalake::partition::days(text)? as i32),
             None => Value::Date(value.as_i64()? as i32),
         },
+        _ => return None,
+    })
+}
+
+/// Converts one partition value of a client's manifest to the catalog's JSON (PAR-2). `None` when the type is not served.
+pub(crate) fn partition_json(ty: &str, field: &Json, value: &Value) -> Option<Json> {
+    let value = match value {
+        Value::Union(_, inner) => inner.as_ref(),
+        other => other,
+    };
+    Some(match (ty, value) {
+        (_, Value::Null) => Json::Null,
+        ("boolean", Value::Boolean(v)) => json!(v),
+        ("int", Value::Int(v)) => json!(v),
+        ("long", Value::Long(v)) => json!(v),
+        ("long", Value::Int(v)) => json!(v),
+        ("float", Value::Float(v)) => json!(v),
+        ("double", Value::Double(v)) => json!(v),
+        ("string", Value::String(v)) => json!(v),
+        ("date", Value::Date(days) | Value::Int(days)) if field["transform"] == "identity" => {
+            let identity = Transform::Identity.apply("date", Scalar::Long(i64::from(*days)));
+            identity.ok()?
+        }
+        ("date", Value::Date(days) | Value::Int(days)) => json!(days),
         _ => return None,
     })
 }

@@ -1,5 +1,5 @@
-//! A bound in the order-preserving encoding of the catalog (STA-5), as Iceberg serializes a single value (ICE-3). The
-//! reference's `iceberg_bound` is the oracle this is tested against, value for value.
+//! Conversion between the catalog's order-preserving bounds (STA-5) and Iceberg's single-value serialization (ICE-3,
+//! ICE-6). The reference's `iceberg_bound` and `iceberg_bound_in` are the oracles of both directions.
 
 /// A bound of a field of type `ty`, as it is stored, in Iceberg's serialization; none if the type has no such thing.
 pub fn to_iceberg(ty: &str, bound: &[u8]) -> Option<Vec<u8>> {
@@ -24,6 +24,45 @@ pub fn to_iceberg(ty: &str, bound: &[u8]) -> Option<Vec<u8>> {
         "string" | "uuid" | "fixed" | "binary" => Some(bound.to_vec()),
         _ => None,
     }
+}
+
+/// Converts an Iceberg bound of a field of type `ty` to the catalog's encoding. `None` drops the bound: a NaN (STA-6), a
+/// type without bounds (STA-9), or bytes of the wrong length. A missing bound only costs pruning.
+pub fn from_iceberg(ty: &str, bound: &[u8]) -> Option<Vec<u8>> {
+    use metalake::bounds as encode;
+    let base = ty.split(['(', '[']).next().unwrap_or(ty);
+    match base {
+        "boolean" => Some(encode::boolean(*bound.first()? != 0)),
+        "int" | "long" | "time" | "timestamp" | "timestamptz" | "timestamp_ns" | "timestamptz_ns" => {
+            Some(encode::long(little_endian(bound)?))
+        }
+        "date" => Some(encode::date(i32::try_from(little_endian(bound)?).ok()?)),
+        "float" => encode::double(f64::from(f32::from_le_bytes(bound.try_into().ok()?))),
+        "double" => encode::double(f64::from_le_bytes(bound.try_into().ok()?)),
+        "decimal" => Some(encode::decimal(two_complement(bound)?)),
+        "string" | "uuid" | "fixed" | "binary" => Some(bound.to_vec()),
+        _ => None,
+    }
+}
+
+/// An integer of 4 or 8 bytes, little-endian.
+fn little_endian(bound: &[u8]) -> Option<i64> {
+    match bound.len() {
+        4 => Some(i64::from(i32::from_le_bytes(bound.try_into().ok()?))),
+        8 => Some(i64::from_le_bytes(bound.try_into().ok()?)),
+        _ => None,
+    }
+}
+
+/// Two's complement, big-endian, of up to 16 bytes.
+fn two_complement(bound: &[u8]) -> Option<i128> {
+    if bound.is_empty() || bound.len() > 16 {
+        return None;
+    }
+    let fill = if bound[0] & 0x80 == 0 { 0 } else { 0xff };
+    let mut wide = [fill; 16];
+    wide[16 - bound.len()..].copy_from_slice(bound);
+    Some(i128::from_be_bytes(wide))
 }
 
 /// A `date` promoted to a timestamp keeps its bounds of 4 bytes, in days (STA-7).
@@ -90,5 +129,35 @@ mod tests {
         assert_eq!(to_iceberg("long", &[1, 2]), None);
         let too_wide = metalake::bounds::long(i64::from(i32::MAX) + 1);
         assert_eq!(to_iceberg("int", &too_wide), None);
+    }
+
+    #[test]
+    fn ice6_bound_little_endian_widths() {
+        use metalake::bounds::long;
+        assert_eq!(from_iceberg("long", &(-5_i32).to_le_bytes()), Some(long(-5)));
+        assert_eq!(from_iceberg("long", &(-5_i64).to_le_bytes()), Some(long(-5)));
+        assert_eq!(from_iceberg("long", &[1, 2]), None);
+        assert_eq!(from_iceberg("date", &i64::MAX.to_le_bytes()), None);
+    }
+
+    #[test]
+    fn ice6_bound_decimal_sign_extension() {
+        use metalake::bounds::decimal;
+        assert_eq!(from_iceberg("decimal(10,2)", &[0xff]), Some(decimal(-1)));
+        assert_eq!(from_iceberg("decimal(10,2)", &[0, 0x80]), Some(decimal(128)));
+        assert_eq!(from_iceberg("decimal(10,2)", &[]), None);
+        assert_eq!(from_iceberg("decimal(10,2)", &[0; 17]), None);
+    }
+
+    #[test]
+    fn sta6_nan_bound_dropped() {
+        assert_eq!(from_iceberg("double", &f64::NAN.to_le_bytes()), None);
+        assert_eq!(from_iceberg("float", &f32::NAN.to_le_bytes()), None);
+    }
+
+    #[test]
+    fn sta9_unbounded_types_dropped() {
+        assert_eq!(from_iceberg("variant", &[1]), None);
+        assert_eq!(from_iceberg("geometry", &[0; 16]), None);
     }
 }

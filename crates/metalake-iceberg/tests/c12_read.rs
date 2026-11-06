@@ -9,7 +9,7 @@ use common::{Failure, append, create, fresh_schema, local_catalog, server, url};
 use futures_util::TryStreamExt;
 use metalake::vectors::Deletes;
 use metalake::{Catalog, CatalogConfig, Scan};
-use metalake_iceberg::project::bounds::to_iceberg;
+use metalake_iceberg::project::bounds::{from_iceberg, to_iceberg};
 use metalake_pg::{Commit, Pool, Protocol};
 use serde_json::{Value, json};
 
@@ -169,15 +169,22 @@ async fn ice3_bounds_match_reference() -> Result<(), Failure> {
         ("uuid", "f79c3e09-677c-4bbd-a479-3f349cb785e7"),
         ("time", "12:30:00"),
         ("timestamp", "2024-02-29T12:30:00"),
+        ("timestamp", "1969-12-31T23:59:59.999999"),
+        ("timestamptz", "2024-02-29T12:30:00+00:00"),
+        ("decimal(38,0)", "-12345678901234567890123456789012345678"),
+        ("double", "-0.0"),
+        ("long", "-9223372036854775808"),
     ] {
         let row = session
             .query_one(
-                "select b, iceberg_bound($1, b) from encode_bound($1, $2) b",
+                "select b, iceberg_bound($1, b), iceberg_bound_in($1, iceberg_bound($1, b)) from encode_bound($1, $2) b",
                 &[&ty, &value],
             )
             .await?;
-        let (stored, served): (Vec<u8>, Vec<u8>) = (row.get(0), row.get(1));
-        assert_eq!(to_iceberg(ty, &stored), Some(served), "{ty} {value}");
+        let (stored, served, received): (Vec<u8>, Vec<u8>, Vec<u8>) = (row.get(0), row.get(1), row.get(2));
+        assert_eq!(to_iceberg(ty, &stored).as_ref(), Some(&served), "{ty} {value}");
+        assert_eq!(from_iceberg(ty, &served), Some(received), "{ty} {value}");
+        assert_eq!(from_iceberg(ty, &served), Some(stored), "{ty} {value}");
     }
     catalog.close();
     Ok(())
