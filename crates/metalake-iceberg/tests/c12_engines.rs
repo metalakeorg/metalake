@@ -53,7 +53,7 @@ async fn wide(schema: &str) -> Result<std::path::PathBuf, Failure> {
 }
 
 #[tokio::test]
-async fn spark_reads_a_partition_a_vector_and_a_branch() -> Result<(), Failure> {
+async fn spark_read_partition_vector_branch() -> Result<(), Failure> {
     if !wanted("spark") {
         return Ok(());
     }
@@ -69,7 +69,7 @@ async fn spark_reads_a_partition_a_vector_and_a_branch() -> Result<(), Failure> 
 }
 
 #[tokio::test]
-async fn duckdb_reads_a_partition_and_a_vector() -> Result<(), Failure> {
+async fn duckdb_read_partition_vector() -> Result<(), Failure> {
     if !wanted("duckdb") {
         return Ok(());
     }

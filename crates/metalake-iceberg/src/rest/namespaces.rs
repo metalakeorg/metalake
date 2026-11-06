@@ -43,7 +43,7 @@ mod tests {
     }
 
     #[test]
-    fn a_listing_is_one_level_under_its_parent() {
+    fn ice7_list_direct_children() {
         let all = names(&[&["a"], &["a", "b"], &["a", "b", "c"], &["ab"]]);
         let at = |parent: &[&str]| children(&all, parent).map(|c| c.iter().map(|n| n.join(".")).collect::<Vec<_>>());
         assert_eq!(at(&[]).unwrap(), ["a", "ab"]);
@@ -53,7 +53,7 @@ mod tests {
     }
 
     #[test]
-    fn a_parent_that_is_not_there_is_no_empty_listing() {
+    fn ice7_list_missing_parent() {
         assert!(children(&names(&[&["a"]]), &["b"]).is_none());
     }
 }

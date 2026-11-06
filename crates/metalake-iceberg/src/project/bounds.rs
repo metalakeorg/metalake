@@ -75,7 +75,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_decimal_takes_the_fewest_bytes() {
+    fn ice3_decimal_minimal_encoding() {
         assert_eq!(shortest(0), [0]);
         assert_eq!(shortest(127), [127]);
         assert_eq!(shortest(128), [0, 128]);
@@ -85,7 +85,7 @@ mod tests {
     }
 
     #[test]
-    fn what_has_no_serialization_says_so() {
+    fn ice3_unserializable_bound() {
         assert_eq!(to_iceberg("variant", &[1, 2]), None);
         assert_eq!(to_iceberg("long", &[1, 2]), None);
         let too_wide = metalake::bounds::long(i64::from(i32::MAX) + 1);

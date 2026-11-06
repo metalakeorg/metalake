@@ -35,7 +35,7 @@ fn as_the_reference_has_it(mut metadata: Value) -> Value {
 }
 
 #[tokio::test]
-async fn pyiceberg_reads_a_table_and_what_it_is_told_is_what_the_reference_says() -> Result<(), Failure> {
+async fn ice1_pyiceberg_load_matches_reference() -> Result<(), Failure> {
     let schema = fresh_schema();
     let (catalog, storage, directory) = local_catalog(&schema).await?;
     let main = catalog.branch("main").await?;
@@ -76,7 +76,7 @@ async fn pyiceberg_reads_a_table_and_what_it_is_told_is_what_the_reference_says(
 }
 
 #[tokio::test]
-async fn pyiceberg_reads_partitions_vectors_a_branch_and_two_schemas() -> Result<(), Failure> {
+async fn pyiceberg_read_partitions_vectors_branch_schemas() -> Result<(), Failure> {
     let schema = fresh_schema();
     let (catalog, storage, directory) = local_catalog(&schema).await?;
     let main = catalog.branch("main").await?;
@@ -139,7 +139,7 @@ async fn pyiceberg_reads_partitions_vectors_a_branch_and_two_schemas() -> Result
 }
 
 #[tokio::test]
-async fn a_bound_is_served_as_the_reference_serves_it() -> Result<(), Failure> {
+async fn ice3_bounds_match_reference() -> Result<(), Failure> {
     let schema = fresh_schema();
     let catalog = Catalog::init(CatalogConfig::new(url(), &schema).warehouse("memory:///wh"), None).await?;
     let pool = Pool::new(&url(), 1)?;

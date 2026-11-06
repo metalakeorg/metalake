@@ -295,7 +295,7 @@ mod tests {
     }
 
     #[test]
-    fn an_append_says_its_ref_what_it_expects_and_its_key() {
+    fn ice6_append_request() {
         let change = asked(append()).unwrap();
         assert_eq!(change.ref_name, "main");
         assert_eq!(change.expected, Some(Some(5)));
@@ -312,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stage_create_comes_back_whole() {
+    fn rest7_stage_create_request() {
         let change = asked(create()).unwrap();
         let creation = change.creation.as_ref().unwrap();
         assert_eq!(creation.table_id, "00000000-0000-0000-0000-000000000002");
@@ -334,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn the_snapshots_of_one_commit_chain_to_what_the_ref_is_set_to() {
+    fn ice6_snapshot_chain() {
         let body = with_updates(
             append(),
             json!([snapshot(7, 5), set_ref("main", 7), snapshot(8, 7), set_ref("main", 8)]),
@@ -352,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn what_is_not_a_commit_of_files_is_refused() {
+    fn ice6_invalid_ref_updates_refused() {
         refused(with_updates(append(), json!([snapshot(7, 5)])), "no ref");
         refused(with_updates(append(), json!([set_ref("main", 7)])), "adds");
         refused(
@@ -368,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_names_what_it_refuses() {
+    fn ice6_unsupported_updates_refused() {
         refused(
             with_updates(append(), json!([{"action": "remove-snapshots", "snapshot-ids": [1]}])),
             "remove-snapshots",
@@ -403,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn properties_are_honoured_but_for_the_write_modes() {
+    fn rest9_property_updates() {
         let body = with_updates(
             append(),
             json!([{"action": "set-properties", "updates": {"a": "1", "b": "2"}},
@@ -423,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn a_transaction_is_on_one_ref() {
+    fn rest9_multi_ref_transaction_refused() {
         let on = |name: &str| Change {
             ref_name: name.to_string(),
             expected: None,

@@ -50,7 +50,7 @@ impl Drop for Running {
 }
 
 #[tokio::test]
-async fn pyiceberg_connects_and_lists_what_postgres_holds() -> Result<(), Box<dyn std::error::Error>> {
+async fn pyiceberg_list_namespaces() -> Result<(), Box<dyn std::error::Error>> {
     let python = std::env::var("METALAKE_TEST_PYTHON").expect("METALAKE_TEST_PYTHON: a Python with pyiceberg");
     let schema = fresh_schema();
     catalog(&schema).await?;
@@ -85,7 +85,7 @@ async fn pyiceberg_connects_and_lists_what_postgres_holds() -> Result<(), Box<dy
 }
 
 #[tokio::test]
-async fn a_catalog_it_cannot_reach_ends_the_process_with_a_reason() -> Result<(), Box<dyn std::error::Error>> {
+async fn startup_missing_catalog_exits() -> Result<(), Box<dyn std::error::Error>> {
     let run = Command::new(env!("CARGO_BIN_EXE_metalake-iceberg"))
         .args(["--schema", &fresh_schema(), "--listen", "127.0.0.1:0"])
         .env("METALAKE_POSTGRES", url())
@@ -96,7 +96,7 @@ async fn a_catalog_it_cannot_reach_ends_the_process_with_a_reason() -> Result<()
 }
 
 #[tokio::test]
-async fn stopping_closes_the_connections_even_of_a_state_still_held() -> Result<(), Box<dyn std::error::Error>> {
+async fn shutdown_releases_held_connections() -> Result<(), Box<dyn std::error::Error>> {
     let schema = fresh_schema();
     catalog(&schema).await?;
     let named = format!("{} application_name={schema}", url());

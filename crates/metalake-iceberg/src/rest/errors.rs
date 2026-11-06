@@ -82,7 +82,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_refusal_that_changed_nothing_is_a_409_and_what_is_not_known_a_5xx() {
+    fn rest2_protocol_error_status() {
         for (kind, code) in [
             (ErrorKind::Conflict, 409),
             (ErrorKind::Serialization, 409),
@@ -98,7 +98,7 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_before_the_commit_is_answered_as_one_after_it() {
+    fn rest2_refused_status_matches_protocol() {
         let conflict = Failure::from(Refused::Conflict("moved".into()));
         assert_eq!((conflict.code, conflict.kind), of_protocol(ErrorKind::Conflict));
         let invalid = Failure::from(Refused::Invalid("no".into()));
@@ -106,7 +106,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failure_has_the_shape_of_iceberg() {
+    async fn error_response_body() {
         let response = Failure::no_namespace("a.b").into_response();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let bytes = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();

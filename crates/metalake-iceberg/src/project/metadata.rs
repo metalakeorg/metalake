@@ -282,13 +282,13 @@ mod tests {
     }
 
     #[test]
-    fn a_ref_keeps_its_current_snapshot_and_ten_ancestors() {
+    fn rest5_ancestor_limit() {
         let refs = [("main".to_string(), "branch".to_string(), Some(20))];
         assert_eq!(ids(served(chain(1..=20), &refs)), (10..=20).collect::<Vec<_>>());
     }
 
     #[test]
-    fn each_ref_keeps_its_own_and_a_gone_ancestor_ends_the_walk() {
+    fn rest5_ancestors_per_ref() {
         let refs = [
             ("main".to_string(), "branch".to_string(), Some(20)),
             ("old".to_string(), "tag".to_string(), Some(5)),
@@ -300,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn every_table_is_copy_on_write() {
+    fn rest4_copy_on_write_override() {
         let rows = Rows {
             table_id: "t".into(),
             definition: json!({"properties": {"write.delete.mode": "merge-on-read", "a": "b"}}),

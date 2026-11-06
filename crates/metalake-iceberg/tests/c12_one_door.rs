@@ -9,7 +9,7 @@ const OUT_OF_BOUNDS: [&str; 5] = [
 ];
 
 #[test]
-fn the_server_depends_on_the_core_and_the_sdk_and_on_no_engine() {
+fn server_dependencies() {
     let manifest = include_str!("../Cargo.toml");
     for name in OUT_OF_BOUNDS {
         assert!(!manifest.contains(name), "{name} is out of bounds");

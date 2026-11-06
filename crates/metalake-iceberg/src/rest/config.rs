@@ -19,7 +19,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn it_says_exactly_what_is_served() {
+    async fn rest1_config_endpoints() {
         let Json(body) = config().await;
         assert_eq!(body["endpoints"], json!(ENDPOINTS));
         assert_eq!(body["defaults"], json!({}));
