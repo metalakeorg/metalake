@@ -14,6 +14,22 @@ set search_path = @schema@, pg_catalog, pg_temp as $$
   on conflict (path) do update set expires_at = excluded.expires_at;
 $$;
 
+-- RET-7b: objects found in storage that nothing knows become expired intents, for orphans to take. An intent that is
+-- there stays as it is: its writer may be at work.
+create function @schema@.adopt_orphans(ref_id int, table_id uuid, paths text[])
+returns bigint language sql
+set search_path = @schema@, pg_catalog, pg_temp as $$
+  with adopted as (
+    insert into intent (path, table_id, ref_id, expires_at)
+    select p, $2, $1, now() from unnest($3) p
+     where not exists (select 1 from data_file d where d.path = p)
+       and not exists (select 1 from deletion_vector v where v.path = p)
+       and not exists (select 1 from deletion_queue q where q.path = p)
+    on conflict (path) do nothing
+    returning 1)
+  select count(*) from adopted;
+$$;
+
 -- The functions a writer calls, and only a writer.
 create function @schema@.writing_functions() returns setof regprocedure language sql stable as $$
   select p.oid::regprocedure from pg_proc p
@@ -21,7 +37,7 @@ create function @schema@.writing_functions() returns setof regprocedure language
      and p.proname in ('commit', 'merge', 'merge_report', 'create_ref', 'delete_ref', 'set_retention',
                        'set_collect_grace',
                        'expire', 'sweep_done', 'forget_intents', 'fill_committed_at', 'next_id',
-                       'register_intents');
+                       'register_intents', 'adopt_orphans');
 $$;
 
 -- Gives the catalog to `owner`, and its rights to `writer` and `reader`, which init created. Run again by migrate,

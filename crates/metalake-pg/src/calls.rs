@@ -554,6 +554,12 @@ impl Protocol {
         Ok(self.one(s, "forget_intents(paths => $1)", &[&paths]).await?.get(0))
     }
 
+    /// Makes expired intents of the paths nothing knows, on a table and ref, and answers how many (RET-7b).
+    pub async fn adopt_orphans(&self, s: &impl Session, ref_id: i32, table_id: Uuid, paths: &[String]) -> Result<i64> {
+        let call = "adopt_orphans(ref_id => $1, table_id => $2, paths => $3)";
+        Ok(self.one(s, call, &[&ref_id, &table_id, &paths]).await?.get(0))
+    }
+
     /// Whether a table's inline files on a ref are due a flush (INL-2).
     pub async fn inline_flush_due(&self, s: &impl Session, r: i32, t: Uuid) -> Result<bool> {
         Ok(self
@@ -635,6 +641,7 @@ pub const INTERFACE: &[(&str, &[&str], bool)] = &[
     ("sweep_done", &["paths"], true),
     ("orphans", &["at"], false),
     ("forget_intents", &["paths"], true),
+    ("adopt_orphans", &["ref_id", "table_id", "paths"], true),
     ("fill_committed_at", &["lim"], true),
     ("inline_flush_due", &["r", "t"], false),
 ];

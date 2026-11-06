@@ -29,7 +29,7 @@ _ArrowData: TypeAlias = _ArrowStream | _ArrowArray
 _StrPath: TypeAlias = str | os.PathLike[str]
 _Age: TypeAlias = str | datetime.timedelta
 _Idempotent: TypeAlias = tuple[str, int]
-_TaskName: TypeAlias = Literal["times", "flush", "compact", "expire", "sweep", "orphans"]
+_TaskName: TypeAlias = Literal["times", "flush", "compact", "expire", "sweep", "orphans", "strays"]
 
 
 def connect(lake: _StrPath | None = None, *, schema: str | None = None) -> Lake: ...

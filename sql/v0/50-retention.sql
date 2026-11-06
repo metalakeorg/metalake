@@ -148,6 +148,10 @@ begin
   get diagnostics k = row_count; n := n + k;
   delete from idempotency i using ref r where r.ref_id = i.ref_id and r.deleted;
   get diagnostics k = row_count; n := n + k;
+  -- RET-3: the key of an Iceberg commit lasts as a retry could. A native app_id may live for years.
+  delete from idempotency i using x_bound b
+   where b.ref_id = i.ref_id and not b.deleted and i.app_id like 'iceberg:%' and i.commit_seq < b.m;
+  get diagnostics k = row_count; n := n + k;
   -- RET-3 (0.2): commits below a ref's floor, or of a deleted ref, that nothing remaining names.
   if budget > 0 then
     with c as (

@@ -63,7 +63,10 @@ impl Pool {
             deadpool_postgres::PoolError::Backend(e) => Error::from(e),
             deadpool_postgres::PoolError::Timeout(_) => {
                 let (wait, size) = (self.1.as_secs_f64(), self.0.status().max_size);
-                Error::new(ErrorKind::Postgres, format!("no connection of {size} came free in {wait}s"))
+                Error::new(
+                    ErrorKind::Postgres,
+                    format!("no connection of {size} came free in {wait}s"),
+                )
             }
             e => Error::new(ErrorKind::Unknown, e.to_string()),
         })

@@ -29,8 +29,11 @@ fn batch(keys: std::ops::Range<i64>) -> RecordBatch {
 
 /// A catalog, its table on a store that counts and can refuse, every file and vector of it stored.
 async fn lake(store: Arc<Counting>) -> Result<(Catalog, Table, Storage, Protocol), Error> {
-    let schema = fresh_schema();
-    let catalog = Catalog::init(CatalogConfig::new(url(), &schema).warehouse("memory:///wh"), None).await?;
+    lake_in(store, &fresh_schema()).await
+}
+
+async fn lake_in(store: Arc<Counting>, schema: &str) -> Result<(Catalog, Table, Storage, Protocol), Error> {
+    let catalog = Catalog::init(CatalogConfig::new(url(), schema).warehouse("memory:///wh"), None).await?;
     let storage = Storage::from_store("memory:///wh", store)?;
     let main = catalog.branch("main").await?;
     let shape = batch(0..1).schema();
@@ -45,7 +48,7 @@ async fn lake(store: Arc<Counting>) -> Result<(Catalog, Table, Storage, Protocol
     })?;
     tx.commit().await?;
     let t = main.table(&["db"], "t").await?;
-    Ok((catalog, t, storage, Protocol::new(&schema)))
+    Ok((catalog, t, storage, Protocol::new(schema)))
 }
 
 async fn files(
@@ -308,5 +311,121 @@ async fn a_vector_in_a_puffin_file_whose_intent_expired_is_refused() -> Result<(
     };
     let answer = p.merge(&session, &merge).await;
     assert!(answer.as_ref().is_err_and(refused), "{answer:?}");
+    Ok(())
+}
+
+/// RET-7b: what a client left under a table's location goes through intents; a live file, a file the service
+/// generated, a newer object and an intent at work stay; and a writer that commits a path adopted meanwhile is refused.
+#[tokio::test]
+async fn what_nothing_knows_is_adopted_and_what_is_known_is_not() -> Result<(), Box<dyn std::error::Error>> {
+    let store = Arc::new(Counting::default());
+    let (catalog, t, storage, _) = lake(store.clone()).await?;
+    let main = catalog.branch("main").await?;
+    append(&catalog, &t, &storage, 0..5).await?;
+    let t = main.table(&["db"], "t").await?;
+    let live = objects(&store).await;
+    assert_eq!(live.len(), 1);
+
+    let location = t.location().trim_end_matches('/').to_string();
+    let stray = format!("{location}/data/left-by-a-dead-spark.parquet");
+    let generated = format!("{location}/metalake-manifests/m-1.avro");
+    storage.put(&stray, bytes::Bytes::from_static(b"x")).await?;
+    storage.put(&generated, bytes::Bytes::from_static(b"x")).await?;
+    let waiting = files(&catalog, &t, &storage, 7..8, WriteOptions::default()).await?;
+
+    // A day's age keeps everything that is new.
+    let maintain = catalog.maintenance();
+    assert_eq!(maintain.strays(&t, &storage, Duration::from_secs(86400)).await?, 0);
+
+    assert_eq!(
+        maintain.strays(&t, &storage, Duration::ZERO).await?,
+        1,
+        "the stray only"
+    );
+    assert_eq!(maintain.orphans(&storage).await?, 1);
+    let left = objects(&store).await;
+    assert_eq!(left.len(), 3, "{left:?}");
+    assert!(left.contains(&live[0]));
+    assert!(left.iter().any(|o| o.as_str().ends_with("m-1.avro")));
+    assert!(
+        !left
+            .iter()
+            .any(|o| o.as_str().ends_with("left-by-a-dead-spark.parquet"))
+    );
+
+    // The upload with a live intent was not touched, and its writer commits it.
+    main.transaction().append(waiting).commit().await?;
+    let t = main.table(&["db"], "t").await?;
+    assert_eq!(keys(&catalog, &t, &storage).await?, [0, 1, 2, 3, 4, 7]);
+
+    // A slow writer, whose file was adopted before its commit, is refused, and no row points to nothing.
+    let late = files(
+        &catalog,
+        &t,
+        &storage,
+        9..10,
+        WriteOptions {
+            intent_ttl: Duration::ZERO,
+            ..Default::default()
+        },
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(main.transaction().append(late).commit().await.is_err());
+    Ok(())
+}
+
+/// A store that spells a path otherwise than the catalog would make a live file look unknown: nothing is adopted.
+#[tokio::test]
+async fn a_live_file_the_listing_does_not_show_stops_it() -> Result<(), Box<dyn std::error::Error>> {
+    let store = Arc::new(Counting::default());
+    let (catalog, t, storage, _) = lake(store.clone()).await?;
+    let main = catalog.branch("main").await?;
+    append(&catalog, &t, &storage, 0..5).await?;
+    let t = main.table(&["db"], "t").await?;
+    let path = objects(&store).await[0].clone();
+    store.delete(&path.as_str().into()).await?;
+    let refused = catalog.maintenance().strays(&t, &storage, Duration::ZERO).await;
+    assert!(matches!(refused, Err(Error::Location(_))), "{refused:?}");
+    Ok(())
+}
+
+/// RET-3: the key of an Iceberg commit goes below the floor, with its commit; a native key stays, and keeps its commit.
+#[tokio::test]
+async fn an_iceberg_key_goes_with_the_floor_and_a_native_one_stays() -> Result<(), Box<dyn std::error::Error>> {
+    let store = Arc::new(Counting::default());
+    let schema = fresh_schema();
+    let (catalog, t, storage, _) = lake_in(store.clone(), &schema).await?;
+    let main = catalog.branch("main").await?;
+    let added = files(&catalog, &t, &storage, 0..1, WriteOptions::default()).await?;
+    main.transaction()
+        .append(added)
+        .idempotent("iceberg:t:7431", 1)
+        .commit()
+        .await?;
+    let added = files(&catalog, &t, &storage, 1..2, WriteOptions::default()).await?;
+    main.transaction()
+        .append(added)
+        .idempotent("a-native-writer", 1)
+        .commit()
+        .await?;
+    let added = files(&catalog, &t, &storage, 2..3, WriteOptions::default()).await?;
+    main.transaction()
+        .append(added)
+        .idempotent("iceberg:t:7432", 1)
+        .commit()
+        .await?;
+
+    let pool = Pool::new(&url(), 1)?;
+    let session = pool.get().await?;
+    let query = format!("select array(select app_id from {schema}.idempotency order by app_id)");
+    catalog.maintenance().expire().await?;
+    let left: Vec<String> = session.query_one(&query, &[]).await?.get(0);
+    assert_eq!(left.len(), 3, "no retention, no floor");
+
+    main.set_retention(&keep_latest()).await?;
+    catalog.maintenance().expire().await?;
+    let left: Vec<String> = session.query_one(&query, &[]).await?.get(0);
+    assert_eq!(left, ["a-native-writer", "iceberg:t:7432"]);
     Ok(())
 }

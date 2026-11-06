@@ -133,6 +133,8 @@ begin
   get diagnostics k = row_count; n := n + k;
   delete from idempotency i where exists (select 1 from ref r where r.ref_id = i.ref_id and r.deleted);
   get diagnostics k = row_count; n := n + k;
+  delete from idempotency i where i.app_id like 'iceberg:%' and i.commit_seq < retention_floor(i.ref_id);
+  get diagnostics k = row_count; n := n + k;
   delete from commit c
    where not exists (select 1 from snapshot s where s.snapshot_id = c.commit_seq)
      and not exists (select 1 from ref r where r.created_seq = c.commit_seq)

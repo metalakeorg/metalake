@@ -191,8 +191,9 @@ impl PyLake {
 
     /// Runs the core's tasks once, for whatever schedules it, and answers what was done. Every task is safe to repeat and
     /// to run beside commits. In order, they are `times`, `flush`, `compact`, `expire`, `sweep` and `orphans`; `task` runs
-    /// one, and `on`, a branch, and `table`, `namespace.table`, narrow a `flush` or a `compact`. If a task fails, the
-    /// exception's `done` says what had been done, and running it again goes on from there.
+    /// one, and `on`, a branch, and `table`, `namespace.table`, narrow a `flush` or a `compact`. `strays`, asked for by
+    /// table, is not among them: it lists the table's location, for what an Iceberg client left, for `orphans` to take. If
+    /// a task fails, the exception's `done` says what had been done, and running it again goes on from there.
     #[pyo3(signature = (task=None, *, on=None, table=None))]
     fn maintain(
         &self,

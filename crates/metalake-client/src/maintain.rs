@@ -2,6 +2,8 @@
 //! order, what rewrites comes before what takes away: a compaction's old files are collectable only once expiring queues
 //! them, and only then can a sweep delete them.
 
+use std::time::Duration;
+
 use metalake::{Ref, Storage, Table, TableName};
 use serde::Serialize;
 
@@ -15,7 +17,12 @@ pub enum Task {
     Expire,
     Sweep,
     Orphans,
+    /// What a client left in a table's location: asked for by table, as it alone lists storage (RET-7b).
+    Strays,
 }
+
+/// How old an object must be for `strays` to take it: more than any write in progress.
+const STRAY_AGE: Duration = Duration::from_secs(3 * 24 * 3600);
 
 const ORDER: [Task; 6] = [
     Task::Times,
@@ -29,9 +36,9 @@ const ORDER: [Task; 6] = [
 impl Task {
     /// A task by the name it goes by.
     pub fn parse(name: &str) -> Result<Self> {
-        let found = ORDER.into_iter().find(|task| task.name() == name);
-        found.ok_or_else(|| {
-            let names: Vec<&str> = ORDER.iter().map(|task| task.name()).collect();
+        let tasks = ORDER.into_iter().chain([Task::Strays]);
+        tasks.clone().find(|task| task.name() == name).ok_or_else(|| {
+            let names: Vec<&str> = tasks.map(Task::name).collect();
             Error::usage(format!("{name} is not a task: {}", names.join(", ")))
         })
     }
@@ -44,6 +51,7 @@ impl Task {
             Task::Expire => "expire",
             Task::Sweep => "sweep",
             Task::Orphans => "orphans",
+            Task::Strays => "strays",
         }
     }
 
@@ -81,8 +89,12 @@ impl Lake {
     /// Runs the tasks in order, up to the first that fails.
     pub async fn maintain(&self, request: &MaintainRequest) -> Result<MaintainRun> {
         let scoped = request.on.is_some() || request.table.is_some();
-        if scoped && !request.task.is_some_and(Task::rewrites) {
-            return Err(Error::usage("a ref or a table is for flush and compact"));
+        let strays = matches!(request.task, Some(Task::Strays));
+        if scoped && !strays && !request.task.is_some_and(Task::rewrites) {
+            return Err(Error::usage("a ref or a table is for flush, compact and strays"));
+        }
+        if strays && request.table.is_none() {
+            return Err(Error::usage("strays lists a table's location: name the table"));
         }
         let tasks = request.task.as_ref().map_or(&ORDER[..], std::slice::from_ref);
 
@@ -110,6 +122,23 @@ impl Lake {
             Task::Expire => done.push(whole(maintenance.expire().await?)),
             Task::Sweep => done.push(whole(maintenance.sweep(&self.storage()?).await?)),
             Task::Orphans => done.push(whole(maintenance.orphans(&self.storage()?).await?)),
+            Task::Strays => {
+                let storage = self.storage()?;
+                for on in self.branches(request).await? {
+                    if let Some(table) = tables(request, &on).await?.first() {
+                        let adopted = maintenance.strays(table, &storage, STRAY_AGE).await?;
+                        done.push(Done {
+                            task: task.name(),
+                            on: Some(on.name().to_string()),
+                            table: Some(format!("{}.{}", table.namespace().join("."), table.name())),
+                            result: Some(adopted),
+                        });
+                        return Ok(());
+                    }
+                }
+                let name = request.table.as_deref().unwrap_or_default();
+                return Err(Error::failed(format!("no branch has the table {name}")));
+            }
             Task::Flush | Task::Compact => {
                 let storage = self.storage()?;
                 let mut found = false;

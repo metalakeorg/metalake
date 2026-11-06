@@ -4,9 +4,10 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use bytes::Bytes;
-use futures_util::{StreamExt, stream};
+use futures_util::{StreamExt, TryStreamExt, stream};
 use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
 
@@ -81,6 +82,22 @@ impl Storage {
 
     pub async fn get(&self, url: &str) -> Result<Bytes> {
         Ok(self.store.get(&self.path(url)?).await?.bytes().await?)
+    }
+
+    /// The objects under `location`, each with its age in seconds, as the catalog would spell its URL.
+    pub(crate) async fn list(&self, location: &str) -> Result<Vec<(String, i64)>> {
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        let prefix = self.path(location)?;
+        let found: Vec<_> = self.store.list(Some(&prefix)).try_collect().await?;
+        let ages = found.into_iter().map(|o| {
+            (
+                format!("{}/{}", self.base, o.location),
+                now - o.last_modified.timestamp(),
+            )
+        });
+        Ok(ages.collect())
     }
 
     /// Deletes an object; deleting one that is not there is not an error, since sweeping may be repeated (RET-4).

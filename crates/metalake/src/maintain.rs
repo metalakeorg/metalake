@@ -4,6 +4,9 @@
 //! caller's. Flushing and compacting rewrite files instead: a `replace` commit (CMT-11) of the same live rows, which
 //! the protocol refuses if a delete got in first, since it counts them.
 
+use std::collections::BTreeSet;
+use std::time::Duration;
+
 use futures_util::{StreamExt, TryStreamExt, stream};
 use metalake_pg::BATCH;
 
@@ -79,6 +82,36 @@ impl Maintenance {
             }
         }
         Ok(forgotten)
+    }
+
+    /// Turns the objects under a table's location that are older than `age` and that nothing knows into expired intents,
+    /// which `orphans` then deletes, and answers how many (RET-7b). A writer that commits one late is refused (CMT-9).
+    /// Only this lists storage, so it is asked for by table, with `age` beyond any write in progress.
+    pub async fn strays(&self, table: &Table, storage: &Storage, age: Duration) -> Result<u64> {
+        let listed = storage.list(table.location()).await?;
+        // A store that spelled a path otherwise than the catalog would make a live file look unknown, and lose it.
+        let spelled: BTreeSet<&str> = listed.iter().map(|(url, _)| url.as_str()).collect();
+        for task in self.files(table).await? {
+            let path = task.path.filter(|p| p.starts_with(table.location()));
+            if let Some(path) = path.filter(|p| !spelled.contains(p.as_str())) {
+                return Err(Error::Location(format!(
+                    "{path} is not among what {} lists",
+                    table.location()
+                )));
+            }
+        }
+        let generated = format!("{}/metalake-", table.location().trim_end_matches('/'));
+        let old: Vec<String> = listed
+            .into_iter()
+            .filter(|(url, seconds)| *seconds >= age.as_secs() as i64 && !url.starts_with(&generated))
+            .map(|(url, _)| url)
+            .collect();
+        let (p, session) = (self.catalog.protocol(), self.catalog.session().await?);
+        let mut adopted = 0;
+        for paths in old.chunks(self.batch.max(1) as usize) {
+            adopted += p.adopt_orphans(&session, table.ref_id(), table.id(), paths).await? as u64;
+        }
+        Ok(adopted)
     }
 
     /// Moves a table's inline files to storage if they are due (INL-2), and answers the commit, or none if they are

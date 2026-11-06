@@ -39,6 +39,14 @@ def test_every_task_in_its_order(lake):
     assert "flush" in repr(flush)
 
 
+def test_strays_is_asked_for_by_table(lake):
+    with pytest.raises(metalake.UsageError, match="name the table"):
+        lake.maintain("strays")
+    done = lake.maintain("strays", table="default.small")
+    assert [(d.task, d.table, d.result) for d in done] == [("strays", "default.small", 0)]
+    assert "strays" not in [d.task for d in lake.maintain()]
+
+
 def test_one_task(lake):
     assert [d.task for d in lake.maintain("times")] == ["times"]
 
@@ -67,9 +75,9 @@ def test_a_table_need_not_be_on_every_branch(lake):
 
 
 def test_only_a_rewrite_can_be_narrowed(lake):
-    with pytest.raises(metalake.UsageError, match="flush and compact"):
+    with pytest.raises(metalake.UsageError, match="flush, compact and strays"):
         lake.maintain("expire", table="default.small")
-    with pytest.raises(metalake.UsageError, match="flush and compact"):
+    with pytest.raises(metalake.UsageError, match="flush, compact and strays"):
         lake.maintain(on="main")
 
 

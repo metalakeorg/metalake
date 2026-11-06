@@ -379,7 +379,8 @@ order and the cluster key.
 - **CMT-5.** With an `app_id`, a commit is idempotent: it inserts `(ref, app_id, 0, 0)` into `idempotency`
   if absent and locks that row first. If its `app_version` is at most the stored `version`, it changes nothing
   and returns the stored `commit_seq`. Otherwise it stores its own `app_version` and `commit_seq`.
-  `app_version` is positive.
+  `app_version` is positive. The prefix `iceberg:` is reserved for the keys of Iceberg commits (ICE-6), which
+  collection removes (RET-3).
 - **CMT-6.** A table entry MAY carry `expected_snapshot`. If the current snapshot differs, the commit fails
   with a conflict. This is how an Iceberg `assert-ref-snapshot-id` requirement is honoured.
 - **CMT-7.** Checked under the locks, against the current state, a commit fails with a conflict when it:
@@ -580,6 +581,9 @@ referred to. Retention says how much history each ref keeps.
   row is collectable when its `commit_seq` is not the id of a remaining snapshot, the `created_seq` of a ref,
   or a commit recorded in `idempotency`, and, *0.2*, its ref is deleted or the commit is below the ref's floor:
   a commit within the retention stays, so that the feed delivers it (CHG-1), even one that wrote no snapshot.
+  An `idempotency` row is collectable when its ref is deleted, or, *0.2*, when its `app_id` starts with `iceberg:`
+  and its commit is below the ref's floor: such a key serves a retry, and any other may be used for as long as
+  its writer lives.
   Collecting never changes the result of a retained read.
 
   *0.2. Note.* By RET-2, the reach points on a live ref `r` are every sequence from its floor up, and isolated
@@ -619,6 +623,10 @@ referred to. Retention says how much history each ref keeps.
   refers to it and it is not in `deletion_queue`, whose objects wait for their grace (RET-9). Orphans are found from `intent` alone, without listing storage: a collector deletes the
   object, then the `intent` row. A commit or a merge that adds a file or a Puffin file whose `intent` has expired is
   refused (CMT-9), so a writer that missed its deadline never commits a path that a collector may have deleted.
+- **RET-7b.** *0.2.* A writer that does not register intents, as an Iceberg client does not, may leave objects
+  nothing records. A collector MAY list a table's location and, for an object older than any write in progress
+  that no row refers to, insert an `intent` that has expired, unless one exists. RET-7 then applies to it, and
+  CMT-9 refuses a writer that commits it late. Objects the projection generates (`metalake-*`) are not listed.
 
 ## 14. Time and changes
 
