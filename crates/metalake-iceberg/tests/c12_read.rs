@@ -139,6 +139,32 @@ async fn pyiceberg_read_partitions_vectors_branch_schemas() -> Result<(), Failur
 }
 
 #[tokio::test]
+async fn ice6_pyiceberg_append() -> Result<(), Failure> {
+    let schema = fresh_schema();
+    let (catalog, storage, directory) = local_catalog(&schema).await?;
+    let main = catalog.branch("main").await?;
+    main.transaction().create_namespace(&["db"]).commit().await?;
+    create(&main, "plain", "0", vec![]).await?;
+    append(&catalog, &main, &storage, "plain", 0..3).await?;
+
+    let (_server, uri) = server(&schema)?;
+    let said = client("append", &uri)?;
+    let t = main.table(&["db"], "plain").await?;
+    let planned: Vec<_> = Scan::new(&catalog, &t).plan().await?.try_collect().await?;
+    let _ = std::fs::remove_dir_all(&directory);
+    assert_eq!(said["rows"], json!([0, 1, 2, 7, 8]));
+    assert_eq!(
+        said["after"],
+        t.snapshot_id().map_or(json!(null), |id| json!(id)),
+        "MetaLake's id"
+    );
+    assert_eq!(said["reread"], said["after"]);
+    assert!(said["after"].as_i64() > said["before"].as_i64());
+    assert_eq!(planned.iter().map(|f| f.record_count).sum::<i64>(), 5);
+    Ok(())
+}
+
+#[tokio::test]
 async fn ice3_bounds_match_reference() -> Result<(), Failure> {
     let schema = fresh_schema();
     let catalog = Catalog::init(CatalogConfig::new(url(), &schema).warehouse("memory:///wh"), None).await?;

@@ -21,6 +21,7 @@ metalake.workspace = true
 metalake-pg.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true
+bytes.workspace = true
 parquet.workspace = true
 apache-avro = "0.22"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
@@ -32,5 +33,4 @@ tokio = { workspace = true, features = ["net", "signal"] }
 uuid.workspace = true
 
 [dev-dependencies]
-bytes.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }

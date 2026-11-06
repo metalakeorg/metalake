@@ -140,6 +140,13 @@ impl Transaction {
         self
     }
 
+    /// Refuses the commit unless `snapshot_id` is the table's current snapshot on the ref (CMT-6), for a writer whose base
+    /// is not a `Table` it read here, such as an Iceberg client's.
+    pub fn expect_snapshot(mut self, table_id: Uuid, snapshot_id: Option<i64>) -> Self {
+        self.expected.push(TableExpect { table_id, snapshot_id });
+        self
+    }
+
     /// Creates a namespace (NS-1).
     pub fn create_namespace(mut self, namespace: &[&str]) -> Self {
         self.namespaces.push(json!({"namespace": namespace, "create": true}));

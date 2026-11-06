@@ -31,3 +31,10 @@ pub enum Error {
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+impl Error {
+    /// Whether this is an object the store does not have.
+    pub fn is_missing_object(&self) -> bool {
+        matches!(self, Self::Storage(object_store::Error::NotFound { .. }))
+    }
+}

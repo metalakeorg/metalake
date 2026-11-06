@@ -4,6 +4,7 @@ import json
 import sys
 import urllib.request
 
+import pyarrow
 from pyiceberg.catalog import load_catalog
 from pyiceberg.exceptions import NoSuchNamespaceError, NoSuchTableError
 from pyiceberg.io.pyarrow import PyArrowFileIO
@@ -58,6 +59,20 @@ def read(uri):
     return said
 
 
+def append(uri):
+    table = connect(uri).load_table("db.plain")
+    before = table.current_snapshot().snapshot_id
+    table.append(pyarrow.Table.from_pylist([{"k": 7}, {"k": 8}], schema=table.schema().as_arrow()))
+    current = table.current_snapshot()
+    reread = connect(uri).load_table("db.plain")
+    return {
+        "before": before,
+        "after": current.snapshot_id,
+        "reread": reread.current_snapshot().snapshot_id,
+        "rows": sorted(row["k"] for row in reread.scan().to_arrow().to_pylist()),
+    }
+
+
 def wide(uri):
     catalog = connect(uri)
     table = catalog.load_table("db.wide")
@@ -75,4 +90,4 @@ def wide(uri):
 
 
 if __name__ == "__main__":
-    print(json.dumps({"namespaces": namespaces, "read": read, "wide": wide}[sys.argv[1]](sys.argv[2])))
+    print(json.dumps({"namespaces": namespaces, "read": read, "wide": wide, "append": append}[sys.argv[1]](sys.argv[2])))

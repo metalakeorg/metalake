@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use apache_avro::Reader;
 use apache_avro::types::Value;
+use bytes::Bytes;
 use futures_util::{StreamExt, TryStreamExt, stream};
 use metalake::{FileAdd, Storage, stats};
 use serde_json::Value as Json;
@@ -205,15 +206,29 @@ fn folded(entries: impl IntoIterator<Item = (i32, ManifestFile)>) -> ProposedFil
     files
 }
 
+/// An object a client said it wrote. One that is not there is the request's fault, and will not be there on a retry.
+async fn client_object(storage: &Storage, url: &str) -> Result<Bytes, ApplyError> {
+    storage.get(url).await.map_err(|e| {
+        if e.is_missing_object() {
+            invalid(format!("{url} is not there")).into()
+        } else {
+            e.into()
+        }
+    })
+}
+
 /// What the snapshots of a commit add and remove.
 pub async fn proposed(storage: &Storage, snapshots: &[ProposedSnapshot]) -> Result<ProposedFiles, ApplyError> {
     let mut all = Vec::new();
     for snapshot in snapshots {
-        let list = storage.get(&snapshot.manifest_list).await?;
+        let list = client_object(storage, &snapshot.manifest_list).await?;
         let manifests = manifests_of(&list, snapshot.snapshot_id)?;
-        let read = manifests.into_iter().map(|(path, spec_id)| async move {
-            let bytes = storage.get(&path).await?;
-            Ok::<_, ApplyError>(entries(&bytes, spec_id)?)
+        let read = manifests.into_iter().map(|(path, spec_id)| {
+            let storage = storage.clone();
+            async move {
+                let bytes = client_object(&storage, &path).await?;
+                Ok::<_, ApplyError>(entries(&bytes, spec_id)?)
+            }
         });
         let read: Vec<_> = stream::iter(read).buffered(CONCURRENCY).try_collect().await?;
         all.extend(read.into_iter().flatten());
@@ -223,14 +238,20 @@ pub async fn proposed(storage: &Storage, snapshots: &[ProposedSnapshot]) -> Resu
 
 /// The footer's size of each file. The manifest does not carry it, so this costs one request per file.
 pub async fn footer_sizes(storage: &Storage, files: &[ManifestFile]) -> Result<Vec<i32>, ApplyError> {
-    let read = files.iter().map(|file| async move {
-        let size = u64::try_from(file.file_size).unwrap_or(0);
-        if size < PARQUET_TAIL {
-            return Err(invalid(format!("{} is too small to be Parquet", file.path)).into());
+    let sized: Vec<(String, u64)> = files
+        .iter()
+        .map(|file| (file.path.clone(), u64::try_from(file.file_size).unwrap_or(0)))
+        .collect();
+    let read = sized.into_iter().map(|(path, size)| {
+        let storage = storage.clone();
+        async move {
+            if size < PARQUET_TAIL {
+                return Err(ApplyError::from(invalid(format!("{path} is too small to be Parquet"))));
+            }
+            let tail = storage.tail(&path, size, PARQUET_TAIL).await?;
+            let found = stats::footer_size(&tail);
+            found.ok_or_else(|| ApplyError::from(invalid(format!("{path} is not Parquet of {size} bytes"))))
         }
-        let tail = storage.tail(&file.path, size, PARQUET_TAIL).await?;
-        let found = stats::footer_size(&tail);
-        found.ok_or_else(|| ApplyError::from(invalid(format!("{} is not Parquet of {size} bytes", file.path))))
     });
     stream::iter(read).buffered(CONCURRENCY).try_collect().await
 }
@@ -297,7 +318,6 @@ pub fn file_add(
 
 #[cfg(test)]
 mod tests {
-    use bytes::Bytes;
     use serde_json::json;
 
     use super::*;
@@ -517,6 +537,11 @@ mod tests {
         .await;
         let snapshots = [snapshot(7, "memory:///t/l1"), snapshot(8, "memory:///t/l2")];
         let files = proposed(&storage, &snapshots).await.unwrap();
+        let gone = proposed(&storage, &[snapshot(9, "memory:///t/none")]).await;
+        assert!(
+            matches!(gone, Err(ApplyError::Refused(Refused::Invalid(_)))),
+            "{gone:?}"
+        );
         let added: Vec<&str> = files.added.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(added, ["memory:///t/b"]);
         assert_eq!(files.removed, Vec::<String>::new());
