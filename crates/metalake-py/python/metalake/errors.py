@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ._metalake import Done
+    from ._metalake import Done as _Done
 
 
 class MetaLakeError(Exception):
@@ -17,7 +17,7 @@ class MetaLakeError(Exception):
         self.rule = rule
         self.code = code
         self.retryable = retryable
-        self.done: list[Done] = []
+        self.done: list[_Done] = []
 
     def __reduce__(self):
         # Across processes, as `multiprocessing` sends it. What `maintain` had done stays behind.

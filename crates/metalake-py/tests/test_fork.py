@@ -3,12 +3,14 @@
 import multiprocessing
 import os
 import pickle
+import sys
 
 import pytest
 
 import metalake
 
 needs_fork = pytest.mark.skipif(not hasattr(os, "fork"), reason="this system has no fork")
+not_on_macos = pytest.mark.skipif(sys.platform == "darwin", reason="macOS refuses a forked child")
 LIMIT = 60
 
 # What a child inherits. A fork copies these, which is the point.
@@ -83,6 +85,10 @@ def write(directory, k):
     return k
 
 
+def connect_refused(directory):
+    return refused(lambda: metalake.connect(directory))
+
+
 def leave():
     return os.getpid()
 
@@ -97,15 +103,27 @@ def test_what_a_child_inherits_says_so_and_does_not_hang(lake, use):
 
 
 @needs_fork
+@not_on_macos
 def test_a_child_connects_on_its_own(lake, directory):
     assert sum(in_children(connect_again, (directory,))[0]) == 2
 
 
 @needs_fork
+@not_on_macos
 def test_children_write_each_with_its_own(lake, directory):
     lake.sql("create table written (k bigint)")
     assert sorted(in_children(write, *[(directory, k) for k in range(4)])) == [0, 1, 2, 3]
     assert sum(batch.num_rows for batch in lake.sql("select k from written")) == 4
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="only macOS refuses a forked child")
+def test_on_macos_a_forked_child_is_told_to_spawn(lake, directory):
+    assert "spawn" in in_children(connect_refused, (directory,))[0]
+
+
+def test_a_spawned_child_connects_on_its_own(lake, directory):
+    with multiprocessing.get_context("spawn").Pool(1) as pool:
+        assert sum(pool.apply_async(connect_again, (directory,)).get(timeout=LIMIT)) == 2
 
 
 @needs_fork

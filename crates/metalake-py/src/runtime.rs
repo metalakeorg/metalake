@@ -1,7 +1,8 @@
 //! The one runtime of a process, and the one way Python waits for it. A connection to Postgres lives on a task of the
 //! runtime that opened it, so a program that makes many calls needs them all on the same one. A fork copies a runtime
 //! without its threads, so a process makes its own, and leaves the one it inherited: dropping it would wait for those
-//! threads, which are not there.
+//! threads, which are not there. On macOS a child that connects after such a fork hangs, as Python warns of when it makes
+//! `spawn` the default there, so it is told so.
 //!
 //! The wait is a plain channel. tokio's timers would not fire while a statement keeps every worker busy, since nothing
 //! drives them then, and an interrupt would go unnoticed.
@@ -38,6 +39,12 @@ fn runtime() -> &'static Runtime {
     }
 }
 
+/// Whether this process was forked from one that had started the runtime.
+fn forked() -> bool {
+    let current = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    current.is_some_and(|(owner, _)| owner != std::process::id())
+}
+
 /// Runs `future` on the runtime, and answers how to end it.
 pub fn spawn<F>(future: F) -> AbortHandle
 where
@@ -53,6 +60,10 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
+    if cfg!(target_os = "macos") && forked() {
+        let message = "a process forked from one that used metalake cannot connect on macOS: start it with `spawn`";
+        return Err(to_python(py, Error::usage(message)));
+    }
     let (sender, mut receiver) = channel();
     let task = spawn(async move {
         let _ = sender.send(future.await);

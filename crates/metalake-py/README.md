@@ -30,3 +30,6 @@ stable: 0 done, 1 failed, 2 wrong use, 3 a conflict that changed nothing, 4 a wr
 ## Platforms
 
 Windows and macOS 11 or later on x86-64 and ARM, Linux with glibc 2.34 or later on x86-64 and ARM.
+
+On macOS, a process forked from one that used metalake cannot connect, and says so: start it with `spawn`, which is what
+`multiprocessing` does there by default.
