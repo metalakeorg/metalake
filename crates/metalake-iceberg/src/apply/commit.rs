@@ -1,22 +1,19 @@
-//! One `updateTable` as one commit of the protocol (ICE-6), on what `update` and `files` established.
+//! `updateTable` and `transactions/commit` as one commit of the protocol (ICE-6, REST-9), on what `update` and `files`
+//! established.
 
 use std::collections::HashMap;
 
-use metalake::{Error, FileAdd, Table};
-use serde_json::Value as Json;
+use metalake::{Error, FileAdd, Ref, Table};
+use serde_json::{Value as Json, json};
 use uuid::Uuid;
 
 use super::files::{self, ManifestFile};
-use super::update::{Change, Creation};
+use super::update::{Change, one_ref};
 use super::{ApplyError, Refused, create};
 use crate::state::State;
 
 /// The version of every Iceberg idempotency key: a key names one proposed snapshot (REST-3).
 const APP_VERSION: i64 = 1;
-
-fn not_yet(what: &str) -> Refused {
-    Refused::Invalid(format!("{what} is not served yet"))
-}
 
 /// The type of each field of a definition.
 fn field_types(definition: &Json) -> HashMap<i32, String> {
@@ -76,104 +73,226 @@ fn resolved(paths: &[String], ids: &[i64], found: &[(Option<String>, i64)]) -> O
     Some(resolved)
 }
 
-/// The commit a stage-create ends in: the definition and the first files, so that a table and its rows appear together
-/// (REST-7). The client's id makes the key the same across attempts.
-async fn create_with_files(
-    state: &State,
-    namespace: &[&str],
-    name: &str,
-    change: &Change,
-    creation: &Creation,
-) -> Result<Table, ApplyError> {
-    let on = state.named(&change.ref_name).await?;
-    let table_id = Uuid::parse_str(&creation.table_id)
-        .map_err(|_| Refused::Invalid(format!("{} is not a table uuid", creation.table_id)))?;
-    let key = change.app_id(&creation.table_id).expect("a creation has a key");
-    if on.commit_of_key(&key).await?.is_some() {
-        return Ok(on.table(namespace, name).await?);
-    }
-    let definition = create::definition(namespace, name, creation, &change.properties)?;
-    let storage = state.storage()?;
-    let proposed = files::proposed(&storage, &change.snapshots).await?;
-    if !proposed.removed.is_empty() {
-        return Err(Refused::Invalid("a commit that creates a table removes no files".into()).into());
-    }
-    let footers = files::footer_sizes(&storage, &proposed.added).await?;
-    let adds = file_adds(table_id, &create::described(&definition), &proposed.added, &footers)?;
-    on.transaction()
-        .define(table_id, definition)
-        .append(adds)
-        .author("iceberg")
-        .idempotent(key, APP_VERSION)
-        .commit()
-        .await?;
-    Ok(on.table(namespace, name).await?)
+/// A table a commit changes, as a client names it.
+#[derive(Debug)]
+pub struct Target {
+    pub namespace: Vec<String>,
+    pub name: String,
+    pub change: Change,
 }
 
-/// Commits a change to the table `name` of `namespace`, and answers the table. A key already applied answers at once,
+impl Target {
+    fn levels(&self) -> Vec<&str> {
+        self.namespace.iter().map(String::as_str).collect()
+    }
+}
+
+/// What one table adds to a commit.
+#[derive(Debug)]
+struct Prepared {
+    table_id: Uuid,
+    table: Option<Table>,
+    adds: Vec<FileAdd>,
+    removed: Vec<i64>,
+    definition: Option<Json>,
+    expected: Option<Option<i64>>,
+    replace: bool,
+}
+
+/// The table a change names, or the id a stage-create gave it.
+async fn resolve(on: &Ref, target: &Target) -> Result<(Uuid, Option<Table>), ApplyError> {
+    if let Some(creation) = &target.change.creation {
+        let id = Uuid::parse_str(&creation.table_id)
+            .map_err(|_| Refused::Invalid(format!("{} is not a table uuid", creation.table_id)))?;
+        return Ok((id, None));
+    }
+    let table = on.table(&target.levels(), &target.name).await?;
+    target.change.check_table(&table.id().to_string())?;
+    Ok((table.id(), Some(table)))
+}
+
+/// The files of a change, and its definition: what a stage-create sends back, or the properties it changes.
+async fn prepare(
+    state: &State,
+    on: &Ref,
+    target: &Target,
+    table_id: Uuid,
+    table: Option<Table>,
+) -> Result<Prepared, ApplyError> {
+    let change = &target.change;
+    let definition = match &change.creation {
+        Some(creation) => Some(create::definition(
+            &target.levels(),
+            &target.name,
+            creation,
+            &change.properties,
+        )?),
+        None if change.properties.is_empty() => None,
+        None => Some(json!({"properties": create::properties(&change.properties)?})),
+    };
+    let (mut adds, mut removed) = (Vec::new(), Vec::new());
+    if !change.snapshots.is_empty() {
+        let storage = state.storage()?;
+        let proposed = files::proposed(&storage, &change.snapshots).await?;
+        let described = match (&table, &definition) {
+            (Some(table), _) => on.definition(table, None).await?,
+            (None, Some(new)) => create::described(new),
+            (None, None) => unreachable!("a change without a table creates one"),
+        };
+        if let Some(table) = &table {
+            let (paths, ids) = by_kind(table.location(), &proposed.removed);
+            let found = match proposed.removed.is_empty() {
+                true => Vec::new(),
+                false => on.files_at_paths(table, &paths, &ids).await?,
+            };
+            let conflict = || Refused::Conflict("a file the commit removes is not visible on the ref".into());
+            removed = resolved(&paths, &ids, &found).ok_or_else(conflict)?;
+        } else if !proposed.removed.is_empty() {
+            return Err(Refused::Invalid("a commit that creates a table removes no files".into()).into());
+        }
+        let footers = files::footer_sizes(&storage, &proposed.added).await?;
+        adds = file_adds(table_id, &described, &proposed.added, &footers)?;
+    }
+    let expected = change.expected.filter(|_| table.is_some());
+    Ok(Prepared {
+        table_id,
+        table,
+        adds,
+        removed,
+        definition,
+        expected,
+        replace: change.operation() == Some("replace"),
+    })
+}
+
+/// The commit's one key: a client keeps its snapshot ids across attempts, so the least of them is the same each time, and
+/// any of them names the commit (REST-3).
+fn commit_key(targets: &[Target], ids: &[Uuid]) -> Option<String> {
+    let keys = targets
+        .iter()
+        .zip(ids)
+        .filter_map(|(t, id)| t.change.app_id(&id.to_string()));
+    keys.min()
+}
+
+/// Commits the changes of several tables as one commit on one ref (ICE-6, REST-9). A key already applied answers at once,
 /// whatever the client has since done with its files (REST-3).
-pub async fn apply(state: &State, namespace: &[&str], name: &str, change: &Change) -> Result<Table, ApplyError> {
-    if let Some(creation) = &change.creation {
-        return create_with_files(state, namespace, name, change, creation).await;
-    }
-    if !change.properties.is_empty() {
-        return Err(not_yet("a change of properties").into());
-    }
-    let on = state.named(&change.ref_name).await.map_err(|e| match e {
-        Error::NotFound(_) => ApplyError::from(Refused::Invalid(format!("no ref {}", change.ref_name))),
+pub async fn apply(state: &State, targets: &[Target]) -> Result<Vec<Table>, ApplyError> {
+    let ref_name = one_ref(targets.iter().map(|t| &t.change))?;
+    let on = state.named(ref_name).await.map_err(|e| match e {
+        Error::NotFound(_) => ApplyError::from(Refused::Invalid(format!("no ref {ref_name}"))),
         other => other.into(),
     })?;
-    let table = on.table(namespace, name).await?;
-    change.check_table(&table.id().to_string())?;
-    if change.snapshots.is_empty() {
-        return Ok(table);
+    let mut resolved = Vec::with_capacity(targets.len());
+    for target in targets {
+        resolved.push(resolve(&on, target).await?);
     }
-    let key = change.app_id(&table.id().to_string());
-    if let Some(key) = &key
-        && on.commit_of_key(key).await?.is_some()
-    {
-        return Ok(table);
-    }
-
-    let storage = state.storage()?;
-    let proposed = files::proposed(&storage, &change.snapshots).await?;
-    let (paths, ids) = by_kind(table.location(), &proposed.removed);
-    let found = match proposed.removed.is_empty() {
-        true => Vec::new(),
-        false => on.files_at_paths(&table, &paths, &ids).await?,
-    };
-    let Some(removed) = resolved(&paths, &ids, &found) else {
-        // The files may be gone because a first attempt of this commit took them, after the check above.
-        if let Some(key) = &key
-            && on.commit_of_key(key).await?.is_some()
-        {
-            return Ok(table);
+    let ids: Vec<Uuid> = resolved.iter().map(|(id, _)| *id).collect();
+    let key = commit_key(targets, &ids);
+    if !was_applied(&on, key.as_deref()).await? {
+        let mut prepared = Vec::with_capacity(targets.len());
+        for (target, (id, table)) in targets.iter().zip(resolved) {
+            match prepare(state, &on, target, id, table).await {
+                Ok(one) => prepared.push(one),
+                // The files may be gone because a first attempt of this commit took them, after the check above.
+                Err(ApplyError::Refused(Refused::Conflict(_))) if was_applied(&on, key.as_deref()).await? => {
+                    return tables(&on, targets).await;
+                }
+                Err(failure) => return Err(failure),
+            }
         }
-        return Err(Refused::Conflict("a file the commit removes is not visible on the ref".into()).into());
-    };
-    let footers = files::footer_sizes(&storage, &proposed.added).await?;
-    let definition = on.definition(&table, None).await?;
-    let adds = file_adds(table.id(), &definition, &proposed.added, &footers)?;
+        commit(&on, prepared, key).await?;
+    }
+    tables(&on, targets).await
+}
 
-    let mut transaction = on.transaction().append(adds).remove(&table, removed).author("iceberg");
-    if change.operation() == Some("replace") {
+async fn was_applied(on: &Ref, key: Option<&str>) -> Result<bool, ApplyError> {
+    match key {
+        Some(key) => Ok(on.commit_of_key(key).await?.is_some()),
+        None => Ok(false),
+    }
+}
+
+async fn tables(on: &Ref, targets: &[Target]) -> Result<Vec<Table>, ApplyError> {
+    let mut found = Vec::with_capacity(targets.len());
+    for target in targets {
+        found.push(on.table(&target.levels(), &target.name).await?);
+    }
+    Ok(found)
+}
+
+async fn commit(on: &Ref, prepared: Vec<Prepared>, key: Option<String>) -> Result<(), ApplyError> {
+    let idle = |p: &Prepared| p.adds.is_empty() && p.removed.is_empty() && p.definition.is_none();
+    if key.is_none() && prepared.iter().all(idle) {
+        return Ok(());
+    }
+    let replaces = prepared.iter().all(|p| p.replace);
+    let mut transaction = on.transaction().author("iceberg");
+    for one in prepared {
+        transaction = transaction.append(one.adds);
+        if let Some(table) = &one.table {
+            transaction = transaction.remove(table, one.removed);
+        }
+        if let Some(definition) = one.definition {
+            transaction = transaction.define(one.table_id, definition);
+        }
+        if let Some(expected) = one.expected {
+            transaction = transaction.expect_snapshot(one.table_id, expected);
+        }
+    }
+    if replaces {
         transaction = transaction.replace();
     }
-    if let Some(app_id) = key {
-        transaction = transaction.idempotent(app_id, APP_VERSION);
-    }
-    if let Some(expected) = change.expected {
-        transaction = transaction.expect_snapshot(table.id(), expected);
+    if let Some(key) = key {
+        transaction = transaction.idempotent(key, APP_VERSION);
     }
     transaction.commit().await?;
-    Ok(table)
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use std::collections::BTreeMap;
 
     use super::*;
+    use crate::wire::commit::ProposedSnapshot;
+
+    fn target(snapshot: i64) -> Target {
+        let proposed = ProposedSnapshot {
+            snapshot_id: snapshot,
+            parent_snapshot_id: None,
+            manifest_list: String::new(),
+            summary: BTreeMap::new(),
+        };
+        Target {
+            namespace: vec!["db".to_string()],
+            name: "t".to_string(),
+            change: Change {
+                ref_name: "main".to_string(),
+                expected: None,
+                table_uuid: None,
+                creation: None,
+                snapshots: vec![proposed],
+                properties: BTreeMap::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn rest9_commit_key_independent_of_order() {
+        let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let one = commit_key(&[target(5), target(9)], &[a, b]);
+        let other = commit_key(&[target(9), target(5)], &[b, a]);
+        assert_eq!(one, other);
+        assert_eq!(one, Some(format!("iceberg:{a}:5")));
+    }
+
+    #[test]
+    fn properties_only_commit_has_no_key() {
+        let mut only = target(1);
+        only.change.snapshots.clear();
+        assert_eq!(commit_key(&[only], &[Uuid::from_u128(1)]), None);
+    }
 
     #[test]
     fn field_types_of_definition() {

@@ -41,6 +41,16 @@ impl Failure {
         self.code == StatusCode::CONFLICT
     }
 
+    pub(crate) fn namespace_exists(name: &str) -> Self {
+        let message = format!("namespace {name} already exists");
+        Self::new(StatusCode::CONFLICT, "AlreadyExistsException", message)
+    }
+
+    pub(crate) fn namespace_not_empty(name: &str) -> Self {
+        let message = format!("namespace {name} is not empty");
+        Self::new(StatusCode::CONFLICT, "NamespaceNotEmptyException", message)
+    }
+
     pub(crate) fn no_namespace(name: &str) -> Self {
         let message = format!("no namespace {name}");
         Self::new(StatusCode::NOT_FOUND, "NoSuchNamespaceException", message)

@@ -2,6 +2,7 @@
 
 pub mod commit;
 pub mod create;
+pub mod ddl;
 pub mod files;
 pub mod update;
 

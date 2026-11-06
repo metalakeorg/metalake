@@ -235,11 +235,11 @@ pub fn change(request: CommitTableRequest) -> Result<Change, Refused> {
 }
 
 /// REST-9: a commit of several tables is on one ref.
-pub fn one_ref(changes: &[Change]) -> Result<&str, Refused> {
-    let Some(first) = changes.first() else {
+pub fn one_ref<'a>(mut changes: impl Iterator<Item = &'a Change>) -> Result<&'a str, Refused> {
+    let Some(first) = changes.next() else {
         return invalid("a transaction changes a table");
     };
-    if changes.iter().any(|c| c.ref_name != first.ref_name) {
+    if changes.any(|c| c.ref_name != first.ref_name) {
         return invalid("a transaction is on one ref");
     }
     Ok(&first.ref_name)
@@ -443,8 +443,8 @@ mod tests {
             snapshots: Vec::new(),
             properties: BTreeMap::new(),
         };
-        assert_eq!(one_ref(&[on("b"), on("b")]), Ok("b"));
-        assert!(one_ref(&[on("main"), on("b")]).is_err());
-        assert!(one_ref(&[]).is_err());
+        assert_eq!(one_ref([on("b"), on("b")].iter()), Ok("b"));
+        assert!(one_ref([on("main"), on("b")].iter()).is_err());
+        assert!(one_ref([].iter()).is_err());
     }
 }

@@ -4,12 +4,21 @@ use axum::Json;
 use serde_json::{Value, json};
 
 /// What this server serves, as the OpenAPI spells a route. `{prefix}` is part of the spelling, and this server uses none.
-const ENDPOINTS: [&str; 5] = [
+const ENDPOINTS: [&str; 14] = [
     "GET /v1/{prefix}/namespaces",
+    "POST /v1/{prefix}/namespaces",
+    "GET /v1/{prefix}/namespaces/{namespace}",
+    "HEAD /v1/{prefix}/namespaces/{namespace}",
+    "DELETE /v1/{prefix}/namespaces/{namespace}",
+    "POST /v1/{prefix}/namespaces/{namespace}/properties",
     "GET /v1/{prefix}/namespaces/{namespace}/tables",
     "POST /v1/{prefix}/namespaces/{namespace}/tables",
     "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}",
     "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}",
+    "HEAD /v1/{prefix}/namespaces/{namespace}/tables/{table}",
+    "DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}",
+    "POST /v1/{prefix}/tables/rename",
+    "POST /v1/{prefix}/transactions/commit",
 ];
 
 pub(crate) async fn config() -> Json<Value> {

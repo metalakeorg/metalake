@@ -5,20 +5,22 @@ use std::collections::BTreeMap;
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, State as Shared};
+use axum::http::StatusCode;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use super::errors::Failure;
 use super::namespaces::SEPARATOR;
+use crate::apply::commit::Target;
 use crate::apply::update::change;
-use crate::apply::{Refused, commit, create};
+use crate::apply::{Refused, commit, create, ddl};
 use crate::load::load;
 use crate::project::metadata::staged;
 use crate::state::State;
-use crate::wire::commit::{CommitTableRequest, CreateTableRequest};
+use crate::wire::commit::{CommitTableRequest, CommitTransactionRequest, CreateTableRequest, RenameTableRequest};
 use crate::wire::metadata::LoadTableResult;
 
-fn levels(namespace: &str) -> Vec<&str> {
+pub(super) fn levels(namespace: &str) -> Vec<&str> {
     namespace.split(SEPARATOR).collect()
 }
 
@@ -37,7 +39,7 @@ pub(crate) async fn list(Shared(state): Shared<State>, Path(namespace): Path<Str
     Ok(Json(json!({"identifiers": identifiers})))
 }
 
-fn decoded<T: DeserializeOwned>(body: &Bytes) -> Result<T, Failure> {
+pub(super) fn decoded<T: DeserializeOwned>(body: &Bytes) -> Result<T, Failure> {
     let malformed = |e: serde_json::Error| Refused::Invalid(format!("a malformed request: {e}"));
     Ok(serde_json::from_slice(body).map_err(malformed)?)
 }
@@ -89,15 +91,73 @@ pub(crate) async fn get(
     Ok(Json(load(&state, &table).await?))
 }
 
-/// `POST /v1/namespaces/{namespace}/tables/{table}`: `updateTable`, one commit (ICE-6). The body is decoded here since
-/// Iceberg expects a 400 for a malformed request, and axum's extractor answers 422.
+/// `POST /v1/namespaces/{namespace}/tables/{table}`: `updateTable`, one commit (ICE-6).
 pub(crate) async fn update(
     Shared(state): Shared<State>,
     Path((namespace, name)): Path<(String, String)>,
     body: Bytes,
 ) -> Result<Json<LoadTableResult>, Failure> {
     let request: CommitTableRequest = decoded(&body)?;
-    let change = change(request)?;
-    let table = commit::apply(&state, &levels(&namespace), &name, &change).await?;
-    Ok(Json(load(&state, &table).await?))
+    let target = Target {
+        namespace: levels(&namespace).iter().map(|l| l.to_string()).collect(),
+        name,
+        change: change(request)?,
+    };
+    let tables = commit::apply(&state, std::slice::from_ref(&target)).await?;
+    Ok(Json(load(&state, &tables[0]).await?))
+}
+
+/// `POST /v1/transactions/commit`: one commit of several tables, on one ref (REST-9).
+pub(crate) async fn commit_transaction(Shared(state): Shared<State>, body: Bytes) -> Result<StatusCode, Failure> {
+    let request: CommitTransactionRequest = decoded(&body)?;
+    let mut targets = Vec::with_capacity(request.table_changes.len());
+    for mut entry in request.table_changes {
+        let identifier = entry.identifier.take();
+        let identifier = identifier.ok_or_else(|| Refused::Invalid("a table change names no table".into()))?;
+        targets.push(Target {
+            namespace: identifier.namespace,
+            name: identifier.name,
+            change: change(entry)?,
+        });
+    }
+    commit::apply(&state, &targets).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `HEAD /v1/namespaces/{namespace}/tables/{table}`, which generates nothing, unlike a load.
+pub(crate) async fn exists(
+    Shared(state): Shared<State>,
+    Path((namespace, name)): Path<(String, String)>,
+) -> Result<StatusCode, Failure> {
+    state.main().table(&levels(&namespace), &name).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /v1/namespaces/{namespace}/tables/{table}`. `purgeRequested` changes nothing (REST-8), so it is not read.
+pub(crate) async fn drop(
+    Shared(state): Shared<State>,
+    Path((namespace, name)): Path<(String, String)>,
+) -> Result<StatusCode, Failure> {
+    let table = state.main().table(&levels(&namespace), &name).await?;
+    ddl::drop_table(&state, &table).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /v1/tables/rename`.
+pub(crate) async fn rename(Shared(state): Shared<State>, body: Bytes) -> Result<StatusCode, Failure> {
+    let request: RenameTableRequest = decoded(&body)?;
+    let source: Vec<&str> = request.source.namespace.iter().map(String::as_str).collect();
+    let table = state.main().table(&source, &request.source.name).await?;
+    let destination = &request.destination;
+    let namespaces = state.main().namespaces().await?;
+    if !namespaces.iter().any(|n| n.namespace == destination.namespace) {
+        return Err(Failure::no_namespace(&destination.namespace.join(".")));
+    }
+    ddl::rename_table(&state, &table, &destination.namespace, &destination.name)
+        .await
+        .map_err(|e| match Failure::from(e) {
+            failure if failure.is_conflict() => Failure::already_exists(&destination.name),
+            failure => failure,
+        })?;
+    Ok(StatusCode::NO_CONTENT)
 }

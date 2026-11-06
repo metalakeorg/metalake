@@ -123,11 +123,15 @@ fn sort_fields(order: &Value) -> Vec<Value> {
         .collect()
 }
 
-/// The properties a table is created with. `format-version` is the server's to serve, so it is checked and not stored.
-fn properties(given: &BTreeMap<String, Option<String>>) -> Result<Map<String, Value>, Refused> {
+/// Property changes in the protocol's shape, a removal being a null. `format-version` is the server's to serve, so it is
+/// checked and not stored.
+pub(super) fn properties(given: &BTreeMap<String, Option<String>>) -> Result<Map<String, Value>, Refused> {
     let mut kept = Map::new();
     for (key, value) in given {
-        let Some(value) = value else { continue };
+        let Some(value) = value else {
+            kept.insert(key.clone(), Value::Null);
+            continue;
+        };
         if key == "format-version" {
             if value != "2" {
                 return Err(invalid("tables are served in format 2"));
@@ -159,7 +163,8 @@ pub fn definition(
     if !order.is_empty() {
         definition["sort_order"] = Value::Array(order);
     }
-    let kept = properties(given)?;
+    let mut kept = properties(given)?;
+    kept.retain(|_, value| !value.is_null());
     if !kept.is_empty() {
         definition["properties"] = Value::Object(kept);
     }

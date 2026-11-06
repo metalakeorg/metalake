@@ -211,6 +211,12 @@ impl Transaction {
         Ok((self, id))
     }
 
+    /// Changes a namespace by an entry already in the protocol's shape (NS-1 to NS-4).
+    pub fn change_namespace(mut self, change: Value) -> Self {
+        self.namespaces.push(change);
+        self
+    }
+
     /// Creates or changes a table by a definition already in the protocol's shape, and under the id it gives.
     pub fn define(mut self, table_id: Uuid, definition: Value) -> Self {
         self.changes.insert(table_id.to_string(), definition);

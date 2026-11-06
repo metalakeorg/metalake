@@ -141,6 +141,21 @@ pub struct CreateTableRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct CreateNamespaceRequest {
+    pub namespace: Vec<String>,
+    #[serde(default)]
+    pub properties: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct UpdateNamespaceRequest {
+    #[serde(default)]
+    pub removals: Vec<String>,
+    #[serde(default)]
+    pub updates: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct RenameTableRequest {
     pub source: TableIdentifier,
     pub destination: TableIdentifier,
