@@ -97,11 +97,13 @@ def test_an_interrupt_ends_iteration(lake):
 
 
 def test_an_interrupt_ends_polars(lake, interrupt_polars):
-    # Polars says it in its own words, which depend on its version: `to_polars` is what gives the interrupt back.
+    # Polars says it in its own words, which depend on its version, and Polars 1 panics on a stream that fails:
+    # `to_polars` is what gives the interrupt back.
     start = time.perf_counter()
-    with interrupt_polars(), pytest.raises((pl.exceptions.ComputeError, KeyboardInterrupt)):
+    with interrupt_polars(), pytest.raises(BaseException) as raised:
         pl.DataFrame(lake.sql(LONG))
     assert time.perf_counter() - start < 5
+    assert type(raised.value).__name__ in ("ComputeError", "KeyboardInterrupt", "PanicException")
     assert pl.DataFrame(lake.sql("select k from t")).height == 3
 
 
