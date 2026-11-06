@@ -9,7 +9,7 @@ use super::errors::Failure;
 use crate::state::State;
 
 /// How the OpenAPI joins the levels of a namespace in a query.
-const SEPARATOR: char = '\x1f';
+pub(super) const SEPARATOR: char = '\x1f';
 
 #[derive(Deserialize)]
 pub(crate) struct Listing {

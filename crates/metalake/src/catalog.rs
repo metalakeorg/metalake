@@ -233,6 +233,15 @@ impl Ref {
         crate::Merge::new(self.clone())
     }
 
+    /// A table's definition on this ref, at `at` or now, in the protocol's shape (`describe`).
+    pub async fn definition(&self, table: &Table, at: Option<i64>) -> Result<serde_json::Value> {
+        let p = self.catalog.protocol();
+        let found = p
+            .describe(&self.catalog.session().await?, self.id, table.id(), at)
+            .await?;
+        found.ok_or_else(|| Error::NotFound(format!("table {} on {}", table.name(), self.name)))
+    }
+
     /// The namespaces this ref sees, in order.
     pub async fn namespaces(&self) -> Result<Vec<NamespaceRow>> {
         let p = self.catalog.protocol();

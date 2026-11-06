@@ -84,6 +84,15 @@ impl Storage {
         Ok(self.store.get(&self.path(url)?).await?.bytes().await?)
     }
 
+    /// Whether an object is there.
+    pub async fn exists(&self, url: &str) -> Result<bool> {
+        match self.store.head(&self.path(url)?).await {
+            Ok(_) => Ok(true),
+            Err(object_store::Error::NotFound { .. }) => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// The objects under `location`, each with its age in seconds, as the catalog would spell its URL.
     pub(crate) async fn list(&self, location: &str) -> Result<Vec<(String, i64)>> {
         let now = SystemTime::now()

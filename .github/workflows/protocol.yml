@@ -28,7 +28,7 @@ jobs:
         with:
           components: clippy
       - name: A real Iceberg client
-        run: python -m pip install --quiet "pyiceberg==0.12.0"
+        run: python -m pip install --quiet "pyiceberg[pyarrow]==0.12.0"
       - name: The specification
         run: bash spec/v0/run.sh
       - name: The specification, with PyIceberg

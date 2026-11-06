@@ -19,11 +19,15 @@ path = "src/main.rs"
 [dependencies]
 metalake.workspace = true
 metalake-pg.workspace = true
+apache-avro = { version = "0.22", features = ["zstandard"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
 clap = { version = "4", features = ["derive", "env"] }
+futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["net", "signal"] }
 
 [dev-dependencies]
+arrow-array.workspace = true
+arrow-schema.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }

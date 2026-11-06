@@ -4,6 +4,7 @@
 mod config;
 mod errors;
 mod namespaces;
+mod tables;
 
 use axum::Router;
 use axum::routing::get;
@@ -15,6 +16,8 @@ pub(crate) fn router(state: State) -> Router {
     Router::new()
         .route("/v1/config", get(config::config))
         .route("/v1/namespaces", get(namespaces::list))
+        .route("/v1/namespaces/{namespace}/tables", get(tables::list))
+        .route("/v1/namespaces/{namespace}/tables/{table}", get(tables::get))
         .fallback(async || Failure::no_route())
         .with_state(state)
 }

@@ -70,7 +70,7 @@ async fn pyiceberg_connects_and_lists_what_postgres_holds() -> Result<(), Box<dy
 
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/client.py");
     let run = Command::new(python)
-        .args([script, &format!("http://{address}")])
+        .args([script, "namespaces", &format!("http://{address}")])
         .output()?;
     assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
     let said: Value = serde_json::from_slice(&run.stdout)?;
