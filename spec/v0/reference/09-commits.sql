@@ -130,7 +130,10 @@ begin
     if not exists (select 1 from visible_table_names(r, latest) v where v.table_id = t) then
       perform conflict(format('table %s is not visible on ref %s', t, r));
     end if;
-    insert into head values (r, t, snapshot_at(r, t, latest)) on conflict do nothing;
+    -- Only on a ref's first commit to the table: collection may have taken what it saw, and it has a head by then.
+    if not exists (select 1 from head h where h.ref_id = r and h.table_id = t) then
+      insert into head values (r, t, snapshot_at(r, t, latest)) on conflict do nothing;
+    end if;
     perform 1 from head h where h.ref_id = r and h.table_id = t for update;
   end loop;
 

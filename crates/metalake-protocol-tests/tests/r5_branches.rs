@@ -565,6 +565,49 @@ impl Run {
     }
 }
 
+/// A head stays when collection takes the snapshot it was first read from: found by the random run.
+#[test]
+fn head_after_collected_snapshot() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let steps = [
+        Step::Branch {
+            from: 0,
+            tag: false,
+            at: None,
+        },
+        Step::Retain {
+            r: 72,
+            min_snapshots: 0,
+        },
+        Step::Both {
+            r: 0,
+            table: 0,
+            change: Change::Rename(0),
+            supply: 0,
+        },
+        Step::Commit {
+            r: 152,
+            table: 0,
+            change: Change::Append(1),
+        },
+        Step::Collect,
+        Step::Commit {
+            r: 29,
+            table: 0,
+            change: Change::AddField(0),
+        },
+    ];
+    runtime
+        .block_on(async {
+            let mut run = Run::new().await?;
+            for step in &steps {
+                run.apply(step).await?;
+            }
+            run.pair.drop().await
+        })
+        .unwrap();
+}
+
 #[test]
 fn branches_and_merges_match_reference() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
