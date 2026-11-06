@@ -14,6 +14,7 @@ use pyo3_arrow::input::AnyRecordBatch;
 use tokio::sync::mpsc;
 
 use crate::errors::to_python;
+use crate::owner::Owner;
 use crate::runtime::wait;
 
 /// Batches read ahead of the writer.
@@ -77,6 +78,7 @@ impl PyWritten {
 
 #[pyclass(name = "Table", module = "metalake", frozen)]
 pub struct PyTable {
+    owner: Owner,
     lake: Arc<Lake>,
     session: Arc<Session>,
     path: TablePath,
@@ -88,10 +90,16 @@ impl PyTable {
         let path = TablePath::parse(name).map_err(|e| to_python(py, e))?;
         let (reached, wanted) = (lake.clone(), path.clone());
         wait(py, async move { reached.table(&wanted).await.map(|_| ()) })?.map_err(|e| to_python(py, e))?;
-        Ok(Self { lake, session, path })
+        Ok(Self {
+            owner: Owner::here(),
+            lake,
+            session,
+            path,
+        })
     }
 
     fn schema(&self, py: Python<'_>) -> PyResult<SchemaRef> {
+        self.owner.check(py, "Table")?;
         let (lake, path) = (self.lake.clone(), self.path.clone());
         let found = wait(py, async move { lake.table(&path).await })?;
         let (_, table) = found.map_err(|e| to_python(py, e))?;
@@ -125,6 +133,7 @@ impl PyTable {
         author: Option<String>,
         idempotent: Option<(String, i64)>,
     ) -> PyResult<PyWritten> {
+        self.owner.check(py, "Table")?;
         let reader = data.into_reader()?;
         let given = reader.schema();
         let batches = batches_of(reader);
@@ -145,6 +154,7 @@ impl PyTable {
         author: Option<String>,
         idempotent: Option<(String, i64)>,
     ) -> PyResult<PyWritten> {
+        self.owner.check(py, "Table")?;
         let reader = data.into_reader()?;
         let given = reader.schema();
         let batches = batches_of(reader);
@@ -166,6 +176,7 @@ impl PyTable {
         author: Option<String>,
         idempotent: Option<(String, i64)>,
     ) -> PyResult<PyWritten> {
+        self.owner.check(py, "Table")?;
         let reader = data.into_reader()?;
         let given = reader.schema();
         let batches = batches_of(reader);
@@ -188,6 +199,7 @@ impl PyTable {
         author: Option<String>,
         idempotent: Option<(String, i64)>,
     ) -> PyResult<PyWritten> {
+        self.owner.check(py, "Table")?;
         let details = details(message, author, idempotent);
         let (session, path) = (self.session.clone(), self.path.clone());
         let written = wait(py, async move { session.delete(&path, &filter, details).await })?;

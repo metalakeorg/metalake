@@ -9,6 +9,7 @@ use pyo3::prelude::*;
 
 use crate::errors::to_python;
 use crate::info::{History, PyDone, PyMerged, PyRef, PyStatus};
+use crate::owner::Owner;
 use crate::result::QueryResult;
 use crate::runtime::wait;
 use crate::table::PyTable;
@@ -32,6 +33,7 @@ impl Age {
 /// A lake, reached, with the session its statements run in.
 #[pyclass(name = "Lake", module = "metalake", frozen)]
 pub struct PyLake {
+    owner: Owner,
     lake: Arc<Lake>,
     session: Arc<Session>,
 }
@@ -60,6 +62,7 @@ impl PyLake {
     fn new(py: Python<'_>, reached: metalake_client::Result<(Lake, Session)>) -> PyResult<Self> {
         let (lake, session) = reached.map_err(|e| to_python(py, e))?;
         Ok(Self {
+            owner: Owner::here(),
             lake: Arc::new(lake),
             session: Arc::new(session),
         })
@@ -71,6 +74,7 @@ impl PyLake {
     /// Runs statements in order, each committed before the next, and answers the rows of the last. A read waits to be
     /// read, at the point of this call; anything else has happened when this returns.
     fn sql(&self, py: Python<'_>, text: String) -> PyResult<QueryResult> {
+        self.owner.check(py, "Lake")?;
         let session = self.session.clone();
         let prepared = wait(py, async move { session.run(&text).await })?;
         Ok(QueryResult::new(prepared.map_err(|e| to_python(py, e))?))
@@ -78,18 +82,21 @@ impl PyLake {
 
     /// A table by the name a statement would use: `t`, `namespace.t` or `ref.namespace.t`.
     fn table(&self, py: Python<'_>, name: &str) -> PyResult<PyTable> {
+        self.owner.check(py, "Lake")?;
         PyTable::open(py, self.lake.clone(), self.session.clone(), name)
     }
 
     /// Takes a new picture of what `information_schema` shows, for what others changed. A table or a ref named in a
     /// statement is found without it.
     fn refresh(&self, py: Python<'_>) -> PyResult<()> {
+        self.owner.check(py, "Lake")?;
         let session = self.session.clone();
         wait(py, async move { session.refresh().await })?.map_err(|e| to_python(py, e))
     }
 
     /// What the lake is. Printed, it reads as `metalake status` does.
     fn status(&self, py: Python<'_>) -> PyResult<PyStatus> {
+        self.owner.check(py, "Lake")?;
         let lake = self.lake.clone();
         let status = wait(py, async move { lake.status().await })?;
         status.map(PyStatus::from).map_err(|e| to_python(py, e))
@@ -97,6 +104,7 @@ impl PyLake {
 
     /// Every branch and tag.
     fn refs(&self, py: Python<'_>) -> PyResult<Vec<PyRef>> {
+        self.owner.check(py, "Lake")?;
         let lake = self.lake.clone();
         let refs = wait(py, async move { lake.refs(None).await })?.map_err(|e| to_python(py, e))?;
         Ok(refs.into_iter().map(PyRef::from).collect())
@@ -105,22 +113,26 @@ impl PyLake {
     /// A new branch, from `main` or from `start`: a ref, or `ref@sequence`. It copies nothing.
     #[pyo3(signature = (name, start=None))]
     fn branch(&self, py: Python<'_>, name: String, start: Option<String>) -> PyResult<PyRef> {
+        self.owner.check(py, "Lake")?;
         self.create_ref(py, RefKind::Branch, name, start)
     }
 
     /// A new tag, a state that does not change, from `main` or from `start`: a ref, or `ref@sequence`.
     #[pyo3(signature = (name, start=None))]
     fn tag(&self, py: Python<'_>, name: String, start: Option<String>) -> PyResult<PyRef> {
+        self.owner.check(py, "Lake")?;
         self.create_ref(py, RefKind::Tag, name, start)
     }
 
     /// Deletes a branch. Its name is never used again.
     fn delete_branch(&self, py: Python<'_>, name: String) -> PyResult<()> {
+        self.owner.check(py, "Lake")?;
         self.delete_ref(py, RefKind::Branch, name)
     }
 
     /// Deletes a tag. Its name is never used again.
     fn delete_tag(&self, py: Python<'_>, name: String) -> PyResult<()> {
+        self.owner.check(py, "Lake")?;
         self.delete_ref(py, RefKind::Tag, name)
     }
 
@@ -136,6 +148,7 @@ impl PyLake {
         min_snapshots: Option<i32>,
         min_seq: Option<i64>,
     ) -> PyResult<()> {
+        self.owner.check(py, "Lake")?;
         let max_age = max_age.map(Age::duration).transpose().map_err(|e| to_python(py, e))?;
         let retention = Retention {
             min_seq,
@@ -148,6 +161,7 @@ impl PyLake {
 
     /// Says how long an expired object waits before it is deleted, for the whole lake. Reads should end within it.
     fn grace(&self, py: Python<'_>, age: Age) -> PyResult<()> {
+        self.owner.check(py, "Lake")?;
         let age = age.duration().map_err(|e| to_python(py, e))?;
         let lake = self.lake.clone();
         wait(py, async move { lake.set_grace(age).await })?.map_err(|e| to_python(py, e))
@@ -165,6 +179,7 @@ impl PyLake {
         on: Option<String>,
         table: Option<String>,
     ) -> PyResult<Vec<PyDone>> {
+        self.owner.check(py, "Lake")?;
         let task = task.as_deref().map(Task::parse).transpose();
         let request = MaintainRequest {
             task: task.map_err(|e| to_python(py, e))?,
@@ -199,6 +214,7 @@ impl PyLake {
         message: Option<String>,
         author: Option<String>,
     ) -> PyResult<PyMerged> {
+        self.owner.check(py, "Lake")?;
         let request = MergeRequest {
             branch,
             tables: tables.unwrap_or_default(),
@@ -220,6 +236,7 @@ impl PyLake {
     /// The commits of a ref, the latest first, or, with `table`, `namespace.table`, the snapshots of that table.
     #[pyo3(signature = (on="main".to_string(), *, limit=20, table=None))]
     fn log(&self, py: Python<'_>, on: String, limit: i64, table: Option<String>) -> PyResult<History> {
+        self.owner.check(py, "Lake")?;
         let lake = self.lake.clone();
         let history = wait(py, async move {
             Ok(match table {

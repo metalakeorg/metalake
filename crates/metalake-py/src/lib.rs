@@ -4,6 +4,7 @@
 mod errors;
 mod info;
 mod lake;
+mod owner;
 mod result;
 mod runtime;
 mod table;

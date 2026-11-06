@@ -19,6 +19,7 @@ use tokio::sync::Semaphore;
 use tokio::task::AbortHandle;
 
 use crate::errors::to_python;
+use crate::owner::Owner;
 use crate::runtime::{self, PATIENCE};
 
 /// Batches ahead of the reader: a statement waits past these, so a slow reader does not fill memory.
@@ -150,18 +151,21 @@ impl RecordBatchReader for Reader {
 /// The rows of a statement, at the point it was prepared. It can be read any number of times, and every read is the same.
 #[pyclass(name = "Result", module = "metalake", frozen)]
 pub struct QueryResult {
+    owner: Owner,
     prepared: Arc<Prepared>,
 }
 
 impl QueryResult {
     pub fn new(prepared: Prepared) -> Self {
         Self {
+            owner: Owner::here(),
             prepared: Arc::new(prepared),
         }
     }
 
     /// One read, for anything that speaks Arrow.
     fn reader<'py>(&self, py: Python<'py>, stopped: &Slot) -> PyResult<Bound<'py, PyRecordBatchReader>> {
+        self.owner.check(py, "Result")?;
         let reader = Reader {
             pump: Pump::start(self.prepared.clone()),
             schema: self.prepared.schema(),
@@ -258,10 +262,12 @@ impl QueryResult {
     }
 
     /// One read, batch by batch.
-    fn __iter__(&self) -> Batches {
-        Batches {
+    fn __iter__(&self, py: Python<'_>) -> PyResult<Batches> {
+        self.owner.check(py, "Result")?;
+        Ok(Batches {
+            owner: self.owner,
             pump: Mutex::new(Some(Pump::start(self.prepared.clone()))),
-        }
+        })
     }
 }
 
@@ -269,6 +275,7 @@ impl QueryResult {
 /// with the GIL in hand, which the first would need to go on.
 #[pyclass(name = "Batches", module = "metalake", frozen)]
 pub struct Batches {
+    owner: Owner,
     pump: Mutex<Option<Pump>>,
 }
 
@@ -280,6 +287,7 @@ impl Batches {
 
     /// The next batch, waiting with the GIL released. An interrupt or a failure ends the read.
     fn __next__(&self, py: Python<'_>) -> PyResult<PyBatch> {
+        self.owner.check(py, "Result")?;
         let mut pump = match self.pump.try_lock() {
             Ok(pump) => pump,
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),

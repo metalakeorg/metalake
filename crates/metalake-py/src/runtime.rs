@@ -1,11 +1,13 @@
 //! The one runtime of a process, and the one way Python waits for it. A connection to Postgres lives on a task of the
-//! runtime that opened it, so a program that makes many calls needs them all on the same one.
+//! runtime that opened it, so a program that makes many calls needs them all on the same one. A fork copies a runtime
+//! without its threads, so a process makes its own, and leaves the one it inherited: dropping it would wait for those
+//! threads, which are not there.
 //!
 //! The wait is a plain channel. tokio's timers would not fire while a statement keeps every worker busy, since nothing
 //! drives them then, and an interrupt would go unnoticed.
 
 use std::future::Future;
-use std::sync::OnceLock;
+use std::sync::Mutex;
 use std::sync::mpsc::{RecvTimeoutError, channel};
 use std::time::Duration;
 
@@ -17,14 +19,21 @@ use tokio::task::AbortHandle;
 /// How often a wait looks for an interrupt.
 pub const PATIENCE: Duration = Duration::from_millis(100);
 
+/// The runtime, and the process it is for.
+static RUNTIME: Mutex<Option<(u32, &'static Runtime)>> = Mutex::new(None);
+
 fn runtime() -> &'static Runtime {
-    static RUNTIME: OnceLock<Runtime> = OnceLock::new();
-    RUNTIME.get_or_init(|| {
-        Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .expect("a runtime starts")
-    })
+    let mut current = RUNTIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let process = std::process::id();
+    match *current {
+        Some((owner, runtime)) if owner == process => runtime,
+        _ => {
+            let built = Builder::new_multi_thread().enable_all().build();
+            let runtime: &'static Runtime = Box::leak(Box::new(built.expect("a runtime starts")));
+            *current = Some((process, runtime));
+            runtime
+        }
+    }
 }
 
 /// Runs `future` on the runtime, and answers how to end it.
