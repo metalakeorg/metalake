@@ -114,7 +114,7 @@ async fn delete(
 }
 
 #[tokio::test]
-async fn a_branch_reaches_its_parent_in_one_commit_or_not_at_all() -> Result<(), Box<dyn std::error::Error>> {
+async fn merge_atomic() -> Result<(), Box<dyn std::error::Error>> {
     let catalog = catalog(&["a", "b"], vec![]).await?;
     let storage = Storage::in_memory();
     let main = catalog.branch("main").await?;
@@ -186,7 +186,7 @@ async fn a_branch_reaches_its_parent_in_one_commit_or_not_at_all() -> Result<(),
 }
 
 #[tokio::test]
-async fn one_table_merges_alone_and_a_commit_across_needs_split() -> Result<(), Box<dyn std::error::Error>> {
+async fn merge_selected_table_and_split() -> Result<(), Box<dyn std::error::Error>> {
     let catalog = catalog(&["a", "b"], vec![]).await?;
     let storage = Storage::in_memory();
     let main = catalog.branch("main").await?;
@@ -227,7 +227,7 @@ async fn one_table_merges_alone_and_a_commit_across_needs_split() -> Result<(), 
 }
 
 #[tokio::test]
-async fn vectors_in_puffin_changed_on_both_sides_are_unioned() -> Result<(), Box<dyn std::error::Error>> {
+async fn merge_unions_puffin_vectors() -> Result<(), Box<dyn std::error::Error>> {
     // Vectors and files past 1 KiB leave the catalog.
     let catalog = catalog(&["t"], vec![("inline.max-bytes", "1024")]).await?;
     let storage = Storage::in_memory();

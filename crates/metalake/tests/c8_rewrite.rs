@@ -79,7 +79,7 @@ async fn delete_first(on: &Ref, t: &Table, storage: &Storage, file_id: i64) -> R
 }
 
 #[tokio::test]
-async fn a_flush_moves_inline_files_to_storage_when_they_are_due() -> Result<(), Box<dyn std::error::Error>> {
+async fn flush_inline_files_when_due() -> Result<(), Box<dyn std::error::Error>> {
     // Not due: under the limits, and young.
     let (catalog, main, storage) = lake(vec![], vec![]).await?;
     append(&catalog, &main, &storage, 0..3).await?;
@@ -131,7 +131,7 @@ async fn a_flush_moves_inline_files_to_storage_when_they_are_due() -> Result<(),
 }
 
 #[tokio::test]
-async fn a_compaction_keeps_the_rows_and_drops_the_vectors() -> Result<(), Box<dyn std::error::Error>> {
+async fn compaction_preserves_rows_drops_vectors() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, main, storage) = lake(vec![("inline.max-bytes", "0")], vec![]).await?;
     for at in 0..3 {
         append(&catalog, &main, &storage, at * 10..at * 10 + 5).await?;
@@ -188,7 +188,7 @@ async fn a_compaction_keeps_the_rows_and_drops_the_vectors() -> Result<(), Box<d
 }
 
 #[tokio::test]
-async fn a_compaction_writes_each_partition_apart() -> Result<(), Box<dyn std::error::Error>> {
+async fn compaction_per_partition() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, main, storage) = lake(vec![("inline.max-bytes", "0")], vec![("k", "bucket[2]")]).await?;
     append(&catalog, &main, &storage, 0..20).await?;
     append(&catalog, &main, &storage, 20..40).await?;
@@ -205,7 +205,7 @@ async fn a_compaction_writes_each_partition_apart() -> Result<(), Box<dyn std::e
 }
 
 #[tokio::test]
-async fn a_rewrite_from_a_state_a_delete_has_passed_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+async fn stale_rewrite_conflicts() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, main, storage) = lake(vec![("inline.max-bytes", "0")], vec![]).await?;
     append(&catalog, &main, &storage, 0..5).await?;
     append(&catalog, &main, &storage, 5..10).await?;

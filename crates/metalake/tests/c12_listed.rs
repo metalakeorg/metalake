@@ -46,7 +46,7 @@ fn by_file(mut files: Value) -> Value {
 }
 
 #[tokio::test]
-async fn it_answers_what_the_reference_does_at_every_snapshot() -> Result<(), Box<dyn std::error::Error>> {
+async fn listed_files_match_reference() -> Result<(), Box<dyn std::error::Error>> {
     let schema = fresh_schema();
     let config = CatalogConfig::new(url(), &schema).warehouse("memory:///wh");
     let catalog = Catalog::init(config, None).await?;
@@ -113,7 +113,7 @@ async fn it_answers_what_the_reference_does_at_every_snapshot() -> Result<(), Bo
 
 /// A merged file has several rows of `data_file`: a list names one, or it would count the file twice.
 #[tokio::test]
-async fn a_merged_file_is_listed_once() -> Result<(), Box<dyn std::error::Error>> {
+async fn merged_file_listed_once() -> Result<(), Box<dyn std::error::Error>> {
     let schema = fresh_schema();
     let config = CatalogConfig::new(url(), &schema).warehouse("memory:///wh");
     let catalog = Catalog::init(config, None).await?;

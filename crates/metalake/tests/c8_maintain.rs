@@ -102,7 +102,7 @@ fn keep_latest() -> Retention {
 }
 
 #[tokio::test]
-async fn expired_objects_leave_after_the_grace() -> Result<(), Box<dyn std::error::Error>> {
+async fn expired_objects_removed_after_grace() -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(Counting::default());
     let (catalog, t, storage, _) = lake(store.clone()).await?;
     let main = catalog.branch("main").await?;
@@ -155,7 +155,7 @@ async fn expired_objects_leave_after_the_grace() -> Result<(), Box<dyn std::erro
 }
 
 #[tokio::test]
-async fn a_failed_sweep_is_repeated_and_a_gone_object_is_no_error() -> Result<(), Box<dyn std::error::Error>> {
+async fn sweep_retries_failed_ignores_missing() -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(Counting::default());
     let (catalog, t, storage, _) = lake(store.clone()).await?;
     let main = catalog.branch("main").await?;
@@ -191,7 +191,7 @@ async fn a_failed_sweep_is_repeated_and_a_gone_object_is_no_error() -> Result<()
 }
 
 #[tokio::test]
-async fn an_abandoned_upload_is_deleted_and_a_committed_file_is_not() -> Result<(), Box<dyn std::error::Error>> {
+async fn orphan_upload_removed() -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(Counting::default());
     let (catalog, t, storage, p) = lake(store.clone()).await?;
     let main = catalog.branch("main").await?;
@@ -257,7 +257,7 @@ async fn an_abandoned_upload_is_deleted_and_a_committed_file_is_not() -> Result<
 }
 
 #[tokio::test]
-async fn commit_times_are_filled_in_batches() -> Result<(), Box<dyn std::error::Error>> {
+async fn fill_commit_times_batched() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, t, storage, _) = lake(Arc::new(Counting::default())).await?;
     append(&catalog, &t, &storage, 0..1).await?;
     append(&catalog, &t, &storage, 1..2).await?;
@@ -268,7 +268,7 @@ async fn commit_times_are_filled_in_batches() -> Result<(), Box<dyn std::error::
 }
 
 #[tokio::test]
-async fn a_vector_in_a_puffin_file_whose_intent_expired_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+async fn cmt9_expired_puffin_intent_refused() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, t, storage, p) = lake(Arc::default()).await?;
     let main = catalog.branch("main").await?;
     append(&catalog, &t, &storage, 0..5).await?;
@@ -317,7 +317,7 @@ async fn a_vector_in_a_puffin_file_whose_intent_expired_is_refused() -> Result<(
 /// RET-7b: what a client left under a table's location goes through intents; a live file, a file the service
 /// generated, a newer object and an intent at work stay; and a writer that commits a path adopted meanwhile is refused.
 #[tokio::test]
-async fn what_nothing_knows_is_adopted_and_what_is_known_is_not() -> Result<(), Box<dyn std::error::Error>> {
+async fn ret7b_adopt_orphans() -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(Counting::default());
     let (catalog, t, storage, _) = lake(store.clone()).await?;
     let main = catalog.branch("main").await?;
@@ -377,7 +377,7 @@ async fn what_nothing_knows_is_adopted_and_what_is_known_is_not() -> Result<(), 
 
 /// A store that spells a path otherwise than the catalog would make a live file look unknown: nothing is adopted.
 #[tokio::test]
-async fn a_live_file_the_listing_does_not_show_stops_it() -> Result<(), Box<dyn std::error::Error>> {
+async fn ret7b_unlisted_live_file_refused() -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(Counting::default());
     let (catalog, t, storage, _) = lake(store.clone()).await?;
     let main = catalog.branch("main").await?;
@@ -392,7 +392,7 @@ async fn a_live_file_the_listing_does_not_show_stops_it() -> Result<(), Box<dyn 
 
 /// RET-3: the key of an Iceberg commit goes below the floor, with its commit; a native key stays, and keeps its commit.
 #[tokio::test]
-async fn an_iceberg_key_goes_with_the_floor_and_a_native_one_stays() -> Result<(), Box<dyn std::error::Error>> {
+async fn ret3_iceberg_keys_expire_at_floor() -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(Counting::default());
     let schema = fresh_schema();
     let (catalog, t, storage, _) = lake_in(store.clone(), &schema).await?;

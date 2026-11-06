@@ -69,7 +69,7 @@ fn expected(with_y: bool) -> Schema {
 }
 
 #[tokio::test]
-async fn the_core_reads_a_table_as_arrow_where_a_read_sees_it() -> Result<(), Box<dyn std::error::Error>> {
+async fn table_arrow_schema_by_ref() -> Result<(), Box<dyn std::error::Error>> {
     let schema = fresh_schema();
     let catalog = Catalog::init(CatalogConfig::new(url(), &schema), None).await?;
     assert!(catalog.versions().writable());
@@ -154,7 +154,7 @@ async fn the_core_reads_a_table_as_arrow_where_a_read_sees_it() -> Result<(), Bo
 }
 
 #[tokio::test]
-async fn storage_holds_what_is_put_under_its_location() -> Result<(), Box<dyn std::error::Error>> {
+async fn storage_round_trip() -> Result<(), Box<dyn std::error::Error>> {
     let dir = std::env::temp_dir().join(fresh_schema());
     std::fs::create_dir_all(&dir)?;
     let location = url::Url::from_directory_path(&dir).unwrap().to_string();

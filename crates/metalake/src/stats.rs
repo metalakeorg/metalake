@@ -289,7 +289,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn units_rescale_exactly_or_not_at_all() {
+    fn rescale_exact_only() {
         assert_eq!(rescale(5, 1_000_000, 1_000), Some(5_000));
         assert_eq!(rescale(5_000, 1, 1_000), Some(5));
         assert_eq!(rescale(5_001, 1, 1_000), None);
@@ -297,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn a_date_written_before_its_promotion_bounds_as_the_timestamp_it_is() {
+    fn promoted_date_bounds() {
         let field = |ty: &str| Field {
             field_id: 1,
             parent_field_id: None,
@@ -318,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn unscaled_values_keep_their_sign() {
+    fn unscaled_decimal_sign() {
         assert_eq!(unscaled(&[0xFF]), Some(-1));
         assert_eq!(unscaled(&[0x00, 0x80]), Some(128));
         assert_eq!(unscaled(&[0x80, 0x00]), Some(-32768));

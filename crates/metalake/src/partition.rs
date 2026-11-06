@@ -280,7 +280,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn murmur3_gives_icebergs_values() {
+    fn murmur3_matches_iceberg() {
         // The values of Iceberg's specification, Appendix B.
         let hash = |ty: &str, v: Scalar<'_>| murmur3_32(&hash_bytes(ty, v).unwrap());
         assert_eq!(hash("int", Scalar::Long(34)), 2_017_239_379);
@@ -296,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn transforms_parse_and_name_their_fields() {
+    fn transform_parse_and_field_name() {
         assert_eq!(Transform::parse("bucket[16]").unwrap(), Transform::Bucket(16));
         assert_eq!(Transform::parse("truncate[4]").unwrap(), Transform::Truncate(4));
         assert!(Transform::parse("bucket[0]").is_err() && Transform::parse("hours").is_err());

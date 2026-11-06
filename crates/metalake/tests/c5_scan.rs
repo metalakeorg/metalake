@@ -138,7 +138,7 @@ fn row_groups(task: &ScanTask) -> usize {
 }
 
 #[tokio::test]
-async fn what_is_read_is_what_was_written_with_no_request_for_a_footer() -> Result<(), Box<dyn std::error::Error>> {
+async fn scan_round_trip_without_footer() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, store, storage) = setup().await?;
     write(&catalog, &storage, vec![batch(0..10)], WriteOptions::default()).await?;
     let rolled = WriteOptions {
@@ -245,7 +245,7 @@ async fn what_is_read_is_what_was_written_with_no_request_for_a_footer() -> Resu
 }
 
 #[tokio::test]
-async fn a_range_reads_only_the_files_and_row_groups_that_may_hold_it() -> Result<(), Box<dyn std::error::Error>> {
+async fn scan_range_pruning() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, store, storage) = setup().await?;
     // One file of 40 row groups of 5,000 rows, then one of 2 far beyond it.
     let groups = WriteOptions {

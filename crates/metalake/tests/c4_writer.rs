@@ -86,7 +86,7 @@ async fn setup() -> Result<(String, Catalog, Table, Storage), Box<dyn std::error
 }
 
 #[tokio::test]
-async fn a_small_batch_is_inline_and_a_large_one_is_uploaded_in_files() -> Result<(), Box<dyn std::error::Error>> {
+async fn writer_inline_threshold() -> Result<(), Box<dyn std::error::Error>> {
     let (schema, catalog, table, storage) = setup().await?;
     let main = catalog.branch("main").await?;
     let pool = Pool::new(&url(), 1)?;
@@ -179,7 +179,7 @@ async fn a_small_batch_is_inline_and_a_large_one_is_uploaded_in_files() -> Resul
 }
 
 #[tokio::test]
-async fn batches_that_are_not_the_tables_are_refused() -> Result<(), Box<dyn std::error::Error>> {
+async fn writer_schema_mismatch_refused() -> Result<(), Box<dyn std::error::Error>> {
     let (_schema, catalog, table, storage) = setup().await?;
     let mut writer = TableWriter::new(&catalog, &table, storage, WriteOptions::default())?;
     let good = batch(0, 3);
@@ -231,7 +231,7 @@ async fn batches_that_are_not_the_tables_are_refused() -> Result<(), Box<dyn std
 /// C4c: a partitioned table's rows go to one file for each partition value, which the file carries, nulls
 /// included; the files commit.
 #[tokio::test]
-async fn rows_go_to_one_file_for_each_partition_value() -> Result<(), Box<dyn std::error::Error>> {
+async fn writer_partition_fanout() -> Result<(), Box<dyn std::error::Error>> {
     use std::collections::BTreeMap;
 
     use metalake::partition::{Scalar, Transform};

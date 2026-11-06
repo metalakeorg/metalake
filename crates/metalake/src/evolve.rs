@@ -282,7 +282,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_parse_as_icebergs_single_values() {
+    fn parse_default_values() {
         assert_eq!(days("1970-01-01"), Some(0));
         assert_eq!(days("2017-11-16"), Some(17_486));
         assert_eq!(days("0001-01-01"), Some(-719_162));
@@ -306,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn a_column_a_file_has_not_is_its_default_or_null() {
+    fn missing_column_default_or_null() {
         let field = |id: i32, ty: &str, required: bool, default: Option<Value>| Field {
             field_id: id,
             parent_field_id: None,
@@ -346,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn promotions_widen_and_keep_nulls() {
+    fn typ3_promotion_preserves_nulls() {
         let ints: ArrayRef = Arc::new(Int32Array::from(vec![Some(-1), None, Some(i32::MAX)]));
         let longs = promote(&ints, &DataType::Int32, &DataType::Int64).unwrap();
         assert_eq!(

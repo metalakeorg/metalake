@@ -186,7 +186,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn blobs_come_back_the_same_and_damage_is_refused() {
+    fn blob_round_trip_and_corruption() {
         for positions in [vec![], vec![0], vec![5, 70_000, (1 << 32) + 3, 1 << 40]] {
             let v = DeletionVector::from_positions(positions.clone());
             let back = DeletionVector::from_blob(&v.to_blob()).unwrap();
@@ -223,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn a_selection_skips_the_deleted_rows_of_the_groups_read() {
+    fn row_selection_skips_deleted_rows() {
         let v = DeletionVector::from_positions([0, 1, 4, 12, 13, 25, 29]);
         let runs = |groups: &[(u64, u64)]| -> Vec<(bool, usize)> {
             let s: Vec<RowSelector> = v.row_selection(groups).into();

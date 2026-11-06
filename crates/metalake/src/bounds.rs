@@ -146,7 +146,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_edges_of_each_encoding_order_as_their_values() {
+    fn sta5_bound_encoding_order() {
         assert!(long(i64::MIN) < long(-1) && long(-1) < long(0) && long(0) < long(i64::MAX));
         assert_eq!(long(i64::MIN), [0u8; 8]);
         assert!(date(i32::MIN) < date(-1) && date(-1) < date(0));
@@ -169,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn values_encode_as_their_type_does() {
+    fn sta5_value_encoding_by_type() {
         assert_eq!(value("int", Scalar::Long(-3)), Some(long(-3)));
         assert_eq!(value("timestamptz", Scalar::Long(7)), Some(long(7)));
         assert_eq!(value("date", Scalar::Long(-2)), Some(date(-2)));
@@ -185,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn upper_bounds_skip_surrogates_and_drop_what_cannot_grow() {
+    fn truncate_upper_bound() {
         let s = |v: &str| v.as_bytes().to_vec();
         let upper = |v: &str| truncate_upper(Truncation::String, v.as_bytes());
         assert_eq!(upper("short"), Some(s("short")));

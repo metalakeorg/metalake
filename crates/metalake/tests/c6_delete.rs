@@ -102,7 +102,7 @@ async fn delete_where(storage: &Storage, scan: Scan, chosen: impl Fn(i64) -> boo
 }
 
 #[tokio::test]
-async fn an_engines_chosen_rows_are_deleted_and_no_other() -> Result<(), Box<dyn std::error::Error>> {
+async fn delete_selected_rows() -> Result<(), Box<dyn std::error::Error>> {
     let schema = fresh_schema();
     let catalog = Catalog::init(CatalogConfig::new(url(), &schema).warehouse("memory:///wh"), None).await?;
     table(&catalog, vec![]).await?;
@@ -198,7 +198,7 @@ async fn an_engines_chosen_rows_are_deleted_and_no_other() -> Result<(), Box<dyn
 }
 
 #[tokio::test]
-async fn a_large_vector_goes_to_a_puffin_file_its_footer_names() -> Result<(), Box<dyn std::error::Error>> {
+async fn large_vector_stored_in_puffin() -> Result<(), Box<dyn std::error::Error>> {
     let schema = fresh_schema();
     let catalog = Catalog::init(CatalogConfig::new(url(), &schema).warehouse("memory:///wh"), None).await?;
     // Vectors and files past 1 KiB leave the catalog.

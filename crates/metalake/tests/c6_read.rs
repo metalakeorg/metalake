@@ -75,7 +75,7 @@ fn vector(task: &ScanTask, positions: &[u64], path: Option<(&str, i64)>) -> Vect
 }
 
 #[tokio::test]
-async fn a_deleted_row_is_not_read_inline_in_puffin_or_on_a_branch() -> Result<(), Box<dyn std::error::Error>> {
+async fn scan_applies_deletion_vectors() -> Result<(), Box<dyn std::error::Error>> {
     let schema = fresh_schema();
     let catalog = Catalog::init(CatalogConfig::new(url(), &schema).warehouse("memory:///wh"), None).await?;
     let main = catalog.branch("main").await?;
@@ -200,7 +200,7 @@ async fn a_deleted_row_is_not_read_inline_in_puffin_or_on_a_branch() -> Result<(
 /// What a vector costs a read: 10^6 rows in one file, read whole, then with 10% of its rows deleted at random.
 #[tokio::test]
 #[ignore = "a measurement: run with --release --ignored"]
-async fn deletes_cost_little() -> Result<(), Box<dyn std::error::Error>> {
+async fn delete_cost_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
     let schema = fresh_schema();
     let catalog = Catalog::init(CatalogConfig::new(url(), &schema).warehouse("memory:///wh"), None).await?;
     let main = catalog.branch("main").await?;

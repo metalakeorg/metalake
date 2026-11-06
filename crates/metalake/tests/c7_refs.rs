@@ -70,7 +70,7 @@ async fn names(on: &Ref) -> Result<Vec<String>, Error> {
 }
 
 #[tokio::test]
-async fn reads_as_of_a_time_tags_and_branches_from_the_past() -> Result<(), Box<dyn std::error::Error>> {
+async fn time_travel_by_time_tag_branch() -> Result<(), Box<dyn std::error::Error>> {
     let schema = fresh_schema();
     let catalog = Catalog::init(CatalogConfig::new(url(), &schema).warehouse("memory:///wh"), None).await?;
     let main = catalog.branch("main").await?;

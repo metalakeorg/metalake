@@ -224,7 +224,7 @@ fn field(f: &metalake::Field) -> Value {
 }
 
 #[tokio::test]
-async fn files_written_before_a_change_read_under_the_table_after_it() -> Result<(), Box<dyn std::error::Error>> {
+async fn schema_evolution_old_files() -> Result<(), Box<dyn std::error::Error>> {
     let schema = fresh_schema();
     let catalog = Catalog::init(CatalogConfig::new(url(), &schema).warehouse("memory:///wh"), None).await?;
     let main = catalog.branch("main").await?;

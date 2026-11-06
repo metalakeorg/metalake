@@ -311,7 +311,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_what_cannot_have_taken_effect_twice_is_repeated() {
+    fn repeatable_error_kinds() {
         assert!(repeatable(ErrorKind::Serialization, false));
         assert!(repeatable(ErrorKind::Unknown, true));
         assert!(!repeatable(ErrorKind::Unknown, false));

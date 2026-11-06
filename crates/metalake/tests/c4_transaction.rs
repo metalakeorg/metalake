@@ -80,7 +80,7 @@ fn file(table: &Table, name: &str, lo: i64, hi: i64) -> FileAdd {
 }
 
 #[tokio::test]
-async fn transactions_create_write_and_refuse_as_the_protocol_says() -> Result<(), Box<dyn std::error::Error>> {
+async fn transaction_create_write_and_refusals() -> Result<(), Box<dyn std::error::Error>> {
     let schema = fresh_schema();
     let catalog = Catalog::init(CatalogConfig::new(url(), &schema).warehouse("memory:///wh"), None).await?;
     let main = catalog.branch("main").await?;
@@ -218,7 +218,7 @@ async fn located(catalog: &Catalog, name: &str) -> Result<String, Box<dyn std::e
 }
 
 #[tokio::test]
-async fn the_warehouse_is_the_catalogs() -> Result<(), Box<dyn std::error::Error>> {
+async fn catalog_warehouse_default() -> Result<(), Box<dyn std::error::Error>> {
     let schema = fresh_schema();
     let created = Catalog::init(CatalogConfig::new(url(), &schema).warehouse("memory:///wh/"), None).await?;
     let (tx, _) = created

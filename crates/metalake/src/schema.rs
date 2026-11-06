@@ -268,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn every_primitive_type_has_its_arrow_type() {
+    fn arrow_primitive_types() {
         let cases = [
             ("unknown", DataType::Null),
             ("boolean", DataType::Boolean),
@@ -301,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn types_the_core_does_not_read_yet_are_refused_by_name() {
+    fn unsupported_types_refused() {
         for ty in [
             "variant",
             "geometry",
@@ -320,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_fields_keep_their_ids_names_and_nullability() {
+    fn nested_field_metadata() {
         let fields = [
             field(1, None, 1, "k", "long", true),
             field(2, None, 2, "s", "struct", false),
@@ -386,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn an_arrow_schema_becomes_fields_and_comes_back_the_same() {
+    fn arrow_schema_round_trip() {
         let fields = [
             field(1, None, 1, "k", "long", true),
             field(2, None, 2, "s", "struct", false),
@@ -404,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn arrow_types_without_a_spec_type_are_refused() {
+    fn unsupported_arrow_types_refused() {
         for ty in [
             DataType::UInt64,
             DataType::Int16,
@@ -420,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn a_list_without_its_element_is_refused() {
+    fn list_without_element_refused() {
         let fields = [field(4, None, 1, "tags", "list", false)];
         assert!(matches!(arrow_schema(&fields), Err(Error::Schema(m)) if m.contains("element")));
     }
