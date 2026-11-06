@@ -14,7 +14,7 @@ bin="$work/venv/bin"
 "$bin/python" -m pip install --quiet --no-index "$wheel"
 case "$2" in
   bare) "$bin/python" -m pip install --quiet pytest polars; export METALAKE_TEST_BARE=1 ;;
-  current) "$bin/python" -m pip install --quiet pytest polars pyarrow pandas ;;
+  current) "$bin/python" -m pip install --quiet pytest polars pyarrow pandas mypy ;;
   oldest) "$bin/python" -m pip install --quiet pytest "polars==1.22.0" "pyarrow==15.0.0" "numpy<2" "pandas<3" ;;
   *) echo "bare, current or oldest"; exit 2 ;;
 esac
@@ -22,4 +22,8 @@ esac
 "$bin/python" -m pip list 2>/dev/null | grep -iE '^(polars|pyarrow|pandas) ' || true
 unset METALAKE_POSTGRES METALAKE_SCHEMA METALAKE_POSTGRES_BIN PGPASSWORD
 cd "$work"
+if [ "$2" = current ]; then
+  "$bin/python" -m mypy.stubtest metalake --ignore-missing-stub --mypy-config-file "$tests/../pyproject.toml"
+  "$bin/python" -m mypy --config-file "$tests/../pyproject.toml" "$tests/typing_check.py"
+fi
 "$bin/python" -m pytest "$tests" -q --tb=short -p no:cacheprovider

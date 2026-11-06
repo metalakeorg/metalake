@@ -1,16 +1,23 @@
 """What can go wrong, one for one with the exit codes of the command line."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ._metalake import Done
+
 
 class MetaLakeError(Exception):
     """A failure. `rule` is the protocol's rule it broke, `code` its SQLSTATE, and `retryable` whether trying again may
     work. From `maintain`, `done` is what had been done."""
 
-    def __init__(self, message, rule=None, code=None, retryable=False):
+    def __init__(self, message: str, rule: str | None = None, code: str | None = None, retryable: bool = False):
         super().__init__(message)
         self.rule = rule
         self.code = code
         self.retryable = retryable
-        self.done = []
+        self.done: list[Done] = []
 
 
 class UsageError(MetaLakeError, ValueError):
