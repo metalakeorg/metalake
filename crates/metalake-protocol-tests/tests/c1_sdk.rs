@@ -66,6 +66,6 @@ async fn a_pool_with_nothing_free_refuses_after_its_wait() -> Result<(), Error> 
     assert_eq!(refused.kind(), ErrorKind::Postgres);
     assert!(refused.to_string().contains("no connection of 1"), "{refused}");
     drop(held);
-    pool.get().await?;
+    let _freed = pool.get().await?;
     Ok(())
 }
