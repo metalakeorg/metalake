@@ -108,8 +108,8 @@ async fn stopping_closes_the_connections_even_of_a_state_still_held() -> Result<
         let _ = stopped.await;
     }));
 
-    let (client, connection) = tokio_postgres::connect(&url(), tokio_postgres::NoTls).await?;
-    tokio::spawn(connection);
+    let looks = metalake_pg::Pool::new(&url(), 1)?;
+    let client = looks.get().await?;
     let query = "select count(*) from pg_stat_activity where application_name = $1";
     let open: i64 = client.query_one(query, &[&schema]).await?.get(0);
     assert!(open > 0, "the state holds a connection");

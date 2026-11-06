@@ -65,4 +65,31 @@ create type @schema@.planned_file as (
   vector_offset bigint,
   vector_size bigint,
   vector_cardinality bigint,
+  vector_inline bytea,
+  begin_seq bigint);
+
+-- A file as a list of files gives it (listed_files): what a read needs of it, and what a manifest does and a read does
+-- not, its statistics and the sequence that added it.
+create type @schema@.listed_file as (
+  file_id bigint,
+  begin_seq bigint,
+  path text,
+  spec_id int,
+  partition jsonb,
+  record_count bigint,
+  file_size bigint,
+  footer_size int,
+  sort_order_id int,
+  stat_field_ids int[],
+  lower bytea[],
+  upper bytea[],
+  null_count bigint[],
+  nan_count bigint[],
+  value_count bigint[],
+  content bytea,
+  vector_begin_seq bigint,
+  vector_path text,
+  vector_offset bigint,
+  vector_size bigint,
+  vector_cardinality bigint,
   vector_inline bytea);

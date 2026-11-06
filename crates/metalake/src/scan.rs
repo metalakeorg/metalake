@@ -18,6 +18,7 @@ use futures_util::future::BoxFuture;
 use futures_util::stream::{self, BoxStream};
 use futures_util::{FutureExt, StreamExt, TryStreamExt};
 use metalake_pg::Prune;
+use metalake_pg::records::ListedFile;
 use metalake_pg::records::{PlannedFile, PlannedVector};
 use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt};
@@ -248,6 +249,21 @@ impl Scan {
             .map(move |file| {
                 let _ = &session;
                 Ok(ScanTask::from(file?))
+            })
+            .boxed())
+    }
+
+    /// The files the scan reads, each with its statistics, as they stream from the protocol.
+    pub async fn list(&self) -> Result<BoxStream<'static, Result<ListedFile>>> {
+        let session = self.catalog.session().await?;
+        let t = &self.table;
+        let p = self.catalog.protocol();
+        let files = p.listed_files(&session, t.ref_id(), t.id(), Some(t.seq())).await?;
+        // The session goes with the stream, whose rows are its connection's.
+        Ok(files
+            .map(move |file| {
+                let _ = &session;
+                Ok(file?)
             })
             .boxed())
     }

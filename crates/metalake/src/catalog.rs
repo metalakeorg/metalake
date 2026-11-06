@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use metalake_pg::records::{CommitEntry, NamespaceRow, RefRow, SnapshotEntry, TableName};
+use metalake_pg::records::{CommitEntry, NamespaceRow, RefRow, SnapshotEntry, TableName, TableSnapshot};
 use metalake_pg::{CreateRef, Pool, PooledSession, Protocol, Retention, Roles, Versions};
 use uuid::Uuid;
 
@@ -130,6 +130,15 @@ impl Catalog {
         Ok(LatestPoints(
             tables.into_iter().map(|t| ((t.ref_id, t.table_id), t.seq)).collect(),
         ))
+    }
+
+    /// Every snapshot of a table, of any ref, the earliest first.
+    pub async fn table_snapshots(&self, table: &Table) -> Result<Vec<TableSnapshot>> {
+        Ok(self
+            .inner
+            .protocol
+            .table_snapshots(&self.session().await?, table.id())
+            .await?)
     }
 
     /// A branch, by name.

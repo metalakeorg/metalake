@@ -89,6 +89,54 @@ pub struct PlannedFile {
     pub content: Option<Vec<u8>>,
     pub footer: Option<Vec<u8>>,
     pub vector: Option<PlannedVector>,
+    /// The commit that added this row of the file.
+    pub begin_seq: i64,
+}
+
+/// A file as a list of them gives it: what a read needs, and what a read does not (ICE-2, ICE-3).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListedFile {
+    pub file_id: i64,
+    pub begin_seq: i64,
+    pub path: Option<String>,
+    pub spec_id: i32,
+    pub partition: Value,
+    pub record_count: i64,
+    pub file_size: i64,
+    pub footer_size: i32,
+    pub sort_order_id: Option<i32>,
+    pub stat_field_ids: Vec<i32>,
+    pub lower: Vec<Option<Vec<u8>>>,
+    pub upper: Vec<Option<Vec<u8>>>,
+    pub null_count: Vec<Option<i64>>,
+    pub nan_count: Vec<Option<i64>>,
+    pub value_count: Option<Vec<Option<i64>>>,
+    pub content: Option<Vec<u8>>,
+    pub vector: Option<PlannedVector>,
+}
+
+impl ListedFile {
+    pub(crate) fn from_row(row: &Row) -> Self {
+        Self {
+            file_id: row.get("file_id"),
+            begin_seq: row.get("begin_seq"),
+            path: row.get("path"),
+            spec_id: row.get("spec_id"),
+            partition: row.get("partition"),
+            record_count: row.get("record_count"),
+            file_size: row.get("file_size"),
+            footer_size: row.get("footer_size"),
+            sort_order_id: row.get("sort_order_id"),
+            stat_field_ids: row.get("stat_field_ids"),
+            lower: row.get("lower"),
+            upper: row.get("upper"),
+            null_count: row.get("null_count"),
+            nan_count: row.get("nan_count"),
+            value_count: row.get("value_count"),
+            content: row.get("content"),
+            vector: PlannedVector::from_row(row),
+        }
+    }
 }
 
 /// The deletion vector of a planned file.
@@ -198,6 +246,18 @@ impl SnapshotEntry {
     }
 }
 
+/// A snapshot of a table, whichever its ref, with what serving it takes (ICE-1).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TableSnapshot {
+    pub snapshot_id: i64,
+    pub parent_snapshot_id: Option<i64>,
+    pub ref_name: String,
+    pub schema_seq: i64,
+    pub summary: Value,
+    /// Its commit's time, in milliseconds since the epoch.
+    pub timestamp_ms: Option<i64>,
+}
+
 /// A namespace of a ref, as the view `namespaces` shows it (NS-1, NS-4).
 #[derive(Debug, Clone, PartialEq)]
 pub struct NamespaceRow {
@@ -235,16 +295,6 @@ impl RefRow {
 
 impl PlannedFile {
     pub(crate) fn from_row(row: &Row) -> Self {
-        let vector = row
-            .get::<_, Option<i64>>("vector_begin_seq")
-            .map(|begin_seq| PlannedVector {
-                begin_seq,
-                path: row.get("vector_path"),
-                offset: row.get("vector_offset"),
-                size: row.get("vector_size"),
-                cardinality: row.get("vector_cardinality"),
-                inline: row.get("vector_inline"),
-            });
         Self {
             file_id: row.get("file_id"),
             path: row.get("path"),
@@ -256,8 +306,22 @@ impl PlannedFile {
             first_row_id: row.get("first_row_id"),
             content: row.get("content"),
             footer: row.get("footer"),
-            vector,
+            vector: PlannedVector::from_row(row),
+            begin_seq: row.get("begin_seq"),
         }
+    }
+}
+
+impl PlannedVector {
+    fn from_row(row: &Row) -> Option<Self> {
+        row.get::<_, Option<i64>>("vector_begin_seq").map(|begin_seq| Self {
+            begin_seq,
+            path: row.get("vector_path"),
+            offset: row.get("vector_offset"),
+            size: row.get("vector_size"),
+            cardinality: row.get("vector_cardinality"),
+            inline: row.get("vector_inline"),
+        })
     }
 }
 

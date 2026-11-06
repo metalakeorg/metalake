@@ -64,7 +64,7 @@ returns setof @schema@.planned_file language sql stable as $$
         on f.table_id = $2 and f.ref_id = c.ref_id and f.begin_seq <= c.seq and c.seq < f.end_seq
      where not q.prunes)
   select f.file_id, f.path, f.spec_id, f.partition, f.record_count, f.file_size, f.footer_size, f.first_row_id,
-         i.content, ff.footer, d.begin_seq, d.path, d.content_offset, d.content_size, d.cardinality, d.inline
+         i.content, ff.footer, d.begin_seq, d.path, d.content_offset, d.content_size, d.cardinality, d.inline, f.begin_seq
     from candidate f
     left join hidden h on h.file_id = f.file_id and h.level < f.level
     left join lateral (
@@ -89,4 +89,17 @@ returns setof @schema@.planned_file language sql stable as $$
                                                   * ft.day) # (-9223372036854775808)::bigint))
                                    else f.upper[p] end as upper) b
         where ft.prunes), false);
+$$;
+
+-- The files plan answers at (ref_id, table_id, at), each with its statistics, for who lists them and does not read them
+-- (ICE-2, ICE-3). plan stays the one definition of what a read sees, and a row of data_file is named by its key. A file or
+-- a vector with `begin_seq` S was added by commit S, since a commit's sequence is unique in the catalog.
+create function @schema@.listed_files(ref_id int, table_id uuid, at bigint default 9223372036854775806)
+returns setof @schema@.listed_file language sql stable as $$
+  select p.file_id, p.begin_seq, p.path, p.spec_id, p.partition, p.record_count, p.file_size, p.footer_size,
+         f.sort_order_id, f.stat_field_ids, f.lower, f.upper, f.null_count, f.nan_count, f.value_count,
+         p.content, p.vector_begin_seq, p.vector_path, p.vector_offset, p.vector_size, p.vector_cardinality,
+         p.vector_inline
+    from @schema@.plan($1, $2, $3) p
+    join @schema@.data_file f on f.table_id = $2 and f.file_id = p.file_id and f.begin_seq = p.begin_seq;
 $$;

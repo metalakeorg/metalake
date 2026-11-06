@@ -117,6 +117,8 @@ set search_path = @schema@, pg_catalog, pg_temp as $$
     'sort_orders', (select coalesce(jsonb_object_agg(o.sort_order_id::text, o.fields), '{}')
                       from (select distinct sort_order_id, fields from sort_order where sort_order.table_id = $2) o),
     'cluster_key', (select to_jsonb(k.field_ids) from visible_cluster_key($1, $2, $3) k),
+    'last_field_id', (select c.last_field_id from table_counter c where c.table_id = $2),
+    'last_partition_field_id', (select c.last_partition_field_id from table_counter c where c.table_id = $2),
     'properties', (select coalesce(jsonb_object_agg(p.key, p.value), '{}') from visible_properties($1, $2, $3) p))
     from visible_table_names($1, $3) n
    where n.table_id = $2;

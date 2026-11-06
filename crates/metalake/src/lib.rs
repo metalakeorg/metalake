@@ -33,7 +33,9 @@ pub use error::{Error, Result};
 pub use evolve::Evolve;
 pub use maintain::Maintenance;
 pub use metalake_pg::Retention;
-pub use metalake_pg::records::{CommitEntry, FileAdd, NamespaceRow, RefRow, SnapshotEntry, TableName};
+pub use metalake_pg::records::{
+    CommitEntry, FileAdd, ListedFile, NamespaceRow, RefRow, SnapshotEntry, TableName, TableSnapshot,
+};
 pub use scan::{Scan, ScanTask, TaskReader, TaskVector};
 pub use storage::Storage;
 pub use table::{Field, Table};

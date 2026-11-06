@@ -12,8 +12,8 @@ use tokio_postgres::{GenericClient, Row};
 use uuid::Uuid;
 
 use crate::records::{
-    CommitEntry, CommitResult, FeedCommit, FileAdd, FileChange, FileRef, LATEST, NamespaceRow, PlannedFile, RefRow,
-    SnapshotEntry, StablePoint, TableAsOf, TableExpect, TableLatest, TableName, VectorSet,
+    CommitEntry, CommitResult, FeedCommit, FileAdd, FileChange, FileRef, LATEST, ListedFile, NamespaceRow, PlannedFile,
+    RefRow, SnapshotEntry, StablePoint, TableAsOf, TableExpect, TableLatest, TableName, TableSnapshot, VectorSet,
 };
 use crate::{Result, Session, quote_ident};
 
@@ -237,6 +237,23 @@ impl Protocol {
         Ok(rows.map_ok(|r| PlannedFile::from_row(&r)).map_err(Into::into))
     }
 
+    /// The files a read of `table_id` on `ref_id` at `at` opens, each with its statistics, as they stream from Postgres.
+    pub async fn listed_files<S: Session>(
+        &self,
+        s: &S,
+        ref_id: i32,
+        table_id: Uuid,
+        at: Option<i64>,
+    ) -> Result<impl Stream<Item = Result<ListedFile>> + Send + use<S>> {
+        let statement = s
+            .statement(&self.sql("listed_files(ref_id => $1, table_id => $2, at => $3)"))
+            .await?;
+        let at = at.unwrap_or(LATEST);
+        let params: [Param<'_>; 3] = [&ref_id, &table_id, &at];
+        let rows = s.client().query_raw(&statement, params).await?;
+        Ok(rows.map_ok(|r| ListedFile::from_row(&r)).map_err(Into::into))
+    }
+
     /// The refs of the catalog that are not deleted.
     pub async fn refs(&self, s: &impl Session) -> Result<Vec<RefRow>> {
         let statement = s
@@ -291,6 +308,30 @@ impl Protocol {
             .await?;
         let rows = s.client().query(&statement, &[&on, &table, &limit]).await?;
         Ok(rows.iter().map(SnapshotEntry::from_row).collect())
+    }
+
+    /// Every snapshot of a table, of any ref, the earliest first.
+    pub async fn table_snapshots(&self, s: &impl Session, table: Uuid) -> Result<Vec<TableSnapshot>> {
+        let statement = s
+            .statement(&format!(
+                "select snapshot_id, parent_snapshot_id, ref, schema_seq, summary, \
+                 (extract(epoch from committed_at) * 1000)::bigint as timestamp_ms from {}.snapshots \
+                 where table_id = $1 order by snapshot_id",
+                self.schema
+            ))
+            .await?;
+        let rows = s.client().query(&statement, &[&table]).await?;
+        Ok(rows
+            .iter()
+            .map(|r| TableSnapshot {
+                snapshot_id: r.get("snapshot_id"),
+                parent_snapshot_id: r.get("parent_snapshot_id"),
+                ref_name: r.get("ref"),
+                schema_seq: r.get("schema_seq"),
+                summary: r.get("summary"),
+                timestamp_ms: r.get("timestamp_ms"),
+            })
+            .collect())
     }
 
     /// The tables visible at a read (TBL-1).
@@ -621,6 +662,7 @@ pub const INTERFACE: &[(&str, &[&str], bool)] = &[
     ("register_intents", &["ref_id", "table_id", "paths", "ttl"], true),
     ("next_id", &["t", "kind"], true),
     ("plan", &["ref_id", "table_id", "at", "field_id", "lo", "hi"], false),
+    ("listed_files", &["ref_id", "table_id", "at"], false),
     ("tables_at", &["ref_id", "at"], false),
     ("describe", &["ref_id", "table_id", "at"], false),
     ("snapshot_at", &["r", "t", "s"], false),

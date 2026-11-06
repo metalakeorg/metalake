@@ -27,4 +27,3 @@ tokio = { workspace = true, features = ["net", "signal"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["sync", "time"] }
-tokio-postgres.workspace = true
