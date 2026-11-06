@@ -5,6 +5,7 @@
 mod common;
 
 use std::process::Command;
+use std::sync::{Mutex, PoisonError};
 
 use common::{Failure, append, create, fresh_schema, local_catalog, server};
 use futures_util::TryStreamExt;
@@ -17,7 +18,11 @@ fn wanted(engine: &str) -> bool {
     wanted.split(',').any(|name| name == engine)
 }
 
+/// One engine at a time: two Sparks race for Ivy's cache as they download the same jar, and fail.
+static ONE_ENGINE: Mutex<()> = Mutex::new(());
+
 fn run(engine: &str, uri: &str) -> Result<Value, Failure> {
+    let _alone = ONE_ENGINE.lock().unwrap_or_else(PoisonError::into_inner);
     let python = std::env::var("METALAKE_TEST_PYTHON").expect("METALAKE_TEST_PYTHON");
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/engines.py");
     let run = Command::new(python).args([script, engine, uri]).output()?;
