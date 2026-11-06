@@ -753,6 +753,7 @@ Iceberg REST server of the projection, and are checked by its tests.
   - the `ADDED` entries of the manifests the new snapshot added become added files, their bounds converted back
     from Iceberg's serialization to MetaLake's (STA-5); its `DELETED` entries become removed files, and one that
     is not visible on the ref answers 409. Chained snapshots in one request are one commit;
+  - statistics files a client sets or removes are ignored: they are hints, and the catalog keeps its own;
   - other updates are refused in v0, but for what §16.3 allows;
   - the answer is the projection after the commit, in which the snapshot carries MetaLake's id.
 
@@ -777,7 +778,8 @@ Iceberg REST server of the projection, and are checked by its tests.
 - **REST-6.** A table has no manifests until a client asks. An answer names only files that exist. A commit of a
   table that has them changes only the blocks it touches. What is generated lies under `<location>/metalake-*`, and
   can always be generated again.
-- **REST-7.** `createTable` is a commit that creates the table. With `stage-create` it writes nothing and answers
+- **REST-7.** `createTable` is a commit that creates the table, and assigns its ids from 1, as what a client sends
+  is a shape. With `stage-create` it writes nothing and answers
   the metadata, and the `updateTable` that follows, with `assert-create`, is one commit of the definition and the
   first files, so that a table and its rows appear together.
 - **REST-8.** `dropTable` and `renameTable` are commits. Objects follow retention (§13), as another ref may read

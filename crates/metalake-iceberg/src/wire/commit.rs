@@ -84,6 +84,10 @@ pub enum Update {
     AddSnapshot {
         snapshot: ProposedSnapshot,
     },
+    SetStatistics {},
+    RemoveStatistics {},
+    SetPartitionStatistics {},
+    RemovePartitionStatistics {},
     SetSnapshotRef {
         ref_name: String,
         #[serde(rename = "type")]

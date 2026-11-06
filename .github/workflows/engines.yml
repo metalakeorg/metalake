@@ -28,7 +28,6 @@ jobs:
     env:
       METALAKE_TEST_PYTHON: python
       METALAKE_TEST_ENGINES: trino,flink
-      METALAKE_TEST_FLINK_JARS: ${{ github.workspace }}/flink-jars
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -45,8 +44,7 @@ jobs:
         run: docker pull --quiet trinodb/trino:484
       - name: Iceberg's runtime for Flink
         run: |
-          mkdir -p "$METALAKE_TEST_FLINK_JARS"
-          cd "$METALAKE_TEST_FLINK_JARS"
+          cd "$(python -c 'import os, pyflink; print(os.path.dirname(pyflink.__file__))')/lib"
           maven=https://repo1.maven.org/maven2/org/apache
           curl -fsSLO "$maven/iceberg/iceberg-flink-runtime-1.20/$ICEBERG/iceberg-flink-runtime-1.20-$ICEBERG.jar"
           curl -fsSLO "$maven/hadoop/hadoop-client-api/$HADOOP/hadoop-client-api-$HADOOP.jar"

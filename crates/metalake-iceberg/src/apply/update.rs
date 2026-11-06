@@ -208,6 +208,11 @@ pub fn change(request: CommitTableRequest) -> Result<Change, Refused> {
                 }
             }
             Update::AddSnapshot { snapshot } => snapshots.push(snapshot),
+            // Hints a client may recompute, which Trino sends with every write. The catalog keeps its own statistics.
+            Update::SetStatistics {}
+            | Update::RemoveStatistics {}
+            | Update::SetPartitionStatistics {}
+            | Update::RemovePartitionStatistics {} => {}
             Update::SetSnapshotRef { kind, .. } if kind != "branch" => {
                 return invalid("a tag is not moved through Iceberg");
             }
@@ -411,6 +416,13 @@ mod tests {
         let mut body = create();
         body["requirements"] = json!([{"type": "assert-create"}, {"type": "assert-table-uuid", "uuid": "u"}]);
         refused(body, "alone");
+    }
+
+    #[test]
+    fn ice6_statistics_updates_ignored() {
+        let statistics = json!({"action": "set-statistics", "snapshot-id": 7, "statistics": {"statistics-path": "x"}});
+        let change = asked(with_updates(append(), json!([statistics]))).unwrap();
+        assert!(change.snapshots.is_empty() && change.properties.is_empty());
     }
 
     #[test]

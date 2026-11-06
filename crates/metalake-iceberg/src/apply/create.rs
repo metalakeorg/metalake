@@ -1,7 +1,7 @@
 //! Translates a table's Iceberg definition to the protocol's (REST-7): the schema tree to field rows, and the spec and sort
 //! order to their catalog shape. `project::metadata::schema` is the inverse, and is what the tests hold this to.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use metalake::Table;
 use serde_json::{Map, Value, json};
@@ -14,6 +14,7 @@ use crate::wire::commit::CreateTableRequest;
 
 /// Where a partition field's ids start when a table has none: Iceberg's convention.
 const NO_PARTITION_FIELD: i64 = 999;
+const FIRST_PARTITION_FIELD: i64 = 1000;
 
 fn invalid(message: impl Into<String>) -> Refused {
     Refused::Invalid(message.into())
@@ -85,7 +86,72 @@ fn push_fields(rows: &mut Vec<Value>, parent: Option<i64>, fields: &Value) -> Re
     Ok(())
 }
 
-/// A schema as field rows, with a table's ids as the client assigned them (CMT-9).
+/// Gives every field of a struct its id, and only then those below, as Iceberg does.
+fn renumber_struct(parent: &mut Value, next: &mut i64, new_ids: &mut HashMap<i64, i64>) {
+    let Some(fields) = parent["fields"].as_array_mut() else {
+        return;
+    };
+    for field in fields.iter_mut() {
+        if let Some(old) = field["id"].as_i64() {
+            new_ids.insert(old, *next);
+            field["id"] = json!(*next);
+            *next += 1;
+        }
+    }
+    for field in fields.iter_mut() {
+        renumber_type(&mut field["type"], next, new_ids);
+    }
+}
+
+fn renumber_type(field_type: &mut Value, next: &mut i64, new_ids: &mut HashMap<i64, i64>) {
+    let Value::Object(_) = field_type else { return };
+    let mut assign = |key: &str, next: &mut i64| {
+        if let Some(old) = field_type[key].as_i64() {
+            new_ids.insert(old, *next);
+            field_type[key] = json!(*next);
+            *next += 1;
+        }
+    };
+    assign("element-id", next);
+    assign("key-id", next);
+    assign("value-id", next);
+    match field_type["type"].as_str() {
+        Some("struct") => renumber_struct(field_type, next, new_ids),
+        Some("list") => renumber_type(&mut field_type["element"], next, new_ids),
+        Some("map") => {
+            renumber_type(&mut field_type["key"], next, new_ids);
+            renumber_type(&mut field_type["value"], next, new_ids);
+        }
+        _ => {}
+    }
+}
+
+/// Assigns a table's ids from 1, as an Iceberg catalog does on `createTable`: what a client sends is only a shape, and it
+/// takes the ids from the answer. Spark, for one, numbers from 0, which TYP-2 refuses.
+fn assign_fresh_ids(creation: &mut Creation) -> Result<(), Refused> {
+    let mut new_ids = HashMap::new();
+    let mut next = 1;
+    renumber_struct(&mut creation.schema, &mut next, &mut new_ids);
+    let source = |field: &Value| {
+        let old = field["source-id"].as_i64().unwrap_or(-1);
+        let unknown = || invalid(format!("no field {old} to partition or sort by"));
+        new_ids.get(&old).copied().ok_or_else(unknown)
+    };
+    if let Some(fields) = creation.spec["fields"].as_array_mut() {
+        for (at, field) in fields.iter_mut().enumerate() {
+            field["source-id"] = json!(source(field)?);
+            field["field-id"] = json!(FIRST_PARTITION_FIELD + at as i64);
+        }
+    }
+    if let Some(fields) = creation.sort_order.as_mut().and_then(|o| o["fields"].as_array_mut()) {
+        for field in fields {
+            field["source-id"] = json!(source(field)?);
+        }
+    }
+    Ok(())
+}
+
+/// A schema as field rows, with the ids it carries, which CMT-9 takes as a created table's.
 pub fn field_rows(schema: &Value) -> Result<Vec<Value>, Refused> {
     let identified = schema["identifier-field-ids"]
         .as_array()
@@ -211,7 +277,7 @@ pub fn requested(state: &State, namespace: &[&str], request: CreateTableRequest)
     if state.storage()?.path(&location).is_err() {
         return Err(invalid(format!("{location} is out of the warehouse's store")).into());
     }
-    let creation = Creation {
+    let mut creation = Creation {
         table_id: table_id.to_string(),
         schema: request.schema,
         spec: request
@@ -220,6 +286,7 @@ pub fn requested(state: &State, namespace: &[&str], request: CreateTableRequest)
         sort_order: request.write_order,
         location,
     };
+    assign_fresh_ids(&mut creation)?;
     let given = request.properties.into_iter().map(|(k, v)| (k, Some(v))).collect();
     let definition = definition(namespace, &request.name, &creation, &given)?;
     Ok(Requested {
@@ -279,6 +346,36 @@ mod tests {
     fn typ6_schema_round_trip() {
         let rows = field_rows(&nested()).unwrap();
         assert_eq!(schema(0, &Value::Array(rows)), nested());
+    }
+
+    #[test]
+    fn rest7_fresh_ids() {
+        let schema = json!({"type": "struct", "fields": [
+            {"id": 0, "name": "k", "required": false, "type": "long"},
+            {"id": 1, "name": "s", "required": false, "type": {"type": "struct", "fields": [
+                {"id": 2, "name": "x", "required": false, "type": "int"}]}},
+            {"id": 3, "name": "m", "required": false, "type": {"type": "map", "key-id": 4, "key": "string",
+                "value-id": 5, "value-required": false, "value": "int"}},
+            {"id": 6, "name": "t", "required": false, "type": "long"}]});
+        let spec =
+            json!({"spec-id": 0, "fields": [{"source-id": 6, "field-id": 7, "name": "t_b", "transform": "day"}]});
+        let order = json!({"order-id": 1, "fields": [{"source-id": 0, "transform": "identity"}]});
+        let mut new = creation(schema, spec, Some(order));
+        assign_fresh_ids(&mut new).unwrap();
+        let ids = |rows: Vec<Value>| rows.iter().map(|r| r["field_id"].as_i64().unwrap()).collect::<Vec<_>>();
+        assert_eq!(ids(field_rows(&new.schema).unwrap()), [1, 2, 5, 3, 6, 7, 4]);
+        assert_eq!(new.schema["fields"][3]["name"], "t");
+        assert_eq!(new.schema["fields"][3]["id"], 4);
+        assert_eq!(new.spec["fields"][0]["source-id"], 4);
+        assert_eq!(new.spec["fields"][0]["field-id"], 1000);
+        assert_eq!(new.sort_order.as_ref().unwrap()["fields"][0]["source-id"], 1);
+    }
+
+    #[test]
+    fn partition_over_unknown_field_refused() {
+        let spec =
+            json!({"spec-id": 0, "fields": [{"source-id": 99, "field-id": 1000, "name": "x", "transform": "day"}]});
+        refused(assign_fresh_ids(&mut creation(nested(), spec, None)), "no field 99");
     }
 
     #[test]

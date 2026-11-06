@@ -158,9 +158,6 @@ def flink_lifecycle(uri):
     from pyflink.table import EnvironmentSettings, TableEnvironment
 
     environment = TableEnvironment.create(EnvironmentSettings.in_batch_mode())
-    jars = sorted(os.listdir(os.environ["METALAKE_TEST_FLINK_JARS"]))
-    jars = [f"file://{os.environ['METALAKE_TEST_FLINK_JARS']}/{jar}" for jar in jars]
-    environment.get_config().set("pipeline.jars", ";".join(jars))
     environment.execute_sql(
         f"create catalog lake with ('type' = 'iceberg', 'catalog-type' = 'rest', 'uri' = '{uri}')"
     ).wait()
