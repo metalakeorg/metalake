@@ -12,3 +12,4 @@ __pycache__/
 /dist/
 /crates/metalake-py/python/metalake/postgres/
 /crates/metalake-py/python/metalake/_metalake.*
+!/crates/metalake-py/python/metalake/_metalake.pyi
