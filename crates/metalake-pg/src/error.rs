@@ -149,7 +149,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn refusals_are_classified_by_their_sqlstate_and_source() {
+    fn classify_sqlstate() {
         assert_eq!(classify("40001", true), ErrorKind::Conflict);
         assert_eq!(classify("40001", false), ErrorKind::Serialization);
         assert_eq!(classify("40P01", false), ErrorKind::Serialization);
@@ -162,13 +162,13 @@ mod tests {
     }
 
     #[test]
-    fn only_rule_ids_are_rules() {
+    fn rule_id_format() {
         assert!(is_rule("CMT-7") && is_rule("TT-1") && is_rule("MRG-12"));
         assert!(!is_rule("cmt-7") && !is_rule("CMT-") && !is_rule("-7") && !is_rule("CMT-7a") && !is_rule("CMT7"));
     }
 
     #[test]
-    fn only_serialization_is_retryable_as_it_is() {
+    fn retryable_error_kinds() {
         assert!(Error::new(ErrorKind::Serialization, "").is_retryable());
         for kind in [
             ErrorKind::Conflict,

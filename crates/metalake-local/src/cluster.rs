@@ -430,7 +430,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_value_is_quoted_for_libpq() {
+    fn quote_libpq_value() {
         assert_eq!(quoted(r"C:\a b"), r"'C:\\a b'");
         assert_eq!(quoted("it's"), r"'it\'s'");
     }

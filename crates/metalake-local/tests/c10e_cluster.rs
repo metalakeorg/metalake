@@ -22,7 +22,7 @@ fn path() -> PathBuf {
 }
 
 #[tokio::test]
-async fn a_catalog_installs_on_a_lakes_own_postgres() -> Result<(), Box<dyn std::error::Error>> {
+async fn init_catalog_on_pg_cluster() -> Result<(), Box<dyn std::error::Error>> {
     let began = Instant::now();
     let binaries = Binaries::find()?;
     println!("binaries {:?} in {:?}", binaries.directory(), began.elapsed());
@@ -78,7 +78,7 @@ async fn a_catalog_installs_on_a_lakes_own_postgres() -> Result<(), Box<dyn std:
 }
 
 #[test]
-fn a_cluster_of_another_version_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+fn pg_cluster_unsupported_version() -> Result<(), Box<dyn std::error::Error>> {
     let lake = path();
     let binaries = Binaries::find()?;
     Cluster::init(&lake, binaries.clone())?;
@@ -92,7 +92,7 @@ fn a_cluster_of_another_version_is_refused() -> Result<(), Box<dyn std::error::E
 }
 
 #[test]
-fn binaries_of_another_version_are_refused() {
+fn pg_binaries_unsupported_version() {
     let none = Binaries::at(path());
     assert!(matches!(none, Err(Error::Binaries(_))), "{none:?}");
 }
@@ -101,7 +101,7 @@ fn binaries_of_another_version_are_refused() {
 /// and leaves.
 #[test]
 #[ignore = "run by the tests below"]
-fn a_process_that_uses_a_lake() {
+fn helper_process_connect() {
     let Ok(lake) = std::env::var("LAKE") else {
         return;
     };
@@ -113,7 +113,7 @@ fn a_process_that_uses_a_lake() {
 fn process(lake: &std::path::Path) -> Command {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
-        .args(["--exact", "a_process_that_uses_a_lake", "--ignored", "--nocapture"])
+        .args(["--exact", "helper_process_connect", "--ignored", "--nocapture"])
         .env("LAKE", lake);
     command
 }
@@ -140,7 +140,7 @@ impl Drop for Lake {
 }
 
 #[test]
-fn many_processes_bring_up_one_server_that_outlives_them() {
+fn concurrent_start_single_server() {
     let lake = Lake::new();
     let children: Vec<_> = (0..10)
         .map(|_| process(&lake.path).stdout(Stdio::piped()).spawn().unwrap())
@@ -162,7 +162,7 @@ fn many_processes_bring_up_one_server_that_outlives_them() {
 
 #[cfg(windows)]
 #[test]
-fn a_server_outlives_the_console_that_started_it() {
+fn server_outlives_console() {
     use std::os::windows::process::CommandExt;
     const CREATE_NEW_CONSOLE: u32 = 0x10;
 
@@ -174,7 +174,7 @@ fn a_server_outlives_the_console_that_started_it() {
 }
 
 #[tokio::test]
-async fn a_server_that_died_comes_back_with_what_was_committed() -> Result<(), Box<dyn std::error::Error>> {
+async fn server_crash_recovery() -> Result<(), Box<dyn std::error::Error>> {
     let lake = Lake::new();
     let connection = lake.cluster.ensure()?;
     let config = CatalogConfig::new(connection, "metalake").warehouse("memory:///lake");
@@ -213,7 +213,7 @@ async fn a_server_that_died_comes_back_with_what_was_committed() -> Result<(), B
 }
 
 #[test]
-fn stopping_is_safe_to_repeat() {
+fn stop_is_idempotent() {
     let lake = Lake::new();
     lake.cluster.stop().unwrap();
     lake.cluster.ensure().unwrap();

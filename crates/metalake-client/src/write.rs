@@ -401,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn only_what_loses_nothing_or_fails_is_allowed() {
+    fn allowed_casts() {
         use DataType::*;
         assert!(allowed(&Utf8View, &Utf8) && allowed(&LargeUtf8, &Utf8) && allowed(&Null, &Int64));
         assert!(allowed(&Int32, &Int64) && allowed(&Int64, &Int32) && allowed(&Float32, &Float64));
@@ -424,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn a_name_reads_as_in_a_statement() {
+    fn table_path_parse() {
         assert_eq!(TablePath::parse("t").unwrap(), path("main", &["default"], "t"));
         assert_eq!(TablePath::parse("n.t").unwrap(), path("main", &["n"], "t"));
         assert_eq!(TablePath::parse("r.n.t").unwrap(), path("r", &["n"], "t"));

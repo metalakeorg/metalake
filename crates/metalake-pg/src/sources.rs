@@ -68,7 +68,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_sources_install_tables_then_the_reference_then_the_protocol() {
+    fn install_order() {
         let kinds: Vec<Kind> = SOURCES.iter().map(|(_, kind, _)| *kind).collect();
         let first_protocol = kinds.iter().position(|k| *k == Kind::Protocol).unwrap();
         assert!(kinds.iter().take_while(|k| **k == Kind::Table).count() > 0);
@@ -82,7 +82,7 @@ mod tests {
     }
 
     #[test]
-    fn a_reused_file_with_before_comes_just_before_its_file() {
+    fn install_order_before_reused_file() {
         let names: Vec<&str> = SOURCES.iter().map(|(name, _, _)| *name).collect();
         let retention = names
             .iter()
@@ -92,7 +92,7 @@ mod tests {
     }
 
     #[test]
-    fn rendering_qualifies_every_object_with_the_quoted_schema() {
+    fn render_qualified_schema() {
         assert_eq!(
             render("create function @schema@.f()", "a\"b"),
             "create function \"a\"\"b\".f()"
@@ -107,7 +107,7 @@ mod tests {
     }
 
     #[test]
-    fn created_names_views_functions_and_types() {
+    fn parse_created_objects() {
         let sql = "create function \"c\".plan(r int)\n  create or replace view \"c\".refs as\ncreate type \"c\".file_add as (";
         assert_eq!(
             created(sql),

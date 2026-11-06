@@ -401,7 +401,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_file_says_only_what_differs() {
+    fn config_file_omits_defaults() {
         let plain = Location {
             postgres: Some("postgresql://host/db".into()),
             local: None,
@@ -433,7 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn a_password_is_seen_in_each_form() {
+    fn detect_password() {
         for with in [
             "postgresql://u:secret@h/db",
             "postgres://u@h/db?password=secret",
@@ -453,13 +453,13 @@ mod tests {
     }
 
     #[test]
-    fn a_password_joins_each_form() {
+    fn inject_password() {
         assert_eq!(joined("postgresql://u@h/db", "a b/c"), "postgresql://u:a%20b%2Fc@h/db");
         assert_eq!(joined("host=h", r"it's\"), r"host=h password='it\'s\\'");
     }
 
     #[test]
-    fn storage_takes_its_services_variables_in_lower_case() {
+    fn storage_env_options_lower_case() {
         let vars = [
             ("AWS_REGION", "eu"),
             ("GOOGLE_SERVICE_ACCOUNT", "k"),
@@ -475,7 +475,7 @@ mod tests {
     }
 
     #[test]
-    fn a_program_names_a_lake_in_each_form() {
+    fn location_forms() {
         let postgres = Location::named(Some("postgresql://u@h/db"), Some("other")).unwrap();
         assert_eq!(postgres.postgres.as_deref(), Some("postgresql://u@h/db"));
         assert_eq!(postgres.schema(), "other");
@@ -500,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn a_warehouse_is_a_url() {
+    fn warehouse_url_forms() {
         assert_eq!(warehouse_url("s3://bucket/prefix").unwrap(), "s3://bucket/prefix");
         let dir = env::temp_dir().join(format!("metalake-warehouse-{}", std::process::id()));
         let url = warehouse_url(dir.to_str().unwrap()).unwrap();
