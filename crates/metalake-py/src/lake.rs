@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use metalake_client::{Error, Lake, MaintainRequest, MergeRequest, RefKind, Retention, Session, Task, duration};
 use pyo3::prelude::*;
+use pyo3::types::PyTuple;
 
 use crate::errors::to_python;
 use crate::info::{History, PyDone, PyMerged, PyRef, PyStatus};
@@ -71,19 +72,40 @@ impl PyLake {
 
 #[pymethods]
 impl PyLake {
+    /// Closes the connections of this lake, which with `with` happens by itself. Its tables and results go with it, and
+    /// its server stays up: that is the lake's, and `stop` ends it. Closing twice does nothing.
+    fn close(&self) {
+        if self.owner.close() {
+            self.lake.close();
+        }
+    }
+
+    fn __enter__(slf: pyo3::PyRef<'_, Self>) -> PyResult<pyo3::PyRef<'_, Self>> {
+        slf.owner.check(slf.py(), "Lake")?;
+        Ok(slf)
+    }
+
+    #[pyo3(signature = (*_failure))]
+    fn __exit__(&self, _failure: &Bound<'_, PyTuple>) {
+        self.close();
+    }
+
     /// Runs statements in order, each committed before the next, and answers the rows of the last. A read waits to be
     /// read, at the point of this call; anything else has happened when this returns.
     fn sql(&self, py: Python<'_>, text: String) -> PyResult<QueryResult> {
         self.owner.check(py, "Lake")?;
         let session = self.session.clone();
         let prepared = wait(py, async move { session.run(&text).await })?;
-        Ok(QueryResult::new(prepared.map_err(|e| to_python(py, e))?))
+        Ok(QueryResult::new(
+            prepared.map_err(|e| to_python(py, e))?,
+            self.owner.clone(),
+        ))
     }
 
     /// A table by the name a statement would use: `t`, `namespace.t` or `ref.namespace.t`.
     fn table(&self, py: Python<'_>, name: &str) -> PyResult<PyTable> {
         self.owner.check(py, "Lake")?;
-        PyTable::open(py, self.lake.clone(), self.session.clone(), name)
+        PyTable::open(py, self.owner.clone(), self.lake.clone(), self.session.clone(), name)
     }
 
     /// Takes a new picture of what `information_schema` shows, for what others changed. A table or a ref named in a

@@ -93,6 +93,11 @@ impl Catalog {
         Self::connect(config).await
     }
 
+    /// Closes this handle's connections, for every clone of it. What it read goes on existing, but it asks no more.
+    pub fn close(&self) {
+        self.inner.pool.close();
+    }
+
     /// Upgrades a catalog to this core's protocol (`metalake migrate`), and answers the sequence of a migration of the
     /// format's rows, if there was one. It connects by itself, since `connect` refuses a catalog that needs this, and
     /// it holds every ref while it runs, so nothing calls it on its own.

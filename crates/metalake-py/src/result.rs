@@ -156,9 +156,9 @@ pub struct QueryResult {
 }
 
 impl QueryResult {
-    pub fn new(prepared: Prepared) -> Self {
+    pub fn new(prepared: Prepared, owner: Owner) -> Self {
         Self {
-            owner: Owner::here(),
+            owner,
             prepared: Arc::new(prepared),
         }
     }
@@ -240,6 +240,11 @@ impl QueryResult {
         reader.call_method1("__arrow_c_stream__", (requested_schema,))
     }
 
+    /// What it holds, which does not run it: a result can take a long while, and looking at one should not.
+    fn __repr__(&self) -> String {
+        format!("Result(columns={:?})", self.columns())
+    }
+
     /// The rows as a `polars.DataFrame`.
     fn to_polars<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let polars = library(py, "to_polars", "polars", "polars")?;
@@ -265,7 +270,7 @@ impl QueryResult {
     fn __iter__(&self, py: Python<'_>) -> PyResult<Batches> {
         self.owner.check(py, "Result")?;
         Ok(Batches {
-            owner: self.owner,
+            owner: self.owner.clone(),
             pump: Mutex::new(Some(Pump::start(self.prepared.clone()))),
         })
     }

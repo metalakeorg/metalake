@@ -260,6 +260,11 @@ impl Lake {
         Ok(Self { catalog, location })
     }
 
+    /// Closes the connections of this lake. Its server stays up: it is the lake's, and others may be on it.
+    pub fn close(&self) {
+        self.catalog.close();
+    }
+
     /// The store of the catalog's warehouse, with the credentials of the environment. Only a verb that moves bytes
     /// asks for it.
     pub fn storage(&self) -> Result<Storage> {

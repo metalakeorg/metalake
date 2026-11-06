@@ -40,6 +40,11 @@ impl Pool {
         Ok(Self(pool))
     }
 
+    /// Closes the idle connections, and those in use as they come back. The pool opens no more.
+    pub fn close(&self) {
+        self.0.close();
+    }
+
     /// A connection of the pool, opened if none is free.
     pub async fn get(&self) -> Result<PooledSession> {
         self.0.get().await.map_err(|e| match e {
