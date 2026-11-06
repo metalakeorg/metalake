@@ -198,6 +198,13 @@ impl SnapshotEntry {
     }
 }
 
+/// A namespace of a ref, as the view `namespaces` shows it (NS-1, NS-4).
+#[derive(Debug, Clone, PartialEq)]
+pub struct NamespaceRow {
+    pub namespace: Vec<String>,
+    pub properties: Value,
+}
+
 /// A ref of the catalog, as the view `refs` shows it (BR-1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefRow {

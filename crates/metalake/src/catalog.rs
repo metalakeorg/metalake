@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use metalake_pg::records::{CommitEntry, RefRow, SnapshotEntry, TableName};
+use metalake_pg::records::{CommitEntry, NamespaceRow, RefRow, SnapshotEntry, TableName};
 use metalake_pg::{CreateRef, Pool, PooledSession, Protocol, Retention, Roles, Versions};
 use uuid::Uuid;
 
@@ -222,6 +222,12 @@ impl Ref {
     /// A merge of this branch into its parent, what it would do or doing it (MRG-1 to MRG-8).
     pub fn merge(&self) -> crate::Merge {
         crate::Merge::new(self.clone())
+    }
+
+    /// The namespaces this ref sees, in order.
+    pub async fn namespaces(&self) -> Result<Vec<NamespaceRow>> {
+        let p = self.catalog.protocol();
+        Ok(p.namespaces(&self.catalog.session().await?, &self.name).await?)
     }
 
     /// This ref's own commits, the latest first: what it inherited is its parent's, up to its `fork_seq`.

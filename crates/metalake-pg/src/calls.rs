@@ -12,8 +12,8 @@ use tokio_postgres::{GenericClient, Row};
 use uuid::Uuid;
 
 use crate::records::{
-    CommitEntry, CommitResult, FeedCommit, FileAdd, FileChange, FileRef, LATEST, PlannedFile, RefRow, SnapshotEntry,
-    StablePoint, TableAsOf, TableExpect, TableLatest, TableName, VectorSet,
+    CommitEntry, CommitResult, FeedCommit, FileAdd, FileChange, FileRef, LATEST, NamespaceRow, PlannedFile, RefRow,
+    SnapshotEntry, StablePoint, TableAsOf, TableExpect, TableLatest, TableName, VectorSet,
 };
 use crate::{Result, Session, quote_ident};
 
@@ -247,6 +247,24 @@ impl Protocol {
             .await?;
         let rows = s.client().query(&statement, &[]).await?;
         Ok(rows.iter().map(RefRow::from_row).collect())
+    }
+
+    /// The namespaces of a ref, in order.
+    pub async fn namespaces(&self, s: &impl Session, on: &str) -> Result<Vec<NamespaceRow>> {
+        let statement = s
+            .statement(&format!(
+                "select namespace, properties from {}.namespaces where ref = $1 order by namespace",
+                self.schema
+            ))
+            .await?;
+        let rows = s.client().query(&statement, &[&on]).await?;
+        Ok(rows
+            .iter()
+            .map(|r| NamespaceRow {
+                namespace: r.get("namespace"),
+                properties: r.get("properties"),
+            })
+            .collect())
     }
 
     /// The commits of a ref, the latest first.

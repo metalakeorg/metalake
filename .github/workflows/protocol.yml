@@ -1,0 +1,43 @@
+# What needs a Postgres in Docker: the specification's suites, the protocol, the core and the Iceberg REST server.
+name: protocol
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: protocol-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  protocol:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      METALAKE_TEST_PYTHON: python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: A real Iceberg client
+        run: python -m pip install --quiet "pyiceberg==0.12.0"
+      - name: The specification
+        run: bash spec/v0/run.sh
+      - name: The specification, with PyIceberg
+        run: bash spec/v0/conformance/iceberg/run.sh
+      - name: The protocol
+        run: bash sql/test.sh
+      - name: The core
+        run: CRATE=metalake bash sql/test.sh
+      - name: The Iceberg REST server
+        run: CRATE=metalake-iceberg bash sql/test.sh
+      - name: Lints of the Iceberg REST server
+        run: cargo clippy -p metalake-iceberg --all-targets -- -D warnings
