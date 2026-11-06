@@ -105,6 +105,51 @@ async fn spark_lifecycle() -> Result<(), Failure> {
 }
 
 #[tokio::test]
+async fn trino_lifecycle() -> Result<(), Failure> {
+    if !wanted("trino") {
+        return Ok(());
+    }
+    let schema = fresh_schema();
+    let directory = wide(&schema).await?;
+    let (_server, uri) = server(&schema)?;
+    let said = run("trino", &uri)?;
+    let _ = std::fs::remove_dir_all(&directory);
+    assert_eq!(said["main"], json!([0, 2, 3, 4, 10, 11, 12]));
+    assert_eq!(said["branch"], json!([0, 2, 3, 4, 10, 11, 12, 20]));
+    assert_eq!(said["pruned"], json!([10, 11, 12]));
+    assert_eq!(said["inserted"], json!([0, 2, 3, 4, 10, 11, 12, 30, 31]));
+    let refused = said["row_delete"].as_str().unwrap_or_default();
+    assert!(refused.contains("copy-on-write"), "the limit is named: {refused}");
+    assert_eq!(
+        said["after_delete"], said["inserted"],
+        "a refused delete changes nothing"
+    );
+    assert_eq!(said["created_as"], json!([1, 2]));
+    assert_eq!(said["renamed"], json!(["d", "t"]));
+    assert_eq!(said["schemas"].as_array().map(Vec::len), Some(2), "{said}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn flink_lifecycle() -> Result<(), Failure> {
+    if !wanted("flink") {
+        return Ok(());
+    }
+    let schema = fresh_schema();
+    let directory = wide(&schema).await?;
+    let (_server, uri) = server(&schema)?;
+    let said = run("flink", &uri)?;
+    let _ = std::fs::remove_dir_all(&directory);
+    assert_eq!(said["main"], json!([0, 2, 3, 4, 10, 11, 12]));
+    assert_eq!(said["branch"], json!([0, 2, 3, 4, 10, 11, 12, 20]));
+    assert_eq!(said["pruned"], json!([10, 11, 12]));
+    assert_eq!(said["inserted"], json!([0, 2, 3, 4, 10, 11, 12, 30, 31]));
+    assert_eq!(said["overwritten"], json!([3]));
+    assert_eq!(said["databases"], json!(["db"]));
+    Ok(())
+}
+
+#[tokio::test]
 async fn duckdb_read_partition_vector() -> Result<(), Failure> {
     if !wanted("duckdb") {
         return Ok(());

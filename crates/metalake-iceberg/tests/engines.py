@@ -2,7 +2,11 @@
 branch `b`, and of the filter that prunes, from table `db.wide`."""
 
 import json
+import os
+import subprocess
 import sys
+import tempfile
+import time
 
 
 def duckdb(uri):
@@ -79,5 +83,110 @@ def spark_lifecycle(uri):
     return said
 
 
+def trino_container(uri):
+    """Trino in its image, on the host's network and paths, with one catalog: the server under test."""
+    catalog = tempfile.mkdtemp()
+    with open(os.path.join(catalog, "lake.properties"), "w") as properties:
+        properties.write(
+            "connector.name=iceberg\n"
+            "iceberg.catalog.type=rest\n"
+            f"iceberg.rest-catalog.uri={uri}\n"
+            "fs.hadoop.enabled=true\n"
+        )
+    os.chmod(catalog, 0o755)
+    subprocess.run(
+        ["docker", "run", "-d", "--rm", "--name", "metalake-trino", "--network", "host", "--user", "root",
+         "-v", f"{catalog}:/etc/trino/catalog", "-v", "/tmp:/tmp", "trinodb/trino:484"],
+        check=True, stdout=subprocess.DEVNULL,
+    )
+
+
+def trino_lifecycle(uri):
+    import trino
+
+    trino_container(uri)
+    try:
+        connection = trino.dbapi.connect(host="127.0.0.1", port=8080, user="metalake", catalog="lake")
+        cursor = connection.cursor()
+        for _ in range(120):
+            try:
+                cursor.execute("select 1 from system.runtime.nodes where state = 'active'")
+                if cursor.fetchall():
+                    cursor.execute("show schemas from lake")
+                    cursor.fetchall()
+                    break
+            except Exception:
+                pass
+            time.sleep(1)
+
+        def run(query):
+            cursor.execute(query)
+            return cursor.fetchall()
+
+        keys = lambda query: [row[0] for row in run(query)]
+        said = {
+            "main": keys("select k from lake.db.wide order by k"),
+            "branch": keys("select k from lake.db.wide for version as of 'b' order by k"),
+            "pruned": keys("select k from lake.db.wide where k >= 10 order by k"),
+        }
+        run("insert into lake.db.wide values (30), (31)")
+        said["inserted"] = keys("select k from lake.db.wide order by k")
+        try:
+            run("delete from lake.db.wide where k = 2")
+            said["row_delete"] = "deleted"
+        except Exception as refused:
+            said["row_delete"] = str(refused)
+        said["after_delete"] = keys("select k from lake.db.wide order by k")
+        run("create schema lake.flow")
+        run("create table lake.flow.t (k bigint, s varchar)")
+        run("insert into lake.flow.t values (1, 'a'), (2, 'b')")
+        run("create table lake.flow.c as select k from lake.flow.t")
+        said["created_as"] = keys("select k from lake.flow.c order by k")
+        run("alter table lake.flow.c rename to lake.flow.d")
+        said["renamed"] = sorted(row[0] for row in run("show tables from lake.flow"))
+        run("drop table lake.flow.d")
+        run("drop table lake.flow.t")
+        run("drop schema lake.flow")
+        said["schemas"] = keys("show schemas from lake")
+        return said
+    finally:
+        subprocess.run(["docker", "logs", "--tail", "40", "metalake-trino"], stdout=sys.stderr, stderr=sys.stderr)
+        subprocess.run(["docker", "rm", "-f", "metalake-trino"], stdout=subprocess.DEVNULL)
+
+
+def flink_lifecycle(uri):
+    from pyflink.table import EnvironmentSettings, TableEnvironment
+
+    environment = TableEnvironment.create(EnvironmentSettings.in_batch_mode())
+    jars = sorted(os.listdir(os.environ["METALAKE_TEST_FLINK_JARS"]))
+    jars = [f"file://{os.environ['METALAKE_TEST_FLINK_JARS']}/{jar}" for jar in jars]
+    environment.get_config().set("pipeline.jars", ";".join(jars))
+    environment.execute_sql(
+        f"create catalog lake with ('type' = 'iceberg', 'catalog-type' = 'rest', 'uri' = '{uri}')"
+    ).wait()
+
+    def keys(query):
+        with environment.execute_sql(query).collect() as rows:
+            return sorted(row[0] for row in rows)
+
+    said = {
+        "main": keys("select k from lake.db.wide"),
+        "branch": keys("select k from lake.db.wide /*+ OPTIONS('branch' = 'b') */"),
+        "pruned": keys("select k from lake.db.wide where k >= 10"),
+    }
+    environment.execute_sql("insert into lake.db.wide values (30), (31)").wait()
+    said["inserted"] = keys("select k from lake.db.wide")
+    environment.execute_sql("create database lake.flow").wait()
+    environment.execute_sql("create table lake.flow.t (k bigint, s string)").wait()
+    environment.execute_sql("insert into lake.flow.t values (1, 'a'), (2, 'b')").wait()
+    environment.execute_sql("insert overwrite lake.flow.t values (3, 'c')").wait()
+    said["overwritten"] = keys("select k from lake.flow.t")
+    environment.execute_sql("alter table lake.flow.t set ('team' = 'data')").wait()
+    environment.execute_sql("drop table lake.flow.t").wait()
+    environment.execute_sql("drop database lake.flow").wait()
+    said["databases"] = sorted(row[0] for row in environment.execute_sql("show databases in lake").collect())
+    return said
+
+
 if __name__ == "__main__":
-    print("\n" + json.dumps({"duckdb": duckdb, "spark": spark, "spark_insert": spark_insert, "spark_lifecycle": spark_lifecycle}[sys.argv[1]](sys.argv[2])))
+    print("\n" + json.dumps({"duckdb": duckdb, "spark": spark, "spark_insert": spark_insert, "spark_lifecycle": spark_lifecycle, "trino": trino_lifecycle, "flink": flink_lifecycle}[sys.argv[1]](sys.argv[2])))

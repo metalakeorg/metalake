@@ -1,0 +1,55 @@
+# Engines that take long to set up, against the Iceberg REST server: Trino in its image, and Flink with Iceberg's runtime.
+# Apart from `protocol`, so that a change of the server is held to them without the suites of the protocol.
+name: engines
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - crates/metalake-iceberg/**
+      - .github/workflows/engines.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: engines-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ICEBERG: "1.11.0"
+  HADOOP: "3.4.1"
+
+jobs:
+  engines:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      METALAKE_TEST_PYTHON: python
+      METALAKE_TEST_ENGINES: trino,flink
+      METALAKE_TEST_FLINK_JARS: ${{ github.workspace }}/flink-jars
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Clients
+        run: python -m pip install --quiet trino==0.340.0 apache-flink==1.20.3
+      - name: Trino
+        run: docker pull --quiet trinodb/trino:484
+      - name: Iceberg's runtime for Flink
+        run: |
+          mkdir -p "$METALAKE_TEST_FLINK_JARS"
+          cd "$METALAKE_TEST_FLINK_JARS"
+          maven=https://repo1.maven.org/maven2/org/apache
+          curl -fsSLO "$maven/iceberg/iceberg-flink-runtime-1.20/$ICEBERG/iceberg-flink-runtime-1.20-$ICEBERG.jar"
+          curl -fsSLO "$maven/hadoop/hadoop-client-api/$HADOOP/hadoop-client-api-$HADOOP.jar"
+          curl -fsSLO "$maven/hadoop/hadoop-client-runtime/$HADOOP/hadoop-client-runtime-$HADOOP.jar"
+      - name: The engines
+        run: CRATE=metalake-iceberg bash sql/test.sh --test c12_engines
