@@ -165,6 +165,29 @@ async fn ice6_pyiceberg_append() -> Result<(), Failure> {
 }
 
 #[tokio::test]
+async fn rest3_conflict_rebase_and_repeat() -> Result<(), Failure> {
+    let schema = fresh_schema();
+    let (catalog, storage, directory) = local_catalog(&schema).await?;
+    let main = catalog.branch("main").await?;
+    main.transaction().create_namespace(&["db"]).commit().await?;
+    create(&main, "plain", "0", vec![]).await?;
+    append(&catalog, &main, &storage, "plain", 0..3).await?;
+
+    let (_server, uri) = server(&schema)?;
+    let said = client("retry", &uri)?;
+    let _ = std::fs::remove_dir_all(&directory);
+    assert_eq!(said["statuses"], json!([409, 200]), "the client rebased: {said}");
+    assert_eq!(said["same_id"], true, "under the snapshot id it proposed");
+    assert_eq!(said["repeated"], 200, "{said}");
+    assert_eq!(said["unchanged"], true, "a repeat commits nothing");
+    assert_eq!(said["stale"], 200, "the key answers before the expected snapshot");
+    assert_eq!(said["stale_unchanged"], true);
+    assert_eq!(said["conflicts"], json!([409, 409]), "a refused commit leaves no key");
+    assert_eq!(said["rows"], json!([0, 1, 2, 10, 11, 12]));
+    Ok(())
+}
+
+#[tokio::test]
 async fn ice3_bounds_match_reference() -> Result<(), Failure> {
     let schema = fresh_schema();
     let catalog = Catalog::init(CatalogConfig::new(url(), &schema).warehouse("memory:///wh"), None).await?;

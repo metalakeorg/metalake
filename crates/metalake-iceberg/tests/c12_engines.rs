@@ -69,6 +69,20 @@ async fn spark_read_partition_vector_branch() -> Result<(), Failure> {
 }
 
 #[tokio::test]
+async fn spark_insert() -> Result<(), Failure> {
+    if !wanted("spark") {
+        return Ok(());
+    }
+    let schema = fresh_schema();
+    let directory = wide(&schema).await?;
+    let (_server, uri) = server(&schema)?;
+    let said = run("spark_insert", &uri)?;
+    let _ = std::fs::remove_dir_all(&directory);
+    assert_eq!(said["rows"], json!([0, 2, 3, 4, 10, 11, 12, 30, 31]));
+    Ok(())
+}
+
+#[tokio::test]
 async fn duckdb_read_partition_vector() -> Result<(), Failure> {
     if !wanted("duckdb") {
         return Ok(());

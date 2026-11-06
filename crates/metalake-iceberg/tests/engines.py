@@ -19,10 +19,10 @@ def duckdb(uri):
     }
 
 
-def spark(uri):
+def spark_session(uri):
     from pyspark.sql import SparkSession
 
-    session = (
+    return (
         SparkSession.builder.master("local[2]")
         .config("spark.jars.packages", "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.11.0")
         .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
@@ -32,6 +32,10 @@ def spark(uri):
         .config("spark.ui.enabled", "false")
         .getOrCreate()
     )
+
+
+def spark(uri):
+    session = spark_session(uri)
     keys = lambda query: [row[0] for row in session.sql(query).collect()]
     return {
         "main": keys("select k from lake.db.wide order by k"),
@@ -40,5 +44,11 @@ def spark(uri):
     }
 
 
+def spark_insert(uri):
+    session = spark_session(uri)
+    session.sql("insert into lake.db.wide values (30), (31)")
+    return {"rows": [row[0] for row in session.sql("select k from lake.db.wide order by k").collect()]}
+
+
 if __name__ == "__main__":
-    print("\n" + json.dumps({"duckdb": duckdb, "spark": spark}[sys.argv[1]](sys.argv[2])))
+    print("\n" + json.dumps({"duckdb": duckdb, "spark": spark, "spark_insert": spark_insert}[sys.argv[1]](sys.argv[2])))
