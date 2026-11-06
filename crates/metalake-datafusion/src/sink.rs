@@ -84,7 +84,14 @@ impl Selection {
     async fn rows(&self) -> Result<BoxStream<'static, Result<RecordBatch>>> {
         // Taken whole: a stream of them keeps a connection, and what writes needs another while it reads them, so that as
         // many writers as the pool has connections would each hold one and wait for ever.
-        let tasks: Vec<_> = self.scan.plan().await.map_err(external)?.try_collect().await.map_err(external)?;
+        let tasks: Vec<_> = self
+            .scan
+            .plan()
+            .await
+            .map_err(external)?
+            .try_collect()
+            .await
+            .map_err(external)?;
         let tasks = stream::iter(tasks.into_iter().map(Ok)).boxed();
         let filter = self.filter.clone();
         let batches = self.scan.read(tasks, &self.table.storage).map(move |batch| {
