@@ -41,7 +41,7 @@ fn parquet(dir: &Path) -> usize {
 }
 
 #[test]
-fn a_lake_runs_on_its_own_postgres() {
+fn local_lake_dedicated_postgres() {
     let began = Instant::now();
     let lake = Lake::new();
     println!("init {:?}", began.elapsed());
@@ -89,7 +89,7 @@ fn a_lake_runs_on_its_own_postgres() {
 }
 
 #[test]
-fn a_lake_is_found_from_below() {
+fn connect_from_subdirectory() {
     let lake = Lake::new();
     let below = lake.0.join("a/b");
     fs::create_dir_all(&below).unwrap();
@@ -98,7 +98,7 @@ fn a_lake_is_found_from_below() {
 }
 
 #[test]
-fn a_lake_stops_starts_and_is_deleted() {
+fn local_lake_lifecycle() {
     let lake = Lake::new();
     let dir = &lake.0;
     sql(dir, "create table t (k int); insert into t values (7)", "csv");
@@ -116,7 +116,7 @@ fn a_lake_stops_starts_and_is_deleted() {
 }
 
 #[test]
-fn many_commands_share_one_server() {
+fn concurrent_commands_share_server() {
     let lake = Lake::new();
     let dir = &lake.0;
     sql(dir, "create table t (k int)", "csv");
@@ -154,7 +154,7 @@ fn file_url(path: &Path) -> String {
 }
 
 #[test]
-fn a_warehouse_is_checked_and_a_lake_is_not_made_twice() {
+fn init_validates_warehouse() {
     let dir = directory();
     let elsewhere = directory();
     let url = file_url(&elsewhere);
@@ -189,7 +189,7 @@ fn a_warehouse_is_checked_and_a_lake_is_not_made_twice() {
 }
 
 #[test]
-fn only_a_lakes_own_postgres_is_stopped() {
+fn stop_refuses_external_postgres() {
     let dir = directory();
     fs::write(dir.join("metalake.toml"), "postgres = \"host=nowhere\"\n").unwrap();
     let refused = run(&dir, &["stop"]);

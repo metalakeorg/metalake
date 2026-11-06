@@ -20,7 +20,7 @@ fn count(dir: &Path, on: &str) -> String {
 }
 
 #[test]
-fn a_log_lists_the_latest_first() {
+fn log_order() {
     let dir = table();
     let all = log(&dir, &[]);
     assert!(all.len() >= 3, "{all:?}");
@@ -48,7 +48,7 @@ fn a_log_lists_the_latest_first() {
 }
 
 #[test]
-fn a_sequence_of_the_log_reads_and_starts_from_the_past() {
+fn time_travel_from_log_sequence() {
     let dir = table();
     let two_rows = log(&dir, &["--limit", "1"])[0]["commit_seq"].as_i64().unwrap();
     sql(&dir, "insert into main.db.t values (3, 'c', 2.5)", "csv");
@@ -61,7 +61,7 @@ fn a_sequence_of_the_log_reads_and_starts_from_the_past() {
 }
 
 #[test]
-fn a_merge_is_signed_and_a_branch_shows_its_own_commits() {
+fn log_merge_author_and_branch_commits() {
     let dir = table();
     ok(&dir, &["branch", "create", "dev"]);
     sql(&dir, "insert into dev.db.t values (3, 'c', 2.5)", "csv");
@@ -90,7 +90,7 @@ fn a_merge_is_signed_and_a_branch_shows_its_own_commits() {
 }
 
 #[test]
-fn a_tables_log_shows_only_that_table() {
+fn log_table_filter() {
     let dir = table();
     sql(
         &dir,

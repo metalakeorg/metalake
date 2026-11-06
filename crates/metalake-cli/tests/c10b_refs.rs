@@ -21,7 +21,7 @@ fn count(dir: &Path, on: &str) -> String {
 }
 
 #[test]
-fn a_branch_writes_alone() {
+fn branch_isolation() {
     let dir = table();
     let created = objects(&dir, &["branch", "create", "dev"]);
     assert_eq!(created.len(), 1);
@@ -48,7 +48,7 @@ fn a_branch_writes_alone() {
 }
 
 #[test]
-fn a_tag_holds_a_state() {
+fn tag_immutable() {
     let dir = table();
     let tag = &objects(&dir, &["tag", "create", "q3"])[0];
     assert_eq!(tag["kind"], "tag");
@@ -66,7 +66,7 @@ fn a_tag_holds_a_state() {
 }
 
 #[test]
-fn a_ref_starts_from_a_point() {
+fn ref_from_sequence() {
     let dir = table();
     let mark = objects(&dir, &["tag", "create", "mark"])[0]["created_seq"]
         .as_i64()
@@ -97,7 +97,7 @@ fn a_ref_starts_from_a_point() {
 }
 
 #[test]
-fn a_ref_is_deleted_on_purpose_and_for_good() {
+fn ref_delete_requires_confirmation() {
     let dir = table();
     ok(&dir, &["branch", "create", "dev"]);
 
@@ -125,7 +125,7 @@ fn a_ref_is_deleted_on_purpose_and_for_good() {
 }
 
 #[test]
-fn a_list_prints_in_each_format() {
+fn ref_list_output_formats() {
     let dir = table();
     // An empty list keeps its header.
     assert_eq!(

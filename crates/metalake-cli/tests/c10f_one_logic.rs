@@ -25,7 +25,7 @@ fn sources(dir: &Path, found: &mut Vec<(String, String)>) {
 }
 
 #[test]
-fn the_command_line_reaches_nothing_but_the_client() {
+fn cli_dependencies() {
     let manifest = include_str!("../Cargo.toml");
     for crate_below in REACHES_BELOW {
         let depends = manifest.lines().any(|l| l.starts_with(crate_below));
@@ -34,7 +34,7 @@ fn the_command_line_reaches_nothing_but_the_client() {
 }
 
 #[test]
-fn the_command_line_decides_nothing_the_client_does() {
+fn cli_delegates_to_client() {
     let mut found = Vec::new();
     sources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut found);
     assert!(found.len() > 5, "the sources were read");

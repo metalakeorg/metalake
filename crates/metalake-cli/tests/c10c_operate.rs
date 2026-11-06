@@ -32,7 +32,7 @@ fn rows(dir: &Path) -> String {
 }
 
 #[test]
-fn migrating_a_catalog_up_to_date_changes_nothing() {
+fn migrate_up_to_date_catalog() {
     let (dir, schema) = lake();
     sql(&dir, "create table t (k int); insert into t values (1)", "csv");
     let before: Value = serde_json::from_str(&ok(&dir, &["status", "--format", "json"])).unwrap();
@@ -48,7 +48,7 @@ fn migrating_a_catalog_up_to_date_changes_nothing() {
 }
 
 #[test]
-fn a_catalog_behind_this_binary_asks_for_migrate() {
+fn outdated_catalog_refused() {
     let (dir, schema) = lake();
     sql(&dir, "create table t (k int); insert into t values (1)", "csv");
     postgres(&format!("delete from {schema}.meta where key = 'protocol_version'"));
@@ -67,7 +67,7 @@ fn a_catalog_behind_this_binary_asks_for_migrate() {
 }
 
 #[test]
-fn a_catalog_ahead_of_this_binary_asks_for_an_upgrade() {
+fn newer_catalog_refused() {
     let (dir, schema) = lake();
     sql(&dir, "create table t (k int); insert into t values (1)", "csv");
     postgres(&format!(
@@ -138,7 +138,7 @@ fn maintain(dir: &Path, args: &[&str]) -> Vec<Value> {
 const ALL: &str = "n,m\n200000,200000\n";
 
 #[test]
-fn with_no_policy_nothing_is_taken_away() {
+fn maintain_without_retention() {
     let dir = split();
     let done = maintain(&dir, &[]);
     let tasks: Vec<&str> = done.iter().map(|d| d["task"].as_str().unwrap()).collect();
@@ -151,7 +151,7 @@ fn with_no_policy_nothing_is_taken_away() {
 }
 
 #[test]
-fn what_no_ref_keeps_leaves_the_disk() {
+fn maintain_removes_unreferenced_files() {
     let dir = split();
     ok(&dir, &["retain", "main", "--min-snapshots", "1"]);
     ok(&dir, &["retain", "--grace", "0s"]);
@@ -166,7 +166,7 @@ fn what_no_ref_keeps_leaves_the_disk() {
 }
 
 #[test]
-fn a_tag_keeps_what_it_reads() {
+fn tag_retains_files() {
     let dir = split();
     ok(&dir, &["tag", "create", "q3"]);
     ok(&dir, &["retain", "main", "--min-snapshots", "1"]);
@@ -185,7 +185,7 @@ fn a_tag_keeps_what_it_reads() {
 }
 
 #[test]
-fn a_rewrite_can_be_narrowed() {
+fn maintain_ref_and_table_filter() {
     let dir = split();
     ok(&dir, &["branch", "create", "dev"]);
     ok(&dir, &["tag", "create", "q3"]);
@@ -210,7 +210,7 @@ fn a_rewrite_can_be_narrowed() {
 }
 
 #[test]
-fn a_policy_is_checked_before_it_is_set() {
+fn retain_validates_policy() {
     let (dir, _) = lake();
     ok(&dir, &["retain", "main", "--max-age", "30d", "--min-snapshots", "10"]);
     ok(&dir, &["retain", "--grace", "12h"]);

@@ -32,7 +32,7 @@ fn files(dir: &Path) -> Vec<PathBuf> {
 }
 
 #[test]
-fn a_branch_is_merged_into_its_parent() {
+fn merge_branch() {
     let dir = table();
     ok(&dir, &["branch", "create", "dev"]);
     sql(&dir, "insert into dev.db.t values (3, 'c', 2.5)", "csv");
@@ -59,7 +59,7 @@ fn a_branch_is_merged_into_its_parent() {
 }
 
 #[test]
-fn a_conflict_is_exit_3_with_its_rule_and_changes_nothing() {
+fn merge_conflict_exit_code() {
     let dir = table();
     ok(&dir, &["branch", "create", "dev"]);
     // The branch sets a vector on a file the parent removes, which is a conflict (MRG-3, by MRG-5's rule).
@@ -80,7 +80,7 @@ fn a_conflict_is_exit_3_with_its_rule_and_changes_nothing() {
 }
 
 #[test]
-fn a_conflict_in_sql_is_exit_3_too() {
+fn sql_conflict_exit_code() {
     let dir = table();
     let update = "update main.db.t set f = f + 1 where k = 1";
     let start = || {
@@ -112,7 +112,7 @@ fn a_conflict_in_sql_is_exit_3_too() {
 }
 
 #[test]
-fn vectors_changed_on_both_sides_are_unioned() {
+fn merge_unions_vectors() {
     let dir = table();
     sql(
         &dir,
@@ -138,7 +138,7 @@ fn vectors_changed_on_both_sides_are_unioned() {
 }
 
 #[test]
-fn one_table_merges_alone() {
+fn merge_selected_table() {
     let dir = table();
     sql(
         &dir,
@@ -164,7 +164,7 @@ fn one_table_merges_alone() {
 }
 
 #[test]
-fn a_commit_across_a_selection_needs_split() {
+fn mrg7_cross_table_commit_requires_split() {
     let dir = table();
     sql(
         &dir,

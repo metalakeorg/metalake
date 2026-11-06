@@ -12,7 +12,7 @@ use common::{directory, lake, metalake, ok, run, sql, table, text, unique, url};
 use serde_json::Value;
 
 #[test]
-fn a_lake_is_found_from_below_and_says_what_it_is() {
+fn status_from_subdirectory() {
     let (dir, schema) = lake();
     let below = dir.join("a/b");
     fs::create_dir_all(&below).unwrap();
@@ -43,7 +43,7 @@ fn a_lake_is_found_from_below_and_says_what_it_is() {
 }
 
 #[test]
-fn the_environment_names_a_lake_with_no_file() {
+fn status_from_environment() {
     let (_, schema) = lake();
     let empty = directory();
     let output = metalake(&empty)
@@ -58,7 +58,7 @@ fn the_environment_names_a_lake_with_no_file() {
 }
 
 #[test]
-fn a_password_is_refused_and_left_nowhere() {
+fn init_password_refused() {
     let dir = directory();
     let output = run(&dir, &["init", "postgresql://u:secret@host/db", "data"]);
     assert_eq!(output.status.code(), Some(2));
@@ -72,7 +72,7 @@ fn a_password_is_refused_and_left_nowhere() {
 }
 
 #[test]
-fn a_lake_is_not_created_twice() {
+fn init_existing_lake_refused() {
     let (dir, schema) = lake();
     let before = fs::read(dir.join("metalake.toml")).unwrap();
     let output = run(&dir, &["init", &url(), "data", "--schema", &unique()]);
@@ -89,7 +89,7 @@ fn a_lake_is_not_created_twice() {
 }
 
 #[test]
-fn a_failure_is_on_stderr_with_its_code() {
+fn failure_stderr_and_exit_code() {
     let empty = directory();
 
     let wrong = run(&empty, &["nonsense"]);
@@ -127,7 +127,7 @@ fn a_failure_is_on_stderr_with_its_code() {
 }
 
 #[test]
-fn sql_reads_in_each_format() {
+fn sql_output_formats() {
     let dir = table();
     let select = "select k, s, f from main.db.t order by k";
     assert_eq!(sql(&dir, select, "csv"), "k,s,f\n1,a,0.5\n2,,1.5\n");
@@ -160,7 +160,7 @@ fn files(dir: &Path) -> Vec<PathBuf> {
 }
 
 #[test]
-fn rows_land_in_a_local_warehouse_and_come_back() {
+fn local_warehouse_round_trip() {
     let dir = table();
     assert!(files(&dir.join("data")).is_empty(), "two rows stay in the catalog");
     sql(
@@ -182,14 +182,14 @@ fn rows_land_in_a_local_warehouse_and_come_back() {
 }
 
 #[test]
-fn an_unqualified_table_is_in_main_default() {
+fn unqualified_table_resolution() {
     let (dir, _) = lake();
     sql(&dir, "create table t (k int); insert into t values (7)", "csv");
     assert_eq!(sql(&dir, "select k from main.default.t", "csv"), "k\n7\n");
 }
 
 #[test]
-fn statements_come_from_a_file_and_from_stdin() {
+fn sql_input_file_and_stdin() {
     let dir = table();
     let file = dir.join("q.sql");
     fs::write(&file, "select count(*) as n from main.db.t;").unwrap();
@@ -215,7 +215,7 @@ fn statements_come_from_a_file_and_from_stdin() {
 }
 
 #[test]
-fn the_first_failure_stops_a_script_and_stdout_stays_clean() {
+fn sql_script_stops_on_failure() {
     let dir = table();
     let output = run(
         &dir,
@@ -230,7 +230,7 @@ fn the_first_failure_stops_a_script_and_stdout_stays_clean() {
 }
 
 #[test]
-fn what_a_table_cannot_be_is_refused_not_dropped() {
+fn unsupported_table_options_refused() {
     let dir = table();
     for statement in [
         "create table main.db.a (k bigint primary key)",
@@ -253,7 +253,7 @@ fn what_a_table_cannot_be_is_refused_not_dropped() {
 }
 
 #[test]
-fn a_session_has_the_functions_people_expect() {
+fn session_builtin_functions() {
     let (dir, _) = lake();
     let select = "select lower('A') as a, date_trunc('year', timestamp '2026-11-04T10:00:00') as b,
                   regexp_like('abc', 'b') as c, abs(-1) as d, array_length(make_array(1, 2)) as e";
@@ -261,7 +261,7 @@ fn a_session_has_the_functions_people_expect() {
 }
 
 #[test]
-fn the_past_reads_through_a_catalogs_name() {
+fn time_travel_by_catalog_name() {
     let dir = table();
     sql(&dir, "insert into main.db.t values (3, 'c', 2.5)", "csv");
     assert_eq!(sql(&dir, "select count(*) as n from main.db.t", "csv"), "n\n3\n");
