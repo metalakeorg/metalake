@@ -22,7 +22,7 @@ metalake-pg.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true
 parquet.workspace = true
-apache-avro = { version = "0.22", features = ["zstandard"] }
+apache-avro = "0.22"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
 clap = { version = "4", features = ["derive", "env"] }
 futures-util.workspace = true

@@ -145,7 +145,6 @@ dependencies = [
  "strum",
  "thiserror",
  "uuid",
- "zstd",
 ]
 
 [[package]]

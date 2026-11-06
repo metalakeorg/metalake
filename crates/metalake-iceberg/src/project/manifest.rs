@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use apache_avro::schema::RecordField;
 use apache_avro::types::Value;
-use apache_avro::{Codec, Schema, Writer, ZstandardSettings};
+use apache_avro::{Codec, DeflateSettings, Schema, Writer};
 use metalake::{Error, ListedFile, Result};
 use serde_json::{Value as Json, json};
 
@@ -52,6 +52,11 @@ pub struct Listed {
     pub added_rows: i64,
     pub existing_rows: i64,
     pub min_sequence: i64,
+}
+
+/// Iceberg's default for manifests, which every reader has: DuckDB reads no other.
+fn codec() -> Codec {
+    Codec::Deflate(DeflateSettings::default())
 }
 
 fn avro_failed(error: apache_avro::Error) -> Error {
@@ -231,8 +236,7 @@ fn delete_entry(delete: &Delete<'_>, sequence: i64, cardinality: i64, context: &
 }
 
 fn writer<'a>(schema: &'a Schema, context: &Context<'_>, content: &str) -> Result<Writer<'a, Vec<u8>>> {
-    let codec = Codec::Zstandard(ZstandardSettings::default());
-    let mut writer = Writer::with_codec(schema, Vec::new(), codec).map_err(avro_failed)?;
+    let mut writer = Writer::with_codec(schema, Vec::new(), codec()).map_err(avro_failed)?;
     let spec = json!(partition_fields(context.spec)).to_string();
     for (key, value) in [
         ("schema", context.schema.to_string()),
@@ -286,8 +290,7 @@ pub fn delete_manifest(deletes: &[Delete<'_>], context: &Context<'_>) -> Result<
 /// The manifest list of `snapshot`, whose parent, if any, is `parent`.
 pub fn manifest_list(snapshot: i64, parent: Option<i64>, manifests: &[Listed]) -> Result<Vec<u8>> {
     let schema = avro::manifest_file();
-    let codec = Codec::Zstandard(ZstandardSettings::default());
-    let mut writer = Writer::with_codec(&schema, Vec::new(), codec).map_err(avro_failed)?;
+    let mut writer = Writer::with_codec(&schema, Vec::new(), codec()).map_err(avro_failed)?;
     let parent = parent.map_or_else(|| "null".to_string(), |id| id.to_string());
     for (key, value) in [
         ("snapshot-id", snapshot.to_string()),
