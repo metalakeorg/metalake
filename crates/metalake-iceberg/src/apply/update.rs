@@ -136,6 +136,14 @@ fn is_reserved_property(key: &str) -> bool {
     COPY_ON_WRITE.contains(&key)
 }
 
+/// REST-4 and REST-9: a property may be anything but another write mode.
+pub(super) fn check_property(key: &str, value: &str) -> Result<(), Refused> {
+    if is_reserved_property(key) && value != "copy-on-write" {
+        return invalid(format!("{key} is copy-on-write: Iceberg clients write no deletes here"));
+    }
+    Ok(())
+}
+
 /// The ref a commit moves. Its snapshots must end at what the ref is set to, each the parent of the next: anything else
 /// is a stage, a rollback or a fast-forward, which ICE-6 does not make a commit of files.
 fn target_ref(snapshots: &[ProposedSnapshot], moves: &[(String, i64)]) -> Result<Option<String>, Refused> {
@@ -187,9 +195,7 @@ pub fn change(request: CommitTableRequest) -> Result<Change, Refused> {
             }
             Update::SetProperties { updates } => {
                 for (key, value) in updates {
-                    if is_reserved_property(&key) && value != "copy-on-write" {
-                        return invalid(format!("{key} is copy-on-write: Iceberg clients write no deletes here"));
-                    }
+                    check_property(&key, &value)?;
                     properties.insert(key, Some(value));
                 }
             }

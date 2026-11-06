@@ -200,6 +200,19 @@ pub fn served(snapshots: Vec<TableSnapshot>, refs: &[(String, String, Option<i64
 /// The write modes every table is served with: a client that wrote position deletes would be refused (REST-4).
 pub const COPY_ON_WRITE: [&str; 3] = ["write.delete.mode", "write.update.mode", "write.merge.mode"];
 
+/// The metadata of a table that is staged: a definition in the shape of `describe`, with no snapshot and no ref.
+pub fn staged(table_id: String, definition: Value) -> TableMetadata {
+    let fields = definition["fields"].clone();
+    let rows = Rows {
+        table_id,
+        definition,
+        schemas: BTreeMap::from([(0, fields)]),
+        snapshots: Vec::new(),
+        refs: Vec::new(),
+    };
+    metadata(&rows, |_| String::new())
+}
+
 /// The table's metadata, each snapshot naming the manifest list `manifest_list` gives it.
 pub fn metadata(rows: &Rows, manifest_list: impl Fn(i64) -> String) -> TableMetadata {
     let d = &rows.definition;
@@ -297,6 +310,20 @@ mod tests {
         let kept = ids(served(chain(3..=20), &refs));
         assert_eq!(kept[..3], [3, 4, 5]);
         assert_eq!(kept[3], 10);
+    }
+
+    #[test]
+    fn rest7_staged_metadata() {
+        let definition = json!({"location": "memory:///t", "last_field_id": 1, "last_partition_field_id": 999,
+                                "fields": [{"field_id": 1, "parent_field_id": null, "position": 1, "name": "k",
+                                            "type": "long", "required": true}],
+                                "spec_id": 0, "specs": {"0": []}, "sort_order_id": 0, "properties": {}});
+        let served = staged("t".into(), definition);
+        assert_eq!(served.current_snapshot_id, None);
+        assert!(served.snapshots.is_empty() && served.refs.is_empty());
+        assert_eq!((served.current_schema_id, served.last_column_id), (0, 1));
+        assert_eq!(served.schemas[0]["fields"][0]["name"], "k");
+        assert_eq!(served.properties["write.merge.mode"], "copy-on-write");
     }
 
     #[test]

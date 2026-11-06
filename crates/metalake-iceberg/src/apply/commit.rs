@@ -4,10 +4,11 @@ use std::collections::HashMap;
 
 use metalake::{Error, FileAdd, Table};
 use serde_json::Value as Json;
+use uuid::Uuid;
 
 use super::files::{self, ManifestFile};
-use super::update::Change;
-use super::{ApplyError, Refused};
+use super::update::{Change, Creation};
+use super::{ApplyError, Refused, create};
 use crate::state::State;
 
 /// The version of every Iceberg idempotency key: a key names one proposed snapshot (REST-3).
@@ -25,7 +26,7 @@ fn field_types(definition: &Json) -> HashMap<i32, String> {
 }
 
 fn file_adds(
-    table: &Table,
+    table_id: Uuid,
     definition: &Json,
     files: &[ManifestFile],
     footers: &[i32],
@@ -34,7 +35,7 @@ fn file_adds(
     let add = |(file, footer): (&ManifestFile, &i32)| {
         let spec = definition["specs"][file.spec_id.to_string()].as_array();
         let spec = spec.ok_or_else(|| Refused::Invalid(format!("no partition spec {}", file.spec_id)))?;
-        files::file_add(table.id(), file, *footer, spec, &types)
+        files::file_add(table_id, file, *footer, spec, &types)
     };
     files.iter().zip(footers).map(add).collect()
 }
@@ -75,11 +76,45 @@ fn resolved(paths: &[String], ids: &[i64], found: &[(Option<String>, i64)]) -> O
     Some(resolved)
 }
 
+/// The commit a stage-create ends in: the definition and the first files, so that a table and its rows appear together
+/// (REST-7). The client's id makes the key the same across attempts.
+async fn create_with_files(
+    state: &State,
+    namespace: &[&str],
+    name: &str,
+    change: &Change,
+    creation: &Creation,
+) -> Result<Table, ApplyError> {
+    let on = state.named(&change.ref_name).await?;
+    let table_id = Uuid::parse_str(&creation.table_id)
+        .map_err(|_| Refused::Invalid(format!("{} is not a table uuid", creation.table_id)))?;
+    let key = change.app_id(&creation.table_id).expect("a creation has a key");
+    if on.commit_of_key(&key).await?.is_some() {
+        return Ok(on.table(namespace, name).await?);
+    }
+    let definition = create::definition(namespace, name, creation, &change.properties)?;
+    let storage = state.storage()?;
+    let proposed = files::proposed(&storage, &change.snapshots).await?;
+    if !proposed.removed.is_empty() {
+        return Err(Refused::Invalid("a commit that creates a table removes no files".into()).into());
+    }
+    let footers = files::footer_sizes(&storage, &proposed.added).await?;
+    let adds = file_adds(table_id, &create::described(&definition), &proposed.added, &footers)?;
+    on.transaction()
+        .define(table_id, definition)
+        .append(adds)
+        .author("iceberg")
+        .idempotent(key, APP_VERSION)
+        .commit()
+        .await?;
+    Ok(on.table(namespace, name).await?)
+}
+
 /// Commits a change to the table `name` of `namespace`, and answers the table. A key already applied answers at once,
 /// whatever the client has since done with its files (REST-3).
 pub async fn apply(state: &State, namespace: &[&str], name: &str, change: &Change) -> Result<Table, ApplyError> {
-    if change.creation.is_some() {
-        return Err(not_yet("assert-create").into());
+    if let Some(creation) = &change.creation {
+        return create_with_files(state, namespace, name, change, creation).await;
     }
     if !change.properties.is_empty() {
         return Err(not_yet("a change of properties").into());
@@ -118,7 +153,7 @@ pub async fn apply(state: &State, namespace: &[&str], name: &str, change: &Chang
     };
     let footers = files::footer_sizes(&storage, &proposed.added).await?;
     let definition = on.definition(&table, None).await?;
-    let adds = file_adds(&table, &definition, &proposed.added, &footers)?;
+    let adds = file_adds(table.id(), &definition, &proposed.added, &footers)?;
 
     let mut transaction = on.transaction().append(adds).remove(&table, removed).author("iceberg");
     if change.operation() == Some("replace") {

@@ -31,6 +31,16 @@ impl Failure {
         Self::new(StatusCode::NOT_FOUND, "NoSuchEndpointException", "no such route")
     }
 
+    pub(crate) fn already_exists(name: &str) -> Self {
+        let message = format!("table {name} already exists");
+        Self::new(StatusCode::CONFLICT, "AlreadyExistsException", message)
+    }
+
+    /// Whether a commit was refused because the state moved.
+    pub(crate) fn is_conflict(&self) -> bool {
+        self.code == StatusCode::CONFLICT
+    }
+
     pub(crate) fn no_namespace(name: &str) -> Self {
         let message = format!("no namespace {name}");
         Self::new(StatusCode::NOT_FOUND, "NoSuchNamespaceException", message)

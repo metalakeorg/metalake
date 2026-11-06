@@ -1,6 +1,7 @@
 //! What a client asks to change, turned into what the protocol commits. Nothing here knows HTTP.
 
 pub mod commit;
+pub mod create;
 pub mod files;
 pub mod update;
 

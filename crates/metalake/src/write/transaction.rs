@@ -184,16 +184,7 @@ impl Transaction {
             .collect::<Result<Vec<_>>>()?;
         let location = match new.location {
             Some(l) => l,
-            None => {
-                let warehouse = self.on.catalog().warehouse().ok_or_else(|| {
-                    Error::Location(format!("{} needs a location: the catalog has no warehouse", new.name))
-                })?;
-                let mut l = warehouse.trim_end_matches('/').to_string();
-                for part in new.namespace.iter().chain([&new.name]) {
-                    l = format!("{l}/{part}");
-                }
-                format!("{l}-{}", id.simple())
-            }
+            None => self.on.catalog().default_location(new.namespace, new.name, id)?,
         };
         let fields: Vec<Value> = fields
             .iter()
@@ -218,6 +209,12 @@ impl Transaction {
         }
         self.changes.insert(id.to_string(), definition);
         Ok((self, id))
+    }
+
+    /// Creates or changes a table by a definition already in the protocol's shape, and under the id it gives.
+    pub fn define(mut self, table_id: Uuid, definition: Value) -> Self {
+        self.changes.insert(table_id.to_string(), definition);
+        self
     }
 
     /// The idempotency key (CMT-8): a writer's id and a version it never repeats for different data, such as the

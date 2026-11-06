@@ -193,6 +193,18 @@ impl Catalog {
         &self.inner.protocol
     }
 
+    /// Where a table goes that names no location: under the warehouse, by namespace and name.
+    pub fn default_location(&self, namespace: &[&str], name: &str, table_id: uuid::Uuid) -> Result<String> {
+        let warehouse = self
+            .warehouse()
+            .ok_or_else(|| Error::Location(format!("{name} needs a location: the catalog has no warehouse")))?;
+        let mut location = warehouse.trim_end_matches('/').to_string();
+        for part in namespace.iter().chain([&name]) {
+            location = format!("{location}/{part}");
+        }
+        Ok(format!("{location}-{}", table_id.simple()))
+    }
+
     /// Where this connection's new tables put their files when they name no location: the config's, or the catalog's.
     pub fn warehouse(&self) -> Option<&str> {
         self.inner.warehouse.as_deref()

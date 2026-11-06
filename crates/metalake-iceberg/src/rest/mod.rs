@@ -16,7 +16,10 @@ pub(crate) fn router(state: State) -> Router {
     Router::new()
         .route("/v1/config", get(config::config))
         .route("/v1/namespaces", get(namespaces::list))
-        .route("/v1/namespaces/{namespace}/tables", get(tables::list))
+        .route(
+            "/v1/namespaces/{namespace}/tables",
+            get(tables::list).post(tables::create),
+        )
         .route(
             "/v1/namespaces/{namespace}/tables/{table}",
             get(tables::get).post(tables::update),

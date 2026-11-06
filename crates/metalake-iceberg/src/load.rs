@@ -177,7 +177,11 @@ pub(crate) async fn load(state: &State, table: &Table) -> Result<LoadTableResult
     let location = table.location();
     let served = metadata(&rows, |at| list_path(location, at));
     Ok(LoadTableResult {
-        metadata_location: format!("{}/v{}.metadata.json", generated(location), served.last_sequence_number),
+        metadata_location: Some(format!(
+            "{}/v{}.metadata.json",
+            generated(location),
+            served.last_sequence_number
+        )),
         metadata: served,
         config: BTreeMap::new(),
     })

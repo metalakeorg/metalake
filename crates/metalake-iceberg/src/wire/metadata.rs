@@ -8,7 +8,9 @@ use serde_json::Value;
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct LoadTableResult {
-    pub metadata_location: String,
+    /// None for a staged table, which has no metadata yet (REST-7).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata_location: Option<String>,
     pub metadata: TableMetadata,
     pub config: BTreeMap<String, String>,
 }
