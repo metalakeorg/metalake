@@ -87,13 +87,17 @@ def test_a_failure_in_the_stream_is_ours(lake, method):
         getattr(lake.sql("select 1 / (l - l) from kinds where l is not null"), method)()
 
 
-@pytest.mark.parametrize("method", ["to_polars", "to_arrow"])
-def test_an_interrupt_is_an_interrupt(lake, method):
-    pytest.importorskip({"to_polars": "polars", "to_arrow": "pyarrow"}[method])
+def test_an_interrupt_is_an_interrupt_in_polars(lake, interrupt_polars):
+    with interrupt_polars(), pytest.raises(KeyboardInterrupt):
+        lake.sql(LONG).to_polars()
+
+
+def test_an_interrupt_is_an_interrupt_in_arrow(lake):
+    pytest.importorskip("pyarrow")
     timer = threading.Timer(1, _thread.interrupt_main)
     timer.start()
     with pytest.raises(KeyboardInterrupt):
-        getattr(lake.sql(LONG), method)()
+        lake.sql(LONG).to_arrow()
     timer.join()
 
 

@@ -26,4 +26,6 @@ if [ "$2" = current ]; then
   "$bin/python" -m mypy.stubtest metalake --ignore-missing-stub --mypy-config-file "$tests/../pyproject.toml"
   "$bin/python" -m mypy --config-file "$tests/../pyproject.toml" "$tests/typing_check.py"
 fi
-"$bin/python" -m pytest "$tests" -q --tb=short -p no:cacheprovider
+# A test that hangs says where every thread is and ends the run, rather than wait for the limit of the job in silence.
+"$bin/python" -m pytest "$tests" -q --tb=short -p no:cacheprovider \
+  -o faulthandler_timeout=180 -o faulthandler_exit_on_timeout=true

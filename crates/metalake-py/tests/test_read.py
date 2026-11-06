@@ -80,12 +80,12 @@ def test_a_statement_that_cannot_run_says_so_at_once(lake):
         lake.sql("   ")
 
 
-def interrupted(read, raises=KeyboardInterrupt):
+def interrupted(read):
     """How long `read` takes to end when an interrupt comes after a second."""
     timer = threading.Timer(1, _thread.interrupt_main)
     timer.start()
     start = time.perf_counter()
-    with pytest.raises(raises):
+    with pytest.raises(KeyboardInterrupt):
         read()
     timer.join()
     return time.perf_counter() - start
@@ -96,12 +96,12 @@ def test_an_interrupt_ends_iteration(lake):
     assert pl.DataFrame(lake.sql("select k from t")).height == 3
 
 
-def test_an_interrupt_ends_polars(lake):
+def test_an_interrupt_ends_polars(lake, interrupt_polars):
     # Polars says it in its own words, which depend on its version: `to_polars` is what gives the interrupt back.
-    # Polars 1 holds the GIL as it reads, so the timer of this test, a thread of Python, only runs when the read ends.
-    took = interrupted(lambda: pl.DataFrame(lake.sql(LONG)), (pl.exceptions.ComputeError, KeyboardInterrupt))
-    if int(pl.__version__.split(".")[0]) >= 2:
-        assert took < 5
+    start = time.perf_counter()
+    with interrupt_polars(), pytest.raises((pl.exceptions.ComputeError, KeyboardInterrupt)):
+        pl.DataFrame(lake.sql(LONG))
+    assert time.perf_counter() - start < 5
     assert pl.DataFrame(lake.sql("select k from t")).height == 3
 
 
