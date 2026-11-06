@@ -39,8 +39,44 @@ fn file_adds(
     files.iter().zip(footers).map(add).collect()
 }
 
-/// Commits a change to the table `name` of `namespace`, and answers the table. Committing twice under one key applies
-/// nothing the second time (REST-3).
+/// The id in a path the projection serves for an inline file (ICE-5).
+fn inline_id(location: &str, path: &str) -> Option<i64> {
+    let served = path.strip_prefix(location.trim_end_matches('/'))?;
+    served
+        .strip_prefix("/metalake-inline/")?
+        .strip_suffix(".parquet")?
+        .parse()
+        .ok()
+}
+
+/// Splits removed paths into those the catalog holds as paths, and the ids of inline files.
+fn by_kind(location: &str, removed: &[String]) -> (Vec<String>, Vec<i64>) {
+    let (mut paths, mut ids) = (Vec::new(), Vec::new());
+    for path in removed {
+        match inline_id(location, path) {
+            Some(id) => ids.push(id),
+            None => paths.push(path.clone()),
+        }
+    }
+    (paths, ids)
+}
+
+/// The ids of the files named, or `None` if one is not visible.
+fn resolved(paths: &[String], ids: &[i64], found: &[(Option<String>, i64)]) -> Option<Vec<i64>> {
+    let at: HashMap<&str, i64> = found.iter().filter_map(|(p, id)| Some((p.as_deref()?, *id))).collect();
+    let mut resolved = Vec::with_capacity(paths.len() + ids.len());
+    for path in paths {
+        resolved.push(*at.get(path.as_str())?);
+    }
+    for id in ids {
+        found.iter().find(|(_, f)| f == id)?;
+        resolved.push(*id);
+    }
+    Some(resolved)
+}
+
+/// Commits a change to the table `name` of `namespace`, and answers the table. A key already applied answers at once,
+/// whatever the client has since done with its files (REST-3).
 pub async fn apply(state: &State, namespace: &[&str], name: &str, change: &Change) -> Result<Table, ApplyError> {
     if change.creation.is_some() {
         return Err(not_yet("assert-create").into());
@@ -57,18 +93,38 @@ pub async fn apply(state: &State, namespace: &[&str], name: &str, change: &Chang
     if change.snapshots.is_empty() {
         return Ok(table);
     }
+    let key = change.app_id(&table.id().to_string());
+    if let Some(key) = &key
+        && on.commit_of_key(key).await?.is_some()
+    {
+        return Ok(table);
+    }
 
     let storage = state.storage()?;
     let proposed = files::proposed(&storage, &change.snapshots).await?;
-    if !proposed.removed.is_empty() {
-        return Err(not_yet("removing files").into());
-    }
+    let (paths, ids) = by_kind(table.location(), &proposed.removed);
+    let found = match proposed.removed.is_empty() {
+        true => Vec::new(),
+        false => on.files_at_paths(&table, &paths, &ids).await?,
+    };
+    let Some(removed) = resolved(&paths, &ids, &found) else {
+        // The files may be gone because a first attempt of this commit took them, after the check above.
+        if let Some(key) = &key
+            && on.commit_of_key(key).await?.is_some()
+        {
+            return Ok(table);
+        }
+        return Err(Refused::Conflict("a file the commit removes is not visible on the ref".into()).into());
+    };
     let footers = files::footer_sizes(&storage, &proposed.added).await?;
     let definition = on.definition(&table, None).await?;
     let adds = file_adds(&table, &definition, &proposed.added, &footers)?;
 
-    let mut transaction = on.transaction().append(adds).author("iceberg");
-    if let Some(app_id) = change.app_id(&table.id().to_string()) {
+    let mut transaction = on.transaction().append(adds).remove(&table, removed).author("iceberg");
+    if change.operation() == Some("replace") {
+        transaction = transaction.replace();
+    }
+    if let Some(app_id) = key {
         transaction = transaction.idempotent(app_id, APP_VERSION);
     }
     if let Some(expected) = change.expected {
@@ -91,5 +147,34 @@ mod tests {
         assert_eq!(types.len(), 2);
         assert_eq!(types[&4], "list");
         assert!(field_types(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn ice5_inline_path_by_kind() {
+        let location = "s3://b/t/";
+        let removed = [
+            "s3://b/t/metalake-inline/42.parquet".to_string(),
+            "s3://b/t/data/a.parquet".to_string(),
+            "s3://b/other/metalake-inline/7.parquet".to_string(),
+            "s3://b/t/metalake-inline/x.parquet".to_string(),
+        ];
+        let (paths, ids) = by_kind(location, &removed);
+        assert_eq!(ids, [42]);
+        assert_eq!(paths, removed[1..]);
+    }
+
+    #[test]
+    fn ice6_removed_paths_resolved() {
+        let paths = ["a".to_string(), "b".to_string()];
+        let found = [(Some("b".to_string()), 2), (Some("a".to_string()), 1), (None, 9)];
+        assert_eq!(resolved(&paths, &[9], &found), Some(vec![1, 2, 9]));
+    }
+
+    #[test]
+    fn cmt7_invisible_path_unresolved() {
+        let found = [(Some("a".to_string()), 1)];
+        assert_eq!(resolved(&["a".to_string(), "gone".to_string()], &[], &found), None);
+        assert_eq!(resolved(&[], &[9], &found), None);
+        assert_eq!(resolved(&[], &[], &[]), Some(Vec::new()));
     }
 }

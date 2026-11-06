@@ -47,6 +47,11 @@ impl Change {
         }
     }
 
+    /// The operation the last snapshot's summary states.
+    pub fn operation(&self) -> Option<&str> {
+        self.snapshots.last()?.summary.get("operation").map(String::as_str)
+    }
+
     /// Holds `assert-table-uuid` to the table the name resolved to. A table's id never changes, so this needs no lock.
     pub fn check_table(&self, table_id: &str) -> Result<(), Refused> {
         match &self.table_uuid {

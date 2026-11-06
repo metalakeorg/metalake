@@ -5,7 +5,7 @@
 use std::time::{Duration, SystemTime};
 
 use futures_util::TryStreamExt;
-use metalake_pg::records::TableExpect;
+use metalake_pg::records::{FileRef, TableExpect};
 use metalake_pg::{Commit, CreateRef, ErrorKind, INTERFACE, Merge, Protocol, Prune, Retention};
 use metalake_protocol_tests::records::{encode_long, stored_file};
 use metalake_protocol_tests::{Error, connect, fresh_schema, install_protocol, quote_ident};
@@ -35,6 +35,90 @@ fn append(ref_id: i32, t: Uuid, path: &str, lo: i64) -> Commit {
         files: vec![stored_file(t, path.into(), 10, 1, lo, lo + 9)],
         ..Default::default()
     }
+}
+
+#[tokio::test]
+async fn files_at_paths_by_ref() -> Result<(), Error> {
+    let on = connect().await?;
+    let schema = fresh_schema("c1");
+    install_protocol(&on, &schema).await?;
+    let p = Protocol::new(&schema);
+    let t = Uuid::from_u128(0xc1);
+    p.commit(&on, &create(t)).await?;
+    let branch = p.create_ref(&on, &CreateRef::branch("dev", 1)).await?;
+    p.commit(&on, &append(branch, t, "gs://lake/dev.parquet", 100)).await?;
+    p.commit(&on, &append(1, t, "gs://lake/main.parquet", 200)).await?;
+
+    let names = [
+        "gs://lake/a.parquet",
+        "gs://lake/dev.parquet",
+        "gs://lake/main.parquet",
+        "gs://lake/none.parquet",
+    ];
+    let names = names.map(String::from);
+    let paths = |found: Vec<(Option<String>, i64)>| {
+        let mut paths: Vec<String> = found.into_iter().filter_map(|(path, _)| path).collect();
+        paths.sort();
+        paths
+    };
+    let on_main = p.files_at_paths(&on, 1, t, &names, &[]).await?;
+    let id = on_main
+        .iter()
+        .find(|(path, _)| path.as_ref() == Some(&names[0]))
+        .unwrap()
+        .1;
+    assert_eq!(paths(on_main), [names[0].clone(), names[2].clone()]);
+    let on_dev = p.files_at_paths(&on, branch, t, &names, &[]).await?;
+    assert_eq!(paths(on_dev), [names[0].clone(), names[1].clone()]);
+    assert_eq!(p.files_at_paths(&on, 1, t, &[], &[id]).await?.len(), 1);
+    assert_eq!(p.files_at_paths(&on, 1, t, &[], &[]).await?.len(), 0);
+
+    let removal = Commit {
+        ref_id: 1,
+        operation: "delete".into(),
+        removed: vec![FileRef {
+            table_id: t,
+            file_id: id,
+        }],
+        ..Default::default()
+    };
+    p.commit(&on, &removal).await?;
+    assert_eq!(p.files_at_paths(&on, 1, t, &names[..1], &[]).await?.len(), 0);
+    assert_eq!(
+        p.files_at_paths(&on, branch, t, &names[..1], &[]).await?.len(),
+        1,
+        "dev forked before it"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn commit_of_key_by_ref() -> Result<(), Error> {
+    let on = connect().await?;
+    let schema = fresh_schema("c1");
+    install_protocol(&on, &schema).await?;
+    let p = Protocol::new(&schema);
+    let t = Uuid::from_u128(0xc1);
+    assert_eq!(p.commit_of_key(&on, 1, "c1").await?, None);
+    let applied = p.commit(&on, &create(t)).await?;
+    assert_eq!(p.commit_of_key(&on, 1, "c1").await?, Some(applied.commit_seq));
+    let branch = p.create_ref(&on, &CreateRef::branch("dev", 1)).await?;
+    assert_eq!(p.commit_of_key(&on, branch, "c1").await?, None);
+
+    let mut stale = append(1, t, "gs://lake/b.parquet", 0);
+    stale.expected = vec![TableExpect {
+        table_id: t,
+        snapshot_id: None,
+    }];
+    stale.app_id = Some("refused".into());
+    stale.app_version = Some(1);
+    assert!(p.commit(&on, &stale).await.is_err());
+    assert_eq!(
+        p.commit_of_key(&on, 1, "refused").await?,
+        None,
+        "a refusal leaves no key"
+    );
+    Ok(())
 }
 
 #[tokio::test]

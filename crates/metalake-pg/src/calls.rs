@@ -254,6 +254,34 @@ impl Protocol {
         Ok(rows.map_ok(|r| ListedFile::from_row(&r)).map_err(Into::into))
     }
 
+    /// The visible files of `table_id` among `paths` and `file_ids`, each as its path, if it has one, and its id.
+    pub async fn files_at_paths(
+        &self,
+        s: &impl Session,
+        ref_id: i32,
+        table_id: Uuid,
+        paths: &[String],
+        file_ids: &[i64],
+    ) -> Result<Vec<(Option<String>, i64)>> {
+        let statement = s
+            .statement(&self.sql("files_at_paths(ref_id => $1, table_id => $2, paths => $3, file_ids => $4)"))
+            .await?;
+        let rows = s
+            .client()
+            .query(&statement, &[&ref_id, &table_id, &paths, &file_ids])
+            .await?;
+        Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
+    }
+
+    /// The commit an idempotency key applied on `ref_id`, if any (CMT-5).
+    pub async fn commit_of_key(&self, s: &impl Session, ref_id: i32, app_id: &str) -> Result<Option<i64>> {
+        let statement = s
+            .statement(&self.sql("commit_of_key(ref_id => $1, app_id => $2)"))
+            .await?;
+        let row = s.client().query_one(&statement, &[&ref_id, &app_id]).await?;
+        Ok(row.get(0))
+    }
+
     /// The refs of the catalog that are not deleted.
     pub async fn refs(&self, s: &impl Session) -> Result<Vec<RefRow>> {
         let statement = s
@@ -663,6 +691,8 @@ pub const INTERFACE: &[(&str, &[&str], bool)] = &[
     ("next_id", &["t", "kind"], true),
     ("plan", &["ref_id", "table_id", "at", "field_id", "lo", "hi"], false),
     ("listed_files", &["ref_id", "table_id", "at"], false),
+    ("files_at_paths", &["ref_id", "table_id", "paths", "file_ids"], false),
+    ("commit_of_key", &["ref_id", "app_id"], false),
     ("tables_at", &["ref_id", "at"], false),
     ("describe", &["ref_id", "table_id", "at"], false),
     ("snapshot_at", &["r", "t", "s"], false),

@@ -751,7 +751,8 @@ Iceberg REST server of the projection, and are checked by its tests.
   - an `assert-ref-snapshot-id` requirement becomes `expected_snapshot` (CMT-6), and a mismatch answers
     409 `CommitFailedException`;
   - the `ADDED` entries of the manifests the new snapshot added become added files, their bounds converted back
-    from Iceberg's serialization to MetaLake's (STA-5); its `DELETED` entries become removed files;
+    from Iceberg's serialization to MetaLake's (STA-5); its `DELETED` entries become removed files, and one that
+    is not visible on the ref answers 409. Chained snapshots in one request are one commit;
   - other updates are refused in v0, but for what §16.3 allows;
   - the answer is the projection after the commit, in which the snapshot carries MetaLake's id.
 
@@ -768,7 +769,8 @@ Iceberg REST server of the projection, and are checked by its tests.
   `iceberg:<table_id>:<snapshot-id>` of the snapshot the client proposed, at `app_version` 1 (CMT-5). A client keeps
   that id across attempts, so a commit whose answer was lost is not applied twice: the repeat answers 200.
 - **REST-4.** Every table is served with `write.delete.mode`, `write.update.mode` and `write.merge.mode` as
-  `copy-on-write`. A manifest of deletes in `updateTable` is refused with 400, naming this limit.
+  `copy-on-write`. A delete file an `updateTable` adds is refused with 400, naming this limit; one it removes is
+  ignored, as a vector goes with its data file.
 - **REST-5.** A load serves at least each ref's current snapshot and its last ten ancestors that remain, and MAY
   serve no more than that, in place of ICE-2's every remaining snapshot, whatever `snapshots` asks for: a client
   that rebases needs its base. Time travel through Iceberg goes as far as that.

@@ -112,9 +112,6 @@ fn manifests_of(bytes: &[u8], snapshot_id: i64) -> Result<Vec<(String, i32)>, Re
         if required_long(&record, "added_snapshot_id")? != snapshot_id {
             continue;
         }
-        if required_long(&record, "content")? != i64::from(DATA) {
-            return Err(invalid("delete manifests are not served: tables are copy-on-write"));
-        }
         let spec_id = required_long(&record, "partition_spec_id")? as i32;
         manifests.push((required_string(&record, "manifest_path")?.to_string(), spec_id));
     }
@@ -168,7 +165,11 @@ fn entries(bytes: &[u8], spec_id: i32) -> Result<Vec<(i32, ManifestFile)>, Refus
             return Err(invalid("a manifest entry has no data_file"));
         };
         if required_long(data_file, "content")? != i64::from(DATA) {
-            return Err(invalid("delete files are not served: tables are copy-on-write"));
+            if status == ADDED {
+                return Err(invalid("delete files are not served: tables are copy-on-write"));
+            }
+            // A vector goes with its data file, so a client's removal of its delete file says nothing more.
+            continue;
         }
         let path = required_string(data_file, "file_path")?;
         if status != EXISTING && !required_string(data_file, "file_format")?.eq_ignore_ascii_case("parquet") {
@@ -434,22 +435,18 @@ mod tests {
     }
 
     #[test]
-    fn rest4_delete_manifest_refused() {
-        let bytes = list(vec![listed("old.avro", 5, 1), listed("new.avro", 77, 1)]);
-        refused(manifests_of(&bytes, 77), "copy-on-write");
-        assert!(manifests_of(&bytes, 5).is_err());
-        let bytes = list(vec![listed("served.avro", 5, 1)]);
-        assert_eq!(manifests_of(&bytes, 77).unwrap(), Vec::<(String, i32)>::new());
-    }
-
-    #[test]
-    fn rest4_delete_file_refused() {
+    fn rest4_added_delete_file_refused() {
         refused(
             entries(&manifest(vec![entry(ADDED, data_file("d", 1, "PARQUET"))]), 0),
             "copy-on-write",
         );
     }
 
+    #[test]
+    fn rest4_removed_delete_file_ignored() {
+        let bytes = manifest(vec![entry(DELETED, data_file("d", 1, "PARQUET"))]);
+        assert_eq!(entries(&bytes, 0).unwrap(), Vec::new());
+    }
     #[test]
     fn ice6_data_file_format_validated() {
         refused(

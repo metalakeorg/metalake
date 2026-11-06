@@ -242,6 +242,26 @@ impl Ref {
         found.ok_or_else(|| Error::NotFound(format!("table {} on {}", table.name(), self.name)))
     }
 
+    /// The files of `table` this ref sees among `paths` and `file_ids`, as a path, if there is one, and an id.
+    pub async fn files_at_paths(
+        &self,
+        table: &Table,
+        paths: &[String],
+        file_ids: &[i64],
+    ) -> Result<Vec<(Option<String>, i64)>> {
+        let p = self.catalog.protocol();
+        let session = self.catalog.session().await?;
+        Ok(p.files_at_paths(&session, self.id(), table.id(), paths, file_ids)
+            .await?)
+    }
+
+    /// The commit an idempotency key applied on this ref, if any (CMT-5).
+    pub async fn commit_of_key(&self, app_id: &str) -> Result<Option<i64>> {
+        let p = self.catalog.protocol();
+        Ok(p.commit_of_key(&self.catalog.session().await?, self.id(), app_id)
+            .await?)
+    }
+
     /// The namespaces this ref sees, in order.
     pub async fn namespaces(&self) -> Result<Vec<NamespaceRow>> {
         let p = self.catalog.protocol();

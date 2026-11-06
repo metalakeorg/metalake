@@ -103,3 +103,15 @@ returns setof @schema@.listed_file language sql stable as $$
     from @schema@.plan($1, $2, $3) p
     join @schema@.data_file f on f.table_id = $2 and f.file_id = p.file_id and f.begin_seq = p.begin_seq;
 $$;
+
+-- The visible files of a table among `paths`, or among `file_ids` for those with no path: what an Iceberg commit names
+-- by its served path (ICE-6). plan stays the one definition of what is visible, so this reads every file of the table.
+create function @schema@.files_at_paths(ref_id int, table_id uuid, paths text[], file_ids bigint[])
+returns table (path text, file_id bigint) language sql stable as $$
+  select p.path, p.file_id from @schema@.plan($1, $2) p where p.path = any ($3) or p.file_id = any ($4);
+$$;
+
+-- The commit an idempotency key applied on a ref, if any (CMT-5). A key whose commit rolled back is not there.
+create function @schema@.commit_of_key(ref_id int, app_id text) returns bigint language sql stable as $$
+  select i.commit_seq from @schema@.idempotency i where i.ref_id = $1 and i.app_id = $2 and i.version > 0;
+$$;
