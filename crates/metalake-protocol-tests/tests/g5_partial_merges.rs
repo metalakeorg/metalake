@@ -407,7 +407,7 @@ impl Run {
 }
 
 #[test]
-fn partial_merges_match_the_reference() {
+fn partial_merges_match_reference() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let cases = std::env::var("CASES").ok().and_then(|c| c.parse().ok()).unwrap_or(48);
     let mut runner = TestRunner::new(Config {
@@ -435,7 +435,7 @@ fn partial_merges_match_the_reference() {
 
 /// `merge_report` tries a merge without effect: it answers what the merge then does, and changes nothing.
 #[tokio::test]
-async fn a_merge_report_answers_what_the_merge_does() -> Result<(), Error> {
+async fn merge_report_matches_merge() -> Result<(), Error> {
     let mut run = Run::new().await?;
     let b = run.branch;
     for (table, kind) in [(0, Kind::Prop(0)), (1, Kind::Append)] {
@@ -491,7 +491,7 @@ async fn a_merge_report_answers_what_the_merge_does() -> Result<(), Error> {
 /// (MRG-6), a split commit allowed by `split`, a vector of the rest both sides changed (united on the branch), and a
 /// field both sides added under one name to a table of the rest (the rebase leaves it invalid, MRG-8).
 #[tokio::test]
-async fn partial_merges_the_random_run_may_miss() -> Result<(), Error> {
+async fn partial_merge_edge_cases() -> Result<(), Error> {
     let scenes: [(&[Step], u8, bool, &str); 4] = [
         (
             &[Step::Change {

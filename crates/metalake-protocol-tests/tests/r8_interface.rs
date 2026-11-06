@@ -47,7 +47,7 @@ async fn functions(client: &Client, schema: &str) -> Result<Vec<(String, String)
 
 /// Migrating twice changes no row and no function, and a catalog it does not know is refused without a change.
 #[tokio::test]
-async fn migrating_changes_nothing_and_refuses_what_it_does_not_know() -> Result<(), Error> {
+async fn migrate_idempotent_and_unknown_version_refused() -> Result<(), Error> {
     let (schema, twin) = (fresh_schema("p"), fresh_schema("p"));
     let on = connect().await?;
     install_protocol(&on, &schema).await?;
@@ -125,7 +125,7 @@ async fn migrating_changes_nothing_and_refuses_what_it_does_not_know() -> Result
 /// §2.8: on two refs, after a rename into another namespace, a drop, a new field and a namespace's property, each
 /// view answers what the visibility functions do, for a client whose search_path is elsewhere.
 #[tokio::test]
-async fn the_views_answer_what_visibility_does() -> Result<(), Error> {
+async fn views_match_visibility_functions() -> Result<(), Error> {
     let schema = fresh_schema("p");
     let on = connect().await?;
     install_protocol(&on, &schema).await?;
@@ -258,7 +258,7 @@ async fn answer(client: &Client, sql: &str) -> String {
 /// §2.7: a reader reads and cannot write; a writer writes only through the functions; every function that runs as
 /// the owner pins its search_path; and migrating keeps the rights.
 #[tokio::test]
-async fn roles_allow_what_they_should_and_nothing_else() -> Result<(), Error> {
+async fn role_permissions() -> Result<(), Error> {
     let schema = fresh_schema("p");
     let on = connect().await?;
     install_protocol(&on, &schema).await?;

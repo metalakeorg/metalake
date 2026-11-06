@@ -69,7 +69,7 @@ async fn seed(on: &Client, live: i64) -> Result<String, Error> {
 
 #[tokio::test]
 #[ignore]
-async fn expiring_costs_what_was_closed() -> Result<(), Error> {
+async fn expire_cost_proportional_to_closed_rows() -> Result<(), Error> {
     let on = connect().await?;
     let mut lines = Vec::new();
     for live in std::env::var("LIVE").map_or(vec![100_000i64, 1_000_000], |v| vec![v.parse().unwrap()]) {

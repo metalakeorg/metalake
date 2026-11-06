@@ -105,7 +105,7 @@ fn append(file: FileAdd) -> Commit {
 }
 
 #[tokio::test]
-async fn a_partition_its_statistics_contradict_is_refused_as_the_reference_refuses_it() -> Result<(), Error> {
+async fn par3_contradicting_partition_refused() -> Result<(), Error> {
     let (protocol, reference) = (fresh_schema("p"), fresh_schema("r"));
     let on_protocol = connect().await?;
     let on_reference = connect().await?;

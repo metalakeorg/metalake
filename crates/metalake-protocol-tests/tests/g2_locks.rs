@@ -79,7 +79,7 @@ async fn drop_schema(c: &Client, schema: &str) -> Result<(), Error> {
 }
 
 #[tokio::test]
-async fn one_name_given_twice_at_once_is_refused_to_the_second() -> Result<(), Error> {
+async fn concurrent_duplicate_name_refused() -> Result<(), Error> {
     let (schema, a, b) = catalog().await?;
     let watcher = connect().await?;
     let waiter = pid(&b).await?;
@@ -100,7 +100,7 @@ async fn one_name_given_twice_at_once_is_refused_to_the_second() -> Result<(), E
 }
 
 #[tokio::test]
-async fn a_branch_waits_for_its_parents_commit_in_flight_and_sees_it() -> Result<(), Error> {
+async fn fork_waits_for_parent_commit() -> Result<(), Error> {
     let (schema, a, b) = catalog().await?;
     let watcher = connect().await?;
     let waiter = pid(&b).await?;
@@ -128,7 +128,7 @@ async fn a_branch_waits_for_its_parents_commit_in_flight_and_sees_it() -> Result
 }
 
 #[tokio::test]
-async fn a_merge_is_not_starved_by_commits_that_arrive_after_it() -> Result<(), Error> {
+async fn merge_lock_fairness() -> Result<(), Error> {
     let (schema, a, b) = catalog().await?;
     let watcher = connect().await?;
     let merger = pid(&b).await?;

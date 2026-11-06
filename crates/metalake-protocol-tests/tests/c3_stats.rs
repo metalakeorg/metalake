@@ -220,7 +220,7 @@ fn values_by_field(rows: i64) -> Vec<(i32, &'static str, Vec<String>, i64)> {
 }
 
 #[tokio::test]
-async fn statistics_from_the_footer_are_the_references() -> Result<(), Error> {
+async fn footer_statistics_match_reference() -> Result<(), Error> {
     let schema = fresh_schema("c3");
     let (_catalog, table) = table(&schema).await?;
     let rows = 15;
@@ -323,7 +323,7 @@ async fn statistics_from_the_footer_are_the_references() -> Result<(), Error> {
 /// it with `--ignored`, in release.
 #[tokio::test]
 #[ignore]
-async fn statistics_of_a_large_file_cost_little() -> Result<(), Error> {
+async fn footer_statistics_cost_is_bounded() -> Result<(), Error> {
     let schema = fresh_schema("c3");
     let (_catalog, table) = table(&schema).await?;
     let file = write(&table, 1_000_000, 125_000);

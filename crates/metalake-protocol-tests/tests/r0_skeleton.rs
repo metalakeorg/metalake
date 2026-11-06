@@ -3,7 +3,7 @@
 use metalake_protocol_tests::{Error, compare, connect, fresh_schema, install_protocol, install_reference};
 
 #[tokio::test]
-async fn both_install_into_an_empty_database() -> Result<(), Error> {
+async fn install_into_empty_database() -> Result<(), Error> {
     let client = connect().await?;
     let (protocol, reference) = (fresh_schema("protocol"), fresh_schema("reference"));
     install_protocol(&client, &protocol).await?;
@@ -30,7 +30,7 @@ async fn both_install_into_an_empty_database() -> Result<(), Error> {
 }
 
 #[tokio::test]
-async fn two_fresh_catalogs_are_equal() -> Result<(), Error> {
+async fn fresh_catalogs_equal() -> Result<(), Error> {
     let client = connect().await?;
     let (protocol, reference) = (fresh_schema("protocol"), fresh_schema("reference"));
     install_protocol(&client, &protocol).await?;
@@ -40,7 +40,7 @@ async fn two_fresh_catalogs_are_equal() -> Result<(), Error> {
 }
 
 #[tokio::test]
-async fn a_changed_row_is_reported() -> Result<(), Error> {
+async fn catalog_diff_changed_row() -> Result<(), Error> {
     let client = connect().await?;
     let (protocol, reference) = (fresh_schema("protocol"), fresh_schema("reference"));
     install_protocol(&client, &protocol).await?;
@@ -60,7 +60,7 @@ async fn a_changed_row_is_reported() -> Result<(), Error> {
 }
 
 #[tokio::test]
-async fn a_failed_install_is_rolled_back() -> Result<(), Error> {
+async fn failed_install_rolls_back() -> Result<(), Error> {
     let client = connect().await?;
     let schema = fresh_schema("protocol");
     install_protocol(&client, &schema).await?;

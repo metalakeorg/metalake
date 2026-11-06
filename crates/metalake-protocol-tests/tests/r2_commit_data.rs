@@ -472,7 +472,7 @@ async fn scene() -> Result<Pair, Error> {
 }
 
 #[test]
-fn commits_of_data_match_the_reference() {
+fn data_commits_match_reference() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let config = Config {
         cases: std::env::var("CASES").ok().and_then(|c| c.parse().ok()).unwrap_or(24),

@@ -40,7 +40,7 @@ fn fields(d: &Value) -> Vec<(i64, Option<i64>, String, String)> {
 }
 
 #[tokio::test]
-async fn a_read_sees_the_table_as_it_was_on_its_ref() -> Result<(), Error> {
+async fn describe_by_ref() -> Result<(), Error> {
     let on = connect().await?;
     let schema = fresh_schema("c2");
     install_protocol(&on, &schema).await?;

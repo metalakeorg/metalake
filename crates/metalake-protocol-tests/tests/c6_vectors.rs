@@ -14,7 +14,7 @@ fn cases() -> usize {
 }
 
 #[tokio::test]
-async fn vectors_are_the_references_byte_for_byte() -> Result<(), Error> {
+async fn vector_encoding_matches_reference() -> Result<(), Error> {
     let on = connect().await?;
     let schema = fresh_schema("c6");
     install_reference(&on, &schema).await?;

@@ -8,7 +8,7 @@ use metalake_protocol_tests::{Error, connect, fresh_schema, install_protocol, qu
 /// A catalog the SDK installed speaks its versions; one of another format, or of another protocol until migrated, is
 /// refused as unsupported; one of a newer writer is read, not written.
 #[tokio::test]
-async fn the_sdk_refuses_versions_it_does_not_speak() -> Result<(), Error> {
+async fn sdk_unsupported_version_refused() -> Result<(), Error> {
     let on = connect().await?;
     let schema = fresh_schema("c1");
     install_protocol(&on, &schema).await?;
@@ -56,7 +56,7 @@ async fn the_sdk_refuses_versions_it_does_not_speak() -> Result<(), Error> {
 
 /// A pool with nothing free refuses in the end, and says so, rather than leave its caller waiting for ever.
 #[tokio::test]
-async fn a_pool_with_nothing_free_refuses_after_its_wait() -> Result<(), Error> {
+async fn pool_exhausted_wait_timeout() -> Result<(), Error> {
     let url = std::env::var("DATABASE_URL")?;
     let pool = Pool::waiting(&url, 1, Duration::from_millis(200))?;
     let held = pool.get().await?;

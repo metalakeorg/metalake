@@ -17,7 +17,7 @@ const CALLS: usize = 300;
 
 #[tokio::test]
 #[ignore]
-async fn a_call_costs_little_over_its_function() -> Result<(), Error> {
+async fn call_overhead_is_bounded() -> Result<(), Error> {
     let on = connect().await?;
     let schema = fresh_schema("c1");
     install_protocol(&on, &schema).await?;

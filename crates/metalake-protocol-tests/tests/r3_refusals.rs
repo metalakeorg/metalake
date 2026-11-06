@@ -60,7 +60,7 @@ async fn fresh() -> Result<Pair, Error> {
 }
 
 #[tokio::test]
-async fn faulty_definitions_are_refused_alike() -> Result<(), Error> {
+async fn invalid_definitions_match_reference() -> Result<(), Error> {
     let faults = [
         ("a create with an id that exists (ID-3)", commit(SEED, create("fresh"))),
         (

@@ -50,7 +50,7 @@ fn same(name: &str, got: Vec<Option<Vec<u8>>>, want: Vec<Option<Vec<u8>>>, value
 }
 
 #[tokio::test]
-async fn the_encoding_is_the_references_byte_for_byte() -> Result<(), Error> {
+async fn bound_encoding_matches_reference() -> Result<(), Error> {
     let on = connect().await?;
     let schema = fresh_schema("c3");
     install_reference(&on, &schema).await?;
@@ -293,7 +293,7 @@ fn decimal_text(unscaled: i128, scale: u32) -> String {
 
 /// Bounds order as their values: for each type, `encode(a) < encode(b)` exactly when `a < b`.
 #[test]
-fn bounds_order_as_their_values() {
+fn bound_order_matches_values() {
     let mut runner = TestRunner::new(proptest::test_runner::Config::with_cases(cases() as u32));
     runner
         .run(&(any::<i64>(), any::<i64>()), |(a, b)| {

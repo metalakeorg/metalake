@@ -185,7 +185,7 @@ async fn fresh() -> Result<Pair, Error> {
 }
 
 #[test]
-fn commits_of_namespaces_match_the_reference() {
+fn namespace_commits_match_reference() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let cases = std::env::var("CASES").ok().and_then(|c| c.parse().ok()).unwrap_or(48);
     let mut runner = TestRunner::new(Config {
@@ -228,7 +228,7 @@ fn commits_of_namespaces_match_the_reference() {
 
 /// LAY-5: both refuse to commit to a catalog whose writer_version they do not know, and to one of version 0.
 #[tokio::test]
-async fn a_writer_refuses_an_unknown_writer_version() -> Result<(), Error> {
+async fn lay5_unknown_writer_version_refused() -> Result<(), Error> {
     let pair = fresh().await?;
     let commit = Commit {
         ref_id: MAIN,
@@ -253,7 +253,7 @@ async fn a_writer_refuses_an_unknown_writer_version() -> Result<(), Error> {
 /// before one that never existed (NS-2, in the order the commit names them), and a table created in a dropped
 /// namespace or a namespace dropped with a table in it (NS-3, a conflict).
 #[tokio::test]
-async fn namespace_refusals_match_the_reference() -> Result<(), Error> {
+async fn namespace_refusals_match_reference() -> Result<(), Error> {
     let mut run = Run {
         pair: fresh().await?,
         created: 0,

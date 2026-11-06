@@ -41,7 +41,7 @@ async fn commit(client: &Client, schema: &str, r: i32, t: usize, n: usize, creat
 }
 
 #[tokio::test]
-async fn the_feed_and_reads_as_of_a_time_match_the_reference() -> Result<(), Error> {
+async fn change_feed_and_time_travel_match_reference() -> Result<(), Error> {
     let (protocol, reference) = (fresh_schema("p"), fresh_schema("r"));
     let (on, slow) = (connect().await?, connect().await?);
     install_protocol(&on, &protocol).await?;
@@ -268,7 +268,7 @@ async fn the_feed_and_reads_as_of_a_time_match_the_reference() -> Result<(), Err
 /// `commit_by_time` and `commit_unfilled`, and not the table. Commits of less than one second ago, filled or not,
 /// are not delivered yet.
 #[tokio::test]
-async fn the_feed_reads_through_its_indexes() -> Result<(), Error> {
+async fn change_feed_index_scan() -> Result<(), Error> {
     let protocol = fresh_schema("p");
     let on = connect().await?;
     install_protocol(&on, &protocol).await?;

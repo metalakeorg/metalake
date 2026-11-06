@@ -566,7 +566,7 @@ impl Run {
 }
 
 #[test]
-fn branches_and_merges_match_the_reference() {
+fn branches_and_merges_match_reference() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let cases = std::env::var("CASES").ok().and_then(|c| c.parse().ok()).unwrap_or(32);
     let mut runner = TestRunner::new(Config {
@@ -610,7 +610,7 @@ fn branches_and_merges_match_the_reference() {
 
 /// RET-4: a file removed on a ref that keeps no snapshot is queued by both, once.
 #[tokio::test]
-async fn a_removed_file_is_collected() -> Result<(), Error> {
+async fn removed_file_collected() -> Result<(), Error> {
     let mut run = Run::new().await?;
     for s in [
         Step::Commit {
@@ -640,7 +640,7 @@ async fn a_removed_file_is_collected() -> Result<(), Error> {
 /// batches. A file a branch still reads at its fork, a deleted branch, a file merged into main from a branch then
 /// deleted, a commit of namespaces only within the retention, and an inline file.
 #[tokio::test]
-async fn retention_scenes_match_the_reference() -> Result<(), Error> {
+async fn retention_matches_reference() -> Result<(), Error> {
     let append = |r: u8| Step::Commit {
         r,
         table: 0,

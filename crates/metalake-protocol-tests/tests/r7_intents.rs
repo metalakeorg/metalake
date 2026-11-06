@@ -3,7 +3,7 @@
 use metalake_protocol_tests::{Error, connect, fresh_schema, install_protocol, quote_ident};
 
 #[tokio::test]
-async fn only_orphans_are_forgotten() -> Result<(), Error> {
+async fn forget_intents_orphans_only() -> Result<(), Error> {
     let schema = fresh_schema("p");
     let on = connect().await?;
     install_protocol(&on, &schema).await?;
@@ -38,7 +38,7 @@ async fn only_orphans_are_forgotten() -> Result<(), Error> {
 
 /// RET-5, RET-8: a commit waits for an expiring that holds a path it adds, and a path in the deletion queue is refused.
 #[tokio::test]
-async fn queued_paths_are_refused_and_held_paths_wait() -> Result<(), Error> {
+async fn ret8_queued_path_refused_held_path_waits() -> Result<(), Error> {
     use metalake_protocol_tests::differential::{Commit, Outcome, TableChange, commit_protocol};
     use metalake_protocol_tests::records::stored_file;
     use serde_json::json;

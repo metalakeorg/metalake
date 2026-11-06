@@ -402,7 +402,7 @@ impl Scene {
 }
 
 #[test]
-fn plans_match_the_reference() {
+fn plans_match_reference() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let cases = std::env::var("CASES").ok().and_then(|c| c.parse().ok()).unwrap_or(48);
     let mut runner = TestRunner::new(Config {
@@ -436,7 +436,7 @@ fn plans_match_the_reference() {
 /// through `data_file_bound`. Sequential scans are disabled, since a table of a few rows is read faster without an
 /// index: the test checks that the index serves the query, not that the planner prefers it at this size.
 #[tokio::test]
-async fn plan_is_inlined_and_uses_the_index() -> Result<(), Error> {
+async fn plan_inlined_with_index_scan() -> Result<(), Error> {
     let mut scene = Scene::new().await?;
     for k in 0..20u16 {
         scene

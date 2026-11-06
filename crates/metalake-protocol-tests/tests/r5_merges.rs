@@ -194,7 +194,7 @@ fn supplied(fid: i64, cardinality: i64) -> VectorSet {
 }
 
 #[tokio::test]
-async fn a_vector_both_sides_changed_needs_one_that_holds_both() -> Result<(), Error> {
+async fn merge_vector_changed_on_both_refs() -> Result<(), Error> {
     let (pair, branch, fid) = diverged(false).await?;
     if merge(&pair, branch, None).await? {
         return Err("merged without a merged vector".into());
@@ -209,7 +209,7 @@ async fn a_vector_both_sides_changed_needs_one_that_holds_both() -> Result<(), E
 }
 
 #[tokio::test]
-async fn two_inline_vectors_merge_by_themselves() -> Result<(), Error> {
+async fn merge_inline_vectors() -> Result<(), Error> {
     let (pair, branch, _) = diverged(true).await?;
     if !merge(&pair, branch, None).await? {
         return Err("refused two inline vectors".into());
@@ -218,7 +218,7 @@ async fn two_inline_vectors_merge_by_themselves() -> Result<(), Error> {
 }
 
 #[tokio::test]
-async fn a_merge_that_leaves_two_fields_one_name_is_refused() -> Result<(), Error> {
+async fn merge_field_name_collision_refused() -> Result<(), Error> {
     let (pair, branch, _) = forked().await?;
     let p = quote_ident(&pair.protocol);
     for r in [1, branch] {

@@ -38,7 +38,7 @@ fn append(ref_id: i32, t: Uuid, path: &str, lo: i64) -> Commit {
 }
 
 #[tokio::test]
-async fn every_call_answers_what_its_function_does() -> Result<(), Error> {
+async fn calls_match_functions() -> Result<(), Error> {
     let mut on = connect().await?;
     let schema = fresh_schema("c1");
     install_protocol(&on, &schema).await?;
@@ -155,7 +155,7 @@ async fn every_call_answers_what_its_function_does() -> Result<(), Error> {
 }
 
 #[tokio::test]
-async fn refusals_arrive_with_their_kind_and_rule() -> Result<(), Error> {
+async fn refusal_error_kind_and_rule() -> Result<(), Error> {
     let on = connect().await?;
     let schema = fresh_schema("c1");
     install_protocol(&on, &schema).await?;
@@ -202,7 +202,7 @@ async fn refusals_arrive_with_their_kind_and_rule() -> Result<(), Error> {
 /// Every call has its function, with the same parameters in the same order, and the calls marked as writing are
 /// those `writing_functions()` grants to writers alone.
 #[tokio::test]
-async fn the_calls_are_the_functions_of_the_catalog() -> Result<(), Error> {
+async fn calls_cover_catalog_functions() -> Result<(), Error> {
     let on = connect().await?;
     let schema = fresh_schema("c1");
     install_protocol(&on, &schema).await?;
@@ -248,7 +248,7 @@ async fn the_calls_are_the_functions_of_the_catalog() -> Result<(), Error> {
 
 /// No SQL outside the SDK (ADR 0003 §3.5): no crate but the SDK and this harness depends on the Postgres driver.
 #[test]
-fn only_the_sdk_depends_on_the_driver() {
+fn driver_dependency_limited_to_sdk() {
     let output = std::process::Command::new(env!("CARGO"))
         .args(["metadata", "--format-version", "1", "--no-deps"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))

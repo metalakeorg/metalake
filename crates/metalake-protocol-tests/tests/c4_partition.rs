@@ -63,7 +63,7 @@ async fn check<T: ToSql + Sync + std::fmt::Debug>(
 const DAY_MICROS: &str = "(x / 86400000000) * interval '1 day' + (x % 86400000000) * interval '1 microsecond'";
 
 #[tokio::test]
-async fn the_transforms_are_the_references_value_for_value() -> Result<(), Error> {
+async fn transforms_match_reference() -> Result<(), Error> {
     let on = connect().await?;
     let schema = fresh_schema("c4");
     install_reference(&on, &schema).await?;
