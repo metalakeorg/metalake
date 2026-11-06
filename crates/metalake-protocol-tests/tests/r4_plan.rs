@@ -368,7 +368,10 @@ impl Scene {
             .await?
             .get(0);
         let sql = format!(
-            "select coalesce(json_agg(x order by x.file_id)::text, '[]') from {}.plan($1, $2, $3, $4, $5, $6) x",
+            // `begin_seq` is the protocol's, for who lists files, and `listed_files` is held to the reference apart.
+            "select coalesce(json_agg(x order by x.file_id)::text, '[]') from              (select file_id, path, spec_id, partition, record_count, file_size, footer_size, first_row_id, content,
+                     footer, vector_begin_seq, vector_path, vector_offset, vector_size, vector_cardinality, vector_inline
+                from {}.plan($1, $2, $3, $4, $5, $6)) x",
             quote_ident(&self.protocol)
         );
         let by_protocol: String = self
