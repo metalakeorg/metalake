@@ -29,7 +29,7 @@ def big(start=0):
     return pl.DataFrame({"k": range(start, start + 100_000)})
 
 
-def test_every_task_in_its_order(lake):
+def test_task_order(lake):
     done = lake.maintain()
     assert all(isinstance(d, metalake.Done) for d in done)
     tasks = [d.task for d in done]
@@ -39,7 +39,7 @@ def test_every_task_in_its_order(lake):
     assert "flush" in repr(flush)
 
 
-def test_strays_is_asked_for_by_table(lake):
+def test_strays_requires_table(lake):
     with pytest.raises(metalake.UsageError, match="name the table"):
         lake.maintain("strays")
     done = lake.maintain("strays", table="default.small")
@@ -51,12 +51,12 @@ def test_one_task(lake):
     assert [d.task for d in lake.maintain("times")] == ["times"]
 
 
-def test_a_task_that_is_not_one_says_which_are(lake):
+def test_unknown_task_raises(lake):
     with pytest.raises(metalake.UsageError, match="compact"):
         lake.maintain("clean")
 
 
-def test_a_rewrite_can_be_narrowed(lake):
+def test_compact_ref_and_table_filter(lake):
     lake.sql("create table other (k bigint)")
     done = lake.maintain("compact", table="default.small")
     assert {d.table for d in done} == {"default.small"}
@@ -64,7 +64,7 @@ def test_a_rewrite_can_be_narrowed(lake):
     assert {d.on for d in lake.maintain("compact", on="narrow")} == {"narrow"}
 
 
-def test_a_table_need_not_be_on_every_branch(lake):
+def test_compact_table_on_some_branches(lake):
     lake.branch("before_it")
     lake.sql("create table later (k bigint)")
     assert {d.on for d in lake.maintain("compact", table="default.later")} == {"main"}
@@ -74,19 +74,19 @@ def test_a_table_need_not_be_on_every_branch(lake):
         lake.maintain("compact", table="default.nowhere")
 
 
-def test_only_a_rewrite_can_be_narrowed(lake):
+def test_filter_limited_to_rewrites(lake):
     with pytest.raises(metalake.UsageError, match="flush, compact and strays"):
         lake.maintain("expire", table="default.small")
     with pytest.raises(metalake.UsageError, match="flush, compact and strays"):
         lake.maintain(on="main")
 
 
-def test_a_branch_that_is_not_there_says_so(lake):
+def test_missing_branch_raises(lake):
     with pytest.raises(metalake.MetaLakeError, match="no branch nobody"):
         lake.maintain("compact", on="nobody")
 
 
-def test_compaction_joins_small_files_and_keeps_every_row(lake, directory):
+def test_compaction_preserves_rows(lake, directory):
     lake.sql("create table joined (k bigint)")
     t = lake.table("joined")
     t.append(big())
@@ -98,13 +98,13 @@ def test_compaction_joins_small_files_and_keeps_every_row(lake, directory):
     assert frame.row(0) == (200_000, 199_999 * 200_000 // 2)
 
 
-def test_it_is_safe_to_repeat(lake):
+def test_maintain_is_idempotent(lake):
     first = lake.maintain()
     assert lake.maintain()
     assert first
 
 
-def test_a_failure_says_what_had_been_done(tmp_path):
+def test_failure_reports_completed_tasks(tmp_path):
     lake = metalake.init(tmp_path / "lake")
     try:
         lake.sql("create table t (k bigint)")
@@ -120,7 +120,7 @@ def test_a_failure_says_what_had_been_done(tmp_path):
         metalake._cli(["metalake", "--lake", str(tmp_path), "stop"])
 
 
-def test_other_failures_have_nothing_done(lake):
+def test_failure_without_completed_tasks(lake):
     with pytest.raises(metalake.MetaLakeError) as raised:
         lake.sql("select * from nowhere")
     assert raised.value.done == []

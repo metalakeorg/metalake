@@ -33,18 +33,18 @@ def big(start):
     return pl.DataFrame({"k": range(start, start + ROWS)})
 
 
-def test_a_ref_says_what_it_keeps(lake):
+def test_retain_policy(lake):
     assert lake.retain("kept", max_age="30d", min_snapshots=10) is None
     lake.retain("kept", max_age=datetime.timedelta(days=30))
     lake.retain("kept", min_seq=1)
 
 
-def test_a_ref_must_say_something(lake):
+def test_retain_requires_policy(lake):
     with pytest.raises(metalake.UsageError, match="what to keep"):
         lake.retain("kept")
 
 
-def test_an_age_that_is_no_age_is_a_wrong_use(lake):
+def test_invalid_age_raises(lake):
     with pytest.raises(metalake.UsageError, match="a number and"):
         lake.retain("kept", max_age="soon")
     with pytest.raises(metalake.UsageError, match="a number and"):
@@ -53,12 +53,12 @@ def test_an_age_that_is_no_age_is_a_wrong_use(lake):
         lake.retain("kept", max_age=3)
 
 
-def test_a_ref_that_is_not_there_says_so(lake):
+def test_missing_ref_raises(lake):
     with pytest.raises(metalake.MetaLakeError, match="no ref nobody"):
         lake.retain("nobody", max_age="1d")
 
 
-def test_with_no_policy_nothing_goes(lake, directory):
+def test_no_policy_preserves_objects(lake, directory):
     lake.sql("create table nothing_goes (k bigint)")
     t = lake.table("nothing_goes")
     t.append(big(0))
@@ -69,7 +69,7 @@ def test_with_no_policy_nothing_goes(lake, directory):
     assert stored(directory) >= before
 
 
-def test_what_a_policy_lets_go_goes_from_the_store(lake, directory):
+def test_policy_removes_objects(lake, directory):
     lake.sql("create table let_go (k bigint)")
     t = lake.table("let_go")
     t.append(big(0))

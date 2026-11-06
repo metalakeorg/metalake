@@ -41,27 +41,27 @@ def command(directory, *args):
         (["sql", "select * from nowhere"], 1, lambda lake: lake.sql("select * from nowhere"), metalake.MetaLakeError),
     ],
 )
-def test_an_exit_code_and_an_exception_say_one_thing(lake, directory, args, code, call, exception):
+def test_exit_code_matches_exception(lake, directory, args, code, call, exception):
     assert command(directory, *args) == code
     with pytest.raises(metalake.MetaLakeError) as raised:
         call(lake)
     assert type(raised.value) is exception
 
 
-def test_every_failure_is_a_metalake_error():
+def test_error_hierarchy():
     for kind in (metalake.UsageError, metalake.ConflictError, metalake.UnknownOutcomeError):
         assert issubclass(kind, metalake.MetaLakeError)
     assert issubclass(metalake.UsageError, ValueError)
 
 
-def test_a_conflict_says_its_rule_and_changes_nothing(lake):
+def test_conflict_error_rule(lake):
     with pytest.raises(metalake.ConflictError) as raised:
         lake.merge("dev")
     assert raised.value.rule
     assert str(raised.value)
 
 
-def test_a_write_whose_fate_is_not_known_says_so(tmp_path):
+def test_unknown_outcome_error(tmp_path):
     # A connection lost in a commit cannot be arranged here. The pool closed under a commit takes the same way out.
     pyarrow = pytest.importorskip("pyarrow")
     lake = metalake.init(tmp_path / "lake")
@@ -88,7 +88,7 @@ def test_a_write_whose_fate_is_not_known_says_so(tmp_path):
         metalake.UsageError("wrong"),
     ],
 )
-def test_an_error_crosses_a_process_whole(error):
+def test_error_pickle_round_trip(error):
     again = pickle.loads(pickle.dumps(error))
     assert type(again) is type(error)
     assert (str(again), again.rule, again.code, again.retryable) == (
@@ -106,15 +106,15 @@ def public(owner):
 
 
 @pytest.mark.parametrize("owner", [metalake.Lake, metalake.Table, metalake.Result])
-def test_every_method_says_what_it_does(owner):
+def test_methods_documented(owner):
     undocumented = [name for name, member in public(owner) if not (member.__doc__ or "").strip()]
     assert not undocumented
 
 
-def test_every_function_says_what_it_does():
+def test_functions_documented():
     for function in (metalake.connect, metalake.init, metalake.migrate, metalake.stop):
         assert (function.__doc__ or "").strip(), function.__name__
 
 
-def test_the_public_names_are_there():
+def test_public_api_exports():
     assert all(hasattr(metalake, name) for name in metalake.__all__)

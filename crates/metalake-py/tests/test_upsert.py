@@ -38,25 +38,25 @@ def frame(*records):
     return pl.DataFrame(records, schema={"id": pl.Int64, "total": pl.Int64, "note": pl.String}, orient="row")
 
 
-def test_it_replaces_and_adds(lake, table):
+def test_upsert(lake, table):
     written = lake.table(table).upsert(frame((2, 21, "new"), (3, 30, None)), on=["id"])
     assert (written.rows, written.inserted, written.updated, written.applied) == (2, 1, 1, True)
     assert written.commit
     assert rows(lake, table) == [(1, 10, "a"), (2, 21, "new"), (3, 30, None)]
 
 
-def test_it_adds_only(lake, table):
+def test_insert_only(lake, table):
     written = lake.table(table).upsert(frame((3, 30, "c")), on=["id"])
     assert (written.inserted, written.updated) == (1, 0)
 
 
-def test_it_replaces_only(lake, table):
+def test_update_only(lake, table):
     written = lake.table(table).upsert(frame((1, 11, "x")), on=["id"])
     assert (written.inserted, written.updated) == (0, 1)
     assert rows(lake, table) == [(1, 11, "x"), (2, 20, "b")]
 
 
-def test_a_key_of_two_columns(lake):
+def test_composite_key(lake):
     lake.sql("create table pairs (a bigint, b bigint, v bigint); insert into pairs values (1, 1, 10), (1, 2, 20)")
     data = pl.DataFrame({"a": [1, 2], "b": [2, 2], "v": [21, 30]})
     written = lake.table("pairs").upsert(data, on=["a", "b"])
@@ -64,13 +64,13 @@ def test_a_key_of_two_columns(lake):
     assert rows(lake, "pairs") == [(1, 1, 10), (1, 2, 21), (2, 2, 30)]
 
 
-def test_a_table_of_nothing_but_its_key(lake):
+def test_key_only_table(lake):
     lake.sql("create table keys (k bigint); insert into keys values (1)")
     written = lake.table("keys").upsert(pl.DataFrame({"k": [1, 2]}), on=["k"])
     assert written.inserted == 1 and rows(lake, "keys") == [(1,), (2,)]
 
 
-def test_a_key_twice_is_refused_and_changes_nothing(lake, table):
+def test_duplicate_key_raises(lake, table):
     before = rows(lake, table)
     with pytest.raises(metalake.UsageError, match="more than once"):
         lake.table(table).upsert(frame((7, 1, "a"), (7, 2, "b")), on=["id"])
@@ -79,14 +79,14 @@ def test_a_key_twice_is_refused_and_changes_nothing(lake, table):
     assert rows(lake, table) == before
 
 
-def test_a_key_with_nulls_is_refused(lake, table):
+def test_null_key_raises(lake, table):
     before = rows(lake, table)
     with pytest.raises(metalake.UsageError, match="nulls"):
         lake.table(table).upsert(frame((None, 1, "a")), on=["id"])
     assert rows(lake, table) == before
 
 
-def test_a_key_is_required_and_must_be_a_column(lake, table):
+def test_invalid_key_raises(lake, table):
     with pytest.raises(metalake.UsageError, match="key"):
         lake.table(table).upsert(frame((1, 1, "a")), on=[])
     with pytest.raises(metalake.UsageError, match="nope"):
@@ -95,17 +95,17 @@ def test_a_key_is_required_and_must_be_a_column(lake, table):
         lake.table(table).upsert(frame((1, 1, "a")))
 
 
-def test_columns_are_held_to_as_in_append(lake, table):
+def test_missing_column_raises(lake, table):
     with pytest.raises(metalake.UsageError, match="missing"):
         lake.table(table).upsert(pl.DataFrame({"id": [1]}), on=["id"])
 
 
-def test_nothing_to_write_commits_nothing(lake, table):
+def test_empty_input_skips_commit(lake, table):
     written = lake.table(table).upsert(frame(), on=["id"])
     assert (written.commit, written.rows, written.applied) == (None, 0, False)
 
 
-def test_repeating_with_a_key_applies_once(lake, table):
+def test_idempotency_key(lake, table):
     first = lake.table(table).upsert(frame((3, 30, "c")), on=["id"], idempotent=("sync", 1))
     again = lake.table(table).upsert(frame((3, 31, "d")), on=["id"], idempotent=("sync", 1))
     assert first.applied and not again.applied and again.commit == first.commit
@@ -113,7 +113,7 @@ def test_repeating_with_a_key_applies_once(lake, table):
     assert rows(lake, table) == [(1, 10, "a"), (2, 20, "b"), (3, 30, "c")]
 
 
-def test_a_commit_says_who_and_why(lake, table, directory, capfd):
+def test_commit_author_and_message(lake, table, directory, capfd):
     lake.table(table).upsert(frame((1, 11, "x")), on=["id"], message="the sync", author="ana")
     capfd.readouterr()
     metalake._cli(["metalake", "--lake", str(directory), "log", "--format", "json", "--limit", "1"])
@@ -121,28 +121,28 @@ def test_a_commit_says_who_and_why(lake, table, directory, capfd):
     assert "the sync" in said and "ana" in said
 
 
-def test_a_branch_leaves_its_parent_alone(lake, table, directory):
+def test_branch_isolation(lake, table, directory):
     metalake._cli(["metalake", "--lake", str(directory), "branch", "create", f"{table}_dev"])
     lake.table(f"{table}_dev.default.{table}").upsert(frame((1, 11, "x")), on=["id"])
     assert rows(lake, table) == [(1, 10, "a"), (2, 20, "b")]
     assert (1, 11, "x") in rows(lake, f'"{table}_dev".default.{table}')
 
 
-def test_names_that_need_quoting(lake):
+def test_quoted_identifiers(lake):
     lake.sql('create table odd ("Id" bigint, "a b" bigint); insert into odd values (1, 10)')
     written = lake.table("odd").upsert(pl.DataFrame({"Id": [1, 2], "a b": [11, 20]}), on=["Id"])
     assert (written.inserted, written.updated) == (1, 1)
     assert rows(lake, "odd") == [(1, 11), (2, 20)]
 
 
-def test_a_source_goes_when_it_fails(lake, table):
+def test_source_removed_on_failure(lake, table):
     with pytest.raises(metalake.UsageError):
         lake.table(table).upsert(frame((7, 1, "a"), (7, 2, "b")), on=["id"])
     names = pl.DataFrame(lake.sql("select table_catalog from information_schema.tables"))["table_catalog"].to_list()
     assert ".source" not in names
 
 
-def test_writers_at_once_leave_one_row_per_key(lake, table):
+def test_concurrent_upserts_unique_keys(lake, table):
     def write(start):
         for k in range(start, start + 3):
             while True:

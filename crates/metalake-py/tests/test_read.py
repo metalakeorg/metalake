@@ -31,29 +31,29 @@ def lake(tmp_path_factory):
 
 
 @pytest.mark.skipif("METALAKE_TEST_BARE" not in os.environ, reason="only in a bare environment")
-def test_nothing_else_is_installed():
+def test_no_optional_dependencies():
     assert importlib.util.find_spec("pyarrow") is None
     assert importlib.util.find_spec("arro3") is None
 
 
-def test_polars_reads_rows_and_types(lake):
+def test_polars_rows_and_types(lake):
     frame = pl.DataFrame(lake.sql("select k, name from t order by k"))
     assert frame.schema == {"k": pl.Int64, "name": pl.String}
     assert frame["k"].to_list() == [1, 2, 3]
     assert frame["name"].to_list() == ["a", "b", None]
 
 
-def test_polars_reads_a_large_result(lake):
+def test_polars_large_result(lake):
     frame = pl.DataFrame(lake.sql(f"select value as k from generate_series(1, {ROWS})"))
     assert frame.shape == (ROWS, 1)
     assert frame["k"].sum() == ROWS * (ROWS + 1) // 2
 
 
-def test_columns_are_known_before_reading(lake):
+def test_columns_without_reading(lake):
     assert lake.sql("select k, name from t").columns == ["k", "name"]
 
 
-def test_every_batch_comes_once(lake):
+def test_batches_complete(lake):
     batches = list(lake.sql(f"select value from generate_series(1, {ROWS})"))
     assert sum(b.num_rows for b in batches) == ROWS
     assert isinstance(batches[0], metalake.Batch)
@@ -62,18 +62,18 @@ def test_every_batch_comes_once(lake):
     assert sum(pl.DataFrame(b)["value"].sum() for b in batches) == ROWS * (ROWS + 1) // 2
 
 
-def test_a_failure_in_the_stream_reaches_iteration(lake):
+def test_stream_failure_in_iteration(lake):
     with pytest.raises(metalake.MetaLakeError, match="(?i)divide"):
         list(lake.sql("select 1 / (k - k) from t"))
 
 
-def test_a_failure_in_the_stream_reaches_polars(lake):
+def test_stream_failure_in_polars(lake):
     # An old Polars panics on it, which is no `Exception`; `to_polars` gives back ours whatever the version.
     with pytest.raises(BaseException, match="(?i)divide"):
         pl.DataFrame(lake.sql("select 1 / (k - k) from t"))
 
 
-def test_a_statement_that_cannot_run_says_so_at_once(lake):
+def test_invalid_statement_raises_immediately(lake):
     with pytest.raises(metalake.MetaLakeError, match="nowhere"):
         lake.sql("select * from nowhere")
     with pytest.raises(metalake.UsageError):
@@ -91,12 +91,12 @@ def interrupted(read):
     return time.perf_counter() - start
 
 
-def test_an_interrupt_ends_iteration(lake):
+def test_interrupt_iteration(lake):
     assert interrupted(lambda: list(lake.sql(LONG))) < 5
     assert pl.DataFrame(lake.sql("select k from t")).height == 3
 
 
-def test_an_interrupt_ends_polars(lake, interrupt_polars):
+def test_interrupt_polars(lake, interrupt_polars):
     # Polars says it in its own words, which depend on its version, and Polars 1 panics on a stream that fails:
     # `to_polars` is what gives the interrupt back.
     start = time.perf_counter()
@@ -107,7 +107,7 @@ def test_an_interrupt_ends_polars(lake, interrupt_polars):
     assert pl.DataFrame(lake.sql("select k from t")).height == 3
 
 
-def test_a_result_left_half_read_leaves_the_lake_working(lake):
+def test_partial_read_preserves_lake(lake):
     for _ in range(20):
         result = iter(lake.sql(f"select value from generate_series(1, {ROWS})"))
         assert next(result).num_rows > 0
@@ -115,14 +115,14 @@ def test_a_result_left_half_read_leaves_the_lake_working(lake):
     assert pl.DataFrame(lake.sql("select k from t")).height == 3
 
 
-def test_pyarrow_reads_a_result_too(lake):
+def test_pyarrow_result(lake):
     pyarrow = pytest.importorskip("pyarrow")
     table = pyarrow.table(lake.sql("select k, name from t order by k"))
     assert table.column("k").to_pylist() == [1, 2, 3]
     assert table.num_columns == 2
 
 
-def test_a_second_thread_on_one_read_is_refused_and_nothing_hangs(lake):
+def test_second_thread_on_iterator_raises(lake):
     result = iter(lake.sql(LONG))
     errors = []
     started = threading.Event()

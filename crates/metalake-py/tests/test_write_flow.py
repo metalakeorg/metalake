@@ -26,7 +26,7 @@ def directory(tmp_path_factory):
     metalake._cli(["metalake", "--lake", str(directory), "stop"])
 
 
-def test_every_way_of_writing_in_a_row(directory, capfd):
+def test_write_sequence(directory, capfd):
     lake = metalake.init(directory / "lake")
     lake.sql("create table pedidos (id bigint, total double, nota varchar)")
     t = lake.table("pedidos")
@@ -52,7 +52,7 @@ def test_every_way_of_writing_in_a_row(directory, capfd):
     assert "carga" in said and "limpieza" in said
 
 
-def test_an_interrupt_ends_a_delete_and_an_upsert(directory):
+def test_interrupt_delete_and_upsert(directory):
     pyarrow = pytest.importorskip("pyarrow")
     lake = metalake.connect(directory / "lake")
     lake.sql("create table slow (id bigint); insert into slow values (1)")

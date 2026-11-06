@@ -30,7 +30,7 @@ def lake(directory):
     return made
 
 
-def test_a_branch_starts_at_main_and_goes_its_own_way(lake):
+def test_create_branch(lake):
     made = lake.branch("own")
     assert isinstance(made, metalake.Ref)
     assert (made.name, made.kind, made.parent) == ("own", "branch", "main")
@@ -39,7 +39,7 @@ def test_a_branch_starts_at_main_and_goes_its_own_way(lake):
     assert keys(lake, "t") == [1]
 
 
-def test_a_branch_can_start_at_a_ref_or_a_point(lake):
+def test_create_branch_from_ref_or_sequence(lake):
     before = lake.log()[0].seq
     lake.table("t").append(pl.DataFrame({"k": [3]}))
     lake.branch("from_point", start=f"main@{before}")
@@ -48,12 +48,12 @@ def test_a_branch_can_start_at_a_ref_or_a_point(lake):
     assert {r.name: r.parent for r in lake.refs()}["from_ref"] == "from_point"
 
 
-def test_a_start_at_a_time_says_what_to_do(lake):
+def test_create_branch_from_time_raises(lake):
     with pytest.raises(metalake.UsageError, match="sequence"):
         lake.branch("at_time", start="main@2026-11-05")
 
 
-def test_a_tag_does_not_take_writes(lake):
+def test_tag_raises(lake):
     made = lake.tag("frozen")
     assert made.kind == "tag"
     with pytest.raises(metalake.MetaLakeError):
@@ -61,12 +61,12 @@ def test_a_tag_does_not_take_writes(lake):
     assert 9 not in keys(lake, '"frozen".default.t')
 
 
-def test_a_new_ref_shows_in_the_schema_at_once(lake):
+def test_new_ref_in_information_schema(lake):
     lake.branch("shown")
     assert "shown" in listed(lake)
 
 
-def test_a_deleted_branch_goes_and_its_name_is_not_used_again(lake):
+def test_delete_branch_name_not_reused(lake):
     lake.branch("gone")
     lake.delete_branch("gone")
     assert "gone" not in {r.name for r in lake.refs()}
@@ -75,13 +75,13 @@ def test_a_deleted_branch_goes_and_its_name_is_not_used_again(lake):
         lake.branch("gone")
 
 
-def test_a_deleted_tag_goes(lake):
+def test_delete_tag(lake):
     lake.tag("gone_tag")
     lake.delete_tag("gone_tag")
     assert "gone_tag" not in {r.name for r in lake.refs()}
 
 
-def test_each_kind_is_deleted_by_its_own_verb(lake):
+def test_delete_ref_kind_mismatch_raises(lake):
     lake.tag("a_tag")
     lake.branch("a_branch")
     with pytest.raises(metalake.MetaLakeError):
@@ -91,7 +91,7 @@ def test_each_kind_is_deleted_by_its_own_verb(lake):
     assert {"a_tag", "a_branch"} <= {r.name for r in lake.refs()}
 
 
-def test_a_name_taken_or_a_start_that_is_not_there_is_refused(lake):
+def test_create_branch_invalid_name_or_start(lake):
     with pytest.raises(metalake.MetaLakeError):
         lake.branch("main")
     with pytest.raises(metalake.MetaLakeError, match="no ref nobody"):

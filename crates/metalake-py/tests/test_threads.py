@@ -55,16 +55,16 @@ def keys(result):
     return sorted(row[0] for batch in result for row in pl.DataFrame(batch).rows())
 
 
-def test_many_threads_read_one_result(lake):
+def test_concurrent_read_one_result(lake):
     result = lake.sql("select k from t")
     assert together(*[lambda: keys(result)] * 16) == [[1, 2, 3]] * 16
 
 
-def test_more_readers_than_connections(lake):
+def test_readers_exceed_pool(lake):
     assert together(*[lambda: keys(lake.sql("select k from t"))] * 64) == [[1, 2, 3]] * 64
 
 
-def test_readers_and_writers_of_many_tables(lake):
+def test_concurrent_readers_and_writers(lake):
     names = [f"mixed_{n}" for n in range(8)]
 
     def write(name):
@@ -79,14 +79,14 @@ def test_readers_and_writers_of_many_tables(lake):
     assert answers[8:] == [[7, 8]] * 8
 
 
-def test_appends_to_one_table_all_land(lake):
+def test_concurrent_appends_applied(lake):
     lake.sql("create table appended (k bigint)")
     table = lake.table("appended")
     together(*[lambda k=k: table.append(pl.DataFrame({"k": [k]})) for k in range(32)])
     assert keys(lake.sql("select k from appended")) == list(range(32))
 
 
-def test_as_many_deletes_as_connections_end(lake):
+def test_deletes_at_pool_limit(lake):
     # Each would hold a connection and wait for a second, if reading what to delete kept one.
     for round in range(6):
         name = f"deleted_{round}"
@@ -104,7 +104,7 @@ def test_as_many_deletes_as_connections_end(lake):
         assert keys(lake.sql(f"select k from {name}")) == []
 
 
-def test_as_many_updates_as_connections_end(lake):
+def test_updates_at_pool_limit(lake):
     names = [f"updated_{n}" for n in range(16)]
     for name in names:
         lake.sql(f"create table {name} (k bigint); insert into {name} values (1)")
@@ -112,14 +112,14 @@ def test_as_many_updates_as_connections_end(lake):
     assert all(keys(lake.sql(f"select k from {name}")) == [2] for name in names)
 
 
-def test_a_read_held_open_does_not_stop_others(lake):
+def test_open_read_does_not_block(lake):
     held = iter(lake.sql("select value from generate_series(1, 2000000)"))
     assert next(held).num_rows > 0
     assert together(*[lambda: keys(lake.sql("select k from t"))] * 8) == [[1, 2, 3]] * 8
     del held
 
 
-def test_other_threads_go_on_while_a_call_waits(lake):
+def test_gil_released_during_call(lake):
     ticks = []
     stop = threading.Event()
 
@@ -140,7 +140,7 @@ def test_other_threads_go_on_while_a_call_waits(lake):
     assert len(ticks) > took * 10
 
 
-def test_one_read_refuses_a_second_thread_and_a_result_does_not(lake):
+def test_iterator_single_thread_result_shared(lake):
     result = lake.sql(LONG)
     reading = iter(result)
     errors = []

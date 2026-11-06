@@ -25,7 +25,7 @@ def lake(directory):
     return made
 
 
-def test_status_says_what_the_lake_is(lake, directory):
+def test_status(lake, directory):
     status = lake.status()
     assert isinstance(status, metalake.Status)
     assert status.local and status.local.endswith("lake") and status.postgres is None
@@ -35,14 +35,14 @@ def test_status_says_what_the_lake_is(lake, directory):
     assert set(status.refs) == {"main", "dev", "v1"}
 
 
-def test_status_prints_as_the_command_does(lake, directory, capfd):
+def test_status_matches_cli(lake, directory, capfd):
     capfd.readouterr()
     metalake._cli(["metalake", "--lake", str(directory), "status"])
     said = capfd.readouterr().out
     assert str(lake.status()).split() == said.split()
 
 
-def test_refs_says_what_each_is(lake):
+def test_refs(lake):
     refs = {r.name: r for r in lake.refs()}
     assert isinstance(refs["main"], metalake.Ref)
     assert set(refs) == {"main", "dev", "v1"}
@@ -54,7 +54,7 @@ def test_refs_says_what_each_is(lake):
     assert '"dev"' in repr(refs["dev"])
 
 
-def test_log_says_what_happened_latest_first(lake):
+def test_log_order(lake):
     commits = lake.log()
     assert all(isinstance(c, metalake.Commit) for c in commits)
     assert [c.seq for c in commits] == sorted((c.seq for c in commits), reverse=True)
@@ -64,17 +64,17 @@ def test_log_says_what_happened_latest_first(lake):
     assert latest.operation and "the cleaning" in repr(latest)
 
 
-def test_a_commit_is_a_point_to_read_at(lake):
+def test_read_at_commit_sequence(lake):
     point = lake.log()[1].seq
     assert pl.DataFrame(lake.sql(f'select k from "main@{point}".default.t')).height == 1
 
 
-def test_log_has_a_limit(lake):
+def test_log_limit(lake):
     assert len(lake.log(limit=1)) == 1
     assert len(lake.log("main", limit=2)) == 2
 
 
-def test_log_of_a_table_says_its_snapshots(lake):
+def test_log_table_snapshots(lake):
     snapshots = lake.log(table="default.t")
     assert all(isinstance(s, metalake.Snapshot) for s in snapshots)
     assert len(snapshots) >= 3
@@ -82,7 +82,7 @@ def test_log_of_a_table_says_its_snapshots(lake):
     assert snapshots[0].operation
 
 
-def test_a_ref_that_is_not_there_says_so(lake):
+def test_missing_ref_raises(lake):
     with pytest.raises(metalake.MetaLakeError, match="no ref nobody"):
         lake.log("nobody")
     with pytest.raises(metalake.UsageError):

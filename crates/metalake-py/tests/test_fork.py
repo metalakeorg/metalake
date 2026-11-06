@@ -97,54 +97,54 @@ def leave():
 @pytest.mark.parametrize(
     "use", [use_lake, use_lake_sql, use_table, use_table_write, use_result, use_result_stream]
 )
-def test_what_a_child_inherits_says_so_and_does_not_hang(lake, use):
+def test_inherited_lake_raises(lake, use):
     said = in_children(use, ())[0]
     assert "another process" in said and "connect again" in said
 
 
 @needs_fork
 @not_on_macos
-def test_a_child_connects_on_its_own(lake, directory):
+def test_forked_child_connect(lake, directory):
     assert sum(in_children(connect_again, (directory,))[0]) == 2
 
 
 @needs_fork
 @not_on_macos
-def test_children_write_each_with_its_own(lake, directory):
+def test_forked_children_write(lake, directory):
     lake.sql("create table written (k bigint)")
     assert sorted(in_children(write, *[(directory, k) for k in range(4)])) == [0, 1, 2, 3]
     assert sum(batch.num_rows for batch in lake.sql("select k from written")) == 4
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="only macOS refuses a forked child")
-def test_on_macos_a_forked_child_is_told_to_spawn(lake, directory):
+def test_macos_fork_raises_spawn_hint(lake, directory):
     assert "spawn" in in_children(connect_refused, (directory,))[0]
 
 
-def test_a_spawned_child_connects_on_its_own(lake, directory):
+def test_spawned_child_connect(lake, directory):
     with multiprocessing.get_context("spawn").Pool(1) as pool:
         assert sum(pool.apply_async(connect_again, (directory,)).get(timeout=LIMIT)) == 2
 
 
 @needs_fork
-def test_a_child_ends_with_what_it_inherited(lake):
+def test_forked_child_exit(lake):
     assert in_children(leave, ())[0] != os.getpid()
 
 
 @needs_fork
-def test_the_parent_goes_on(lake):
+def test_parent_after_fork(lake):
     in_children(use_lake, ())
     assert lake.status().schema == "metalake"
     assert sum(batch.num_rows for batch in lake.sql("select k from t")) == 2
 
 
-def test_a_lake_does_not_travel_by_pickle(lake):
+def test_lake_pickle_raises(lake):
     with pytest.raises(TypeError):
         pickle.dumps(lake)
     with pytest.raises(TypeError):
         pickle.dumps(lake.table("t"))
 
 
-def test_this_process_is_not_refused(lake):
+def test_same_process_not_refused(lake):
     assert lake.status().schema == "metalake"
     assert sum(batch.num_rows for batch in lake.sql("select k from t")) == 2

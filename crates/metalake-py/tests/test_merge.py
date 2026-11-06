@@ -38,7 +38,7 @@ def case(lake, request):
     return name, f"{name}_dev"
 
 
-def test_it_merges(lake, case):
+def test_merge(lake, case):
     table, branch = case
     lake.table(f"{branch}.default.{table}").append(frame(2))
     merged = lake.merge(branch, message="the merge", author="ana")
@@ -50,7 +50,7 @@ def test_it_merges(lake, case):
     assert (latest.message, latest.author, latest.seq) == ("the merge", "ana", merged.commit)
 
 
-def test_a_check_says_and_changes_nothing(lake, case):
+def test_check_preserves_state(lake, case):
     table, branch = case
     lake.table(f"{branch}.default.{table}").append(frame(2))
     checked = lake.merge(branch, check=True)
@@ -59,13 +59,13 @@ def test_a_check_says_and_changes_nothing(lake, case):
     assert rows(lake, table) == [(1,)]
 
 
-def test_nothing_to_merge_says_so(lake, case):
+def test_nothing_to_merge(lake, case):
     _, branch = case
     merged = lake.merge(branch)
     assert merged.outcome == "nothing" and merged.commit is None
 
 
-def test_a_conflict_is_a_conflict_with_its_rule_and_changes_nothing(lake, case):
+def test_conflict_error_rule(lake, case):
     table, branch = case
     lake.table(f"{branch}.default.{table}").delete("k = 1")
     lake.table(table).overwrite(frame(7))
@@ -77,7 +77,7 @@ def test_a_conflict_is_a_conflict_with_its_rule_and_changes_nothing(lake, case):
     assert rows(lake, f'"{branch}".default.{table}') == []
 
 
-def test_only_the_tables_it_names(lake, case):
+def test_selected_tables(lake, case):
     table, branch = case
     other = f"{table}_b"
     lake.sql(f'create table {other} (k bigint); create table "{branch}".default.{other}_c (k bigint)')
@@ -91,13 +91,13 @@ def test_only_the_tables_it_names(lake, case):
     assert rows(lake, other) == []
 
 
-def test_a_table_that_is_no_name_is_a_wrong_use(lake, case):
+def test_invalid_table_name_raises(lake, case):
     _, branch = case
     with pytest.raises(metalake.UsageError):
         lake.merge(branch, tables=["no_namespace"])
 
 
-def test_a_commit_across_a_selection_needs_split(lake, case):
+def test_cross_table_commit_requires_split(lake, case):
     table, branch = case
     other = f"{table}_b"
     lake.sql(f"create table {other} (k bigint)")
@@ -119,7 +119,7 @@ def test_a_commit_across_a_selection_needs_split(lake, case):
     assert rows(lake, other) == []
 
 
-def test_deletes_on_both_sides_join(lake):
+def test_deletes_on_both_refs(lake):
     lake.sql("create table both_sides (k bigint)")
     lake.table("both_sides").append(pl.DataFrame({"k": range(100_000)}))
     lake.branch("both_dev")
@@ -129,7 +129,7 @@ def test_deletes_on_both_sides_join(lake):
     assert pl.DataFrame(lake.sql("select count(*) as n from both_sides"))["n"][0] == 90_000
 
 
-def test_a_new_table_shows_after_a_merge(lake, case):
+def test_new_table_visible_after_merge(lake, case):
     table, branch = case
     lake.sql(f'create table "{branch}".default.{table}_new (k bigint)')
     lake.merge(branch)
@@ -137,11 +137,11 @@ def test_a_new_table_shows_after_a_merge(lake, case):
     assert f"{table}_new" in names.to_list()
 
 
-def test_a_branch_that_is_not_there_says_so(lake):
+def test_missing_branch_raises(lake):
     with pytest.raises(metalake.MetaLakeError, match="nobody"):
         lake.merge("nobody")
 
 
-def test_a_branch_with_no_parent_says_so(lake):
+def test_branch_without_parent_raises(lake):
     with pytest.raises(metalake.MetaLakeError):
         lake.merge("main")

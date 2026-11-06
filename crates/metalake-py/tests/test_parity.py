@@ -68,17 +68,17 @@ def commands(capfd):
             yield (verb,)
 
 
-def test_every_verb_of_the_command_line_is_in_python(capfd):
+def test_cli_verbs_in_python(capfd):
     assert set(commands(capfd)) == set(FACES)
 
 
-def test_it_reads_the_real_verbs(capfd):
+def test_cli_verb_discovery(capfd):
     found = set(commands(capfd))
     assert ("merge",) in found and ("branch", "create") in found and len(found) >= 12
 
 
 @pytest.mark.parametrize("command", FACES, ids=" ".join)
-def test_every_option_of_a_verb_is_in_python(capfd, command):
+def test_cli_options_in_python(capfd, command):
     face, renamed = FACES[command]
     parameters = set(inspect.signature(face).parameters)
     for flag in flags(said(capfd, *command)):
@@ -88,5 +88,5 @@ def test_every_option_of_a_verb_is_in_python(capfd, command):
         assert name in parameters, f"{' '.join(command)} --{flag} has no `{name}` in Python"
 
 
-def test_what_is_said_elsewhere_is_there():
+def test_cli_aliases_callable():
     assert all(callable(face) for face in ELSEWHERE.values())

@@ -17,7 +17,7 @@ def directory(tmp_path_factory):
     metalake._cli(["metalake", "--lake", str(directory), "stop"])
 
 
-def test_with_gives_the_lake_and_closes_it(directory):
+def test_context_manager(directory):
     with metalake.connect(directory) as lake:
         assert isinstance(lake, metalake.Lake)
         assert lake.status().schema == "metalake"
@@ -25,7 +25,7 @@ def test_with_gives_the_lake_and_closes_it(directory):
         lake.status()
 
 
-def test_a_failure_inside_still_closes_and_still_rises(directory):
+def test_context_manager_propagates_exception(directory):
     with pytest.raises(ZeroDivisionError):
         with metalake.connect(directory) as lake:
             1 / 0
@@ -33,7 +33,7 @@ def test_a_failure_inside_still_closes_and_still_rises(directory):
         lake.refs()
 
 
-def test_what_a_lake_gave_out_goes_with_it(directory):
+def test_closed_lake_invalidates_handles(directory):
     lake = metalake.connect(directory)
     table = lake.table("t")
     result = lake.sql("select k from t")
@@ -51,13 +51,13 @@ def test_what_a_lake_gave_out_goes_with_it(directory):
         next(reading)
 
 
-def test_closing_twice_does_nothing(directory):
+def test_close_is_idempotent(directory):
     lake = metalake.connect(directory)
     lake.close()
     lake.close()
 
 
-def test_a_closed_lake_cannot_be_entered(directory):
+def test_closed_lake_context_manager_raises(directory):
     lake = metalake.connect(directory)
     lake.close()
     with pytest.raises(metalake.UsageError, match="closed Lake"):
@@ -65,7 +65,7 @@ def test_a_closed_lake_cannot_be_entered(directory):
             pass
 
 
-def test_closing_leaves_the_server_up_and_others_on_it(directory):
+def test_close_preserves_server(directory):
     other = metalake.connect(directory)
     with metalake.connect(directory):
         pass
@@ -74,7 +74,7 @@ def test_closing_leaves_the_server_up_and_others_on_it(directory):
     other.close()
 
 
-def test_closing_gives_the_connections_back(directory):
+def test_close_releases_connections(directory):
     # More than a server takes: kept open, these would run it out.
     kept = []
     for _ in range(150):
@@ -84,7 +84,7 @@ def test_closing_gives_the_connections_back(directory):
     assert len(kept) == 150
 
 
-def test_a_result_shows_its_columns_and_does_not_run(directory):
+def test_result_repr_is_lazy(directory):
     with metalake.connect(directory) as lake:
         long = "select a.value as x from generate_series(1, 400000) a, generate_series(1, 400000) b"
         assert repr(lake.sql(long)) == 'Result(columns=["x"])'

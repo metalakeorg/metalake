@@ -73,7 +73,7 @@ def test_pandas_nullable_integers(lake, table):
     assert rows(lake, table) == [(1, "a"), (None, "b")]
 
 
-def test_integers_with_nulls_from_pandas_say_what_to_do(lake, table, directory):
+def test_pandas_integers_with_nulls_raises(lake, table, directory):
     pandas = pytest.importorskip("pandas")
     pytest.importorskip("pyarrow")
     before = parquet(directory)
@@ -82,13 +82,13 @@ def test_integers_with_nulls_from_pandas_say_what_to_do(lake, table, directory):
     assert parquet(directory) == before
 
 
-def test_a_result_of_a_statement(lake, table):
+def test_append_sql_result(lake, table):
     lake.table(table).append(pl.DataFrame({"k": [1], "s": ["a"]}))
     lake.table(table).append(lake.sql(f"select k + 1 as k, s from {table}"))
     assert rows(lake, table) == [(1, "a"), (2, "a")]
 
 
-def test_every_kind_from_polars(lake):
+def test_polars_all_types(lake):
     lake.sql(f"create table kinds ({COLUMNS})")
     data = pl.DataFrame(
         {
@@ -106,12 +106,12 @@ def test_every_kind_from_polars(lake):
     assert pl.DataFrame(lake.sql("select * from kinds order by k")).row(0) == data.row(0)
 
 
-def test_columns_go_by_name(lake, table):
+def test_columns_by_name(lake, table):
     lake.table(table).append(pl.DataFrame({"s": ["a"], "k": [1]}))
     assert rows(lake, table) == [(1, "a")]
 
 
-def test_a_column_missing_or_extra_is_refused_and_leaves_nothing(lake, table, directory):
+def test_missing_or_extra_column_raises(lake, table, directory):
     before = parquet(directory)
     with pytest.raises(metalake.UsageError, match="missing"):
         lake.table(table).append(pl.DataFrame({"k": [1]}))
@@ -123,7 +123,7 @@ def test_a_column_missing_or_extra_is_refused_and_leaves_nothing(lake, table, di
     assert rows(lake, table) == []
 
 
-def test_a_value_that_does_not_fit_fails_and_does_not_become_null(lake):
+def test_overflow_raises(lake):
     lake.sql("create table small (k int, m decimal(4, 2))")
     with pytest.raises(metalake.MetaLakeError):
         lake.table("small").append(pl.DataFrame({"k": [2**40], "m": [decimal.Decimal("1.00")]}))
@@ -134,7 +134,7 @@ def test_a_value_that_does_not_fit_fails_and_does_not_become_null(lake):
     assert rows(lake, "small") == []
 
 
-def test_nothing_to_write_commits_nothing(lake, table):
+def test_empty_input_skips_commit(lake, table):
     written = lake.table(table).append(pl.DataFrame(schema={"k": pl.Int64, "s": pl.String}))
     assert (written.commit, written.rows, written.applied) == (None, 0, False)
 
@@ -146,7 +146,7 @@ def test_many_rows(lake):
     assert pl.DataFrame(lake.sql("select sum(k) as s from many"))["s"][0] == 999_999 * 1_000_000 // 2
 
 
-def test_repeating_with_a_key_applies_once(lake, table):
+def test_idempotency_key(lake, table):
     data = pl.DataFrame({"k": [1], "s": ["a"]})
     first = lake.table(table).append(data, idempotent=("job", 7))
     again = lake.table(table).append(data, idempotent=("job", 7))
@@ -155,27 +155,27 @@ def test_repeating_with_a_key_applies_once(lake, table):
     assert rows(lake, table) == [(1, "a")] * 2
 
 
-def test_a_commit_says_who_and_why(lake, table, directory, capfd):
+def test_commit_author_and_message(lake, table, directory, capfd):
     lake.table(table).append(pl.DataFrame({"k": [1], "s": ["a"]}), message="the load", author="ana")
     metalake._cli(["metalake", "--lake", str(directory), "log", "--format", "json", "--limit", "1"])
     said = capfd.readouterr().out
     assert "the load" in said and "ana" in said
 
 
-def test_a_tag_takes_no_rows(lake, table, directory):
+def test_tag_raises(lake, table, directory):
     metalake._cli(["metalake", "--lake", str(directory), "tag", "create", f"{table}_v1"])
     with pytest.raises(metalake.MetaLakeError):
         lake.table(f"{table}_v1.default.{table}").append(pl.DataFrame({"k": [1], "s": ["a"]}))
 
 
-def test_a_branch_takes_rows_of_its_own(lake, table, directory):
+def test_branch_isolation(lake, table, directory):
     metalake._cli(["metalake", "--lake", str(directory), "branch", "create", f"{table}_dev"])
     lake.table(f"{table}_dev.default.{table}").append(pl.DataFrame({"k": [1], "s": ["a"]}))
     assert rows(lake, table) == []
     assert rows(lake, f'"{table}_dev".default.{table}') == [(1, "a")]
 
 
-def test_a_stream_made_in_python(lake, table):
+def test_python_stream(lake, table):
     pyarrow = pytest.importorskip("pyarrow")
     schema = pyarrow.schema([("k", pyarrow.int64()), ("s", pyarrow.string())])
 
@@ -187,7 +187,7 @@ def test_a_stream_made_in_python(lake, table):
     assert written.rows == 50
 
 
-def test_a_failure_in_a_stream_commits_nothing(lake, table):
+def test_stream_failure_skips_commit(lake, table):
     pyarrow = pytest.importorskip("pyarrow")
     schema = pyarrow.schema([("k", pyarrow.int64()), ("s", pyarrow.string())])
 
@@ -200,7 +200,7 @@ def test_a_failure_in_a_stream_commits_nothing(lake, table):
     assert rows(lake, table) == []
 
 
-def test_an_interrupt_ends_a_load_and_commits_nothing(lake, table):
+def test_interrupt_skips_commit(lake, table):
     pyarrow = pytest.importorskip("pyarrow")
     schema = pyarrow.schema([("k", pyarrow.int64()), ("s", pyarrow.string())])
 
@@ -217,6 +217,6 @@ def test_an_interrupt_ends_a_load_and_commits_nothing(lake, table):
     assert rows(lake, table) == []
 
 
-def test_what_is_no_arrow_says_so(lake, table):
+def test_non_arrow_input_raises(lake, table):
     with pytest.raises((TypeError, ValueError)):
         lake.table(table).append({"k": [1]})

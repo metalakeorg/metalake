@@ -24,33 +24,33 @@ def lake(directory):
     return made
 
 
-def test_a_name_reads_as_in_a_statement(lake):
+def test_table_path_parse(lake):
     assert lake.table("t").name == "main.default.t"
     assert lake.table("ventas.pedidos").name == "main.ventas.pedidos"
     assert lake.table("dev.ventas.pedidos").name == "dev.ventas.pedidos"
 
 
-def test_a_table_says_its_columns(lake):
+def test_table_columns(lake):
     table = lake.table("t")
     assert isinstance(table, metalake.Table)
     assert table.columns == ["k", "s"]
     assert repr(table) == 'Table("main.default.t")'
 
 
-def test_a_schema_goes_through_arrow(lake):
+def test_table_arrow_schema(lake):
     pyarrow = pytest.importorskip("pyarrow")
     schema = pyarrow.schema(lake.table("t"))
     assert schema.field("k").type == pyarrow.int64()
     assert schema.field("s").type == pyarrow.string()
 
 
-def test_a_table_that_is_not_there_says_so(lake):
+def test_missing_table_raises(lake):
     with pytest.raises(metalake.MetaLakeError, match="nowhere"):
         lake.table("nowhere")
     with pytest.raises(metalake.MetaLakeError, match="no ref"):
         lake.table("nobody.ventas.pedidos")
 
 
-def test_a_name_that_is_no_name_is_a_wrong_use(lake):
+def test_invalid_name_raises(lake):
     with pytest.raises(metalake.UsageError):
         lake.table("a..b")

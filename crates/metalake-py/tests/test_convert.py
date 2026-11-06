@@ -33,7 +33,7 @@ def lake(directory):
     return made
 
 
-def test_polars_keeps_every_kind(lake):
+def test_polars_all_types(lake):
     pl = pytest.importorskip("polars")
     frame = lake.sql("select * from kinds order by l").to_polars()
     assert isinstance(frame, pl.DataFrame)
@@ -49,7 +49,7 @@ def test_polars_keeps_every_kind(lake):
     assert frame.row(1) == (None,) * 9
 
 
-def test_arrow_keeps_every_kind(lake):
+def test_arrow_all_types(lake):
     pyarrow = pytest.importorskip("pyarrow")
     table = lake.sql("select * from kinds order by l").to_arrow()
     assert isinstance(table, pyarrow.Table)
@@ -60,7 +60,7 @@ def test_arrow_keeps_every_kind(lake):
     assert table.column("m").to_pylist() == [decimal.Decimal("3.25"), None]
 
 
-def test_pandas_has_the_rows(lake):
+def test_pandas_rows(lake):
     pandas = pytest.importorskip("pandas")
     pytest.importorskip("pyarrow")
     frame = lake.sql("select l, s from kinds order by l").to_pandas()
@@ -70,7 +70,7 @@ def test_pandas_has_the_rows(lake):
     assert pandas.isna(frame["l"].iloc[1]) and pandas.isna(frame["s"].iloc[1])
 
 
-def test_an_empty_result_keeps_its_columns(lake):
+def test_empty_result_schema(lake):
     pl = pytest.importorskip("polars")
     frame = lake.sql("select * from empty").to_polars()
     assert frame.shape == (0, 9) and frame.schema["l"] == pl.Int64
@@ -80,19 +80,19 @@ def test_an_empty_result_keeps_its_columns(lake):
 
 
 @pytest.mark.parametrize("method", ["to_polars", "to_arrow", "to_pandas"])
-def test_a_failure_in_the_stream_is_ours(lake, method):
+def test_stream_failure_type(lake, method):
     pytest.importorskip({"to_polars": "polars", "to_arrow": "pyarrow", "to_pandas": "pandas"}[method])
     pytest.importorskip("pyarrow" if method != "to_polars" else "polars")
     with pytest.raises(metalake.MetaLakeError, match="(?i)divide"):
         getattr(lake.sql("select 1 / (l - l) from kinds where l is not null"), method)()
 
 
-def test_an_interrupt_is_an_interrupt_in_polars(lake, interrupt_polars):
+def test_polars_interrupt(lake, interrupt_polars):
     with interrupt_polars(), pytest.raises(KeyboardInterrupt):
         lake.sql(LONG).to_polars()
 
 
-def test_an_interrupt_is_an_interrupt_in_arrow(lake):
+def test_arrow_interrupt(lake):
     pytest.importorskip("pyarrow")
     timer = threading.Timer(1, _thread.interrupt_main)
     timer.start()
@@ -110,7 +110,7 @@ def test_an_interrupt_is_an_interrupt_in_arrow(lake):
         ("to_pandas", "pyarrow", "pandas"),
     ],
 )
-def test_a_library_that_is_missing_says_what_to_install(lake, monkeypatch, method, missing, extra):
+def test_missing_library_install_hint(lake, monkeypatch, method, missing, extra):
     if missing != "pandas":
         pytest.importorskip("pandas" if method == "to_pandas" else missing)
     monkeypatch.setitem(sys.modules, missing, None)
@@ -118,14 +118,14 @@ def test_a_library_that_is_missing_says_what_to_install(lake, monkeypatch, metho
         getattr(lake.sql("select 1"), method)()
 
 
-def test_a_polars_that_would_answer_an_empty_frame_is_refused(lake, monkeypatch):
+def test_unsupported_polars_raises(lake, monkeypatch):
     pl = pytest.importorskip("polars")
     monkeypatch.setattr(pl, "__version__", "1.21.0")
     with pytest.raises(ImportError, match="1.22"):
         lake.sql("select 1").to_polars()
 
 
-def test_importing_loads_no_library():
+def test_import_is_lazy():
     code = "import sys, metalake; print([m for m in ('polars', 'pyarrow', 'pandas') if m in sys.modules])"
     import subprocess
 
@@ -133,7 +133,7 @@ def test_importing_loads_no_library():
     assert done.stdout.strip() == "[]"
 
 
-def test_a_file_gone_says_so(lake, directory):
+def test_missing_data_file_raises(lake, directory):
     pl = pytest.importorskip("polars")
     lake.sql("create table big (k bigint); insert into big select value from generate_series(1, 200000)")
     result = lake.sql("select k from big")

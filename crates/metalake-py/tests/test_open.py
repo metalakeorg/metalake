@@ -22,15 +22,15 @@ def made(tmp_path_factory):
     metalake._cli(["metalake", "--lake", str(directory), "stop"])
 
 
-def test_a_lake_is_named_by_the_directory_of_its_file(made):
+def test_connect_by_config_directory(made):
     assert "lake" in repr(metalake.connect(made))
 
 
-def test_a_lake_is_named_by_its_own_directory(made):
+def test_connect_by_lake_directory(made):
     assert isinstance(metalake.connect(made / "lake"), metalake.Lake)
 
 
-def test_naming_none_finds_the_file_from_below(made, monkeypatch):
+def test_connect_from_subdirectory(made, monkeypatch):
     monkeypatch.delenv("METALAKE_POSTGRES", raising=False)
     below = made / "a" / "b"
     below.mkdir(parents=True)
@@ -38,7 +38,7 @@ def test_naming_none_finds_the_file_from_below(made, monkeypatch):
     assert isinstance(metalake.connect(), metalake.Lake)
 
 
-def test_a_lake_goes_on_after_the_directory_changes(made, monkeypatch):
+def test_connect_preserved_after_chdir(made, monkeypatch):
     monkeypatch.chdir(made)
     lake = metalake.connect("./lake")
     monkeypatch.chdir(made.parent)
@@ -46,18 +46,18 @@ def test_a_lake_goes_on_after_the_directory_changes(made, monkeypatch):
     assert isinstance(metalake.connect(made / "lake"), metalake.Lake)
 
 
-def test_nothing_there_says_so(tmp_path):
+def test_connect_missing_lake_raises(tmp_path):
     with pytest.raises(metalake.MetaLakeError, match="neither") as raised:
         metalake.connect(tmp_path)
     assert raised.value.retryable is False and raised.value.rule is None
 
 
-def test_no_postgres_there_is_a_failure():
+def test_connect_unreachable_postgres_raises():
     with pytest.raises(metalake.MetaLakeError):
         metalake.connect("postgresql://metalake@127.0.0.1:1/none")
 
 
-def test_a_password_does_not_go_in_a_file(tmp_path, monkeypatch):
+def test_password_in_url_raises(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     with pytest.raises(metalake.UsageError, match="PGPASSWORD") as raised:
         metalake.init("postgresql://u:secret@host/db", "s3://bucket/x")
@@ -65,7 +65,7 @@ def test_a_password_does_not_go_in_a_file(tmp_path, monkeypatch):
     assert not (tmp_path / "metalake.toml").exists()
 
 
-def test_the_file_goes_beside_the_lake_wherever_the_program_runs(tmp_path, monkeypatch):
+def test_config_file_beside_lake(tmp_path, monkeypatch):
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
@@ -80,7 +80,7 @@ def test_the_file_goes_beside_the_lake_wherever_the_program_runs(tmp_path, monke
         metalake._cli(["metalake", "--lake", str(target.parent), "stop"])
 
 
-def test_a_lake_is_not_made_twice(made, monkeypatch):
+def test_existing_lake_raises(made, monkeypatch):
     monkeypatch.chdir(made)
     with pytest.raises(metalake.MetaLakeError, match="already exists"):
         metalake.init("./lake")
@@ -88,7 +88,7 @@ def test_a_lake_is_not_made_twice(made, monkeypatch):
 
 
 @pytest.mark.skipif("DATABASE_URL" not in os.environ, reason="needs a Postgres")
-def test_a_postgres_that_exists(tmp_path, monkeypatch):
+def test_connect_external_postgres(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     url = os.environ["DATABASE_URL"]
     schema = f"py_{uuid.uuid4().hex[:8]}"
@@ -97,7 +97,7 @@ def test_a_postgres_that_exists(tmp_path, monkeypatch):
     assert "password" not in repr(lake)
 
 
-def test_a_failure_of_each_kind_is_its_own_class():
+def test_error_classes():
     assert issubclass(metalake.ConflictError, metalake.MetaLakeError)
     assert issubclass(metalake.UnknownOutcomeError, metalake.MetaLakeError)
     assert issubclass(metalake.UsageError, ValueError)

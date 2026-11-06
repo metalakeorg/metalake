@@ -43,33 +43,33 @@ def table(lake, request):
     return name
 
 
-def test_a_read_stays_at_its_point(lake, table):
+def test_read_stable_point(lake, table):
     result = lake.sql(f"select k from {table}")
     lake.sql(f"insert into {table} values (2)")
     assert rows(result) == [(1,)]
     assert rows(lake.sql(f"select k from {table}")) == [(1,), (2,)]
 
 
-def test_two_tables_stay_at_one_point(lake, table):
+def test_two_tables_stable_point(lake, table):
     lake.sql(f"create table {table}_b (k bigint); insert into {table}_b values (1)")
     result = lake.sql(f"select a.k from {table} a join {table}_b b on a.k = b.k")
     lake.sql(f"insert into {table} values (5); insert into {table}_b values (5)")
     assert rows(result) == [(1,)]
 
 
-def test_a_write_happens_though_nobody_reads_it(lake, table):
+def test_write_without_read(lake, table):
     lake.sql(f"insert into {table} values (2)")
     lake.sql(f"update {table} set k = 3 where k = 2")
     lake.sql(f"delete from {table} where k = 1")
     assert rows(lake.sql(f"select k from {table}")) == [(3,)]
 
 
-def test_a_write_answers_its_count(lake, table):
+def test_write_row_count(lake, table):
     result = lake.sql(f"insert into {table} values (2), (3)")
     assert pl.DataFrame(result)["count"][0] == 2
 
 
-def test_statements_commit_one_by_one(lake, table):
+def test_statements_commit_individually(lake, table):
     with pytest.raises(metalake.MetaLakeError, match="nowhere"):
         lake.sql(f"insert into {table} values (2); select * from nowhere; insert into {table} values (3)")
     assert rows(lake.sql(f"select k from {table}")) == [(1,), (2,)]
@@ -92,7 +92,7 @@ def test_statements_commit_one_by_one(lake, table):
         "select k from t order by k limit 2",
     ],
 )
-def test_a_result_reads_the_same_every_time(lake, read):
+def test_result_repeatable(lake, read):
     result = lake.sql(read)
     first = rows(result)
     assert first, read
@@ -101,20 +101,20 @@ def test_a_result_reads_the_same_every_time(lake, read):
     assert rows(result) == first
 
 
-def test_a_rewrite_does_not_move_a_result(lake, table):
+def test_result_stable_after_rewrite(lake, table):
     result = lake.sql(f"select k from {table}")
     assert rows(result) == [(1,)]
     lake.sql(f"insert overwrite {table} values (9)")
     assert rows(result) == [(1,)]
 
 
-def test_a_new_table_shows_in_the_schema_at_once(lake):
+def test_new_table_in_information_schema(lake):
     lake.sql("create table listed (k bigint)")
     names = pl.DataFrame(lake.sql("select table_name from information_schema.tables"))["table_name"]
     assert "listed" in names.to_list()
 
 
-def test_refresh_shows_what_another_changed(lake, directory):
+def test_refresh_external_commits(lake, directory):
     other = metalake.connect(directory / "lake")
     other.sql("create table by_another (k bigint)")
     query = "select table_name from information_schema.tables"
@@ -124,19 +124,19 @@ def test_refresh_shows_what_another_changed(lake, directory):
     assert count(lake, "by_another") == 0
 
 
-def test_a_table_from_another_is_found_when_named(lake, directory):
+def test_external_table_resolved_by_name(lake, directory):
     metalake.connect(directory / "lake").sql("create table named_by_another (k bigint)")
     assert count(lake, "named_by_another") == 0
 
 
-def test_a_ref_and_a_point_read_as_on_the_command_line(lake, table, directory):
+def test_ref_and_sequence_names(lake, table, directory):
     metalake._cli(["metalake", "--lake", str(directory), "branch", "create", f"{table}_dev"])
     lake.sql(f'insert into "{table}_dev".default.{table} values (2)')
     assert rows(lake.sql(f"select k from {table}")) == [(1,)]
     assert rows(lake.sql(f'select k from "{table}_dev".default.{table}')) == [(1,), (2,)]
 
 
-def test_writers_on_one_row_conflict(lake, table):
+def test_concurrent_writers_conflict(lake, table):
     lake.sql(f"insert into {table} values (2)")
     refused = []
 
@@ -156,7 +156,7 @@ def test_writers_on_one_row_conflict(lake, table):
     assert all(e.rule for e in refused), [str(e) for e in refused][:3]
 
 
-def test_an_interrupt_ends_a_write_and_changes_nothing(lake, table):
+def test_interrupt_rolls_back(lake, table):
     timer = threading.Timer(1, _thread.interrupt_main)
     timer.start()
     with pytest.raises(KeyboardInterrupt):

@@ -34,25 +34,25 @@ def frame(*keys):
     return pl.DataFrame({"k": list(keys)}, schema={"k": pl.Int64})
 
 
-def test_it_replaces_every_row(lake, table):
+def test_overwrite(lake, table):
     written = lake.table(table).overwrite(frame(9))
     assert written.rows == 1 and written.applied
     assert rows(lake, table) == [(9,)]
 
 
-def test_it_replaces_rows_a_delete_left_too(lake, table):
+def test_overwrite_after_delete(lake, table):
     lake.sql(f"delete from {table} where k = 1")
     lake.table(table).overwrite(frame(9))
     assert rows(lake, table) == [(9,)]
 
 
-def test_no_rows_leave_it_empty_and_commit(lake, table):
+def test_overwrite_empty_input_commits(lake, table):
     written = lake.table(table).overwrite(frame())
     assert written.commit and written.applied and written.rows == 0
     assert rows(lake, table) == []
 
 
-def test_what_it_held_stays_at_earlier_points(lake, table):
+def test_time_travel_preserved(lake, table):
     before = lake.sql(f"select k from {table}")
     point = lake.table(table).append(frame(3)).commit
     lake.table(table).overwrite(frame(9))
@@ -61,20 +61,20 @@ def test_what_it_held_stays_at_earlier_points(lake, table):
     assert rows(lake, f'"main@{point}".default.{table}') == [(1,), (2,), (3,)]
 
 
-def test_a_branch_leaves_its_parent_alone(lake, table, directory):
+def test_branch_isolation(lake, table, directory):
     metalake._cli(["metalake", "--lake", str(directory), "branch", "create", f"{table}_dev"])
     lake.table(f"{table}_dev.default.{table}").overwrite(frame(9))
     assert rows(lake, table) == [(1,), (2,)]
     assert rows(lake, f'"{table}_dev".default.{table}') == [(9,)]
 
 
-def test_columns_are_held_to_as_in_append(lake, table, directory):
+def test_missing_column_raises(lake, table, directory):
     with pytest.raises(metalake.UsageError, match="missing"):
         lake.table(table).overwrite(pl.DataFrame({"z": [1]}))
     assert rows(lake, table) == [(1,), (2,)]
 
 
-def test_a_write_that_lands_meanwhile_is_not_lost(lake, table, directory):
+def test_concurrent_append_conflicts(lake, table, directory):
     pyarrow = pytest.importorskip("pyarrow")
     schema = pyarrow.schema([("k", pyarrow.int64())])
     other = metalake.connect(directory / "lake")
@@ -89,7 +89,7 @@ def test_a_write_that_lands_meanwhile_is_not_lost(lake, table, directory):
     assert rows(lake, table) == [(1,), (2,), (3,)]
 
 
-def test_repeating_with_a_key_applies_once(lake, table):
+def test_idempotency_key(lake, table):
     first = lake.table(table).overwrite(frame(9), idempotent=("load", 1))
     lake.table(table).append(frame(10))
     again = lake.table(table).overwrite(frame(9), idempotent=("load", 1))
@@ -97,6 +97,6 @@ def test_repeating_with_a_key_applies_once(lake, table):
     assert rows(lake, table) == [(10,), (9,)]
 
 
-def test_an_overwrite_by_sql_still_replaces(lake, table):
+def test_sql_overwrite(lake, table):
     lake.sql(f"insert overwrite {table} values (5)")
     assert rows(lake, table) == [(5,)]
