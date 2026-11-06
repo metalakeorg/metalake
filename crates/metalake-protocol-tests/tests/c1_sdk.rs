@@ -1,6 +1,8 @@
 //! C1 (ADR 0003 §7): the protocol's SDK, `metalake-pg`, against a real catalog.
 
-use metalake_pg::{ErrorKind, check_versions, versions};
+use std::time::Duration;
+
+use metalake_pg::{ErrorKind, Pool, check_versions, versions};
 use metalake_protocol_tests::{Error, connect, fresh_schema, install_protocol, quote_ident};
 
 /// A catalog the SDK installed speaks its versions; one of another format, or of another protocol until migrated, is
@@ -49,5 +51,21 @@ async fn the_sdk_refuses_versions_it_does_not_speak() -> Result<(), Error> {
     assert_eq!(versions(&on, &schema).await?, newer);
 
     on.batch_execute(&format!("drop schema {p} cascade")).await?;
+    Ok(())
+}
+
+/// A pool with nothing free refuses in the end, and says so, rather than leave its caller waiting for ever.
+#[tokio::test]
+async fn a_pool_with_nothing_free_refuses_after_its_wait() -> Result<(), Error> {
+    let url = std::env::var("DATABASE_URL")?;
+    let pool = Pool::waiting(&url, 1, Duration::from_millis(200))?;
+    let held = pool.get().await?;
+    let Err(refused) = pool.get().await else {
+        panic!("a pool of one gave a second connection");
+    };
+    assert_eq!(refused.kind(), ErrorKind::Postgres);
+    assert!(refused.to_string().contains("no connection of 1"), "{refused}");
+    drop(held);
+    pool.get().await?;
     Ok(())
 }

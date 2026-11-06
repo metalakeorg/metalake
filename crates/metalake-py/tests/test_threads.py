@@ -86,6 +86,32 @@ def test_appends_to_one_table_all_land(lake):
     assert keys(lake.sql("select k from appended")) == list(range(32))
 
 
+def test_as_many_deletes_as_connections_end(lake):
+    # Each would hold a connection and wait for a second, if reading what to delete kept one.
+    for round in range(6):
+        name = f"deleted_{round}"
+        lake.sql(f"create table {name} (k bigint)")
+        lake.table(name).append(pl.DataFrame({"k": range(16)}))
+
+        def delete(k):
+            while True:
+                try:
+                    return lake.table(name).delete(f"k = {k}")
+                except metalake.ConflictError:
+                    pass
+
+        together(*[lambda k=k: delete(k) for k in range(16)])
+        assert keys(lake.sql(f"select k from {name}")) == []
+
+
+def test_as_many_updates_as_connections_end(lake):
+    names = [f"updated_{n}" for n in range(16)]
+    for name in names:
+        lake.sql(f"create table {name} (k bigint); insert into {name} values (1)")
+    together(*[lambda name=name: lake.sql(f"update {name} set k = 2") for name in names])
+    assert all(keys(lake.sql(f"select k from {name}")) == [2] for name in names)
+
+
 def test_a_read_held_open_does_not_stop_others(lake):
     held = iter(lake.sql("select value from generate_series(1, 2000000)"))
     assert next(held).num_rows > 0

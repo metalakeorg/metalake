@@ -15,7 +15,7 @@ use datafusion::error::Result;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType};
-use futures_util::stream::BoxStream;
+use futures_util::stream::{self, BoxStream};
 use futures_util::{StreamExt, TryStreamExt};
 use metalake::vectors::{Deletes, FILE_ID, POSITION};
 use metalake::{Scan, TableWriter, WriteOptions};
@@ -82,7 +82,10 @@ pub(crate) struct Selection {
 impl Selection {
     /// The batches of the rows that match; a filter that is null for a row does not match it.
     async fn rows(&self) -> Result<BoxStream<'static, Result<RecordBatch>>> {
-        let tasks = self.scan.plan().await.map_err(external)?;
+        // Taken whole: a stream of them keeps a connection, and what writes needs another while it reads them, so that as
+        // many writers as the pool has connections would each hold one and wait for ever.
+        let tasks: Vec<_> = self.scan.plan().await.map_err(external)?.try_collect().await.map_err(external)?;
+        let tasks = stream::iter(tasks.into_iter().map(Ok)).boxed();
         let filter = self.filter.clone();
         let batches = self.scan.read(tasks, &self.table.storage).map(move |batch| {
             let batch = batch.map_err(external)?;
