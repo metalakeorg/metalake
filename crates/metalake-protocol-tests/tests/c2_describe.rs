@@ -143,7 +143,11 @@ async fn a_read_sees_the_table_as_it_was_on_its_ref() -> Result<(), Error> {
         (on_dev["name"].clone(), on_dev["properties"].clone()),
         (json!("u"), json!({"owner": "b"}))
     );
-    assert_eq!(p.describe(&on, 1, t, None).await?, Some(main.clone()));
+    // The counters are the table's, not a ref's: what `dev` drew, `main` is told too, and nothing else of it changes.
+    let mut again = p.describe(&on, 1, t, None).await?.expect("main sees the table");
+    assert_eq!(again["last_field_id"], json!(y));
+    again["last_field_id"] = main["last_field_id"].clone();
+    assert_eq!(again, main);
     assert_eq!(
         p.tables_at(&on, dev, None)
             .await?
