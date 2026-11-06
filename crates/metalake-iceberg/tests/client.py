@@ -58,5 +58,21 @@ def read(uri):
     return said
 
 
+def wide(uri):
+    catalog = connect(uri)
+    table = catalog.load_table("db.wide")
+    keys = lambda scan: sorted(row["k"] for row in scan.to_arrow().to_pylist())
+    return {
+        "main": keys(table.scan()),
+        "branch": keys(table.scan(snapshot_id=table.metadata.refs["b"].snapshot_id)),
+        "pruned": len(list(table.scan(row_filter="k >= 10").plan_files())),
+        "files": len(list(table.scan().plan_files())),
+        "deletes": sorted(len(task.delete_files) for task in table.scan().plan_files()),
+        "schemas": len(table.metadata.schemas),
+        "columns": [field.name for field in table.schema().fields],
+        "metadata": json.load(urllib.request.urlopen(f"{uri}/v1/namespaces/db/tables/wide"))["metadata"],
+    }
+
+
 if __name__ == "__main__":
-    print(json.dumps({"namespaces": namespaces, "read": read}[sys.argv[1]](sys.argv[2])))
+    print(json.dumps({"namespaces": namespaces, "read": read, "wide": wide}[sys.argv[1]](sys.argv[2])))

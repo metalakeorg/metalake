@@ -1,6 +1,6 @@
 //! The rows of a table as `TableMetadata` (ICE-1). The reference's `iceberg_metadata` is the oracle this is tested against.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use metalake::TableSnapshot;
 use serde_json::{Value, json};
@@ -86,6 +86,19 @@ fn int(value: &Value) -> i32 {
     value.as_i64().unwrap_or(0) as i32
 }
 
+/// The fields of a partition spec, from the catalog's shape.
+pub fn partition_fields(fields: &[Value]) -> Vec<PartitionField> {
+    fields
+        .iter()
+        .map(|f| PartitionField {
+            source_id: int(&f["source_ids"][0]),
+            field_id: int(&f["field_id"]),
+            name: f["name"].as_str().unwrap_or_default().to_string(),
+            transform: f["transform"].as_str().unwrap_or_default().to_string(),
+        })
+        .collect()
+}
+
 fn specs(definition: &Value) -> Vec<PartitionSpec> {
     let empty = serde_json::Map::new();
     let mut specs: Vec<PartitionSpec> = definition["specs"]
@@ -94,17 +107,7 @@ fn specs(definition: &Value) -> Vec<PartitionSpec> {
         .iter()
         .map(|(id, fields)| PartitionSpec {
             spec_id: id.parse().unwrap_or(0),
-            fields: fields
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|f| PartitionField {
-                    source_id: int(&f["source_ids"][0]),
-                    field_id: int(&f["field_id"]),
-                    name: f["name"].as_str().unwrap_or_default().to_string(),
-                    transform: f["transform"].as_str().unwrap_or_default().to_string(),
-                })
-                .collect(),
+            fields: partition_fields(fields.as_array().map_or(&[], Vec::as_slice)),
         })
         .collect();
     specs.sort_by_key(|s| s.spec_id);
@@ -169,6 +172,34 @@ fn summary(of: &TableSnapshot) -> BTreeMap<String, String> {
     said
 }
 
+/// How many ancestors of each ref's current snapshot are served, so that a client that rebases finds its base (REST-5).
+const ANCESTORS: usize = 10;
+
+/// The snapshots a load serves: each ref's current one and its last ten ancestors that remain, whatever a client asks.
+pub fn served(snapshots: Vec<TableSnapshot>, refs: &[(String, String, Option<i64>)]) -> Vec<TableSnapshot> {
+    let parents: HashMap<i64, Option<i64>> = snapshots
+        .iter()
+        .map(|s| (s.snapshot_id, s.parent_snapshot_id))
+        .collect();
+    let mut kept = HashSet::new();
+    for (.., current) in refs {
+        let mut at = *current;
+        for _ in 0..=ANCESTORS {
+            let Some(id) = at.filter(|id| parents.contains_key(id)) else {
+                break;
+            };
+            kept.insert(id);
+            at = parents[&id];
+        }
+    }
+    let mut served = snapshots;
+    served.retain(|s| kept.contains(&s.snapshot_id));
+    served
+}
+
+/// The write modes every table is served with: a client that wrote position deletes would be refused (REST-4).
+const COPY_ON_WRITE: [&str; 3] = ["write.delete.mode", "write.update.mode", "write.merge.mode"];
+
 /// The table's metadata, each snapshot naming the manifest list `manifest_list` gives it.
 pub fn metadata(rows: &Rows, manifest_list: impl Fn(i64) -> String) -> TableMetadata {
     let d = &rows.definition;
@@ -195,6 +226,7 @@ pub fn metadata(rows: &Rows, manifest_list: impl Fn(i64) -> String) -> TableMeta
         default_sort_order_id: int(&d["sort_order_id"]),
         properties: properties
             .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
+            .chain(COPY_ON_WRITE.map(|key| (key.to_string(), "copy-on-write".to_string())))
             .collect(),
         current_snapshot_id: current,
         snapshots: rows
@@ -226,5 +258,59 @@ pub fn metadata(rows: &Rows, manifest_list: impl Fn(i64) -> String) -> TableMeta
             .collect(),
         snapshot_log: Vec::new(),
         metadata_log: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chain(ids: std::ops::RangeInclusive<i64>) -> Vec<TableSnapshot> {
+        ids.map(|id| TableSnapshot {
+            snapshot_id: id,
+            parent_snapshot_id: (id > 1).then_some(id - 1),
+            ref_name: "main".into(),
+            schema_seq: 1,
+            summary: Value::Null,
+            timestamp_ms: None,
+        })
+        .collect()
+    }
+
+    fn ids(served: Vec<TableSnapshot>) -> Vec<i64> {
+        served.iter().map(|s| s.snapshot_id).collect()
+    }
+
+    #[test]
+    fn a_ref_keeps_its_current_snapshot_and_ten_ancestors() {
+        let refs = [("main".to_string(), "branch".to_string(), Some(20))];
+        assert_eq!(ids(served(chain(1..=20), &refs)), (10..=20).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn each_ref_keeps_its_own_and_a_gone_ancestor_ends_the_walk() {
+        let refs = [
+            ("main".to_string(), "branch".to_string(), Some(20)),
+            ("old".to_string(), "tag".to_string(), Some(5)),
+            ("empty".to_string(), "branch".to_string(), None),
+        ];
+        let kept = ids(served(chain(3..=20), &refs));
+        assert_eq!(kept[..3], [3, 4, 5]);
+        assert_eq!(kept[3], 10);
+    }
+
+    #[test]
+    fn every_table_is_copy_on_write() {
+        let rows = Rows {
+            table_id: "t".into(),
+            definition: json!({"properties": {"write.delete.mode": "merge-on-read", "a": "b"}}),
+            schemas: BTreeMap::new(),
+            snapshots: Vec::new(),
+            refs: Vec::new(),
+        };
+        let served = metadata(&rows, |_| String::new());
+        assert_eq!(served.properties["write.delete.mode"], "copy-on-write");
+        assert_eq!(served.properties["write.merge.mode"], "copy-on-write");
+        assert_eq!(served.properties["a"], "b");
     }
 }

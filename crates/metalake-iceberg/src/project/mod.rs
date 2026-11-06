@@ -3,5 +3,6 @@
 
 pub mod avro;
 pub mod bounds;
+pub mod deletes;
 pub mod manifest;
 pub mod metadata;

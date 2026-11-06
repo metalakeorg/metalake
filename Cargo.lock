@@ -2588,6 +2588,7 @@ dependencies = [
  "futures-util",
  "metalake",
  "metalake-pg",
+ "parquet",
  "serde",
  "serde_json",
  "tokio",

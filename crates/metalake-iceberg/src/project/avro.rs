@@ -16,7 +16,7 @@ fn field(name: &str, id: i64, schema: Schema) -> RecordField {
         .build()
 }
 
-fn optional(name: &str, id: i64, schema: Schema) -> RecordField {
+pub fn optional(name: &str, id: i64, schema: Schema) -> RecordField {
     let union = UnionSchema::new(vec![Schema::Null, schema]).expect("null and one other type");
     let mut field = field(name, id, Schema::Union(union));
     field.default = Some(serde_json::Value::Null);

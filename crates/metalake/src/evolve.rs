@@ -224,7 +224,7 @@ fn unscaled(text: &str, scale: u32) -> Option<i128> {
 }
 
 /// The days from 1970-01-01 of a date `YYYY-MM-DD`, in the proleptic calendar (Howard Hinnant's algorithm).
-fn days(text: &str) -> Option<i64> {
+pub(crate) fn days(text: &str) -> Option<i64> {
     let mut parts = text.rsplitn(3, '-');
     let (d, m, y) = (parts.next()?, parts.next()?, parts.next()?);
     let (y, m, d): (i64, i64, i64) = (y.parse().ok()?, m.parse().ok()?, d.parse().ok()?);

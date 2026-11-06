@@ -160,6 +160,11 @@ fn single_value(ty: &str, value: Scalar<'_>) -> Option<Value> {
     })
 }
 
+/// The days from 1970-01-01 of a date in Iceberg's JSON single-value serialization.
+pub fn days(text: &str) -> Option<i64> {
+    crate::evolve::days(text)
+}
+
 /// The hash serialization of a value (PAR-1).
 fn hash_bytes(ty: &str, value: Scalar<'_>) -> Option<Vec<u8>> {
     Some(match (base(ty), value) {

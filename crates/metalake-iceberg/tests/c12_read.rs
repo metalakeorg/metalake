@@ -1,15 +1,18 @@
-//! A table read through the server, by a real client, and what it was answered held to the reference: `iceberg_metadata`
-//! as a whole (ICE-1), `iceberg_bound` value for value (ICE-3).
+//! Tables read through the server, by a real client, and what it was answered held to the reference: `iceberg_metadata` as
+//! a whole (ICE-1), `iceberg_bound` value for value (ICE-3).
 
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
-use metalake::{Catalog, CatalogConfig, NewTable, Ref, Storage, TableWriter, WriteOptions};
+use futures_util::TryStreamExt;
+use metalake::vectors::Deletes;
+use metalake::{Catalog, CatalogConfig, NewTable, Ref, Scan, Storage, TableWriter, WriteOptions};
 use metalake_iceberg::project::bounds::to_iceberg;
-use metalake_pg::Pool;
+use metalake_pg::{Commit, Pool, Protocol};
 use serde_json::{Value, json};
 
 type Failure = Box<dyn std::error::Error>;
@@ -33,7 +36,18 @@ fn batch(keys: std::ops::Range<i64>) -> RecordBatch {
     RecordBatch::try_new(Arc::new(schema), columns).unwrap()
 }
 
-async fn create(on: &Ref, name: &str, inline_max: &str) -> Result<(), Failure> {
+/// A catalog in a directory of its own, whose files a client reads.
+async fn local_catalog(schema: &str) -> Result<(Catalog, Storage, PathBuf), Failure> {
+    let directory = std::env::temp_dir().join(schema);
+    std::fs::create_dir_all(&directory)?;
+    let path = directory.display().to_string().replace('\\', "/");
+    let warehouse = format!("file:///{}", path.trim_start_matches('/'));
+    let catalog = Catalog::init(CatalogConfig::new(url(), schema).warehouse(&warehouse), None).await?;
+    let storage = Storage::new(&warehouse, Vec::<(String, String)>::new())?;
+    Ok((catalog, storage, directory))
+}
+
+async fn create(on: &Ref, name: &str, inline_max: &str, partitioning: Vec<(&str, &str)>) -> Result<(), Failure> {
     let shape = batch(0..1).schema();
     let (tx, _) = on.transaction().create_table(NewTable {
         namespace: &["db"],
@@ -41,7 +55,7 @@ async fn create(on: &Ref, name: &str, inline_max: &str) -> Result<(), Failure> {
         schema: &shape,
         location: None,
         cluster_key: vec![],
-        partitioning: vec![],
+        partitioning,
         properties: vec![("inline.max-bytes", inline_max)],
     })?;
     tx.commit().await?;
@@ -86,8 +100,8 @@ fn server(schema: &str) -> Result<(Running, String), Failure> {
     let address = line
         .trim()
         .strip_prefix("listening on ")
-        .expect("the first line says where")
-        .to_string();
+        .expect("the first line says where");
+    let address = address.to_string();
     Ok((running, format!("http://{address}")))
 }
 
@@ -99,10 +113,15 @@ fn client(step: &str, uri: &str) -> Result<Value, Failure> {
     Ok(serde_json::from_slice(&run.stdout)?)
 }
 
-/// Each snapshot's `manifest-list` is the server's to name; the reference leaves it to who writes the files.
-fn without_lists(mut metadata: Value) -> Value {
+/// Each snapshot's `manifest-list` is the server's to name, as the reference leaves it to who writes the files, and the
+/// write modes are the server's to serve (REST-4).
+fn as_the_reference_has_it(mut metadata: Value) -> Value {
     for snapshot in metadata["snapshots"].as_array_mut().unwrap() {
         snapshot.as_object_mut().unwrap().remove("manifest-list");
+    }
+    for mode in ["write.delete.mode", "write.update.mode", "write.merge.mode"] {
+        let served = metadata["properties"].as_object_mut().unwrap().remove(mode);
+        assert_eq!(served, Some(json!("copy-on-write")));
     }
     metadata
 }
@@ -110,22 +129,11 @@ fn without_lists(mut metadata: Value) -> Value {
 #[tokio::test]
 async fn pyiceberg_reads_a_table_and_what_it_is_told_is_what_the_reference_says() -> Result<(), Failure> {
     let schema = fresh_schema();
-    let directory = std::env::temp_dir().join(&schema);
-    std::fs::create_dir_all(&directory)?;
-    let warehouse = format!(
-        "file:///{}",
-        directory
-            .display()
-            .to_string()
-            .replace('\\', "/")
-            .trim_start_matches('/')
-    );
-    let catalog = Catalog::init(CatalogConfig::new(url(), &schema).warehouse(&warehouse), None).await?;
-    let storage = Storage::new(&warehouse, Vec::<(String, String)>::new())?;
+    let (catalog, storage, directory) = local_catalog(&schema).await?;
     let main = catalog.branch("main").await?;
     main.transaction().create_namespace(&["db"]).commit().await?;
-    create(&main, "plain", "0").await?;
-    create(&main, "small", "1000000").await?;
+    create(&main, "plain", "0", vec![]).await?;
+    create(&main, "small", "1000000", vec![]).await?;
     append(&catalog, &main, &storage, "plain", 0..5).await?;
     append(&catalog, &main, &storage, "plain", 100..105).await?;
     append(&catalog, &main, &storage, "small", 0..3).await?;
@@ -155,7 +163,70 @@ async fn pyiceberg_reads_a_table_and_what_it_is_told_is_what_the_reference_says(
         .query_one("select iceberg_metadata($1)", &[&t.id()])
         .await?
         .get(0);
-    assert_eq!(without_lists(said["metadata"].clone()), expected);
+    assert_eq!(as_the_reference_has_it(said["metadata"].clone()), expected);
+    Ok(())
+}
+
+#[tokio::test]
+async fn pyiceberg_reads_partitions_vectors_a_branch_and_two_schemas() -> Result<(), Failure> {
+    let schema = fresh_schema();
+    let (catalog, storage, directory) = local_catalog(&schema).await?;
+    let main = catalog.branch("main").await?;
+    main.transaction().create_namespace(&["db"]).commit().await?;
+    create(&main, "wide", "0", vec![("k", "truncate[10]")]).await?;
+    append(&catalog, &main, &storage, "wide", 0..5).await?;
+    append(&catalog, &main, &storage, "wide", 10..13).await?;
+
+    let t = main.table(&["db"], "wide").await?;
+    let planned: Vec<_> = Scan::new(&catalog, &t).plan().await?.try_collect().await?;
+    let mut deletes = Deletes::new();
+    deletes.insert(
+        planned
+            .iter()
+            .find(|f| f.record_count == 5)
+            .expect("the first file")
+            .file_id,
+        1,
+    );
+    main.transaction().delete(&t, &storage, deletes).commit().await?;
+
+    let branch = main.create_branch("b").await?;
+    append(&catalog, &branch, &storage, "wide", 20..21).await?;
+
+    let pool = Pool::new(&url(), 1)?;
+    let session = pool.get().await?;
+    let protocol = Protocol::new(&schema);
+    let id = protocol.next_id(&session, t.id(), "field").await?;
+    let added = json!({"fields": [{"field_id": id, "new": true, "parent_field_id": null, "position": 2, "name": "v",
+                                   "type": "long", "required": false}]});
+    let change = Commit {
+        ref_id: main.id(),
+        operation: "evolve".into(),
+        changes: Some(json!({t.id().to_string(): added})),
+        ..Default::default()
+    };
+    protocol.commit(&session, &change).await?;
+
+    let (_server, uri) = server(&schema)?;
+    let said = client("wide", &uri)?;
+    let _ = std::fs::remove_dir_all(&directory);
+    assert_eq!(said["main"], json!([0, 2, 3, 4, 10, 11, 12]), "the vector applies");
+    assert_eq!(said["branch"], json!([0, 2, 3, 4, 10, 11, 12, 20]));
+    assert_eq!(said["files"], 2);
+    assert_eq!(said["pruned"], 1, "the partition or the bounds prune");
+    assert_eq!(said["deletes"], json!([0, 1]));
+    assert_eq!(said["schemas"], 2);
+    assert_eq!(said["columns"], json!(["k", "v"]));
+
+    let reference = include_str!("../../../spec/v0/reference/16-iceberg.sql");
+    session
+        .batch_execute(&format!("set search_path = {schema}; {reference}"))
+        .await?;
+    let expected: Value = session
+        .query_one("select iceberg_metadata($1)", &[&t.id()])
+        .await?
+        .get(0);
+    assert_eq!(as_the_reference_has_it(said["metadata"].clone()), expected);
     Ok(())
 }
 

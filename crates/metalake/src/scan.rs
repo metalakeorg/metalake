@@ -401,6 +401,19 @@ async fn batches(task: ScanTask, storage: &Storage, r: Reading) -> Result<BoxStr
         .boxed())
 }
 
+/// The deletion vector of a file as a list gives it, for who serves it.
+pub async fn listed_vector(file: &ListedFile, storage: &Storage) -> Result<Option<DeletionVector>> {
+    let at = file.vector.as_ref().map(|v| TaskVector {
+        begin_seq: v.begin_seq,
+        path: v.path.clone(),
+        offset: v.offset,
+        size: v.size,
+        cardinality: v.cardinality,
+        inline: v.inline.clone(),
+    });
+    vector(file.file_id, at.as_ref(), storage).await
+}
+
 /// A file's deletion vector, from the catalog's bytes or a range of its Puffin file, checked against the count the
 /// catalog keeps.
 pub(crate) async fn vector(file_id: i64, at: Option<&TaskVector>, storage: &Storage) -> Result<Option<DeletionVector>> {

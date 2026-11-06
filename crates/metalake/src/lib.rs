@@ -36,7 +36,7 @@ pub use metalake_pg::Retention;
 pub use metalake_pg::records::{
     CommitEntry, FileAdd, ListedFile, NamespaceRow, RefRow, SnapshotEntry, TableName, TableSnapshot,
 };
-pub use scan::{Scan, ScanTask, TaskReader, TaskVector};
+pub use scan::{Scan, ScanTask, TaskReader, TaskVector, listed_vector};
 pub use storage::Storage;
 pub use table::{Field, Table};
 pub use write::{Merge, MergeReport, NewTable, Outcome, TableWriter, Transaction, WriteOptions};
