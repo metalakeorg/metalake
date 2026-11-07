@@ -269,7 +269,8 @@ create function @schema@.commit(
   app_version bigint default null,
   message text default null,
   definition text default null,
-  namespaces jsonb default null)
+  namespaces jsonb default null,
+  summaries jsonb default null)
 returns @schema@.commit_result language plpgsql
 set search_path = @schema@, pg_catalog, pg_temp as $$
 #variable_conflict use_column
@@ -289,6 +290,7 @@ declare
   app text := $10;
   ver bigint := $11;
   spaces jsonb := coalesce($14, '[]');
+  notes jsonb := coalesce($15, '{}');
   sp jsonb;
   ns text[];
   nv namespace;
@@ -321,10 +323,19 @@ begin
     end if;
   end if;
 
+  -- CMT-12: what the commit adds to the summaries.
+  if jsonb_typeof(notes) <> 'object' or exists (
+       select 1 from jsonb_each(notes) n(k, s)
+        where jsonb_typeof(s) <> 'object' or octet_length(s::text) > 65536
+           or exists (select 1 from jsonb_each(s) y(a, b) where jsonb_typeof(b) <> 'string')) then
+    perform refuse_invalid('CMT-12', 'a summary is an object of strings of at most 65536 bytes');
+  end if;
+
   tables := array(select distinct x from (
       select (f).table_id from unnest(adds) f union all select (x).table_id from unnest(rems) x
       union all select (v).table_id from unnest(vecs) v union all select (e).table_id from unnest(exps) e
-      union all select k::uuid from jsonb_object_keys(defs) k) y(x) order by 1);
+      union all select k::uuid from jsonb_object_keys(defs) k
+      union all select k::uuid from jsonb_object_keys(notes) k) y(x) order by 1);
   created := array(select k::uuid from jsonb_each(defs) d(k, e) where e ? 'create');
   defined := array(select k::uuid from jsonb_object_keys(defs) k);
 
@@ -526,7 +537,7 @@ begin
          case when t = any (defined) or ps.snapshot_id is null
               then coalesce((select sort_order_id from default_sort_order(r, t, latest)), 0)
               else ps.sort_order_id end,
-         jsonb_build_object('operation', op,
+         coalesce(notes -> t::text, '{}') || jsonb_build_object('operation', op,
            'added-data-files', (select count(*) from unnest(adds) f where (f).table_id = t),
            'deleted-data-files', (select count(*) from unnest(rems) x where (x).table_id = t),
            'added-records', coalesce((select sum((f).record_count) from unnest(adds) f where (f).table_id = t), 0),

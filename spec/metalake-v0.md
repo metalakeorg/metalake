@@ -353,7 +353,8 @@ order and the cluster key.
   `parent_snapshot_id` (the table's current snapshot on the ref before the commit, `NULL` for a new table),
   `schema_seq` (the `commit_seq` of the latest commit that changed the table's fields, as seen by this
   snapshot), the default `spec_id` and `sort_order_id` (0 when unsorted) after the commit, and a `summary`
-  with `operation`, `added-data-files`, `deleted-data-files`, `added-records` and `deleted-records`.
+  with `operation`, `added-data-files`, `deleted-data-files`, `added-records` and `deleted-records`, and what
+  the commit adds to it (CMT-12).
 - **CMT-2.** The snapshot of table `t` at `(r, s)` is found through the chain: at the lowest level i that has
   one, the greatest `snapshot_id` of `ref_i` that is at most `s_i` and at least the `begin_seq` of the
   `ref_base` row that level reads through (0 for a ref without one). The **current** snapshot is the one at
@@ -422,6 +423,9 @@ order and the cluster key.
   `NOTIFY metalake` with the payload `<schema>:<commit_seq>`.
 - **CMT-11.** A commit whose `operation` is `replace` (a compaction or a flush) only removes and adds files.
   The live rows of the files it removes (DV-5) equal the rows of the files it adds, which carry no vectors.
+- **CMT-12.** *0.2.* A commit MAY give, for a table, keys of its own for that table's snapshot `summary`: an
+  object of strings, at most 65536 bytes as JSON, or the commit is refused with SQLSTATE `22023`. Giving them
+  touches the table (CMT-1). They mean nothing to the protocol, and the keys of CMT-1 prevail over them.
 
 ## 10. Deletion vectors
 

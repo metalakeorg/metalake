@@ -46,6 +46,27 @@ select expect((select schema_seq = :s1 - 1 and spec_id = 0 and sort_order_id = 0
                  from snapshot where snapshot_id = :s2), 'schema_seq, spec, sort order and summary');
 select expect((select snapshot_id from head where ref_id = 1 and table_id = :'t') = :s2, 'the head');
 
+-- case: a commit adds keys of its own to a summary, and those of the snapshot prevail
+-- rules: CMT-12, CMT-1
+select mk('t') as t \gset
+select cm(jsonb_build_array(jsonb_build_object('table_id', :'t', 'add', jsonb_build_array(fj(1)),
+          'summary', '{"engine": "spark", "epoch": "7", "operation": "delete", "added-data-files": "9"}'::jsonb))) as s1 \gset
+select expect((select summary = '{"operation": "append", "added-data-files": 1, "deleted-data-files": 0, "added-records": 10,
+                                  "deleted-records": 0, "engine": "spark", "epoch": "7"}'
+                 from snapshot where snapshot_id = :s1), 'its keys are kept, and the snapshot''s prevail');
+select cm(jsonb_build_array(jsonb_build_object('table_id', :'t', 'summary', '{"epoch": "8"}'::jsonb))) as s2 \gset
+select expect((select parent_snapshot_id = :s1 and summary ->> 'epoch' = '8' from snapshot where snapshot_id = :s2),
+  'keys alone touch the table');
+
+-- case: what a commit adds to a summary is an object of strings of a bounded size
+-- rules: CMT-12
+select mk('t') as t \gset
+select expect_error(format($$select cm('[{"table_id": "%s", "summary": [1]}]')$$, :'t'), '22023', 'not an object');
+select expect_error(format($$select cm('[{"table_id": "%s", "summary": {"a": 1}}]')$$, :'t'), '22023', 'not a string');
+select expect_error(format($$select cm(jsonb_build_array(jsonb_build_object('table_id', '%s',
+                       'summary', jsonb_build_object('a', repeat('x', 65536)))))$$, :'t'), '22023', 'too large');
+select expect((select count(*) from snapshot where table_id = :'t') = 1, 'a refused commit writes no snapshot');
+
 -- case: the snapshot at a sequence is found through the chain, and only since the base in force
 -- rules: CMT-2
 select mk('t') as t \gset

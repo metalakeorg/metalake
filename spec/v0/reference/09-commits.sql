@@ -140,6 +140,11 @@ begin
   -- CMT-6 and CMT-7: requirements and conflicts, against the current state under the locks.
   for e in select * from jsonb_array_elements(entries) loop
     t := (e ->> 'table_id')::uuid;
+    -- CMT-12: what the commit adds to the summary.
+    if e ? 'summary' and (jsonb_typeof(e -> 'summary') <> 'object' or octet_length((e -> 'summary')::text) > 65536
+                          or exists (select 1 from jsonb_each(e -> 'summary') y(k, v) where jsonb_typeof(v) <> 'string')) then
+      perform invalid(format('the summary of table %s is not an object of strings of at most 65536 bytes', t));
+    end if;
     if e ? 'create' then
       if exists (select 1 from tbl where table_id = t) then
         perform invalid(format('table id %s exists', t));
@@ -404,7 +409,7 @@ begin
            else (select s.schema_seq from snapshot s where s.table_id = t and s.snapshot_id = cur) end,
       (select spec_id from default_spec(r, t, latest)),
       coalesce((select sort_order_id from default_sort_order(r, t, latest)), 0),
-      jsonb_build_object('operation', c ->> 'operation',
+      coalesce(e -> 'summary', '{}') || jsonb_build_object('operation', c ->> 'operation',
         'added-data-files', jsonb_array_length(coalesce(e -> 'add', '[]')),
         'deleted-data-files', jsonb_array_length(coalesce(e -> 'remove', '[]')),
         'added-records', coalesce((select sum((y ->> 'record_count')::bigint) from jsonb_array_elements(e -> 'add') y), 0),

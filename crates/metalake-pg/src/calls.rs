@@ -684,6 +684,7 @@ pub const INTERFACE: &[(&str, &[&str], bool)] = &[
             "message",
             "definition",
             "namespaces",
+            "summaries",
         ],
         true,
     ),

@@ -283,6 +283,44 @@ async fn refusal_error_kind_and_rule() -> Result<(), Error> {
     Ok(())
 }
 
+/// CMT-12 against the protocol's own function: a commit adds keys to a summary, those of the snapshot prevail, and keys
+/// alone touch the table.
+#[tokio::test]
+async fn cmt12_summary_keeps_keys() -> Result<(), Error> {
+    let on = connect().await?;
+    let schema = fresh_schema("c1");
+    install_protocol(&on, &schema).await?;
+    let p = Protocol::new(&schema);
+    let q = quote_ident(&schema);
+    let t = Uuid::from_u128(0xc3);
+    p.commit(&on, &create(t)).await?;
+
+    let keys = json!({t.to_string(): {"engine": "spark", "epoch": "7", "operation": "delete"}});
+    let call = format!("select commit_seq from {q}.commit(ref_id => 1, operation => 'append', summaries => $1)");
+    let seq: i64 = on.query_one(&call, &[&keys]).await?.get(0);
+    let read = format!("select summary, parent_snapshot_id is not null from {q}.snapshot where snapshot_id = $1");
+    let row = on.query_one(&read, &[&seq]).await?;
+    let (summary, chained): (serde_json::Value, bool) = (row.get(0), row.get(1));
+    assert_eq!(
+        (summary["engine"].as_str(), summary["epoch"].as_str()),
+        (Some("spark"), Some("7"))
+    );
+    assert_eq!(summary["operation"], "append");
+    assert!(chained);
+
+    for bad in [
+        json!([1]),
+        json!({t.to_string(): [1]}),
+        json!({t.to_string(): {"epoch": 7}}),
+        json!({t.to_string(): {"a": "x".repeat(65536)}}),
+    ] {
+        let refused = on.query_one(&call, &[&bad]).await.unwrap_err();
+        assert_eq!(refused.code().map(|c| c.code()), Some("22023"), "{bad}");
+    }
+    on.batch_execute(&format!("drop schema {q} cascade")).await?;
+    Ok(())
+}
+
 /// Every call has its function, with the same parameters in the same order, and the calls marked as writing are
 /// those `writing_functions()` grants to writers alone.
 #[tokio::test]
