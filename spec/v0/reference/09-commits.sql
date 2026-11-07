@@ -380,6 +380,9 @@ begin
     -- CMT-9: the result is valid.
     problems := (select string_agg(p, '; ') from (
       select table_errors(r, t, latest) as p
+      union all select added_field_errors(r, t, latest, array(
+        select (y ->> 'field_id')::int from jsonb_array_elements(coalesce(e -> 'fields', '[]')) y
+         where coalesce((y ->> 'new')::boolean, false) and not e ? 'create'))
       union all select file_errors(r, t, latest, seq)
       union all select dv_errors(r, t, latest, seq)
       union all select inline_errors(r, t, latest, seq)

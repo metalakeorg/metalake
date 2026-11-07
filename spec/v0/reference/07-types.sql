@@ -147,10 +147,19 @@ end $$;
 
 -- Every rule of §6 and §7 that table t breaks at (r, s), one line each, prefixed by the rule id. Empty when the
 -- table is valid.
+-- TYP-5: the fields `added`, new to table t at (r, s), that a table that exists cannot take. It looks at the commit that
+-- adds them, since what says that a field came later is its first version, which collection takes.
+create function added_field_errors(r int, t uuid, s bigint, added int[]) returns setof text language sql stable as $$
+  with fs as (select array(select f from visible_fields(r, t, s) f) as all_fields)
+  select format('TYP-5: required field %s was added without defaults', f.field_id)
+    from fs, unnest(fs.all_fields) f
+   where f.field_id = any (added) and f.required and (f.initial_default is null or f.write_default is null)
+     and (f.parent_field_id is null or (ancestor_types(fs.all_fields, f.field_id))[1] = 'struct');
+$$;
+
 create function table_errors(r int, t uuid, s bigint) returns setof text language plpgsql stable as $$
 declare
   fs field[] := array(select f from visible_fields(r, t, s) f);
-  created bigint := (select created_seq from tbl where table_id = t);
 begin
   return query select format('TYP-1: field %s has type %s', f.field_id, f.type)
     from unnest(fs) f where canonical_type(f.type) is distinct from f.type;
@@ -181,11 +190,6 @@ begin
   return query select format('TYP-5: the initial default of field %s changed', x.field_id)
     from field x where x.table_id = t group by x.field_id
    having count(distinct coalesce(x.initial_default::text, '')) > 1;
-  return query select format('TYP-5: required field %s was added without defaults', f.field_id)
-    from unnest(fs) f
-   where f.required and (f.initial_default is null or f.write_default is null)
-     and (f.parent_field_id is null or (ancestor_types(fs, f.field_id))[1] = 'struct')
-     and (select min(x.begin_seq) from field x where x.table_id = t and x.field_id = f.field_id) > created;
   return query select format('TYP-5: field %s of type %s must be optional with null defaults', f.field_id, f.type)
     from unnest(fs) f
    where base_type(f.type) in ('unknown', 'variant', 'geometry', 'geography')

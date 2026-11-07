@@ -505,7 +505,16 @@ begin
              from (select (f).path from unnest(adds) f union select v.path from unnest(vecs) v) y
             where y.path is not null) z
     order by z.b;
-  problem := commit_problem(r, seq, adds, ids, vecs, defined);
+  -- TYP-5: the fields new to tables that exist.
+  select format('%s', x) into problem
+    from jsonb_each(defs) d(k, e),
+         lateral added_field_errors(r, k::uuid, latest, array(
+           select (y ->> 'field_id')::int from jsonb_array_elements(coalesce(e -> 'fields', '[]')) y
+            where coalesce((y ->> 'new')::boolean, false))) x
+   where not e ? 'create' limit 1;
+  if problem is null then
+    problem := commit_problem(r, seq, adds, ids, vecs, defined);
+  end if;
   if problem is not null then
     perform refuse_invalid(split_part(problem, ':', 1), problem);
   end if;

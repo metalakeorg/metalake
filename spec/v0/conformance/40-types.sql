@@ -86,16 +86,22 @@ begin
   if extra is not null then execute extra; end if;
   return errors(1, 9);
 end $$;
+-- The same, of a field 10 that a commit adds.
+create function added_errors(extra text) returns text[] language plpgsql as $$
+begin
+  perform default_errors(extra);
+  return array(select distinct split_part(e, ':', 1) from added_field_errors(1, (select table_id from tbl), 9, '{10}') e);
+end $$;
 select expect(default_errors(null) = '{}', 'valid defaults');
 select expect(default_errors('update field set initial_default = ''"a"'' where field_id = 4') = '{TYP-5}',
   'a list element with a default');
-select expect(default_errors('select fld(10, ''r'', ''string'', 1, 3, req => true)') = '{TYP-5}',
+select expect(added_errors('select fld(10, ''r'', ''string'', 1, 3, req => true)') = '{TYP-5}',
   'a required field added later without defaults');
-select expect(default_errors('select fld(10, ''r'', ''string'', 1, 3, req => true, init => ''"a"'')') = '{TYP-5}',
+select expect(added_errors('select fld(10, ''r'', ''string'', 1, 3, req => true, init => ''"a"'')') = '{TYP-5}',
   'a required field added later without a write default');
 select expect(default_errors('select fld(10, ''r'', ''string'', 1, 1, req => true)') = '{}',
   'a required field from the creation of the table needs none');
-select expect(default_errors('select fld(10, ''y'', ''long'', 1, 3, parent => 5, req => true)') = '{TYP-5}',
+select expect(added_errors('select fld(10, ''y'', ''long'', 1, 3, parent => 5, req => true)') = '{TYP-5}',
   'a required struct field added later without defaults');
 select expect(default_errors('update field set required = true where field_id = 7') = '{TYP-5}', 'a required unknown');
 select expect(default_errors('select fld(10, ''v'', ''variant'', 1, 3, wdef => ''"x"'')') = '{TYP-5}',

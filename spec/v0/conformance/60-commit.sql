@@ -46,6 +46,17 @@ select expect((select schema_seq = :s1 - 1 and spec_id = 0 and sort_order_id = 0
                  from snapshot where snapshot_id = :s2), 'schema_seq, spec, sort order and summary');
 select expect((select snapshot_id from head where ref_id = 1 and table_id = :'t') = :s2, 'the head');
 
+-- case: a required field from the creation of a table needs no defaults once collection took its first version
+-- rules: TYP-5, RET-3
+select mk('t') as t \gset
+select cm(format('[{"table_id": "%s", "fields": [{"field_id": 1, "position": 1, "name": "renamed", "type": "long",
+                    "required": true}]}]', :'t')::jsonb);
+select set_retention(1, null, null, 1);
+select expect(expire() > 0, 'the first version of the field is collected');
+select expect(cm(format('[{"table_id": "%s", "add": [%s]}]', :'t', fj(1))::jsonb) > 0, 'files still go in');
+select expect(cm(format('[{"table_id": "%s", "fields": [{"field_id": 1, "position": 1, "name": "again", "type": "long",
+                           "required": true}]}]', :'t')::jsonb) > 0, 'and the field still changes');
+
 -- case: a commit adds keys of its own to a summary, and those of the snapshot prevail
 -- rules: CMT-12, CMT-1
 select mk('t') as t \gset
