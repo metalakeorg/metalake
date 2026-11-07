@@ -150,6 +150,15 @@ pub struct PlannedVector {
     pub inline: Option<Vec<u8>>,
 }
 
+/// Where a reader that follows a table starts (CHG-4): the time of the feed's cursor, the sequence to read at, and the
+/// horizon after which that read is repeatable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamPoint {
+    pub at: std::time::SystemTime,
+    pub seq: i64,
+    pub horizon: u64,
+}
+
 /// A commit of the change feed (CHG-1).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FeedCommit {

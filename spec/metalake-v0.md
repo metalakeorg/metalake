@@ -676,6 +676,13 @@ referred to. Retention says how much history each ref keeps.
   `operation` is `replace`, which changes no row (CMT-11).
   *Note.* A full merge of `b` gives `b` a new base at `m` and no snapshot (MRG-4), so the feed of a table does not
   announce on `b` what `b` inherits at `m`, though the changes of `m` on `b` state it.
+- **CHG-4.** *0.2.* A reader that **follows** table `t` on ref `r` from a state of it takes, in this order, a time
+  `at`, the last sequence drawn `s`, and the horizon of `s` (VIS-11), as the reference function `stream_point()`
+  does. Once `s` is stable it reads `(r, s)`, and then follows the feed of CHG-1 from the cursor `(at, 0)`, leaving
+  out every commit at or below `s`. It takes each commit once: a commit at or below `s` is in that read, and one
+  above `s` drew its sequence after `at`, so its timestamp is later.
+  The feed does not say that a commit was collected (CHG-1). A reader that took the commits of `t` up to `p`, with
+  `p` below the retention floor of `r`, has lost none only if the snapshot of `t` at the floor is at or below `p`.
 
 ## 15. Partition values
 

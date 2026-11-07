@@ -226,6 +226,40 @@ select set_retention(1, min_snapshots => 1);
 select expect_error(format('select * from commit_changes(1, %L, %s)', :'t', :s2), '22023', 'a read no longer kept');
 select expect_error(format('select * from commit_changes(99, %L, %s)', :'t', :s4), '22023', 'a ref that does not exist');
 
+-- case: a reader that starts at a stream point takes each commit once, one in flight among them
+-- rules: CHG-4
+select mk('t') as t \gset
+select add(:'t', 1) as s1 \gset
+select conn('slow');
+select public.dblink_exec('slow', 'begin');
+select a as flying from public.dblink('slow', format('select add(%L, 2)', :'t')) as x(a bigint) \gset
+select at, seq, horizon from stream_point() \gset p_
+select expect(:p_seq >= :flying, 'the commit in flight is at or below the point');
+select expect(not is_stable(:'p_horizon'), 'so the point is not stable yet');
+select public.dblink_exec('slow', 'commit');
+select expect(is_stable(:'p_horizon'), 'and it is once that commit ended');
+select expect(files(1, :'t', :p_seq) = '{1,2}', 'the read at the point holds it');
+select add(:'t', 3) as s3 \gset
+select pg_sleep(1.1);
+select expect((select array_agg(c.commit_seq order by c.commit_seq) from changes(:'p_at', 0, 1000, :'t') c
+                where c.commit_seq > :p_seq) = array[:s3::bigint], 'the feed from the point has the rest, and nothing twice');
+select expect(not exists (select 1 from changes(:'p_at', 0, 1000, :'t') c where c.commit_seq = :s1),
+  'a commit before the point is not in the feed');
+
+-- case: a reader behind the floor has lost a commit only if the table changed past what it took
+-- rules: CHG-4
+select mk('t') as t \gset
+select mk('u') as u \gset
+select add(:'t', 1) as s1 \gset
+select add(:'u', 2) as s2 \gset
+select add(:'u', 3) as s3 \gset
+select set_retention(1, min_snapshots => 1);
+select expect(retention_floor(1) > :s1, 'the floor passed what it took');
+select expect(snapshot_at(1, :'t', retention_floor(1)) = :s1, 'yet t did not change: nothing was lost');
+select add(:'t', 4) as s4 \gset
+select add(:'u', 5) as s5 \gset
+select expect(snapshot_at(1, :'t', retention_floor(1)) = :s4, 'once it changed past the floor, a commit may be gone');
+
 -- case: a file a branch inherits leaves it by a tombstone, and a new base brings what the parent changed
 -- rules: CHG-3
 select mk('t') as t \gset

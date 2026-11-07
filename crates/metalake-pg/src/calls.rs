@@ -13,8 +13,8 @@ use uuid::Uuid;
 
 use crate::records::{
     CommitChange, CommitEntry, CommitResult, FeedCommit, FileAdd, FileChange, FileRef, LATEST, ListedFile,
-    NamespaceRow, PlannedFile, RefRow, SnapshotEntry, StablePoint, TableAsOf, TableExpect, TableLatest, TableName,
-    TableSnapshot, VectorSet,
+    NamespaceRow, PlannedFile, RefRow, SnapshotEntry, StablePoint, StreamPoint, TableAsOf, TableExpect, TableLatest,
+    TableName, TableSnapshot, VectorSet,
 };
 use crate::{Result, Session, quote_ident};
 
@@ -510,6 +510,26 @@ impl Protocol {
         })
     }
 
+    pub async fn stream_point(&self, s: &impl Session) -> Result<StreamPoint> {
+        let statement = s
+            .statement(&format!(
+                "select at, seq, horizon::text::bigint as horizon from {}.stream_point()",
+                self.schema
+            ))
+            .await?;
+        let row = s.client().query_one(&statement, &[]).await?;
+        Ok(StreamPoint {
+            at: row.get("at"),
+            seq: row.get("seq"),
+            horizon: row.get::<_, i64>("horizon") as u64,
+        })
+    }
+
+    /// The sequence from which a ref keeps every read (RET-1).
+    pub async fn retention_floor(&self, s: &impl Session, ref_id: i32) -> Result<i64> {
+        Ok(self.one(s, "retention_floor(r => $1)", &[&ref_id]).await?.get(0))
+    }
+
     pub async fn is_stable(&self, s: &impl Session, horizon: u64) -> Result<bool> {
         let horizon = horizon as i64;
         Ok(self
@@ -754,6 +774,8 @@ pub const INTERFACE: &[(&str, &[&str], bool)] = &[
     ("tables_as_of", &["ref_id", "at"], false),
     ("tables_latest", &["ref_ids"], false),
     ("stable_point", &[], false),
+    ("stream_point", &[], false),
+    ("retention_floor", &["r"], false),
     ("is_stable", &["horizon"], false),
     ("changes", &["after_at", "after_seq", "lim", "tab"], false),
     ("table_changes", &["r", "t", "a", "b"], false),

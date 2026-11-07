@@ -11,6 +11,14 @@ begin
   horizon := pg_current_xact_id();
 end $$;
 
+-- CHG-4: where a reader that follows a table starts: a time taken before the sequence, which is taken before the horizon.
+create function stream_point(out at timestamptz, out seq bigint, out horizon xid8) language plpgsql volatile as $$
+begin
+  at := clock_timestamp();
+  seq := (select last_value from commit_seq_gen);
+  horizon := pg_current_xact_id();
+end $$;
+
 create function is_stable(horizon xid8) returns boolean language sql volatile as $$
   select pg_snapshot_xmin(pg_current_snapshot()) >= horizon;
 $$;
