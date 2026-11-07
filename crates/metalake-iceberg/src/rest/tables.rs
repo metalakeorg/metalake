@@ -52,6 +52,7 @@ pub(crate) async fn create(
     body: Bytes,
 ) -> Result<Json<LoadTableResult>, Failure> {
     let wanted = levels(&namespace);
+    eprintln!("TRACE create: {}", String::from_utf8_lossy(&body));
     let request: CreateTableRequest = decoded(&body)?;
     let name = request.name.clone();
     let namespaces = state.main().namespaces().await?;
@@ -97,6 +98,7 @@ pub(crate) async fn update(
     Path((namespace, name)): Path<(String, String)>,
     body: Bytes,
 ) -> Result<Json<LoadTableResult>, Failure> {
+    eprintln!("TRACE update {name}: {}", String::from_utf8_lossy(&body));
     let request: CommitTableRequest = decoded(&body)?;
     let target = Target {
         namespace: levels(&namespace).iter().map(|l| l.to_string()).collect(),
