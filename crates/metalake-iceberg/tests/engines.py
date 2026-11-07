@@ -1,12 +1,14 @@
 """Engines other than PyIceberg against the server: what `c12_engines` holds them to, printed as JSON. The rows of `main`, of
 branch `b`, and of the filter that prunes, from table `db.wide`."""
 
+import glob
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 
 
 def duckdb(uri):
@@ -101,6 +103,70 @@ def trino_container(uri):
     )
 
 
+def spark_recovery(uri):
+    """A batch run again after its commit, as when the driver dies before it records that commit. Spark then finds the
+    batch in the summary of the snapshot that holds it."""
+    from pyspark.sql.functions import count
+
+    session = spark_session(uri)
+    root = tempfile.mkdtemp()
+    keys = lambda query: [row[0] for row in session.sql(query).collect()]
+
+    def add(source, name, rows):
+        os.makedirs(source, exist_ok=True)
+        with open(f"{root}/{name}", "w") as file:
+            file.writelines(json.dumps({"k": k}) + "\n" for k in rows)
+        os.rename(f"{root}/{name}", f"{source}/{name}.json")
+
+    def forget(checkpoint, batch):
+        for name in (str(batch), f".{batch}.crc"):
+            os.remove(f"{checkpoint}/commits/{name}")
+
+    def run(frame, mode, checkpoint, table):
+        writer = frame.writeStream.format("iceberg").outputMode(mode).trigger(availableNow=True)
+        writer.option("checkpointLocation", checkpoint).toTable(table).awaitTermination()
+
+    said = {}
+    session.sql("create namespace lake.flow")
+    session.sql("create table lake.flow.s (k bigint)")
+    session.sql("create table lake.flow.total (n bigint)")
+
+    source, checkpoint = f"{root}/source", f"{root}/appended"
+    appended = lambda: run(session.readStream.schema("k bigint").json(source), "append", checkpoint, "lake.flow.s")
+    add(source, "a", [1, 2])
+    appended()
+    forget(checkpoint, 0)
+    appended()
+    said["first_again"] = keys("select k from lake.flow.s order by k")
+    add(source, "b", [3])
+    appended()
+    forget(checkpoint, 1)
+    appended()
+    said["second_again"] = keys("select k from lake.flow.s order by k")
+    add(source, "c", [])
+    appended()
+    said["epochs"] = sorted(
+        epoch for epoch in keys("select summary['spark.sql.streaming.epochId'] from lake.flow.s.snapshots") if epoch
+    )
+
+    source, checkpoint = f"{root}/counted", f"{root}/complete"
+    counted = lambda: run(
+        session.readStream.schema("k bigint").json(source).agg(count("*").alias("n")),
+        "complete",
+        checkpoint,
+        "lake.flow.total",
+    )
+    add(source, "a", [1, 2])
+    counted()
+    forget(checkpoint, 0)
+    counted()
+    said["complete_again"] = keys("select n from lake.flow.total")
+    add(source, "b", [3])
+    counted()
+    said["complete_next"] = keys("select n from lake.flow.total")
+    return said
+
+
 def trino_lifecycle(uri):
     import trino
 
@@ -187,8 +253,71 @@ def flink_lifecycle(uri):
     return said
 
 
+def flink_recovery(uri):
+    """A job cancelled just after the commit of a checkpoint and restored from that checkpoint, whose state still holds
+    what it committed. Flink then finds the checkpoint in the summary of the snapshot that holds it."""
+    from pyflink.common import Configuration
+    from pyflink.table import EnvironmentSettings, TableEnvironment
+
+    root = tempfile.mkdtemp()
+    last_row = 3000
+
+    def streaming(restored=None):
+        options = {
+            "parallelism.default": "1",
+            "execution.checkpointing.interval": "5 s",
+            "execution.checkpointing.externalized-checkpoint-retention": "RETAIN_ON_CANCELLATION",
+            "state.checkpoints.dir": f"file://{root}/checkpoints",
+        }
+        if restored:
+            options["execution.savepoint.path"] = f"file://{restored}"
+        configuration = Configuration()
+        for key, value in options.items():
+            configuration.set_string(key, value)
+        settings = EnvironmentSettings.new_instance().in_streaming_mode().with_configuration(configuration).build()
+        environment = TableEnvironment.create(settings)
+        environment.execute_sql(
+            f"create catalog lake with ('type' = 'iceberg', 'catalog-type' = 'rest', 'uri' = '{uri}')"
+        ).wait()
+        environment.execute_sql(
+            "create temporary table numbers (k bigint) with ('connector' = 'datagen', 'rows-per-second' = '200',"
+            f" 'fields.k.kind' = 'sequence', 'fields.k.start' = '1', 'fields.k.end' = '{last_row}')"
+        ).wait()
+        return environment
+
+    def committed():
+        with urllib.request.urlopen(f"{uri}/v1/namespaces/flow/tables/s") as answer:
+            metadata = json.load(answer)["metadata"]
+        current = metadata.get("current-snapshot-id")
+        snapshots = [s for s in metadata["snapshots"] if s["snapshot-id"] == current]
+        return snapshots[0]["summary"].get("flink.max-committed-checkpoint-id") if snapshots else None
+
+    batch = TableEnvironment.create(EnvironmentSettings.in_batch_mode())
+    batch.execute_sql(
+        f"create catalog lake with ('type' = 'iceberg', 'catalog-type' = 'rest', 'uri' = '{uri}')"
+    ).wait()
+    batch.execute_sql("create database lake.flow").wait()
+    batch.execute_sql("create table lake.flow.s (k bigint)").wait()
+
+    insert = "insert into lake.flow.s select k from numbers"
+    job = streaming().execute_sql(insert)
+    deadline = time.time() + 120
+    while committed() is None and time.time() < deadline:
+        time.sleep(0.1)
+    job.get_job_client().cancel().result()
+
+    checkpoints = glob.glob(f"{root}/checkpoints/*/chk-*")
+    newest = max(checkpoints, key=lambda path: int(path.rsplit("-", 1)[1]))
+    said = {"restored": newest.rsplit("-", 1)[1], "committed": committed()}
+    streaming(newest).execute_sql(insert).wait()
+    with batch.execute_sql("select k from lake.flow.s").collect() as rows:
+        keys = [row[0] for row in rows]
+    said.update({"rows": len(keys), "distinct": len(set(keys)), "last": max(keys), "expected": last_row})
+    return said
+
+
 if __name__ == "__main__":
-    said = "\n" + json.dumps({"duckdb": duckdb, "spark": spark, "spark_insert": spark_insert, "spark_lifecycle": spark_lifecycle, "trino": trino_lifecycle, "flink": flink_lifecycle}[sys.argv[1]](sys.argv[2]))
+    said = "\n" + json.dumps({"duckdb": duckdb, "spark": spark, "spark_insert": spark_insert, "spark_lifecycle": spark_lifecycle, "spark_recovery": spark_recovery, "trino": trino_lifecycle, "flink": flink_lifecycle, "flink_recovery": flink_recovery}[sys.argv[1]](sys.argv[2]))
     print(said, flush=True)
     # A JVM an engine left behind may fail the interpreter's exit, after the answer is out.
     sys.stderr.flush()

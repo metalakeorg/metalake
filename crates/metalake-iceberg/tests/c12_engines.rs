@@ -155,6 +155,41 @@ async fn flink_lifecycle() -> Result<(), Failure> {
 }
 
 #[tokio::test]
+async fn spark_recovery_repeats_no_batch() -> Result<(), Failure> {
+    if !wanted("spark") {
+        return Ok(());
+    }
+    let schema = fresh_schema();
+    let directory = wide(&schema).await?;
+    let (_server, uri) = server(&schema)?;
+    let said = run("spark_recovery", &uri)?;
+    let _ = std::fs::remove_dir_all(&directory);
+    assert_eq!(said["first_again"], json!([1, 2]), "{said}");
+    assert_eq!(said["second_again"], json!([1, 2, 3]), "{said}");
+    assert_eq!(said["epochs"], json!(["0", "1", "2"]), "an empty batch counts: {said}");
+    assert_eq!(said["complete_again"], json!([2]), "{said}");
+    assert_eq!(said["complete_next"], json!([3]), "{said}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn flink_recovery_repeats_no_checkpoint() -> Result<(), Failure> {
+    if !wanted("flink") {
+        return Ok(());
+    }
+    let schema = fresh_schema();
+    let directory = wide(&schema).await?;
+    let (_server, uri) = server(&schema)?;
+    let said = run("flink_recovery", &uri)?;
+    let _ = std::fs::remove_dir_all(&directory);
+    assert_eq!(said["restored"], said["committed"], "a checkpoint already committed: {said}");
+    assert_eq!(said["rows"], said["expected"], "{said}");
+    assert_eq!(said["distinct"], said["expected"], "{said}");
+    assert_eq!(said["last"], said["expected"], "{said}");
+    Ok(())
+}
+
+#[tokio::test]
 async fn duckdb_read_partition_vector() -> Result<(), Failure> {
     if !wanted("duckdb") {
         return Ok(());
