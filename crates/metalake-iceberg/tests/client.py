@@ -84,6 +84,18 @@ def append(uri):
     }
 
 
+def manifests(uri):
+    table = connect(uri).load_table("db.evolved")
+    current = table.current_snapshot()
+    listed = current.manifests(table.io)
+    return {
+        "manifests": [
+            [m.partition_spec_id, m.added_files_count, m.existing_files_count, m.added_snapshot_id == current.snapshot_id]
+            for m in sorted(listed, key=lambda m: (m.partition_spec_id, m.added_files_count))
+        ],
+    }
+
+
 def rows_of(table, keys):
     return pyarrow.Table.from_pylist([{"k": k} for k in keys], schema=table.schema().as_arrow())
 
@@ -238,4 +250,4 @@ def wide(uri):
 
 
 if __name__ == "__main__":
-    print(json.dumps({"namespaces": namespaces, "read": read, "wide": wide, "append": append, "retry": retry, "lifecycle": lifecycle}[sys.argv[1]](sys.argv[2])))
+    print(json.dumps({"namespaces": namespaces, "read": read, "wide": wide, "append": append, "retry": retry, "lifecycle": lifecycle, "manifests": manifests}[sys.argv[1]](sys.argv[2])))

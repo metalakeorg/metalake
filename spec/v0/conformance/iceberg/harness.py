@@ -220,39 +220,45 @@ def project(cur, t, tag="v"):
             for spec_id in sorted({r["spec_id"] for r in rows}):
                 spec = meta.specs()[spec_id]
                 ptype = spec.partition_type(schema)
-                path = f"{loc}/metadata/m-{sid}-{'deletes' if deletes else 'data'}-{spec_id}-{tag}.avro"
-                writer = (DeleteManifestWriterV2 if deletes else ManifestWriterV2)(spec, schema, io.new_output(path), sid, "null")
-                entries = []
-                for r in (r for r in rows if r["spec_id"] == spec_id):
-                        partition = Record(*[py_value(fld.field_type, v) for fld, v in zip(ptype.fields, r["partition"])])
-                        if deletes:
-                            df = DataFile.from_args(
-                                content=DataFileContent.POSITION_DELETES, file_path=r["path"], file_format=FileFormat.PARQUET,
-                                partition=partition, record_count=r["cardinality"], file_size_in_bytes=materialize_deletes(cur, r),
-                                referenced_data_file=r["referenced_data_file"])
-                        else:
-                            if r.get("inline"):
-                                Path(local(r["path"])).parent.mkdir(parents=True, exist_ok=True)
-                                Path(local(r["path"])).write_bytes(bytes.fromhex(r["inline"]))
-                            df = DataFile.from_args(
-                                content=DataFileContent.DATA, file_path=r["path"], file_format=FileFormat.PARQUET,
-                                partition=partition, record_count=r["record_count"], file_size_in_bytes=r["file_size"],
-                                null_value_counts={int(k): v for k, v in (r["null_count"] or {}).items()},
-                                nan_value_counts={int(k): v for k, v in (r["nan_count"] or {}).items()},
-                                lower_bounds={int(k): bytes.fromhex(v) for k, v in (r["lower"] or {}).items()},
-                                upper_bounds={int(k): bytes.fromhex(v) for k, v in (r["upper"] or {}).items()},
-                                sort_order_id=r["sort_order_id"])
-                        df.spec_id = spec_id
-                        entries.append(ManifestEntry.from_args(
-                            status=ManifestEntryStatus.ADDED if r["status"] == "ADDED" else ManifestEntryStatus.EXISTING,
-                            snapshot_id=sid if r["status"] == "ADDED" else r["data_sequence_number"],
-                            sequence_number=r["data_sequence_number"], file_sequence_number=r["data_sequence_number"],
-                            data_file=df))
-                # Entries are built first: an error inside the writer's block would be masked by its empty-file check.
-                with writer as w:
-                    for e in entries:
-                        w.add_entry(e)
-                manifests.append(w.to_manifest_file())
+                here = [r for r in rows if r["spec_id"] == spec_id]
+                groups = [here] if deletes else [[r for r in here if r["status"] == status] for status in ("ADDED", "EXISTING")]
+                for part, group in enumerate(g for g in groups if g):
+                    path = f"{loc}/metadata/m-{sid}-{'deletes' if deletes else 'data'}-{spec_id}-{part}-{tag}.avro"
+                    sequences = [r["data_sequence_number"] for r in group]
+                    writer = (DeleteManifestWriterV2 if deletes else ManifestWriterV2)(spec, schema, io.new_output(path), max(sequences), "null")
+                    entries = []
+                    for r in group:
+                            partition = Record(*[py_value(fld.field_type, v) for fld, v in zip(ptype.fields, r["partition"])])
+                            if deletes:
+                                df = DataFile.from_args(
+                                    content=DataFileContent.POSITION_DELETES, file_path=r["path"], file_format=FileFormat.PARQUET,
+                                    partition=partition, record_count=r["cardinality"], file_size_in_bytes=materialize_deletes(cur, r),
+                                    referenced_data_file=r["referenced_data_file"])
+                            else:
+                                if r.get("inline"):
+                                    Path(local(r["path"])).parent.mkdir(parents=True, exist_ok=True)
+                                    Path(local(r["path"])).write_bytes(bytes.fromhex(r["inline"]))
+                                df = DataFile.from_args(
+                                    content=DataFileContent.DATA, file_path=r["path"], file_format=FileFormat.PARQUET,
+                                    partition=partition, record_count=r["record_count"], file_size_in_bytes=r["file_size"],
+                                    null_value_counts={int(k): v for k, v in (r["null_count"] or {}).items()},
+                                    nan_value_counts={int(k): v for k, v in (r["nan_count"] or {}).items()},
+                                    lower_bounds={int(k): bytes.fromhex(v) for k, v in (r["lower"] or {}).items()},
+                                    upper_bounds={int(k): bytes.fromhex(v) for k, v in (r["upper"] or {}).items()},
+                                    sort_order_id=r["sort_order_id"])
+                            df.spec_id = spec_id
+                            entries.append(ManifestEntry.from_args(
+                                status=ManifestEntryStatus.ADDED if r["status"] == "ADDED" else ManifestEntryStatus.EXISTING,
+                                snapshot_id=sid if r["status"] == "ADDED" else r["data_sequence_number"],
+                                sequence_number=r["data_sequence_number"], file_sequence_number=r["data_sequence_number"],
+                                data_file=df))
+                    # Entries are built first: an error inside the writer's block would be masked by its empty-file check.
+                    with writer as w:
+                        for e in entries:
+                            w.add_entry(e)
+                    manifest = w.to_manifest_file()
+                    manifest.sequence_number, manifest.min_sequence_number = sid, min(sequences)
+                    manifests.append(manifest)
         with write_manifest_list(2, io.new_output(s["manifest-list"]), sid, s.get("parent-snapshot-id"), sid, "null") as lw:
             lw.add_manifests(manifests)
     path = f"{loc}/metadata/{tag}-{md['last-sequence-number']}.metadata.json"
@@ -293,7 +299,9 @@ def outbound(cur, t):
           "both partition specs, the second the default")
     ops = {s.snapshot_id: s.summary.operation.value for s in table.metadata.snapshots}
     merge_seq = sql(cur, "select max(commit_seq) from commit where operation = 'merge'")
-    check(["ICE-1"], ops.get(merge_seq) == "overwrite", "a merge is an overwrite to Iceberg")
+    merged = sql(cur, "select summary from snapshot where snapshot_id = %s and table_id = %s", merge_seq, t)
+    only_added = merged["deleted-data-files"] == 0 and merged["changed-vectors"] == 0
+    check(["ICE-1"], ops.get(merge_seq) == ("append" if only_added else "overwrite"), "a merge is what it did to Iceberg")
 
     owners = dict(cur.execute("select snapshot_id, ref_id from snapshot where table_id = %s", (t,)).fetchall())
     ok = all({task.file.file_path for task in table.scan(snapshot_id=sid).plan_files()} == visible(cur, owner, t, sid)
@@ -310,6 +318,10 @@ def outbound(cur, t):
     check(["ICE-2"], all(e.sequence_number == rows[e.data_file.file_path] for e in entries)
           and {e.data_file.file_path for e in entries if e.status == ManifestEntryStatus.ADDED}
           == {p for p, s in rows.items() if s == last["snapshot-id"]}, "data sequence numbers and ADDED entries")
+    data = [m for m in read_manifest_list(io.new_input(last["manifest-list"])) if m.content == ManifestContent.DATA]
+    check(["ICE-2"], all(not (m.added_files_count and m.existing_files_count) for m in data)
+          and all(bool(m.added_files_count) == (m.added_snapshot_id == last["snapshot-id"]) for m in data),
+          "a data manifest holds one status, and only the one of added files names the snapshot")
 
     main = table.metadata.current_snapshot_id
     filters = [("id", 250, 420, "long"), ("x", -3.0, -2.0, "double"), ("label", "s2b", "s4b", "string"),

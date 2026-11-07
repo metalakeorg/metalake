@@ -134,6 +134,8 @@ select merge(:b);
 select expect(dv_of(1, :'t', 1) = '{0}', 'b''s vector where main kept the old one');
 select expect(dv_of(1, :'t', 2) = '{1,2}', 'the union where both deleted rows of 2');
 select expect(dv_of(1, :'t', 9) = '{3}', 'a vector on b''s own file comes with it');
+select expect((select (summary ->> 'changed-vectors')::int > 0 from snapshot s where s.table_id = :'t'
+                order by s.snapshot_id desc limit 1), 'the merge counts the vectors it opened');
 select create_ref('b2', 1) as b2 \gset
 select cm(tj(:'t', jsonb_build_object('dvs', jsonb_build_array(dvj(3, '{5}')))), :b2, 'delete');
 select cm(tj(:'t', jsonb_build_object('remove', '[3]'::jsonb)), 1, 'delete');

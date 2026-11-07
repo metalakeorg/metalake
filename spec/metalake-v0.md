@@ -525,7 +525,8 @@ blob type `deletion-vector-v1`.
     version first closes `p`'s own live row of the same key;
   - a tombstone of `b` closes `p`'s own live row of the file, or, if `p` inherits the file, opens a tombstone
     of `p`;
-  - `p` gets a snapshot (CMT-1, operation `merge`) and its head for every table that changed;
+  - `p` gets a snapshot (CMT-1, operation `merge`), whose summary also has `changed-vectors`, the vectors that
+    open on `p` at `m`, and its head for every table that changed;
   - `b`'s live `ref_base` row closes at `m` and a new one opens: `(b, m, p, fork_seq = m)`. `b` is now an empty
     child of `p`, and its reads below `m` are unchanged (VIS-8). Its heads become its current snapshots.
 - **MRG-5.** When both sides changed the vector of a file, the merged vector holds every position of both. If
@@ -720,7 +721,8 @@ Iceberg REST server of the projection, and are checked by its tests.
     order 0, and `main`'s defaults; `main`'s visible properties;
   - the snapshots served (ICE-2), with `sequence-number` equal to `snapshot-id`, `timestamp-ms` from the commit
     time (TT-1), `parent-snapshot-id`, `schema-id` and the summary, whose `operation` is mapped to Iceberg's:
-    `merge` and, *0.1*, `rebase` become `overwrite`;
+    a `merge` that deleted no file and changed no vector becomes `append`, as a reader takes its added files
+    for all it did; any other `merge` and, *0.1*, `rebase` become `overwrite`;
   - a `refs` entry for every live ref that sees the table, of its kind, pointing at its current snapshot (CMT-2);
     `current-snapshot-id` is `main`'s. A table whose current snapshot is the one that created it, with no files, is
     served with no snapshot and no ref, as Iceberg has it: a client takes a snapshot for data already written.
@@ -729,7 +731,9 @@ Iceberg REST server of the projection, and are checked by its tests.
 - **ICE-2.** Every remaining snapshot of the table is served, so that a client can rebase on any of them after a
   conflict. The manifests of snapshot `S`, owned by ref `R`, list exactly the files visible at `(R, S)`: status
   `ADDED` for the files `S`'s commit added on `R`, `EXISTING` for the rest, each with its data sequence number
-  equal to its row's `begin_seq`, its spec, partition, record count, size and statistics (ICE-3).
+  equal to its row's `begin_seq`, its spec, partition, record count, size and statistics (ICE-3). A data manifest
+  holds files of one status, so that a reader finds what `S` added by its manifests. The snapshot that added a
+  manifest, and an entry, is the greatest `begin_seq` it holds.
 - **ICE-3.** Statistics are served in Iceberg's single-value serialization of the field's current type: each
   MetaLake bound is decoded (§8, STA-7) and serialized as Iceberg writes it: `int`, `date` as 4 bytes
   little-endian, `long`, `time` and timestamps as 8, `float` and `double` as 4 and 8 bytes of IEEE 754

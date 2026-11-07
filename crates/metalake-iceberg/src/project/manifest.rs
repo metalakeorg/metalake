@@ -53,6 +53,8 @@ pub struct Listed {
     pub added_rows: i64,
     pub existing_rows: i64,
     pub min_sequence: i64,
+    /// The snapshot that added it, which a reader compares with the one it reads (ICE-2).
+    pub added_snapshot: i64,
 }
 
 /// Iceberg's default for manifests, which every reader has: DuckDB reads no other.
@@ -229,7 +231,7 @@ fn data_entry(file: &ListedFile, context: &Context<'_>) -> Result<Value> {
     ];
     Ok(entry(
         file.begin_seq == context.snapshot,
-        context.snapshot,
+        file.begin_seq,
         file.begin_seq,
         data_file,
     ))
@@ -252,12 +254,7 @@ fn delete_entry(delete: &Delete<'_>, sequence: i64, cardinality: i64, context: &
         ("sort_order_id".into(), none()),
         ("referenced_data_file".into(), some(Value::String(referenced))),
     ];
-    Ok(entry(
-        sequence == context.snapshot,
-        context.snapshot,
-        sequence,
-        data_file,
-    ))
+    Ok(entry(sequence == context.snapshot, sequence, sequence, data_file))
 }
 
 fn writer<'a>(schema: &'a Schema, context: &Context<'_>, content: &str) -> Result<Writer<'a, Vec<u8>>> {
@@ -336,7 +333,7 @@ pub fn manifest_list(snapshot: i64, parent: Option<i64>, manifests: &[Listed]) -
             ),
             ("sequence_number".into(), Value::Long(snapshot)),
             ("min_sequence_number".into(), Value::Long(m.min_sequence)),
-            ("added_snapshot_id".into(), Value::Long(snapshot)),
+            ("added_snapshot_id".into(), Value::Long(m.added_snapshot)),
             ("added_files_count".into(), Value::Int(m.added_files)),
             ("existing_files_count".into(), Value::Int(m.existing_files)),
             ("deleted_files_count".into(), Value::Int(0)),

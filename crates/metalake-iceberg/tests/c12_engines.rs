@@ -7,7 +7,7 @@ mod common;
 use std::process::Command;
 use std::sync::{Mutex, PoisonError};
 
-use common::{Failure, append, create, fresh_schema, local_catalog, server};
+use common::{Failure, append, create, fresh_schema, local_catalog, server, streamed};
 use futures_util::TryStreamExt;
 use metalake::Scan;
 use metalake::vectors::Deletes;
@@ -185,7 +185,45 @@ async fn flink_recovery_repeats_no_checkpoint() -> Result<(), Failure> {
     assert_eq!(said["rows"], said["expected"], "{said}");
     assert_eq!(said["distinct"], said["expected"], "{said}");
     assert_eq!(said["last"], said["expected"], "{said}");
-    assert_eq!(said["restored"], said["committed"], "a checkpoint already committed: {said}");
+    assert_eq!(
+        said["restored"], said["committed"],
+        "a checkpoint already committed: {said}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn spark_stream_reads_merge_and_specs() -> Result<(), Failure> {
+    if !wanted("spark") {
+        return Ok(());
+    }
+    let schema = fresh_schema();
+    let directory = streamed(&schema).await?;
+    let (_server, uri) = server(&schema)?;
+    let said = run("spark_stream", &uri)?;
+    let _ = std::fs::remove_dir_all(&directory);
+    assert_eq!(said["merged"], json!([0, 1, 10, 11, 20]), "{said}");
+    assert_eq!(said["evolved"], json!([0, 1, 10, 11, 20, 21]), "{said}");
+    let refused = said["removed"].as_str().unwrap_or_default();
+    assert!(
+        refused.contains("overwrite snapshot"),
+        "a merge that removes is no append: {said}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn flink_incremental_reads_merge_and_specs() -> Result<(), Failure> {
+    if !wanted("flink") {
+        return Ok(());
+    }
+    let schema = fresh_schema();
+    let directory = streamed(&schema).await?;
+    let (_server, uri) = server(&schema)?;
+    let said = run("flink_incremental", &uri)?;
+    let _ = std::fs::remove_dir_all(&directory);
+    assert_eq!(said["merged"], json!([10, 11, 20]), "{said}");
+    assert_eq!(said["evolved"], json!([10, 11, 20, 21]), "{said}");
     Ok(())
 }
 

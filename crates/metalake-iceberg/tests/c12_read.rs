@@ -5,7 +5,7 @@ mod common;
 
 use std::process::Command;
 
-use common::{Failure, append, create, fresh_schema, local_catalog, server, url};
+use common::{Failure, append, create, fresh_schema, local_catalog, server, streamed, url};
 use futures_util::TryStreamExt;
 use metalake::vectors::Deletes;
 use metalake::{Catalog, CatalogConfig, Scan};
@@ -135,6 +135,18 @@ async fn pyiceberg_read_partitions_vectors_branch_schemas() -> Result<(), Failur
         .await?
         .get(0);
     assert_eq!(as_the_reference_has_it(said["metadata"].clone()), expected);
+    Ok(())
+}
+
+#[tokio::test]
+async fn ice2_added_files_manifest_apart() -> Result<(), Failure> {
+    let schema = fresh_schema();
+    let directory = streamed(&schema).await?;
+    let (_server, uri) = server(&schema)?;
+    let said = client("manifests", &uri)?;
+    let _ = std::fs::remove_dir_all(&directory);
+    let expected = json!([[0, 0, 1, false], [1, 0, 1, false], [1, 1, 0, true]]);
+    assert_eq!(said["manifests"], expected, "{said}");
     Ok(())
 }
 

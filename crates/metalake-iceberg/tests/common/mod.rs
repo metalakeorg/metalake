@@ -8,7 +8,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
-use metalake::{Catalog, CatalogConfig, NewTable, Ref, Storage, TableWriter, WriteOptions};
+use futures_util::TryStreamExt;
+use metalake::{Catalog, CatalogConfig, NewTable, Ref, Scan, Storage, TableWriter, WriteOptions};
+use serde_json::json;
 
 pub type Failure = Box<dyn std::error::Error>;
 
@@ -70,6 +72,41 @@ pub async fn append(
     let added = writer.finish().await?;
     on.transaction().append(added).commit().await?;
     Ok(())
+}
+
+/// What a reader of a stream meets, each in a table of `db`: `merged`, a merge of added files between appends; `removed`,
+/// a merge that removes a file; `evolved`, a second spec between appends.
+pub async fn streamed(schema: &str) -> Result<std::path::PathBuf, Failure> {
+    let (catalog, storage, directory) = local_catalog(schema).await?;
+    let main = catalog.branch("main").await?;
+    main.transaction().create_namespace(&["db"]).commit().await?;
+
+    create(&main, "merged", "0", vec![]).await?;
+    append(&catalog, &main, &storage, "merged", 0..2).await?;
+    let branch = main.create_branch("b").await?;
+    append(&catalog, &branch, &storage, "merged", 10..12).await?;
+    branch.merge().commit().await?;
+    append(&catalog, &main, &storage, "merged", 20..21).await?;
+
+    create(&main, "removed", "0", vec![]).await?;
+    append(&catalog, &main, &storage, "removed", 0..2).await?;
+    let branch = main.create_branch("c").await?;
+    let t = branch.table(&["db"], "removed").await?;
+    let planned: Vec<_> = Scan::new(&catalog, &t).plan().await?.try_collect().await?;
+    let ids = planned.iter().map(|f| f.file_id);
+    branch.transaction().remove(&t, ids).commit().await?;
+    branch.merge().commit().await?;
+
+    create(&main, "evolved", "0", vec![]).await?;
+    append(&catalog, &main, &storage, "evolved", 0..2).await?;
+    let t = main.table(&["db"], "evolved").await?;
+    let field = json!({"source_ids": [1], "field_id": 1000, "name": "k_trunc", "transform": "truncate[10]"});
+    let spec = json!({"partition_spec": [field]});
+    main.transaction().define(t.id(), spec).commit().await?;
+    append(&catalog, &main, &storage, "evolved", 10..12).await?;
+    append(&catalog, &main, &storage, "evolved", 20..22).await?;
+    catalog.close();
+    Ok(directory)
 }
 
 pub struct Running(Child);

@@ -165,9 +165,12 @@ create function iceberg_metadata(t uuid) returns jsonb language sql stable as $$
         'snapshot-id', x.snapshot_id, 'parent-snapshot-id', x.parent_snapshot_id, 'sequence-number', x.snapshot_id,
         'timestamp-ms', (extract(epoch from committed_time(x.snapshot_id)) * 1000)::bigint,
         'schema-id', x.schema_seq,
-        'summary', jsonb_build_object('operation', case x.summary ->> 'operation'
+        'summary', jsonb_build_object('operation', case
+                     when x.summary ->> 'operation' = 'merge' and x.summary ->> 'deleted-data-files' = '0'
+                          and x.summary ->> 'changed-vectors' = '0' then 'append'
+                     else case x.summary ->> 'operation'
                      when 'merge' then 'overwrite' when 'rebase' then 'overwrite' when 'replace' then 'replace' when 'delete' then 'delete'
-                     when 'overwrite' then 'overwrite' else 'append' end)
+                     when 'overwrite' then 'overwrite' else 'append' end end)
                    || (select coalesce(jsonb_object_agg(k, v #>> '{}'), '{}') from jsonb_each(x.summary - 'operation') e(k, v))))
         order by x.snapshot_id) from snaps x), '[]'),
     'refs', coalesce((select jsonb_object_agg(name, jsonb_build_object('snapshot-id', id, 'type', kind)) from refs where id is not null), '{}'),

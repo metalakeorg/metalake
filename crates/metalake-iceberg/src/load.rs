@@ -77,6 +77,7 @@ fn listed(path: String, length: usize, spec_id: i32, deletes: bool, entries: &[(
         added_rows: added.iter().map(|(_, rows, _)| rows).sum(),
         existing_rows: existing.iter().map(|(_, rows, _)| rows).sum(),
         min_sequence: entries.iter().map(|(.., sequence)| *sequence).min().unwrap_or(0),
+        added_snapshot: entries.iter().map(|(.., sequence)| *sequence).max().unwrap_or(0),
     }
 }
 
@@ -135,15 +136,19 @@ async fn generate(on: &Ref, state: &State, storage: &Storage, table: &Table, sna
             spec_id,
             spec,
         };
-        let here: Vec<&ListedFile> = files.iter().filter(|f| f.spec_id == spec_id).collect();
-        let bytes = data_manifest(&here, &context)?;
-        let path = format!("{}/m-{at}-{spec_id}.avro", generated(location));
-        let shown: Vec<_> = here
-            .iter()
-            .map(|f| (f.begin_seq == at, f.record_count, f.begin_seq))
-            .collect();
-        manifests.push(listed(path.clone(), bytes.len(), spec_id, false, &shown));
-        storage.put(&path, bytes.into()).await?;
+        // What the snapshot added apart from the rest, so that a reader finds it by its manifest (ICE-2).
+        for (added, name) in [(true, "a"), (false, "m")] {
+            let of_spec = files.iter().filter(|f| f.spec_id == spec_id);
+            let here: Vec<&ListedFile> = of_spec.filter(|f| (f.begin_seq == at) == added).collect();
+            if here.is_empty() {
+                continue;
+            }
+            let bytes = data_manifest(&here, &context)?;
+            let path = format!("{}/{name}-{at}-{spec_id}.avro", generated(location));
+            let shown: Vec<_> = here.iter().map(|f| (added, f.record_count, f.begin_seq)).collect();
+            manifests.push(listed(path.clone(), bytes.len(), spec_id, false, &shown));
+            storage.put(&path, bytes.into()).await?;
+        }
 
         let here: Vec<Delete<'_>> = deletes
             .iter()

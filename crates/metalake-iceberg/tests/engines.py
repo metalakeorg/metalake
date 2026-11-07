@@ -167,6 +167,25 @@ def spark_recovery(uri):
     return said
 
 
+def spark_stream(uri):
+    """A stream read from the first snapshot: it takes what a merge added, and every snapshot of a batch."""
+    session = spark_session(uri)
+    root = tempfile.mkdtemp()
+
+    def stream(table):
+        writer = session.readStream.table(f"lake.db.{table}").writeStream.format("memory").queryName(table)
+        query = writer.outputMode("append").trigger(availableNow=True)
+        query.option("checkpointLocation", f"{root}/{table}").start().awaitTermination()
+        return sorted(row[0] for row in session.sql(f"select k from {table}").collect())
+
+    said = {"merged": stream("merged"), "evolved": stream("evolved")}
+    try:
+        said["removed"] = stream("removed")
+    except Exception as refused:
+        said["removed"] = str(refused)
+    return said
+
+
 def trino_lifecycle(uri):
     import trino
 
@@ -320,8 +339,28 @@ def flink_recovery(uri):
     return said
 
 
+def flink_incremental(uri):
+    """What Flink reads between the first write and the last, which it takes from `append` snapshots alone."""
+    from pyflink.table import EnvironmentSettings, TableEnvironment
+
+    environment = TableEnvironment.create(EnvironmentSettings.in_batch_mode())
+    environment.execute_sql(
+        f"create catalog lake with ('type' = 'iceberg', 'catalog-type' = 'rest', 'uri' = '{uri}')"
+    ).wait()
+
+    def since_first(table):
+        with urllib.request.urlopen(f"{uri}/v1/namespaces/db/tables/{table}") as answer:
+            metadata = json.load(answer)["metadata"]
+        ordered = sorted(s["snapshot-id"] for s in metadata["snapshots"])
+        options = f"'start-snapshot-id' = '{ordered[1]}', 'end-snapshot-id' = '{ordered[-1]}'"
+        with environment.execute_sql(f"select k from lake.db.{table} /*+ OPTIONS({options}) */").collect() as rows:
+            return sorted(row[0] for row in rows)
+
+    return {"merged": since_first("merged"), "evolved": since_first("evolved")}
+
+
 if __name__ == "__main__":
-    said = "\n" + json.dumps({"duckdb": duckdb, "spark": spark, "spark_insert": spark_insert, "spark_lifecycle": spark_lifecycle, "spark_recovery": spark_recovery, "trino": trino_lifecycle, "flink": flink_lifecycle, "flink_recovery": flink_recovery}[sys.argv[1]](sys.argv[2]))
+    said = "\n" + json.dumps({"duckdb": duckdb, "spark": spark, "spark_insert": spark_insert, "spark_lifecycle": spark_lifecycle, "spark_recovery": spark_recovery, "trino": trino_lifecycle, "flink": flink_lifecycle, "flink_recovery": flink_recovery, "spark_stream": spark_stream, "flink_incremental": flink_incremental}[sys.argv[1]](sys.argv[2]))
     print(said, flush=True)
     # A JVM an engine left behind may fail the interpreter's exit, after the answer is out.
     sys.stderr.flush()

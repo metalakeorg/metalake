@@ -354,6 +354,7 @@ begin
         'added-data-files', (select count(*) from data_file x where x.table_id = t and x.ref_id = p and x.begin_seq = m),
         'deleted-data-files', (select count(*) from data_file x where x.table_id = t and x.ref_id = p and x.end_seq = m)
                             + (select count(*) from tombstone x where x.table_id = t and x.ref_id = p and x.begin_seq = m),
+        'changed-vectors', (select count(*) from deletion_vector x where x.table_id = t and x.ref_id = p and x.begin_seq = m),
         'added-records', (select coalesce(sum(record_count), 0) from data_file x where x.table_id = t and x.ref_id = p and x.begin_seq = m),
         'deleted-records', (select coalesce(sum((visible_file(p, t, m - 1, y.file_id)).record_count), 0)
                               from (select x.file_id from data_file x where x.table_id = t and x.ref_id = p and x.end_seq = m

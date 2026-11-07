@@ -144,9 +144,16 @@ fn sort_orders(definition: &Value) -> Vec<SortOrder> {
     orders
 }
 
+/// Whether a merge only added: a reader takes a snapshot's added files for all it did, and applies no deletes to them.
+fn only_added(summary: &Value) -> bool {
+    let none = |key: &str| summary[key].as_i64() == Some(0);
+    none("deleted-data-files") && none("changed-vectors")
+}
+
 /// A snapshot's `operation`, as Iceberg names what it does: it has no merge, and what is not its own is an append.
-fn operation(operation: Option<&str>) -> &'static str {
-    match operation {
+fn operation(summary: &Value) -> &'static str {
+    match summary["operation"].as_str() {
+        Some("merge") if only_added(summary) => "append",
         Some("merge" | "rebase" | "overwrite") => "overwrite",
         Some("replace") => "replace",
         Some("delete") => "delete",
@@ -168,7 +175,7 @@ fn summary(of: &TableSnapshot) -> BTreeMap<String, String> {
             )
         })
         .collect();
-    said.insert("operation".into(), operation(of.summary["operation"].as_str()).into());
+    said.insert("operation".into(), operation(&of.summary).into());
     said
 }
 
@@ -341,6 +348,23 @@ mod tests {
             snapshots,
             refs: vec![("main".to_string(), "branch".to_string(), Some(head))],
         }
+    }
+
+    #[test]
+    fn ice1_merge_operation_states_what_it_did() {
+        let merge = |summary: Value| operation(&summary);
+        let keys = |deleted: i64, vectors: i64| json!({"operation": "merge", "deleted-data-files": deleted, "changed-vectors": vectors});
+        assert_eq!(merge(keys(0, 0)), "append");
+        assert_eq!(merge(keys(1, 0)), "overwrite");
+        assert_eq!(merge(keys(0, 1)), "overwrite");
+        assert_eq!(
+            merge(json!({"operation": "merge", "deleted-data-files": 0})),
+            "overwrite"
+        );
+        assert_eq!(
+            merge(json!({"operation": "rebase", "deleted-data-files": 0, "changed-vectors": 0})),
+            "overwrite"
+        );
     }
 
     #[test]
