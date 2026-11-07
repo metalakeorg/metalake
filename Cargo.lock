@@ -2613,6 +2613,7 @@ dependencies = [
  "deadpool-postgres",
  "futures-util",
  "postgres-types",
+ "serde",
  "serde_json",
  "thiserror",
  "tokio",

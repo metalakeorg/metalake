@@ -421,6 +421,9 @@ order and the cluster key.
 - **CMT-10.** Writers SHOULD register an `intent` row (path, table, ref, expiry) in its own transaction before
   uploading a file or a Puffin file. A commit or a merge deletes the intents of the files and Puffin files it adds. After committing, it sends
   `NOTIFY metalake` with the payload `<schema>:<commit_seq>`.
+  *0.2.* A writer that restores files it prepared before a failure, with their commit still to come, renews their
+  intents and then checks that their objects exist: a commit refuses an intent that expired, and not one that RET-7
+  took along with its object.
 - **CMT-11.** A commit whose `operation` is `replace` (a compaction or a flush) only removes and adds files.
   The live rows of the files it removes (DV-5) equal the rows of the files it adds, which carry no vectors.
 - **CMT-12.** *0.2.* A commit MAY give, for a table, keys of its own for that table's snapshot `summary`: an

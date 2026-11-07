@@ -2,6 +2,7 @@
 
 mod delete;
 mod merge;
+mod prepared;
 mod transaction;
 mod writer;
 

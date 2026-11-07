@@ -302,6 +302,15 @@ impl Protocol {
         Ok(row.get(0))
     }
 
+    /// The version an idempotency key reached on a ref, if any (CMT-5).
+    pub async fn key_version(&self, s: &impl Session, ref_id: i32, app_id: &str) -> Result<Option<i64>> {
+        let statement = s
+            .statement(&self.sql("key_version(ref_id => $1, app_id => $2)"))
+            .await?;
+        let row = s.client().query_one(&statement, &[&ref_id, &app_id]).await?;
+        Ok(row.get(0))
+    }
+
     /// The refs of the catalog that are not deleted.
     pub async fn refs(&self, s: &impl Session) -> Result<Vec<RefRow>> {
         let statement = s
@@ -767,6 +776,7 @@ pub const INTERFACE: &[(&str, &[&str], bool)] = &[
     ("listed_files", &["ref_id", "table_id", "at"], false),
     ("files_at_paths", &["ref_id", "table_id", "paths", "file_ids"], false),
     ("commit_of_key", &["ref_id", "app_id"], false),
+    ("key_version", &["ref_id", "app_id"], false),
     ("tables_at", &["ref_id", "at"], false),
     ("describe", &["ref_id", "table_id", "at"], false),
     ("snapshot_at", &["r", "t", "s"], false),

@@ -3,6 +3,7 @@
 //! tables, `bigint` files and sequences); the core gives them names.
 
 use postgres_types::ToSql;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio_postgres::Row;
 use uuid::Uuid;
@@ -14,7 +15,7 @@ pub const OPEN: i64 = i64::MAX;
 
 /// A data file a commit adds, with its statistics (CMT-6, STA-1 to STA-5). `path` is null for an inline file, whose
 /// bytes are in `content` (INL-1).
-#[derive(Debug, Clone, PartialEq, ToSql)]
+#[derive(Debug, Clone, PartialEq, ToSql, Serialize, Deserialize)]
 #[postgres(name = "file_add")]
 pub struct FileAdd {
     pub table_id: Uuid,

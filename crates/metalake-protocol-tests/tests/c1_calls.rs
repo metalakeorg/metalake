@@ -100,8 +100,10 @@ async fn commit_of_key_by_ref() -> Result<(), Error> {
     let p = Protocol::new(&schema);
     let t = Uuid::from_u128(0xc1);
     assert_eq!(p.commit_of_key(&on, 1, "c1").await?, None);
+    assert_eq!(p.key_version(&on, 1, "c1").await?, None);
     let applied = p.commit(&on, &create(t)).await?;
     assert_eq!(p.commit_of_key(&on, 1, "c1").await?, Some(applied.commit_seq));
+    assert_eq!(p.key_version(&on, 1, "c1").await?, Some(1));
     let branch = p.create_ref(&on, &CreateRef::branch("dev", 1)).await?;
     assert_eq!(p.commit_of_key(&on, branch, "c1").await?, None);
 

@@ -125,6 +125,11 @@ returns setof @schema@.listed_file language sql stable as $$
    order by f.file_id;
 $$;
 
+-- The version an idempotency key reached on a ref, if any (CMT-5). A key whose commit rolled back is not there.
+create function @schema@.key_version(ref_id int, app_id text) returns bigint language sql stable as $$
+  select i.version from @schema@.idempotency i where i.ref_id = $1 and i.app_id = $2 and i.version > 0;
+$$;
+
 -- The commit an idempotency key applied on a ref, if any (CMT-5). A key whose commit rolled back is not there.
 create function @schema@.commit_of_key(ref_id int, app_id text) returns bigint language sql stable as $$
   select i.commit_seq from @schema@.idempotency i where i.ref_id = $1 and i.app_id = $2 and i.version > 0;

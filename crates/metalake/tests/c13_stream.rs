@@ -16,10 +16,11 @@ use common::{fresh_schema, url};
 use futures_util::TryStreamExt;
 use metalake::vectors::Deletes;
 use metalake::{
-    CHANGE_TYPE, COMMIT_SEQ, Catalog, CatalogConfig, Error, NewTable, Ref, Retention, Scan, Start, Storage,
-    StreamCursor, StreamStep, Table, TableStream, TableWriter, WriteOptions,
+    CHANGE_TYPE, COMMIT_SEQ, Catalog, CatalogConfig, Error, FileAdd, NewTable, Outcome, Ref, Retention, Scan, Start,
+    Storage, StreamCursor, StreamStep, Table, TableStream, TableWriter, WriteOptions,
 };
 use metalake_pg::{Commit, Pool, Protocol};
+use object_store::ObjectStoreExt;
 use serde_json::json;
 
 fn batch(keys: std::ops::Range<i64>) -> RecordBatch {
@@ -292,6 +293,128 @@ async fn start_over_a_commit_in_flight() -> Result<(), Box<dyn std::error::Error
     let mut rows = rows_of(&stream, &step, &storage).await?;
     rows.extend(drain(&mut stream, &storage).await?);
     assert_eq!(rebuilt(&rows), [0, 1], "in the read, and not again in the feed");
+    Ok(())
+}
+
+/// What a sink has prepared for an epoch, as it comes back from a checkpoint.
+async fn prepare(
+    catalog: &Catalog,
+    t: &Table,
+    storage: &Storage,
+    keys: std::ops::Range<i64>,
+    options: WriteOptions,
+) -> Result<Vec<FileAdd>, Box<dyn std::error::Error>> {
+    let mut writer = TableWriter::new(catalog, t, storage.clone(), options)?;
+    writer.write(&batch(keys)).await?;
+    let files = writer.finish().await?;
+    Ok(serde_json::from_slice(&serde_json::to_vec(&files)?)?)
+}
+
+fn stored(ttl: Duration) -> WriteOptions {
+    WriteOptions {
+        stored: true,
+        intent_ttl: ttl,
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn commit_each_epoch_once() -> Result<(), Box<dyn std::error::Error>> {
+    let (catalog, main, storage) = lake(vec![]).await?;
+    let t = main.table(&["db"], "t").await?;
+
+    // One file inline, whose bytes only the checkpoint has, and one stored.
+    let inline = prepare(&catalog, &t, &storage, 0..3, WriteOptions::default()).await?;
+    assert!(inline[0].content.is_some());
+    let first = main
+        .transaction()
+        .append(inline.clone())
+        .idempotent("job", 1)
+        .commit()
+        .await?;
+    assert!(matches!(first, Outcome::Committed(_)));
+    let hour = Duration::from_secs(3600);
+    let late = prepare(&catalog, &t, &storage, 3..6, stored(hour)).await?;
+    main.transaction()
+        .append(late.clone())
+        .idempotent("job", 2)
+        .commit()
+        .await?;
+
+    // A sink that fell over after those commits, and does them again, as its checkpoint says.
+    main.restore_prepared("job", 1, &inline, &storage, hour).await?;
+    main.restore_prepared("job", 2, &late, &storage, hour).await?;
+    let again = main.transaction().append(inline).idempotent("job", 1).commit().await?;
+    assert!(matches!(again, Outcome::AlreadyApplied(_)));
+    main.transaction().append(late).idempotent("job", 2).commit().await?;
+    let now = main.table(&["db"], "t").await?;
+    assert_eq!(keys_of(&catalog, &now, &storage).await?, [0, 1, 2, 3, 4, 5]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn restore_after_intent_expired() -> Result<(), Box<dyn std::error::Error>> {
+    let (catalog, main, storage) = lake(vec![]).await?;
+    let t = main.table(&["db"], "t").await?;
+    let files = prepare(&catalog, &t, &storage, 0..3, stored(Duration::from_millis(1))).await?;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let refused = main
+        .transaction()
+        .append(files.clone())
+        .idempotent("job", 1)
+        .commit()
+        .await;
+    let refused = refused.expect_err("its intent expired");
+    assert!(refused.to_string().contains("RET-7"), "{refused}");
+
+    main.restore_prepared("job", 1, &files, &storage, Duration::from_secs(3600))
+        .await?;
+    assert_eq!(
+        catalog.maintenance().orphans(&storage).await?,
+        0,
+        "renewed, it is no orphan"
+    );
+    main.transaction().append(files).idempotent("job", 1).commit().await?;
+    let now = main.table(&["db"], "t").await?;
+    assert_eq!(keys_of(&catalog, &now, &storage).await?, [0, 1, 2]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn restore_refuses_what_collection_took() -> Result<(), Box<dyn std::error::Error>> {
+    let (catalog, main, storage) = lake(vec![]).await?;
+    let t = main.table(&["db"], "t").await?;
+    let files = prepare(&catalog, &t, &storage, 0..3, stored(Duration::from_millis(1))).await?;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(catalog.maintenance().orphans(&storage).await?, 1);
+
+    let hour = Duration::from_secs(3600);
+    let gone = main
+        .restore_prepared("job", 1, &files, &storage, hour)
+        .await
+        .expect_err("its object went");
+    assert!(matches!(gone, Error::NotFound(_)), "{gone}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn restore_leaves_what_committed() -> Result<(), Box<dyn std::error::Error>> {
+    let (catalog, main, storage) = lake(vec![]).await?;
+    let t = main.table(&["db"], "t").await?;
+    let hour = Duration::from_secs(3600);
+    let files = prepare(&catalog, &t, &storage, 0..3, stored(hour)).await?;
+    main.transaction()
+        .append(files.clone())
+        .idempotent("job", 2)
+        .commit()
+        .await?;
+
+    // Its object may have left since, by a compaction: the commit stands, so nothing is wrong.
+    let object = storage.path(files[0].path.as_deref().unwrap())?;
+    storage.store().delete(&object).await?;
+    main.restore_prepared("job", 1, &files, &storage, hour).await?;
+    main.restore_prepared("job", 2, &files, &storage, hour).await?;
     Ok(())
 }
 
