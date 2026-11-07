@@ -54,10 +54,10 @@ async fn ice1_pyiceberg_load_matches_reference() -> Result<(), Failure> {
     assert_eq!(said["pruned"], 1, "the bounds of the manifest prune");
     assert_eq!(said["small"], 3, "an inline file is materialized");
     assert!(said["nowhere"].as_str().unwrap().contains("nowhere"), "{said}");
-    let (current, older) = (&said["entries"][0], &said["entries"][1]);
+    let (older, current) = (&said["entries"][0], &said["entries"][1]);
     assert_eq!(said["entries"].as_array().unwrap().len(), 2);
     assert_eq!(current, &json!(["ADDED", said["current"]]), "what the snapshot added");
-    assert_eq!(older[0], "EXISTING");
+    assert_eq!(older[0], "ADDED", "as the snapshot that added it listed it");
     assert!(older[1].as_i64() < said["current"].as_i64());
 
     let pool = Pool::new(&url(), 1)?;
@@ -145,8 +145,11 @@ async fn ice2_added_files_manifest_apart() -> Result<(), Failure> {
     let (_server, uri) = server(&schema)?;
     let said = client("manifests", &uri)?;
     let _ = std::fs::remove_dir_all(&directory);
-    let expected = json!([[0, 0, 1, false], [1, 0, 1, false], [1, 1, 0, true]]);
+    let expected = json!([[0, 1, 0, false], [1, 1, 0, false], [1, 1, 0, true]]);
     assert_eq!(said["manifests"], expected, "{said}");
+    assert_eq!(said["merged"], json!([0, 1, 10, 11, 20]), "{said}");
+    assert_eq!(said["removed"], json!([]), "a merge that removes is written whole: {said}");
+    assert_eq!(said["evolved"], json!([0, 1, 10, 11, 20, 21]), "{said}");
     Ok(())
 }
 

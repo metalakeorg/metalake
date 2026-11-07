@@ -6,13 +6,16 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 
+use apache_avro::types::Value as AvroValue;
 use bytes::Bytes;
 use futures_util::TryStreamExt;
 use metalake::{Error, ListedFile, Ref, Result, Scan, Storage, Table, TableSnapshot, listed_vector};
 
 use crate::project::deletes::position_deletes;
-use crate::project::manifest::{Context, Delete, Listed, data_manifest, delete_manifest, manifest_list, served_path};
-use crate::project::metadata::{Rows, SERVED_PER_REF, metadata, schema};
+use crate::project::manifest::{
+    Context, Delete, Listed, data_manifest, delete_manifest, listed_manifests, manifest_list, served_path,
+};
+use crate::project::metadata::{Rows, SERVED_PER_REF, adds_only, metadata, schema};
 use crate::state::State;
 use crate::wire::metadata::{LoadTableResult, TableMetadata};
 
@@ -101,7 +104,20 @@ async fn materialize<'f>(files: &'f [ListedFile], location: &str, storage: &Stor
     Ok(deletes)
 }
 
-/// A snapshot's manifests and manifest list, unless they are there.
+/// The manifests a snapshot takes from its parent, when it only added to it and the parent's list is there.
+async fn inherited(storage: &Storage, table: &Table, snapshot: &TableSnapshot) -> Result<Option<Vec<AvroValue>>> {
+    let Some(parent) = snapshot.parent_snapshot_id.filter(|_| adds_only(snapshot)) else {
+        return Ok(None);
+    };
+    let path = list_path(table.location(), parent);
+    if !storage.exists(&path).await? {
+        return Ok(None);
+    }
+    Ok(Some(listed_manifests(&storage.get(&path).await?)?))
+}
+
+/// A snapshot's manifests and manifest list, unless they are there: what it added, and its parent's manifests when it
+/// only added to them, which costs what it added, or else all it sees.
 async fn generate(on: &Ref, state: &State, storage: &Storage, table: &Table, snapshot: &TableSnapshot) -> Result<()> {
     let (location, at) = (table.location(), snapshot.snapshot_id);
     if storage.exists(&list_path(location, at)).await? {
@@ -109,7 +125,11 @@ async fn generate(on: &Ref, state: &State, storage: &Storage, table: &Table, sna
     }
     let namespace: Vec<&str> = table.namespace().iter().map(String::as_str).collect();
     let read = on.at(at).table(&namespace, table.name()).await?;
-    let files: Vec<ListedFile> = Scan::new(state.catalog(), &read).list().await?.try_collect().await?;
+    let carried = inherited(storage, table, snapshot).await?;
+    let files: Vec<ListedFile> = match carried {
+        Some(_) => on.added_files(table, at).await?,
+        None => Scan::new(state.catalog(), &read).list().await?.try_collect().await?,
+    };
     let deletes = materialize(&files, location, storage).await?;
 
     let definition = on.definition(table, Some(at)).await?;
@@ -170,7 +190,8 @@ async fn generate(on: &Ref, state: &State, storage: &Storage, table: &Table, sna
             storage.put(&path, bytes.into()).await?;
         }
     }
-    let list = manifest_list(at, snapshot.parent_snapshot_id, &manifests)?;
+    let carried = carried.unwrap_or_default();
+    let list = manifest_list(at, snapshot.parent_snapshot_id, &manifests, carried)?;
     storage.put(&list_path(location, at), list.into()).await
 }
 

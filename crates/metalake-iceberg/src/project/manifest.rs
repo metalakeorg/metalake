@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use apache_avro::schema::RecordField;
 use apache_avro::types::Value;
-use apache_avro::{Codec, DeflateSettings, Schema, Writer};
+use apache_avro::{Codec, DeflateSettings, Reader, Schema, Writer};
 use metalake::partition::{Scalar, Transform};
 use metalake::{Error, ListedFile, Result};
 use serde_json::{Value as Json, json};
@@ -309,8 +309,14 @@ pub fn delete_manifest(deletes: &[Delete<'_>], context: &Context<'_>) -> Result<
     writer.into_inner().map_err(avro_failed)
 }
 
-/// The manifest list of `snapshot`, whose parent, if any, is `parent`.
-pub fn manifest_list(snapshot: i64, parent: Option<i64>, manifests: &[Listed]) -> Result<Vec<u8>> {
+/// The rows of a manifest list this server wrote, to be listed again as they are (ICE-2).
+pub fn listed_manifests(bytes: &[u8]) -> Result<Vec<Value>> {
+    let reader = Reader::new(bytes).map_err(avro_failed)?;
+    reader.map(|row| row.map_err(avro_failed)).collect()
+}
+
+/// The manifest list of `snapshot`, whose parent, if any, is `parent`: its own manifests, and those it carries.
+pub fn manifest_list(snapshot: i64, parent: Option<i64>, manifests: &[Listed], carried: Vec<Value>) -> Result<Vec<u8>> {
     let schema = avro::manifest_file();
     let mut writer = Writer::with_codec(&schema, Vec::new(), codec()).map_err(avro_failed)?;
     let parent = parent.map_or_else(|| "null".to_string(), |id| id.to_string());
@@ -341,6 +347,9 @@ pub fn manifest_list(snapshot: i64, parent: Option<i64>, manifests: &[Listed]) -
             ("existing_rows_count".into(), Value::Long(m.existing_rows)),
             ("deleted_rows_count".into(), Value::Long(0)),
         ]);
+        writer.append_value(row).map_err(avro_failed)?;
+    }
+    for row in carried {
         writer.append_value(row).map_err(avro_failed)?;
     }
     writer.into_inner().map_err(avro_failed)

@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use metalake_pg::records::{CommitEntry, NamespaceRow, RefRow, SnapshotEntry, TableName, TableSnapshot};
+use futures_util::TryStreamExt;
+use metalake_pg::records::{CommitEntry, ListedFile, NamespaceRow, RefRow, SnapshotEntry, TableName, TableSnapshot};
 use metalake_pg::{CreateRef, Pool, PooledSession, Protocol, Retention, Roles, Versions};
 use uuid::Uuid;
 
@@ -263,6 +264,14 @@ impl Ref {
             .describe(&self.catalog.session().await?, self.id, table.id(), at)
             .await?;
         found.ok_or_else(|| Error::NotFound(format!("table {} on {}", table.name(), self.name)))
+    }
+
+    /// The files commit `at` added to `table` on this ref, with no vectors. Its cost is what it returns, not the table.
+    pub async fn added_files(&self, table: &Table, at: i64) -> Result<Vec<ListedFile>> {
+        let p = self.catalog.protocol();
+        let session = self.catalog.session().await?;
+        let files = p.added_files(&session, self.id(), table.id(), at).await?;
+        Ok(files.try_collect().await?)
     }
 
     /// The files of `table` this ref sees among `paths` and `file_ids`, as a path, if there is one, and an id.

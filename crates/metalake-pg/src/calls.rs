@@ -257,6 +257,22 @@ impl Protocol {
         Ok(rows.map_ok(|r| ListedFile::from_row(&r)).map_err(Into::into))
     }
 
+    /// The files commit `at` added to `table_id` on `ref_id`, with no vectors, as they stream from the protocol.
+    pub async fn added_files<S: Session>(
+        &self,
+        s: &S,
+        ref_id: i32,
+        table_id: Uuid,
+        at: i64,
+    ) -> Result<impl Stream<Item = Result<ListedFile>> + Send + use<S>> {
+        let statement = s
+            .statement(&self.sql("added_files(ref_id => $1, table_id => $2, at => $3)"))
+            .await?;
+        let params: [Param<'_>; 3] = [&ref_id, &table_id, &at];
+        let rows = s.client().query_raw(&statement, params).await?;
+        Ok(rows.map_ok(|r| ListedFile::from_row(&r)).map_err(Into::into))
+    }
+
     /// The visible files of `table_id` among `paths` and `file_ids`, each as its path, if it has one, and its id.
     pub async fn files_at_paths(
         &self,
@@ -718,6 +734,7 @@ pub const INTERFACE: &[(&str, &[&str], bool)] = &[
     ("changes", &["after_at", "after_seq", "lim", "tab"], false),
     ("table_changes", &["r", "t", "a", "b"], false),
     ("ancestors", &["table_id", "heads", "depth"], false),
+    ("added_files", &["ref_id", "table_id", "at"], false),
     ("commit_time", &["seq"], false),
     ("create_ref", &["name", "parent", "kind", "at", "author"], true),
     ("delete_ref", &["ref_id"], true),

@@ -150,6 +150,12 @@ fn only_added(summary: &Value) -> bool {
     none("deleted-data-files") && none("changed-vectors")
 }
 
+/// Whether a snapshot's files are its parent's and those it added, as that schema has them: its manifests are then those
+/// of its parent and what it added (ICE-2).
+pub fn adds_only(snapshot: &TableSnapshot) -> bool {
+    only_added(&snapshot.summary) && snapshot.schema_seq != snapshot.snapshot_id
+}
+
 /// A snapshot's `operation`, as Iceberg names what it does: it has no merge, and what is not its own is an append.
 fn operation(summary: &Value) -> &'static str {
     match summary["operation"].as_str() {
@@ -309,6 +315,30 @@ mod tests {
         assert_eq!(
             merge(json!({"operation": "rebase", "deleted-data-files": 0, "changed-vectors": 0})),
             "overwrite"
+        );
+    }
+
+    #[test]
+    fn ice2_adds_only_needs_every_fact() {
+        let of = |id: i64, schema_seq: i64, summary: Value| TableSnapshot {
+            snapshot_id: id,
+            parent_snapshot_id: Some(1),
+            ref_name: "main".into(),
+            schema_seq,
+            timestamp_ms: None,
+            summary,
+        };
+        let keys = |deleted: i64, vectors: i64| json!({"deleted-data-files": deleted, "changed-vectors": vectors});
+        assert!(adds_only(&of(5, 1, keys(0, 0))));
+        assert!(!adds_only(&of(5, 1, keys(1, 0))), "it removed a file");
+        assert!(!adds_only(&of(5, 1, keys(0, 1))), "it set a vector");
+        assert!(
+            !adds_only(&of(5, 5, keys(0, 0))),
+            "bounds are served in the current type (ICE-3)"
+        );
+        assert!(
+            !adds_only(&of(5, 1, json!({"operation": "rebase"}))),
+            "what it did is not stated"
         );
     }
 

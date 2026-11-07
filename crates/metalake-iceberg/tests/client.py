@@ -88,11 +88,16 @@ def manifests(uri):
     table = connect(uri).load_table("db.evolved")
     current = table.current_snapshot()
     listed = current.manifests(table.io)
+    shown = [
+        [m.partition_spec_id, m.added_files_count, m.existing_files_count, m.added_snapshot_id == current.snapshot_id]
+        for m in listed
+    ]
+    rows = lambda name: sorted(row["k"] for row in connect(uri).load_table(name).scan().to_arrow().to_pylist())
     return {
-        "manifests": [
-            [m.partition_spec_id, m.added_files_count, m.existing_files_count, m.added_snapshot_id == current.snapshot_id]
-            for m in sorted(listed, key=lambda m: (m.partition_spec_id, m.added_files_count))
-        ],
+        "manifests": sorted(shown),
+        "merged": rows("db.merged"),
+        "removed": rows("db.removed"),
+        "evolved": rows("db.evolved"),
     }
 
 

@@ -730,7 +730,8 @@ Iceberg REST server of the projection, and are checked by its tests.
   Schema ids are `schema_seq` values: a catalog projects while its `commit_seq` stays below 2³¹.
 - **ICE-2.** Every remaining snapshot of the table is served, so that a client can rebase on any of them after a
   conflict. The manifests of snapshot `S`, owned by ref `R`, list exactly the files visible at `(R, S)`: status
-  `ADDED` for the files `S`'s commit added on `R`, `EXISTING` for the rest, each with its data sequence number
+  `ADDED` for the files `S`'s commit added on `R`, `EXISTING` for the rest, or `ADDED` in a manifest of the
+  snapshot that added them, which `S` lists as that snapshot wrote it, each with its data sequence number
   equal to its row's `begin_seq`, its spec, partition, record count, size and statistics (ICE-3). A data manifest
   holds files of one status, so that a reader finds what `S` added by its manifests. The snapshot that added a
   manifest, and an entry, is the greatest `begin_seq` it holds.

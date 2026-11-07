@@ -111,6 +111,20 @@ returns table (path text, file_id bigint) language sql stable as $$
   select p.path, p.file_id from @schema@.plan($1, $2) p where p.path = any ($3) or p.file_id = any ($4);
 $$;
 
+-- The files commit $3 added to table $2 on ref $1, with what listed_files gives of them: a row's owner and its begin_seq
+-- find them in the index, whatever the table holds. Their vectors, if any, are not read: a caller that serves them asks
+-- a commit that set none (CMT-1).
+create function @schema@.added_files(ref_id int, table_id uuid, at bigint)
+returns setof @schema@.listed_file language sql stable as $$
+  select f.file_id, f.begin_seq, f.path, f.spec_id, f.partition, f.record_count, f.file_size, f.footer_size,
+         f.sort_order_id, f.stat_field_ids, f.lower, f.upper, f.null_count, f.nan_count, f.value_count,
+         i.content, null::bigint, null::text, null::bigint, null::bigint, null::bigint, null::bytea
+    from @schema@.data_file f
+    left join @schema@.inline_file i on i.table_id = $2 and i.file_id = f.file_id
+   where f.table_id = $2 and f.ref_id = $1 and f.begin_seq = $3
+   order by f.file_id;
+$$;
+
 -- The commit an idempotency key applied on a ref, if any (CMT-5). A key whose commit rolled back is not there.
 create function @schema@.commit_of_key(ref_id int, app_id text) returns bigint language sql stable as $$
   select i.commit_seq from @schema@.idempotency i where i.ref_id = $1 and i.app_id = $2 and i.version > 0;
