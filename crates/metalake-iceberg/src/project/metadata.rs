@@ -213,15 +213,24 @@ pub fn staged(table_id: String, definition: Value) -> TableMetadata {
     metadata(&rows, |_| String::new())
 }
 
+/// Whether a snapshot is the one a table was created with and nothing else: CMT-1 writes it, and Iceberg has no such thing,
+/// so a client takes it as data already written. Trino skips its first files on seeing one.
+pub fn is_empty_creation(snapshot: &TableSnapshot) -> bool {
+    let added = snapshot.summary["added-data-files"].as_i64().unwrap_or(0);
+    snapshot.parent_snapshot_id.is_none() && added == 0
+}
+
 /// The table's metadata, each snapshot naming the manifest list `manifest_list` gives it.
 pub fn metadata(rows: &Rows, manifest_list: impl Fn(i64) -> String) -> TableMetadata {
     let d = &rows.definition;
-    let current = d["snapshot_id"].as_i64();
-    let current_schema = rows
+    let head = rows
         .snapshots
         .iter()
-        .find(|s| Some(s.snapshot_id) == current)
-        .map(|s| s.schema_seq);
+        .find(|s| Some(s.snapshot_id) == d["snapshot_id"].as_i64());
+    let current_schema = head.map(|s| s.schema_seq);
+    // A table nothing was written to has no current snapshot, as in Iceberg (ICE-1).
+    let unwritten = head.filter(|s| is_empty_creation(s)).map(|s| s.snapshot_id);
+    let current = head.map(|s| s.snapshot_id).filter(|id| Some(*id) != unwritten);
     let properties = d["properties"].as_object().into_iter().flatten();
     TableMetadata {
         format_version: 2,
@@ -245,6 +254,7 @@ pub fn metadata(rows: &Rows, manifest_list: impl Fn(i64) -> String) -> TableMeta
         snapshots: rows
             .snapshots
             .iter()
+            .filter(|s| Some(s.snapshot_id) != unwritten)
             .map(|s| Snapshot {
                 snapshot_id: s.snapshot_id,
                 parent_snapshot_id: s.parent_snapshot_id,
@@ -259,7 +269,7 @@ pub fn metadata(rows: &Rows, manifest_list: impl Fn(i64) -> String) -> TableMeta
             .refs
             .iter()
             .filter_map(|(name, kind, id)| {
-                let snapshot_id = (*id)?;
+                let snapshot_id = (*id).filter(|id| Some(*id) != unwritten)?;
                 Some((
                     name.clone(),
                     SnapshotRef {
@@ -310,6 +320,45 @@ mod tests {
         let kept = ids(served(chain(3..=20), &refs));
         assert_eq!(kept[..3], [3, 4, 5]);
         assert_eq!(kept[3], 10);
+    }
+
+    fn snapshot(id: i64, parent: Option<i64>, added: i64) -> TableSnapshot {
+        TableSnapshot {
+            snapshot_id: id,
+            parent_snapshot_id: parent,
+            ref_name: "main".into(),
+            schema_seq: id,
+            timestamp_ms: None,
+            summary: json!({"operation": "update", "added-data-files": added}),
+        }
+    }
+
+    fn with_head(snapshots: Vec<TableSnapshot>, head: i64) -> Rows {
+        Rows {
+            table_id: "t".into(),
+            definition: json!({"snapshot_id": head}),
+            schemas: BTreeMap::from([(1, json!([]))]),
+            snapshots,
+            refs: vec![("main".to_string(), "branch".to_string(), Some(head))],
+        }
+    }
+
+    #[test]
+    fn ice1_unwritten_table_has_no_snapshot() {
+        let served = metadata(&with_head(vec![snapshot(1, None, 0)], 1), |_| String::new());
+        assert_eq!(served.current_snapshot_id, None);
+        assert!(served.snapshots.is_empty() && served.refs.is_empty());
+        assert_eq!(served.current_schema_id, 1, "its schema is still served");
+    }
+
+    #[test]
+    fn ice1_written_table_keeps_its_snapshots() {
+        let written = metadata(&with_head(vec![snapshot(1, None, 2)], 1), |_| String::new());
+        assert_eq!(written.current_snapshot_id, Some(1));
+        let chain = vec![snapshot(1, None, 0), snapshot(2, Some(1), 1)];
+        let served = metadata(&with_head(chain, 2), |_| String::new());
+        assert_eq!(served.current_snapshot_id, Some(2));
+        assert_eq!(served.snapshots.len(), 2);
     }
 
     #[test]

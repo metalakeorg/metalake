@@ -109,7 +109,6 @@ fn records(bytes: &[u8]) -> Result<Vec<Vec<(String, Value)>>, Refused> {
 fn manifests_of(bytes: &[u8], snapshot_id: i64) -> Result<Vec<(String, i32)>, Refused> {
     let mut manifests = Vec::new();
     for record in records(bytes)? {
-        eprintln!("TRACE list {snapshot_id}: {:?} {:?} {:?}", field(&record, "added_snapshot_id"), field(&record, "added_files_count"), field(&record, "manifest_path"));
         if required_long(&record, "added_snapshot_id")? != snapshot_id {
             continue;
         }

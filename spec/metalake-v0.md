@@ -718,7 +718,8 @@ Iceberg REST server of the projection, and are checked by its tests.
     time (TT-1), `parent-snapshot-id`, `schema-id` and the summary, whose `operation` is mapped to Iceberg's:
     `merge` and, *0.1*, `rebase` become `overwrite`;
   - a `refs` entry for every live ref that sees the table, of its kind, pointing at its current snapshot (CMT-2);
-    `current-snapshot-id` is `main`'s.
+    `current-snapshot-id` is `main`'s. A table whose current snapshot is the one that created it, with no files, is
+    served with no snapshot and no ref, as Iceberg has it: a client takes a snapshot for data already written.
 
   Schema ids are `schema_seq` values: a catalog projects while its `commit_seq` stays below 2³¹.
 - **ICE-2.** Every remaining snapshot of the table is served, so that a client can rebase on any of them after a

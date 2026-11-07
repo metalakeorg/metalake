@@ -10,6 +10,7 @@ use uuid::Uuid;
 use super::files::{self, ManifestFile};
 use super::update::{Change, one_ref};
 use super::{ApplyError, Refused, create};
+use crate::project::metadata::is_empty_creation;
 use crate::state::State;
 
 /// The version of every Iceberg idempotency key: a key names one proposed snapshot (REST-3).
@@ -111,6 +112,16 @@ async fn resolve(on: &Ref, target: &Target) -> Result<(Uuid, Option<Table>), App
     Ok((table.id(), Some(table)))
 }
 
+/// What a client that saw a table with no snapshot expects: the snapshot its creation wrote, which it is not served
+/// (ICE-1). A table that has been written since keeps `None`, so the commit conflicts.
+async fn base_of_unwritten(state: &State, table: &Table) -> Result<Option<i64>, ApplyError> {
+    let snapshots = state.catalog().table_snapshots(table).await?;
+    let unwritten = snapshots
+        .iter()
+        .find(|s| Some(s.snapshot_id) == table.snapshot_id() && is_empty_creation(s));
+    Ok(unwritten.map(|s| s.snapshot_id))
+}
+
 /// The files of a change, and its definition: what a stage-create sends back, or the properties it changes.
 async fn prepare(
     state: &State,
@@ -153,7 +164,11 @@ async fn prepare(
         let footers = files::footer_sizes(&storage, &proposed.added).await?;
         adds = file_adds(table_id, &described, &proposed.added, &footers)?;
     }
-    let expected = change.expected.filter(|_| table.is_some());
+    let expected = match (&table, change.expected) {
+        (None, _) => None,
+        (Some(table), Some(None)) => Some(base_of_unwritten(state, table).await?),
+        (Some(_), expected) => expected,
+    };
     Ok(Prepared {
         table_id,
         table,
