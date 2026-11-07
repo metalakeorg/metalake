@@ -2,8 +2,11 @@
 //! snapshot's files never change, so what is there is there for good, and a repeat writes the same bytes.
 
 use std::collections::btree_map::Entry;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
+use std::hash::{Hash, Hasher};
 
+use bytes::Bytes;
 use futures_util::TryStreamExt;
 use metalake::{Error, ListedFile, Ref, Result, Scan, Storage, Table, TableSnapshot, listed_vector};
 
@@ -11,7 +14,7 @@ use crate::project::deletes::position_deletes;
 use crate::project::manifest::{Context, Delete, Listed, data_manifest, delete_manifest, manifest_list, served_path};
 use crate::project::metadata::{Rows, metadata, schema, served};
 use crate::state::State;
-use crate::wire::metadata::LoadTableResult;
+use crate::wire::metadata::{LoadTableResult, TableMetadata};
 
 /// Where what is generated for a table lies, away from data (REST-6).
 fn generated(location: &str) -> String {
@@ -167,6 +170,21 @@ async fn generate(on: &Ref, state: &State, storage: &Storage, table: &Table, sna
 }
 
 /// `loadTable`.
+/// Writes the metadata a load serves, unless it is there: an engine reads the file itself for its metadata tables, as
+/// Trino does, and an answer names only files that exist (REST-6). A ref can change it with no new sequence, so its name
+/// carries its content.
+async fn write_metadata(storage: &Storage, location: &str, served: &TableMetadata) -> Result<String> {
+    let body = serde_json::to_vec(served).map_err(|e| Error::Corrupt(format!("metadata of {location}: {e}")))?;
+    let mut hasher = DefaultHasher::new();
+    body.hash(&mut hasher);
+    let (sequence, content) = (served.last_sequence_number, hasher.finish());
+    let path = format!("{}/v{sequence}-{content:016x}.metadata.json", generated(location));
+    if !storage.exists(&path).await? {
+        storage.put(&path, Bytes::from(body)).await?;
+    }
+    Ok(path)
+}
+
 pub(crate) async fn load(state: &State, table: &Table) -> Result<LoadTableResult> {
     let rows = rows(state, table).await?;
     let storage = state.storage()?;
@@ -176,12 +194,9 @@ pub(crate) async fn load(state: &State, table: &Table) -> Result<LoadTableResult
     }
     let location = table.location();
     let served = metadata(&rows, |at| list_path(location, at));
+    let metadata_location = write_metadata(&storage, location, &served).await?;
     Ok(LoadTableResult {
-        metadata_location: Some(format!(
-            "{}/v{}.metadata.json",
-            generated(location),
-            served.last_sequence_number
-        )),
+        metadata_location: Some(metadata_location),
         metadata: served,
         config: BTreeMap::new(),
     })

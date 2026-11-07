@@ -159,6 +159,7 @@ async fn ice6_pyiceberg_append() -> Result<(), Failure> {
         "MetaLake's id"
     );
     assert_eq!(said["reread"], said["after"]);
+    assert_eq!(said["metadata_exists"], true, "an answer names only files that exist");
     assert!(said["after"].as_i64() > said["before"].as_i64());
     assert_eq!(planned.iter().map(|f| f.record_count).sum::<i64>(), 5);
     Ok(())

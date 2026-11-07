@@ -71,7 +71,7 @@ def spark_lifecycle(uri):
     said["merged"] = keys("select k from lake.flow.t order by k")
     said["merged_s"] = keys("select s from lake.flow.t where k = 1")
     session.sql("alter table lake.flow.t set tblproperties ('team' = 'data')")
-    said["property"] = keys("select value from (show tblproperties lake.flow.t ('team'))")
+    said["property"] = [row[1] for row in session.sql("show tblproperties lake.flow.t ('team')").collect()]
     session.sql("create table lake.flow.c using iceberg as select k from lake.flow.t where k < 10")
     said["created_as"] = keys("select k from lake.flow.c order by k")
     session.sql("alter table lake.flow.c rename to flow.d")

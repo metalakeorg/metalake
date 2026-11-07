@@ -77,6 +77,7 @@ def append(uri):
         "before": before,
         "after": current.snapshot_id,
         "reread": reread.current_snapshot().snapshot_id,
+        "metadata_exists": reread.io.new_input(reread.metadata_location).exists(),
         "rows": sorted(row["k"] for row in reread.scan().to_arrow().to_pylist()),
     }
 
