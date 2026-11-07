@@ -4,6 +4,7 @@
 use std::collections::btree_map::Entry;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
 use std::hash::{Hash, Hasher};
 
 use apache_avro::types::Value as AvroValue;
@@ -116,13 +117,10 @@ async fn inherited(storage: &Storage, table: &Table, snapshot: &TableSnapshot) -
     Ok(Some(listed_manifests(&storage.get(&path).await?)?))
 }
 
-/// A snapshot's manifests and manifest list, unless they are there: what it added, and its parent's manifests when it
-/// only added to them, which costs what it added, or else all it sees.
+/// A snapshot's manifests and manifest list: what it added, and its parent's manifests when it only added to them, which
+/// costs what it added, or else all it sees.
 async fn generate(on: &Ref, state: &State, storage: &Storage, table: &Table, snapshot: &TableSnapshot) -> Result<()> {
     let (location, at) = (table.location(), snapshot.snapshot_id);
-    if storage.exists(&list_path(location, at)).await? {
-        return Ok(());
-    }
     let namespace: Vec<&str> = table.namespace().iter().map(String::as_str).collect();
     let read = on.at(at).table(&namespace, table.name()).await?;
     let carried = inherited(storage, table, snapshot).await?;
@@ -195,35 +193,168 @@ async fn generate(on: &Ref, state: &State, storage: &Storage, table: &Table, sna
     storage.put(&list_path(location, at), list.into()).await
 }
 
-/// `loadTable`.
-/// Writes the metadata a load serves, unless it is there: an engine reads the file itself for its metadata tables, as
-/// Trino does, and an answer names only files that exist (REST-6). A ref can change it with no new sequence, so its name
-/// carries its content.
-async fn write_metadata(storage: &Storage, location: &str, served: &TableMetadata) -> Result<String> {
+/// The metadata a load serves, as the file that holds it and where it lies. A ref can change it with no new sequence, so
+/// its name carries its content.
+fn rendered(location: &str, served: &TableMetadata) -> Result<(String, Bytes)> {
     let body = serde_json::to_vec(served).map_err(|e| Error::Corrupt(format!("metadata of {location}: {e}")))?;
     let mut hasher = DefaultHasher::new();
     body.hash(&mut hasher);
     let (sequence, content) = (served.last_sequence_number, hasher.finish());
     let path = format!("{}/v{sequence}-{content:016x}.metadata.json", generated(location));
-    if !storage.exists(&path).await? {
-        storage.put(&path, Bytes::from(body)).await?;
-    }
-    Ok(path)
+    Ok((path, Bytes::from(body)))
 }
 
+/// Whether a snapshot's list is there, asking once.
+async fn listed_once<Found>(id: i64, asked: &mut HashMap<i64, bool>, exists: impl Fn(i64) -> Found) -> Result<bool>
+where
+    Found: Future<Output = Result<bool>>,
+{
+    if let Some(there) = asked.get(&id) {
+        return Ok(*there);
+    }
+    let there = exists(id).await?;
+    asked.insert(id, there);
+    Ok(there)
+}
+
+/// The snapshots served whose lists are not there, the earliest first. A list is written after its parent's and stays, so
+/// the walk from each head ends at the first list it finds. The chain's oldest is asked too: a window that widened reaches
+/// past every list there is, and then each one is asked.
+async fn unlisted<'a, Found>(
+    snapshots: &'a [TableSnapshot],
+    heads: &[i64],
+    exists: impl Fn(i64) -> Found,
+) -> Result<Vec<&'a TableSnapshot>>
+where
+    Found: Future<Output = Result<bool>>,
+{
+    let by_id: HashMap<i64, &TableSnapshot> = snapshots.iter().map(|s| (s.snapshot_id, s)).collect();
+    let mut asked = HashMap::new();
+    let mut missing = BTreeMap::new();
+    for head in heads {
+        let mut chain = Vec::new();
+        let mut at = by_id.get(head).copied();
+        while let Some(snapshot) = at {
+            chain.push(snapshot);
+            at = snapshot.parent_snapshot_id.and_then(|id| by_id.get(&id).copied());
+        }
+        let Some(oldest) = chain.last() else {
+            continue;
+        };
+        let every_one = !listed_once(oldest.snapshot_id, &mut asked, &exists).await?;
+        for snapshot in chain {
+            let there = listed_once(snapshot.snapshot_id, &mut asked, &exists).await?;
+            if there && !every_one {
+                break;
+            }
+            if !there {
+                missing.insert(snapshot.snapshot_id, snapshot);
+            }
+        }
+    }
+    Ok(missing.into_values().collect())
+}
+
+/// `loadTable`. Its metadata file is written last, so finding it says that every file it names is there, and a load of
+/// what has not changed asks nothing else (REST-6). An engine reads that file itself for its metadata tables, as Trino does.
 pub(crate) async fn load(state: &State, table: &Table) -> Result<LoadTableResult> {
     let rows = rows(state, table).await?;
     let storage = state.storage()?;
-    for snapshot in &rows.snapshots {
-        let on = state.named(&snapshot.ref_name).await?;
-        generate(&on, state, &storage, table, snapshot).await?;
-    }
     let location = table.location();
     let served = metadata(&rows, |at| list_path(location, at));
-    let metadata_location = write_metadata(&storage, location, &served).await?;
+    let (metadata_location, body) = rendered(location, &served)?;
+    if !storage.exists(&metadata_location).await? {
+        let heads: Vec<i64> = rows.refs.iter().filter_map(|(.., current)| *current).collect();
+        let exists = |id| {
+            let (storage, path) = (&storage, list_path(location, id));
+            async move { storage.exists(&path).await }
+        };
+        for snapshot in unlisted(&rows.snapshots, &heads, exists).await? {
+            let on = state.named(&snapshot.ref_name).await?;
+            generate(&on, state, &storage, table, snapshot).await?;
+        }
+        storage.put(&metadata_location, body).await?;
+    }
     Ok(LoadTableResult {
         metadata_location: Some(metadata_location),
         metadata: served,
         config: BTreeMap::new(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::{Cell, RefCell};
+    use std::collections::HashSet;
+
+    use serde_json::json;
+
+    use super::*;
+
+    fn snapshot(id: i64, parent: Option<i64>) -> TableSnapshot {
+        TableSnapshot {
+            snapshot_id: id,
+            parent_snapshot_id: parent,
+            ref_name: "main".into(),
+            schema_seq: 1,
+            summary: json!({}),
+            timestamp_ms: None,
+        }
+    }
+
+    fn chain(ids: std::ops::RangeInclusive<i64>) -> Vec<TableSnapshot> {
+        let first = *ids.start();
+        ids.map(|id| snapshot(id, (id > first).then_some(id - 1))).collect()
+    }
+
+    /// The snapshots `unlisted` finds, given the lists there are, and how many it asked for.
+    async fn found(snapshots: &[TableSnapshot], heads: &[i64], lists: &[i64]) -> (Vec<i64>, usize) {
+        let there: HashSet<i64> = lists.iter().copied().collect();
+        let (requests, there) = (Cell::new(0), RefCell::new(there));
+        let exists = |id: i64| {
+            requests.set(requests.get() + 1);
+            let found = there.borrow().contains(&id);
+            async move { Ok(found) }
+        };
+        let missing = unlisted(snapshots, heads, exists).await.expect("no storage to fail");
+        (missing.iter().map(|s| s.snapshot_id).collect(), requests.get())
+    }
+
+    #[tokio::test]
+    async fn rest6_lists_there_cost_the_same_at_any_length() {
+        let lists: Vec<i64> = (1..=1000).collect();
+        let (short, long) = (chain(991..=1000), chain(1..=1000));
+        let at_ten = found(&short, &[1000], &lists).await;
+        let at_a_thousand = found(&long, &[1000], &lists).await;
+        assert_eq!(at_ten, (vec![], 2));
+        assert_eq!(at_a_thousand, at_ten);
+    }
+
+    #[tokio::test]
+    async fn rest6_only_new_snapshots_generated() {
+        let lists: Vec<i64> = (1..=8).collect();
+        let (missing, requests) = found(&chain(1..=10), &[10], &lists).await;
+        assert_eq!(missing, [9, 10]);
+        assert_eq!(requests, 4, "the oldest, the two new ones and the first there");
+    }
+
+    #[tokio::test]
+    async fn rest6_widened_window_finds_older_lists() {
+        let lists: Vec<i64> = (91..=100).collect();
+        let (missing, _) = found(&chain(1..=100), &[100], &lists).await;
+        assert_eq!(missing, (1..=90).collect::<Vec<_>>());
+    }
+
+    #[tokio::test]
+    async fn rest6_heads_share_their_chain() {
+        let mut snapshots = chain(1..=5);
+        snapshots.push(snapshot(6, Some(3)));
+        let lists = [1, 2, 3, 4, 5];
+        let (missing, requests) = found(&snapshots, &[5, 6, 7], &lists).await;
+        assert_eq!(missing, [6]);
+        assert_eq!(
+            requests, 4,
+            "a list is asked for once, and a head with no snapshot for none"
+        );
+    }
 }

@@ -148,7 +148,11 @@ async fn ice2_added_files_manifest_apart() -> Result<(), Failure> {
     let expected = json!([[0, 1, 0, false], [1, 1, 0, false], [1, 1, 0, true]]);
     assert_eq!(said["manifests"], expected, "{said}");
     assert_eq!(said["merged"], json!([0, 1, 10, 11, 20]), "{said}");
-    assert_eq!(said["removed"], json!([]), "a merge that removes is written whole: {said}");
+    assert_eq!(
+        said["removed"],
+        json!([]),
+        "a merge that removes is written whole: {said}"
+    );
     assert_eq!(said["evolved"], json!([0, 1, 10, 11, 20, 21]), "{said}");
     Ok(())
 }
