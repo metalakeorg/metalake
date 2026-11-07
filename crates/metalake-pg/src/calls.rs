@@ -45,6 +45,8 @@ pub struct Commit {
     pub definition: Option<String>,
     /// Namespace changes (NS-1 to NS-5), in the reference's shape.
     pub namespaces: Option<Value>,
+    /// What the commit adds to each table's snapshot summary, by table (CMT-12).
+    pub summaries: Option<Value>,
 }
 
 /// A merge of a branch, or of a selection of it, into its parent (MRG-1 to MRG-8).
@@ -162,7 +164,7 @@ impl Protocol {
                 s,
                 "commit(ref_id => $1, operation => $2, files => $3, removed => $4, vectors => $5, expected => $6, \
                  changes => $7, author => $8, actor => $9, app_id => $10, app_version => $11, message => $12, \
-                 definition => $13, namespaces => $14)",
+                 definition => $13, namespaces => $14, summaries => $15)",
                 &[
                     &c.ref_id,
                     &c.operation,
@@ -178,6 +180,7 @@ impl Protocol {
                     &c.message,
                     &c.definition,
                     &c.namespaces,
+                    &c.summaries,
                 ],
             )
             .await?;

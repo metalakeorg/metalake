@@ -12,6 +12,24 @@ use crate::wire::commit::{CommitTableRequest, Entry, ProposedSnapshot, Requireme
 /// The format a table is served in (ICE-1).
 const FORMAT_VERSION: i32 = 2;
 
+/// What Iceberg computes for a snapshot's summary over the client's base and its manifests: the catalog states these
+/// itself or has no use for them (CMT-1), and any other key stays the client's (CMT-12).
+const COMPUTED_KEYS: [&str; 4] = [
+    "operation",
+    "changed-partition-count",
+    "partition-summaries-included",
+    "replace-partitions",
+];
+const COMPUTED_PREFIXES: [&str; 7] = [
+    "added-",
+    "deleted-",
+    "removed-",
+    "total-",
+    "manifests-",
+    "entries-",
+    "partitions.",
+];
+
 /// The definition of a table that a stage-create left with its client, sent back whole (REST-7).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Creation {
@@ -50,6 +68,15 @@ impl Change {
     /// The operation the last snapshot's summary states.
     pub fn operation(&self) -> Option<&str> {
         self.snapshots.last()?.summary.get("operation").map(String::as_str)
+    }
+
+    /// What the last snapshot's summary keeps of the client's: how an engine finds what it committed (CMT-12).
+    pub fn client_summary(&self) -> BTreeMap<String, String> {
+        let computed =
+            |key: &str| COMPUTED_KEYS.contains(&key) || COMPUTED_PREFIXES.iter().any(|prefix| key.starts_with(prefix));
+        let last = self.snapshots.last().map(|s| &s.summary);
+        let kept = last.into_iter().flatten().filter(|(key, _)| !computed(key));
+        kept.map(|(key, value)| (key.clone(), value.clone())).collect()
     }
 
     /// Holds `assert-table-uuid` to the table the name resolved to. A table's id never changes, so this needs no lock.
@@ -347,6 +374,41 @@ mod tests {
         };
         refused(without("assign-uuid"), "assign-uuid");
         refused(without("add-spec"), "add-spec");
+    }
+
+    #[test]
+    fn cmt12_client_summary_keeps_engine_keys() {
+        let mut body = append();
+        body["updates"][0]["snapshot"]["summary"] = json!({
+            "operation": "append", "added-data-files": "1", "deleted-records": "2", "removed-files-size": "3",
+            "total-records": "4", "manifests-created": "5", "entries-processed": "6", "partitions.k=1": "7",
+            "changed-partition-count": "8", "partition-summaries-included": "true", "replace-partitions": "true",
+            "spark.sql.streaming.queryId": "q", "spark.sql.streaming.epochId": "7",
+            "flink.max-committed-checkpoint-id": "9", "engine-name": "spark", "job": "a",
+        });
+        let kept = asked(body).expect("an append").client_summary();
+        let keys: Vec<&str> = kept.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            [
+                "engine-name",
+                "flink.max-committed-checkpoint-id",
+                "job",
+                "spark.sql.streaming.epochId",
+                "spark.sql.streaming.queryId",
+            ]
+        );
+    }
+
+    #[test]
+    fn cmt12_last_snapshot_summary_kept() {
+        let mut change = asked(append()).expect("an append");
+        let mut first = change.snapshots[0].clone();
+        first.summary = BTreeMap::from([("job".to_string(), "first".to_string())]);
+        let mut last = first.clone();
+        last.summary.insert("job".to_string(), "last".to_string());
+        change.snapshots = vec![first, last];
+        assert_eq!(change.client_summary()["job"], "last");
     }
 
     #[test]

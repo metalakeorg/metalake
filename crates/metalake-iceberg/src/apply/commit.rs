@@ -1,7 +1,7 @@
 //! `updateTable` and `transactions/commit` as one commit of the protocol (ICE-6, REST-9), on what `update` and `files`
 //! established.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use metalake::{Error, FileAdd, Ref, Table};
 use serde_json::{Value as Json, json};
@@ -97,6 +97,7 @@ struct Prepared {
     removed: Vec<i64>,
     definition: Option<Json>,
     expected: Option<Option<i64>>,
+    summary: BTreeMap<String, String>,
     replace: bool,
 }
 
@@ -176,6 +177,7 @@ async fn prepare(
         removed,
         definition,
         expected,
+        summary: change.client_summary(),
         replace: change.operation() == Some("replace"),
     })
 }
@@ -253,6 +255,9 @@ async fn commit(on: &Ref, prepared: Vec<Prepared>, key: Option<String>) -> Resul
         }
         if let Some(expected) = one.expected {
             transaction = transaction.expect_snapshot(one.table_id, expected);
+        }
+        if !one.summary.is_empty() {
+            transaction = transaction.summary(one.table_id, one.summary);
         }
     }
     if replaces {

@@ -70,10 +70,12 @@ def read(uri):
 def append(uri):
     table = connect(uri).load_table("db.plain")
     before = table.current_snapshot().snapshot_id
-    table.append(pyarrow.Table.from_pylist([{"k": 7}, {"k": 8}], schema=table.schema().as_arrow()))
+    table.append(pyarrow.Table.from_pylist([{"k": 7}, {"k": 8}], schema=table.schema().as_arrow()), snapshot_properties={"job": "7"})
     current = table.current_snapshot()
     reread = connect(uri).load_table("db.plain")
+    summary = reread.current_snapshot().summary
     return {
+        "kept": {key: summary.get(key) for key in ("job", "total-records")},
         "before": before,
         "after": current.snapshot_id,
         "reread": reread.current_snapshot().snapshot_id,

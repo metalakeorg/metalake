@@ -63,6 +63,7 @@ pub struct Transaction {
     expected: Vec<TableExpect>,
     changes: Map<String, Value>,
     namespaces: Vec<Value>,
+    summaries: Map<String, Value>,
     replace: bool,
     app: Option<(String, i64)>,
     author: Option<String>,
@@ -79,6 +80,7 @@ impl Transaction {
             expected: Vec::new(),
             changes: Map::new(),
             namespaces: Vec::new(),
+            summaries: Map::new(),
             replace: false,
             app: None,
             author: None,
@@ -223,6 +225,15 @@ impl Transaction {
         self
     }
 
+    /// Adds keys of the writer's own to the summary of a table's snapshot, which touches the table (CMT-12). They mean
+    /// nothing to the catalog.
+    pub fn summary(mut self, table_id: Uuid, keys: impl IntoIterator<Item = (String, String)>) -> Self {
+        let keys = keys.into_iter().map(|(key, value)| (key, Value::String(value)));
+        self.summaries
+            .insert(table_id.to_string(), Value::Object(keys.collect()));
+        self
+    }
+
     /// The idempotency key (CMT-8): a writer's id and a version it never repeats for different data, such as the
     /// offset of a stream. A commit with a key may be repeated safely; once applied, repeating it applies nothing.
     pub fn idempotent(mut self, app_id: impl Into<String>, version: i64) -> Self {
@@ -274,6 +285,7 @@ impl Transaction {
             message: self.message,
             definition: None,
             namespaces: (!self.namespaces.is_empty()).then_some(Value::Array(self.namespaces)),
+            summaries: (!self.summaries.is_empty()).then_some(Value::Object(self.summaries)),
         };
         let catalog = self.on.catalog();
         let (mut attempt, mut rebase) = (0, false);
