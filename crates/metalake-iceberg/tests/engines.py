@@ -285,12 +285,12 @@ def flink_recovery(uri):
         ).wait()
         return environment
 
-    def committed():
+    def current_summary():
         with urllib.request.urlopen(f"{uri}/v1/namespaces/flow/tables/s") as answer:
             metadata = json.load(answer)["metadata"]
         current = metadata.get("current-snapshot-id")
         snapshots = [s for s in metadata["snapshots"] if s["snapshot-id"] == current]
-        return snapshots[0]["summary"].get("flink.max-committed-checkpoint-id") if snapshots else None
+        return snapshots[0]["summary"] if snapshots else None
 
     batch = TableEnvironment.create(EnvironmentSettings.in_batch_mode())
     batch.execute_sql(
@@ -302,13 +302,16 @@ def flink_recovery(uri):
     insert = "insert into lake.flow.s select k from numbers"
     job = streaming().execute_sql(insert)
     deadline = time.time() + 120
-    while committed() is None and time.time() < deadline:
+    while current_summary() is None and time.time() < deadline:
         time.sleep(0.1)
     job.get_job_client().cancel().result()
 
     checkpoints = glob.glob(f"{root}/checkpoints/*/chk-*")
     newest = max(checkpoints, key=lambda path: int(path.rsplit("-", 1)[1]))
-    said = {"restored": newest.rsplit("-", 1)[1], "committed": committed()}
+    said = {
+        "restored": newest.rsplit("-", 1)[1],
+        "committed": current_summary().get("flink.max-committed-checkpoint-id"),
+    }
     streaming(newest).execute_sql(insert).wait()
     with batch.execute_sql("select k from lake.flow.s").collect() as rows:
         keys = [row[0] for row in rows]

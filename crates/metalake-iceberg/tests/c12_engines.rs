@@ -182,10 +182,10 @@ async fn flink_recovery_repeats_no_checkpoint() -> Result<(), Failure> {
     let (_server, uri) = server(&schema)?;
     let said = run("flink_recovery", &uri)?;
     let _ = std::fs::remove_dir_all(&directory);
-    assert_eq!(said["restored"], said["committed"], "a checkpoint already committed: {said}");
     assert_eq!(said["rows"], said["expected"], "{said}");
     assert_eq!(said["distinct"], said["expected"], "{said}");
     assert_eq!(said["last"], said["expected"], "{said}");
+    assert_eq!(said["restored"], said["committed"], "a checkpoint already committed: {said}");
     Ok(())
 }
 
