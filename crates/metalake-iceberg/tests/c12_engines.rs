@@ -169,6 +169,10 @@ async fn spark_recovery_repeats_no_batch() -> Result<(), Failure> {
     assert_eq!(said["epochs"], json!(["0", "1", "2"]), "an empty batch counts: {said}");
     assert_eq!(said["complete_again"], json!([2]), "{said}");
     assert_eq!(said["complete_next"], json!([3]), "{said}");
+    assert_eq!(said["behind_others"], json!([1]), "{said}");
+    assert_eq!(said["read_on"], said["source"], "{said}");
+    let expired = said["expired"].as_str().unwrap_or_default();
+    assert!(expired.contains("expired or removed"), "{said}");
     Ok(())
 }
 
@@ -184,7 +188,7 @@ async fn flink_recovery_repeats_no_checkpoint() -> Result<(), Failure> {
     let _ = std::fs::remove_dir_all(&directory);
     assert_eq!(said["rows"], said["expected"], "{said}");
     assert_eq!(said["distinct"], said["expected"], "{said}");
-    assert_eq!(said["last"], said["expected"], "{said}");
+    assert_eq!(said["last"], said["last_row"], "{said}");
     assert_eq!(
         said["restored"], said["committed"],
         "a checkpoint already committed: {said}"
@@ -204,6 +208,7 @@ async fn spark_stream_reads_merge_and_specs() -> Result<(), Failure> {
     let _ = std::fs::remove_dir_all(&directory);
     assert_eq!(said["merged"], json!([0, 1, 10, 11, 20]), "{said}");
     assert_eq!(said["evolved"], json!([0, 1, 10, 11, 20, 21]), "{said}");
+    assert_eq!(said["long"], json!((0..60).collect::<Vec<_>>()), "{said}");
     let refused = said["removed"].as_str().unwrap_or_default();
     assert!(
         refused.contains("overwrite snapshot"),

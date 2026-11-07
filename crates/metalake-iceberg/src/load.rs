@@ -17,13 +17,20 @@ use crate::project::manifest::{
     Context, Delete, Inherited, Listed, data_manifest, delete_manifest, listed_manifests, manifest_list, roll_up_due,
     rolled_manifest, rolled_up, served_path, taken,
 };
-use crate::project::metadata::{Rows, adds_only, metadata, schema, served_per_ref};
+use crate::project::metadata::{
+    Expiry, Rows, adds_only, expiry, manifest_target_size, metadata, previous_versions, schema,
+};
 use crate::state::State;
 use crate::wire::metadata::{LoadTableResult, TableMetadata};
 
 /// Where what is generated for a table lies, away from data (REST-6).
 fn generated(location: &str) -> String {
     format!("{}/metalake-manifests", location.trim_end_matches('/'))
+}
+
+/// Where a table's metadata files lie, apart, as a list of them should not grow with its manifests.
+fn metadata_files(location: &str) -> String {
+    format!("{}/metalake-metadata", location.trim_end_matches('/'))
 }
 
 fn list_path(location: &str, snapshot: i64) -> String {
@@ -51,8 +58,8 @@ async fn rows(state: &State, table: &Table) -> Result<Rows> {
         refs.push((described.name.clone(), described.kind.clone(), current));
     }
     let heads: Vec<i64> = refs.iter().filter_map(|(.., current)| *current).collect();
-    let depth = served_per_ref(&definition);
-    let snapshots = state.catalog().ancestors(table, &heads, depth).await?;
+    let Expiry { keep, max_age_ms } = expiry(&definition);
+    let snapshots = state.catalog().ancestors(table, &heads, keep, Some(max_age_ms)).await?;
     let mut schemas = BTreeMap::new();
     for snapshot in &snapshots {
         if let Entry::Vacant(schema) = schemas.entry(snapshot.schema_seq) {
@@ -127,10 +134,11 @@ async fn roll_up<'c>(
     location: &str,
     snapshot: i64,
     manifests: &mut Vec<Inherited>,
+    target: i64,
     context_of: impl Fn(i32) -> Context<'c>,
 ) -> Result<()> {
-    while let Some((spec_id, level)) = roll_up_due(manifests) {
-        let parts = taken(manifests, spec_id, level);
+    while let Some((spec_id, level)) = roll_up_due(manifests, target) {
+        let parts = taken(manifests, spec_id, level, target);
         let bytes = try_join_all(parts.iter().map(|m| storage.get(&m.path))).await?;
         let written = rolled_manifest(&bytes, &context_of(spec_id))?;
         let lo = parts.iter().map(|m| m.min_sequence).min().unwrap_or(0);
@@ -214,7 +222,8 @@ async fn generate(on: &Ref, state: &State, storage: &Storage, table: &Table, sna
         }
     }
     let mut carried = carried.unwrap_or_default();
-    roll_up(storage, location, at, &mut carried, context_of).await?;
+    let target = manifest_target_size(&definition);
+    roll_up(storage, location, at, &mut carried, target, context_of).await?;
     let list = manifest_list(at, snapshot.parent_snapshot_id, &manifests, carried)?;
     storage.put(&list_path(location, at), list.into()).await
 }
@@ -226,8 +235,21 @@ fn rendered(location: &str, served: &TableMetadata) -> Result<(String, Bytes)> {
     let mut hasher = DefaultHasher::new();
     body.hash(&mut hasher);
     let (sequence, content) = (served.last_sequence_number, hasher.finish());
-    let path = format!("{}/v{sequence}-{content:016x}.metadata.json", generated(location));
+    let path = format!("{}/v{sequence}-{content:016x}.metadata.json", metadata_files(location));
     Ok((path, Bytes::from(body)))
+}
+
+/// What a table's metadata files `found`, each with its age, lose to keep `keep` of them, the latest by sequence and then
+/// by age, as a ref can change a table with no new sequence.
+fn stale_versions(found: Vec<(String, i64)>, keep: usize) -> Vec<String> {
+    let sequence = |path: &str| -> i64 {
+        let name = path.rsplit('/').next().unwrap_or_default();
+        let digits = name.strip_prefix('v').and_then(|rest| rest.split('-').next());
+        digits.and_then(|digits| digits.parse().ok()).unwrap_or(0)
+    };
+    let mut versions = found;
+    versions.sort_by_key(|(path, age)| (std::cmp::Reverse(sequence(path)), *age));
+    versions.into_iter().skip(keep).map(|(path, _)| path).collect()
 }
 
 /// Whether a snapshot's list is there, asking once.
@@ -300,6 +322,10 @@ pub(crate) async fn load(state: &State, table: &Table) -> Result<LoadTableResult
             generate(&on, state, &storage, table, snapshot).await?;
         }
         storage.put(&metadata_location, body).await?;
+        let found = storage.list(&metadata_files(location)).await?;
+        for stale in stale_versions(found, previous_versions(&rows.definition) + 1) {
+            storage.delete(&stale).await?;
+        }
     }
     Ok(LoadTableResult {
         metadata_location: Some(metadata_location),
@@ -318,6 +344,8 @@ mod tests {
 
     use super::*;
     use crate::project::manifest::ROLL_UP;
+
+    const TARGET: i64 = 1024;
 
     fn snapshot(id: i64, parent: Option<i64>) -> TableSnapshot {
         TableSnapshot {
@@ -352,6 +380,7 @@ mod tests {
         Inherited {
             row: AvroValue::Null,
             path: format!("gs://t/metalake-manifests/{name}"),
+            length: 1,
             spec_id,
             deletes,
             files: 1,
@@ -369,24 +398,29 @@ mod tests {
 
     #[test]
     fn ice2_roll_up_due_by_spec_and_level() {
-        assert_eq!(roll_up_due(&many("a-", ROLL_UP - 1, 0)), None);
-        assert_eq!(roll_up_due(&many("a-", ROLL_UP, 0)), Some((0, 0)));
-        assert_eq!(roll_up_due(&many("a-", ROLL_UP, 3)), Some((3, 0)));
-        assert_eq!(roll_up_due(&many("r2-", ROLL_UP, 0)), Some((0, 2)));
+        assert_eq!(roll_up_due(&many("a-", ROLL_UP - 1, 0), TARGET), None);
+        assert_eq!(roll_up_due(&many("a-", ROLL_UP, 0), TARGET), Some((0, 0)));
+        assert_eq!(roll_up_due(&many("a-", ROLL_UP, 3), TARGET), Some((3, 0)));
+        assert_eq!(roll_up_due(&many("r2-", ROLL_UP, 0), TARGET), Some((0, 2)));
         let mut split = many("a-", ROLL_UP - 1, 0);
         split.extend(many("a-", 1, 1));
         split.extend(many("r1-", ROLL_UP - 1, 0));
-        assert_eq!(roll_up_due(&split), None, "a spec and a level at a time");
+        assert_eq!(roll_up_due(&split, TARGET), None, "a spec and a level at a time");
     }
 
     #[test]
     fn ice2_roll_up_leaves_what_has_no_level() {
         let whole = many("m-", ROLL_UP, 0);
-        assert_eq!(roll_up_due(&whole), None, "all a snapshot saw");
+        assert_eq!(roll_up_due(&whole, TARGET), None, "all a snapshot saw");
         let deletes: Vec<Inherited> = (0..ROLL_UP)
             .map(|i| manifest(&format!("a-{i}-0.avro"), 0, true))
             .collect();
-        assert_eq!(roll_up_due(&deletes), None, "deletes stay apart");
+        assert_eq!(roll_up_due(&deletes, TARGET), None, "deletes stay apart");
+        assert_eq!(
+            roll_up_due(&many("r1-", ROLL_UP, 0), 1),
+            None,
+            "they reached the target"
+        );
     }
 
     #[test]
@@ -394,8 +428,21 @@ mod tests {
         let mut manifests = many("a-", 2, 0);
         manifests.extend(many("r1-", 1, 0));
         manifests.extend(many("a-", 1, 1));
-        let parts = taken(&mut manifests, 0, 0);
+        let parts = taken(&mut manifests, 0, 0, TARGET);
         assert_eq!((parts.len(), manifests.len()), (2, 2));
+    }
+
+    #[test]
+    fn rest6_metadata_files_keep_the_latest() {
+        let file = |name: &str, age| (format!("gs://t/metalake-metadata/{name}.metadata.json"), age);
+        let found = vec![file("v9-a", 5), file("v10-b", 1), file("v10-c", 9), file("v2-d", 50)];
+        let stale = stale_versions(found, 2);
+        assert_eq!(stale.len(), 2);
+        assert!(
+            stale[0].contains("v9-a") && stale[1].contains("v2-d"),
+            "by number, not by name: {stale:?}"
+        );
+        assert_eq!(stale_versions(vec![file("v1-a", 1)], 2), Vec::<String>::new());
     }
 
     #[tokio::test]

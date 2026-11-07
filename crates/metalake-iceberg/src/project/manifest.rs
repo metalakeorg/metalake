@@ -319,6 +319,7 @@ pub const ROLL_UP: usize = 50;
 pub struct Inherited {
     pub row: Value,
     pub path: String,
+    pub length: i64,
     pub spec_id: i32,
     pub deletes: bool,
     pub files: i32,
@@ -344,6 +345,7 @@ impl Inherited {
         };
         Ok(Self {
             path: path.clone(),
+            length: number("manifest_length")?,
             spec_id: number("partition_spec_id")? as i32,
             deletes: number("content")? == i64::from(POSITION_DELETES),
             files: (number("added_files_count")? + number("existing_files_count")?) as i32,
@@ -364,8 +366,9 @@ impl Inherited {
         name.strip_prefix('r')?.split('-').next()?.parse().ok()
     }
 
-    fn is_at(&self, spec_id: i32, level: u32) -> bool {
-        !self.deletes && self.spec_id == spec_id && self.level() == Some(level)
+    /// Its level, if it rolls up: not one of deletes, and not one that reached the size a manifest stops at.
+    fn rolls_up_at(&self, target: i64) -> Option<u32> {
+        self.level().filter(|_| !self.deletes && self.length < target)
     }
 }
 
@@ -376,10 +379,10 @@ pub fn listed_manifests(bytes: &[u8]) -> Result<Vec<Inherited>> {
 }
 
 /// The spec and level of manifests that are due to become one, if any.
-pub fn roll_up_due(manifests: &[Inherited]) -> Option<(i32, u32)> {
+pub fn roll_up_due(manifests: &[Inherited], target: i64) -> Option<(i32, u32)> {
     let mut counts = BTreeMap::new();
-    for manifest in manifests.iter().filter(|m| !m.deletes) {
-        if let Some(level) = manifest.level() {
+    for manifest in manifests {
+        if let Some(level) = manifest.rolls_up_at(target) {
             *counts.entry((manifest.spec_id, level)).or_insert(0) += 1;
         }
     }
@@ -388,10 +391,10 @@ pub fn roll_up_due(manifests: &[Inherited]) -> Option<(i32, u32)> {
 }
 
 /// Takes from `manifests` those of a spec and a level.
-pub fn taken(manifests: &mut Vec<Inherited>, spec_id: i32, level: u32) -> Vec<Inherited> {
+pub fn taken(manifests: &mut Vec<Inherited>, spec_id: i32, level: u32, target: i64) -> Vec<Inherited> {
     let (parts, rest) = std::mem::take(manifests)
         .into_iter()
-        .partition(|m| m.is_at(spec_id, level));
+        .partition(|m| m.spec_id == spec_id && m.rolls_up_at(target) == Some(level));
     *manifests = rest;
     parts
 }

@@ -299,7 +299,7 @@ async fn ancestors_bounded_per_head() -> Result<(), Error> {
     let found = |heads: Vec<i64>, depth: i32| {
         let (p, on) = (&p, &on);
         async move {
-            let snapshots = p.ancestors(on, t, &heads, depth).await?;
+            let snapshots = p.ancestors(on, t, &heads, depth, None).await?;
             Ok::<_, Error>(snapshots.iter().map(|s| s.snapshot_id).collect::<Vec<_>>())
         }
     };
@@ -314,7 +314,11 @@ async fn ancestors_bounded_per_head() -> Result<(), Error> {
     );
     assert_eq!(found(vec![seqs[4], seqs[3]], 2).await?, seqs[2..].to_vec(), "once each");
     let all = p.table_snapshots(&on, t).await?;
-    assert_eq!(p.ancestors(&on, t, &[seqs[4]], 100).await?, all, "the same rows");
+    assert_eq!(p.ancestors(&on, t, &[seqs[4]], 100, None).await?, all, "the same rows");
+    let recent = p.ancestors(&on, t, &[seqs[4]], 1, Some(3_600_000)).await?;
+    assert_eq!(recent, all, "those within an age, past `keep`");
+    let aged = p.ancestors(&on, t, &[seqs[4]], 2, Some(0)).await?;
+    assert_eq!(aged.len(), 2, "the last ones, past an age");
     on.batch_execute(&format!("drop schema {} cascade", quote_ident(&schema)))
         .await?;
     Ok(())

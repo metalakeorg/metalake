@@ -782,12 +782,15 @@ Iceberg REST server of the projection, and are checked by its tests.
 - **REST-4.** Every table is served with `write.delete.mode`, `write.update.mode` and `write.merge.mode` as
   `copy-on-write`. A delete file an `updateTable` adds is refused with 400, naming this limit; one it removes is
   ignored, as a vector goes with its data file.
-- **REST-5.** A load serves at least each ref's current snapshot and its last ten ancestors that remain, and MAY
-  serve no more than that, in place of ICE-2's every remaining snapshot, whatever `snapshots` asks for: a client
-  that rebases needs its base. Time travel through Iceberg goes as far as that.
+- **REST-5.** A snapshot expires to a client as it does in Iceberg: a load serves, of each ref, its current snapshot and
+  its ancestors that remain, back through those committed within the table property
+  `history.expire.max-snapshot-age-ms` (5 days when absent) or among the last `history.expire.min-snapshots-to-keep`
+  of the ref (1 when absent). The rest of ICE-2's snapshots are not served, as they are expired, and stay in the catalog
+  under retention (§13), read through MetaLake.
 - **REST-6.** A table has no manifests until a client asks. An answer names only files that exist. A commit of a
   table that has them changes only the blocks it touches. What is generated lies under `<location>/metalake-*`, and
   can always be generated again.
+  A table keeps its latest metadata file and the `write.metadata.previous-versions-max` before it (100 when absent).
 - **REST-7.** `createTable` is a commit that creates the table, and assigns its ids from 1, as what a client sends
   is a shape. With `stage-create` it writes nothing and answers
   the metadata, and the `updateTable` that follows, with `assert-create`, is one commit of the definition and the

@@ -65,19 +65,20 @@ create view @schema@.snapshots as
          as operation, @schema@.commit_time(s.snapshot_id) as committed_at, s.summary
     from @schema@.snapshot s join @schema@.ref r on r.ref_id = s.ref_id;
 
--- The snapshots of table $1 reached from each of the snapshots $2 through at most $3 snapshots, itself included, and
--- those that remain: a reader of a long history pays for what it reads.
-create function @schema@.ancestors(table_id uuid, heads bigint[], depth int)
+-- The snapshots of table $1 reached from each of the snapshots $2 that remain, back through the last $3 of each and those
+-- committed within $4 milliseconds: a reader of a long history pays for what it reads.
+create function @schema@.ancestors(table_id uuid, heads bigint[], keep int, max_age_ms bigint default null)
 returns table (snapshot_id bigint, parent_snapshot_id bigint, ref text, schema_seq bigint, summary jsonb,
                committed_at timestamptz)
 language sql stable as $$
-  with recursive a (snapshot_id, parent_snapshot_id, remaining) as (
-    select s.snapshot_id, s.parent_snapshot_id, $3 - 1
+  with recursive a (snapshot_id, parent_snapshot_id, kept) as (
+    select s.snapshot_id, s.parent_snapshot_id, 1
       from @schema@.snapshot s where s.table_id = $1 and s.snapshot_id = any ($2) and $3 > 0
     union
-    select s.snapshot_id, s.parent_snapshot_id, a.remaining - 1
+    select s.snapshot_id, s.parent_snapshot_id, a.kept + 1
       from a join @schema@.snapshot s on s.table_id = $1 and s.snapshot_id = a.parent_snapshot_id
-     where a.remaining > 0)
+     where a.kept < $3
+        or @schema@.commit_time(s.snapshot_id) >= now() - $4::double precision * interval '1 millisecond')
   select s.snapshot_id, s.parent_snapshot_id, r.name, s.schema_seq, s.summary, @schema@.commit_time(s.snapshot_id)
     from (select distinct x.snapshot_id from a x) d
     join @schema@.snapshot s on s.table_id = $1 and s.snapshot_id = d.snapshot_id

@@ -1,6 +1,7 @@
 //! The rows of a table as `TableMetadata` (ICE-1). The reference's `iceberg_metadata` is the oracle this is tested against.
 
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
 use metalake::TableSnapshot;
 use serde_json::{Value, json};
@@ -185,16 +186,34 @@ fn summary(of: &TableSnapshot) -> BTreeMap<String, String> {
     said
 }
 
-/// How many snapshots of each ref a load serves: its current one and its last ten ancestors that remain, whatever a client
-/// asks, so that a client that rebases finds its base (REST-5).
-pub const SERVED_PER_REF: i32 = 11;
+/// A table's property, if it is a positive number: a table any client wrote is still served.
+fn positive<T: FromStr + PartialOrd + Default>(definition: &Value, key: &str) -> Option<T> {
+    let value = definition["properties"][key].as_str()?.parse().ok()?;
+    (value > T::default()).then_some(value)
+}
 
-/// How many snapshots of each ref a table's load serves: what its property `iceberg.served-snapshots` says, if that is a
-/// count, so that a table written by any client is still served.
-pub fn served_per_ref(definition: &Value) -> i32 {
-    let property = definition["properties"]["iceberg.served-snapshots"].as_str();
-    let count = property.and_then(|value| value.parse().ok()).filter(|count| *count > 0);
-    count.unwrap_or(SERVED_PER_REF)
+/// Which snapshots a client sees as not expired (REST-5), by Iceberg's own properties and defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Expiry {
+    pub keep: i32,
+    pub max_age_ms: i64,
+}
+
+pub fn expiry(definition: &Value) -> Expiry {
+    Expiry {
+        keep: positive(definition, "history.expire.min-snapshots-to-keep").unwrap_or(1),
+        max_age_ms: positive(definition, "history.expire.max-snapshot-age-ms").unwrap_or(5 * 24 * 60 * 60 * 1000),
+    }
+}
+
+/// How many metadata files a table keeps before its latest (REST-6).
+pub fn previous_versions(definition: &Value) -> usize {
+    positive(definition, "write.metadata.previous-versions-max").unwrap_or(100)
+}
+
+/// The size a manifest stops rolling up at, as a client's merge stops there.
+pub fn manifest_target_size(definition: &Value) -> i64 {
+    positive(definition, "commit.manifest.target-size-bytes").unwrap_or(8 * 1024 * 1024)
 }
 
 /// The write modes every table is served with: a client that wrote position deletes would be refused (REST-4).
@@ -351,13 +370,31 @@ mod tests {
     }
 
     #[test]
-    fn rest5_served_per_ref_read_from_property() {
-        let of = |value: &str| json!({"properties": {"iceberg.served-snapshots": value}});
-        assert_eq!(served_per_ref(&of("500")), 500);
-        assert_eq!(served_per_ref(&of("0")), SERVED_PER_REF);
-        assert_eq!(served_per_ref(&of("-1")), SERVED_PER_REF);
-        assert_eq!(served_per_ref(&of("many")), SERVED_PER_REF);
-        assert_eq!(served_per_ref(&json!({"properties": {}})), SERVED_PER_REF);
+    fn rest5_expiry_read_from_properties() {
+        let of = |key: &str, value: &str| json!({"properties": {key: value}});
+        assert_eq!(
+            expiry(&json!({"properties": {}})),
+            Expiry {
+                keep: 1,
+                max_age_ms: 432_000_000
+            }
+        );
+        assert_eq!(expiry(&of("history.expire.min-snapshots-to-keep", "7")).keep, 7);
+        assert_eq!(
+            expiry(&of("history.expire.max-snapshot-age-ms", "60000")).max_age_ms,
+            60_000
+        );
+        assert_eq!(expiry(&of("history.expire.min-snapshots-to-keep", "0")).keep, 1);
+        assert_eq!(
+            expiry(&of("history.expire.max-snapshot-age-ms", "soon")).max_age_ms,
+            432_000_000
+        );
+        assert_eq!(previous_versions(&of("write.metadata.previous-versions-max", "3")), 3);
+        assert_eq!(previous_versions(&json!({"properties": {}})), 100);
+        assert_eq!(
+            manifest_target_size(&of("commit.manifest.target-size-bytes", "1024")),
+            1024
+        );
     }
 
     #[test]

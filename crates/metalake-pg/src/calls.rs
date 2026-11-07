@@ -371,23 +371,28 @@ impl Protocol {
         Ok(rows.iter().map(TableSnapshot::from_row).collect())
     }
 
-    /// The snapshots of a table reached from `heads` through at most `depth` snapshots each, the earliest first.
+    /// The snapshots of a table reached from `heads`, back through the last `keep` of each and those committed within
+    /// `max_age_ms`, the earliest first.
     pub async fn ancestors(
         &self,
         s: &impl Session,
         table: Uuid,
         heads: &[i64],
-        depth: i32,
+        keep: i32,
+        max_age_ms: Option<i64>,
     ) -> Result<Vec<TableSnapshot>> {
         let statement = s
             .statement(&format!(
                 "select snapshot_id, parent_snapshot_id, ref, schema_seq, summary, \
                  (extract(epoch from committed_at) * 1000)::bigint as timestamp_ms \
-                 from {}.ancestors(table_id => $1, heads => $2, depth => $3)",
+                 from {}.ancestors(table_id => $1, heads => $2, keep => $3, max_age_ms => $4)",
                 self.schema
             ))
             .await?;
-        let rows = s.client().query(&statement, &[&table, &heads, &depth]).await?;
+        let rows = s
+            .client()
+            .query(&statement, &[&table, &heads, &keep, &max_age_ms])
+            .await?;
         Ok(rows.iter().map(TableSnapshot::from_row).collect())
     }
 
@@ -733,7 +738,7 @@ pub const INTERFACE: &[(&str, &[&str], bool)] = &[
     ("is_stable", &["horizon"], false),
     ("changes", &["after_at", "after_seq", "lim", "tab"], false),
     ("table_changes", &["r", "t", "a", "b"], false),
-    ("ancestors", &["table_id", "heads", "depth"], false),
+    ("ancestors", &["table_id", "heads", "keep", "max_age_ms"], false),
     ("added_files", &["ref_id", "table_id", "at"], false),
     ("commit_time", &["seq"], false),
     ("create_ref", &["name", "parent", "kind", "at", "author"], true),

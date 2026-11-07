@@ -164,6 +164,43 @@ def spark_recovery(uri):
     add(source, "b", [3])
     counted()
     said["complete_next"] = keys("select n from lake.flow.total")
+
+    inserts = lambda table, first: [session.sql(f"insert into lake.flow.{table} values ({k})") for k in range(first, first + 30)]
+
+    # A batch repeated after thirty commits of another writer: its summary is thirty ancestors back.
+    source, checkpoint = f"{root}/source", f"{root}/appended"
+    add(source, "d", [4])
+    appended()
+    inserts("s", 100)
+    forget(checkpoint, 3)
+    appended()
+    said["behind_others"] = keys("select count(*) from lake.flow.s where k = 4")
+
+    # A reader stopped for thirty commits goes on from where it was.
+    session.sql("create table lake.flow.copied (k bigint)")
+    copied = lambda: run(session.readStream.table("lake.flow.s"), "append", f"{root}/copied", "lake.flow.copied")
+    copied()
+    inserts("s", 200)
+    copied()
+    said["read_on"] = keys("select count(*) from lake.flow.copied")
+    said["source"] = keys("select count(*) from lake.flow.s")
+
+    # A reader behind what has expired fails, and loses nothing silently.
+    session.sql(
+        "create table lake.flow.short (k bigint) tblproperties ("
+        "'history.expire.max-snapshot-age-ms' = '1', 'history.expire.min-snapshots-to-keep' = '3')"
+    )
+    session.sql("create table lake.flow.behind (k bigint)")
+    behind = lambda: run(session.readStream.table("lake.flow.short"), "append", f"{root}/behind", "lake.flow.behind")
+    session.sql("insert into lake.flow.short values (1)")
+    behind()
+    for k in range(2, 12):
+        session.sql(f"insert into lake.flow.short values ({k})")
+    try:
+        behind()
+        said["expired"] = "read"
+    except Exception as refused:
+        said["expired"] = str(refused)
     return said
 
 
@@ -178,7 +215,7 @@ def spark_stream(uri):
         query.option("checkpointLocation", f"{root}/{table}").start().awaitTermination()
         return sorted(row[0] for row in session.sql(f"select k from {table}").collect())
 
-    said = {"merged": stream("merged"), "evolved": stream("evolved")}
+    said = {"merged": stream("merged"), "evolved": stream("evolved"), "long": stream("long")}
     try:
         said["removed"] = stream("removed")
     except Exception as refused:
@@ -332,10 +369,13 @@ def flink_recovery(uri):
         "restored": newest.rsplit("-", 1)[1],
         "committed": current_summary().get("flink.max-committed-checkpoint-id"),
     }
+    # Thirty commits of another writer: the job finds its checkpoint that far back.
+    for k in range(1, 31):
+        batch.execute_sql(f"insert into lake.flow.s values (-{k})").wait()
     streaming(newest).execute_sql(insert).wait()
     with batch.execute_sql("select k from lake.flow.s").collect() as rows:
         keys = [row[0] for row in rows]
-    said.update({"rows": len(keys), "distinct": len(set(keys)), "last": max(keys), "expected": last_row})
+    said.update({"rows": len(keys), "distinct": len(set(keys)), "last": max(keys), "last_row": last_row, "expected": last_row + 30})
     return said
 
 

@@ -100,7 +100,7 @@ impl Storage {
     }
 
     /// The objects under `location`, each with its age in seconds, as the catalog would spell its URL.
-    pub(crate) async fn list(&self, location: &str) -> Result<Vec<(String, i64)>> {
+    pub async fn list(&self, location: &str) -> Result<Vec<(String, i64)>> {
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);

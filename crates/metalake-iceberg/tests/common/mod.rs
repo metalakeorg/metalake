@@ -75,7 +75,8 @@ pub async fn append(
 }
 
 /// What a reader of a stream meets, each in a table of `db`: `merged`, a merge of added files between appends; `removed`,
-/// a merge that removes a file; `evolved`, a second spec between appends.
+/// a merge that removes a file; `evolved`, a second spec between appends; `long`, sixty commits, whose first list
+/// rolls up.
 pub async fn streamed(schema: &str) -> Result<std::path::PathBuf, Failure> {
     let (catalog, storage, directory) = local_catalog(schema).await?;
     let main = catalog.branch("main").await?;
@@ -105,6 +106,11 @@ pub async fn streamed(schema: &str) -> Result<std::path::PathBuf, Failure> {
     main.transaction().define(t.id(), spec).commit().await?;
     append(&catalog, &main, &storage, "evolved", 10..12).await?;
     append(&catalog, &main, &storage, "evolved", 20..22).await?;
+
+    create(&main, "long", "0", vec![]).await?;
+    for key in 0..60 {
+        append(&catalog, &main, &storage, "long", key..key + 1).await?;
+    }
     catalog.close();
     Ok(directory)
 }
