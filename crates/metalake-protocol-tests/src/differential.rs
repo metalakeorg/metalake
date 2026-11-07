@@ -255,6 +255,39 @@ impl Pair {
         Ok(())
     }
 
+    /// CHG-3: both catalogs answer the same for the changes of every commit, to every table, on every ref.
+    pub async fn same_commit_changes(&self) -> Result<(), Error> {
+        let p = quote_ident(&self.protocol);
+        let points = self
+            .on_protocol
+            .query(
+                &format!(
+                    "select r.ref_id, t.table_id, c.commit_seq from {p}.ref r, {p}.tbl t, {p}.commit c order by 1, 2, 3"
+                ),
+                &[],
+            )
+            .await?;
+        for row in points {
+            let (r, t, s): (i32, Uuid, i64) = (row.get(0), row.get(1), row.get(2));
+            let call = |schema: &str| {
+                format!(
+                    "select coalesce(string_agg(x::text, ' | ' order by x::text), '')
+                       from {}.commit_changes({r}, '{t}', {s}) x",
+                    quote_ident(schema)
+                )
+            };
+            let by_protocol = changes_of(&self.on_protocol, &call(&self.protocol)).await?;
+            let by_reference = changes_of(&self.on_reference, &call(&self.reference)).await?;
+            if by_protocol != by_reference {
+                return Err(format!(
+                    "the changes of {s} to {t} on {r}: the reference answered {by_reference}, the protocol {by_protocol}"
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
     pub async fn same_rows(&self) -> Result<(), Error> {
         let differences: Vec<Difference> = compare(&self.on_protocol, &self.protocol, &self.reference).await?;
         if differences.is_empty() {
@@ -290,6 +323,17 @@ impl Pair {
 
 /// Copies every row and sequence of one catalog into another of the same format: the reference sets a scene up,
 /// and the protocol continues from it.
+/// What a statement answers, or the SQLSTATE that refused it.
+async fn changes_of(client: &Client, sql: &str) -> Result<String, Error> {
+    match client.query_one(sql, &[]).await {
+        Ok(row) => Ok(row.get(0)),
+        Err(e) => match e.code() {
+            Some(code) => Ok(code.code().to_string()),
+            None => Err(e.into()),
+        },
+    }
+}
+
 pub async fn clone_catalog(client: &Client, from: &str, to: &str) -> Result<(), Error> {
     let (from_q, to_q) = (quote_ident(from), quote_ident(to));
     let tables: Vec<String> = client

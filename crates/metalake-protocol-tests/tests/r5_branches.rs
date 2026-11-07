@@ -624,6 +624,7 @@ fn branches_and_merges_match_reference() {
                     for s in &steps {
                         run.apply(s).await?;
                     }
+                    run.pair.same_commit_changes().await?;
                     run.pair.drop().await
                 })
                 .map_err(|e: Error| TestCaseError::fail(format!("{e:?}")))
