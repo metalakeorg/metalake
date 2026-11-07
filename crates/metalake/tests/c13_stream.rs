@@ -19,7 +19,7 @@ use metalake::{
     CHANGE_TYPE, COMMIT_SEQ, Catalog, CatalogConfig, Error, NewTable, Ref, Retention, Scan, Start, Storage,
     StreamCursor, StreamStep, Table, TableStream, TableWriter, WriteOptions,
 };
-use metalake_pg::{Pool, Protocol};
+use metalake_pg::{Commit, Pool, Protocol};
 use serde_json::json;
 
 fn batch(keys: std::ops::Range<i64>) -> RecordBatch {
@@ -254,6 +254,44 @@ async fn start_among_commits() -> Result<(), Box<dyn std::error::Error>> {
     writer.await??;
     rows.extend(drain(&mut stream, &storage).await?);
     assert_eq!(rebuilt(&rows), (0..600).collect::<Vec<_>>(), "each row once");
+    Ok(())
+}
+
+#[tokio::test]
+async fn start_over_a_commit_in_flight() -> Result<(), Box<dyn std::error::Error>> {
+    let schema = fresh_schema();
+    let (catalog, main, storage) = lake_in(&schema, vec![]).await?;
+    append(&catalog, &main, &storage, 0..1).await?;
+    let t = main.table(&["db"], "t").await?;
+
+    // A commit that drew its sequence and has not ended when the reader takes its point.
+    let mut writer = TableWriter::new(&catalog, &t, storage.clone(), WriteOptions::default())?;
+    writer.write(&batch(1..2)).await?;
+    let commit = Commit {
+        ref_id: main.id(),
+        operation: "append".into(),
+        files: writer.finish().await?,
+        ..Default::default()
+    };
+    let pool = Pool::new(&url(), 1)?;
+    let session = pool.get().await?;
+    let p = Protocol::new(&schema);
+    session.batch_execute("begin").await?;
+    p.commit(&session, &commit).await?;
+
+    let mut stream = main.stream(&t, Start::Snapshot).await?;
+    let starting = tokio::spawn(async move {
+        let step = stream.next().await?.expect("the first read");
+        Ok::<_, Error>((stream, step))
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!starting.is_finished(), "its sequence is not stable yet");
+    session.batch_execute("commit").await?;
+    let (mut stream, step) = starting.await??;
+
+    let mut rows = rows_of(&stream, &step, &storage).await?;
+    rows.extend(drain(&mut stream, &storage).await?);
+    assert_eq!(rebuilt(&rows), [0, 1], "in the read, and not again in the feed");
     Ok(())
 }
 
