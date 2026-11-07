@@ -144,14 +144,6 @@ def trino_lifecycle(uri):
         run("create table lake.flow.c as select k from lake.flow.t")
         said["created_snapshots"] = keys("""select operation from lake.flow."c$snapshots" order by committed_at""")
         said["created_as"] = keys("select k from lake.flow.c order by k")
-        text = lambda query: [[str(value) for value in row] for row in run(query)]
-        said["created_diagnosis"] = {
-            "snapshots": text('select snapshot_id, parent_id, operation, summary from lake.flow."c$snapshots"'),
-            "manifests": text('select path, added_snapshot_id, added_data_files_count, existing_data_files_count '
-                              'from lake.flow."c$manifests"'),
-            "files": text('select file_path, record_count from lake.flow."c$files"'),
-            "current": text('select snapshot_id from lake.flow."c$refs"'),
-        }
         run("alter table lake.flow.c rename to lake.flow.d")
         said["renamed"] = sorted(row[0] for row in run("show tables from lake.flow"))
         run("drop table lake.flow.d")
