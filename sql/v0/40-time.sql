@@ -6,6 +6,8 @@
 
 create index if not exists commit_by_time on @schema@.commit (committed_at, commit_seq) where committed_at is not null;
 create index if not exists commit_unfilled on @schema@.commit (commit_seq) where committed_at is null;
+-- A commit's vectors (CHG-3), as data_file_ref and tombstone_ref find its files.
+create index if not exists deletion_vector_ref on @schema@.deletion_vector (table_id, ref_id, begin_seq);
 
 -- TT-1: copies the commit timestamp into up to `lim` commits that lack it, oldest first, through the index of those
 -- not yet filled; a commit whose timestamp is gone is refused (committed_time). Returns how many it filled.
@@ -100,4 +102,54 @@ begin
       from vb y join va x on x.file_id = y.file_id
      where (x.vector_path, x.vector_offset, x.vector_size, x.vector_cardinality, x.vector_inline)
            is distinct from (y.vector_path, y.vector_offset, y.vector_size, y.vector_cardinality, y.vector_inline);
+end $$;
+
+-- CHG-3: the changes of commit s to table t on ref r. It looks only at the files whose rows of r opened or closed at s,
+-- each one against both reads, so that it costs what the commit touched. A ref whose base changed at s has no such rows
+-- for what it inherits: there, every file of both reads is looked at. The closed rows are asked as `<> open` too, so that
+-- a plan with s as a parameter can use their partial indexes.
+create function @schema@.commit_changes(r int, t uuid, s bigint)
+returns table (change text, file_id bigint, path text, spec_id int, partition jsonb, record_count bigint,
+               file_size bigint, footer_size int, first_row_id bigint, content bytea, footer bytea,
+               vector_before jsonb, vector_after jsonb)
+language plpgsql stable
+set search_path = @schema@, pg_catalog, pg_temp as $$
+declare
+  open constant bigint := 9223372036854775807;
+  rebased boolean := exists (select 1 from ref_base x where x.ref_id = r and x.begin_seq = s);
+begin
+  if not exists (select 1 from ref x where x.ref_id = r and not x.deleted) or s - 1 < retention_floor(r) then
+    perform refuse_invalid('CHG-3', format('(%s, %s) and (%s, %s) are not two retained reads', r, s - 1, r, s));
+  end if;
+  return query
+    with touched (id) as (
+      select x.file_id from data_file x where x.table_id = t and x.ref_id = r and x.begin_seq = s
+      union select x.file_id from data_file x where x.table_id = t and x.ref_id = r and x.end_seq = s and x.end_seq <> open
+      union select x.file_id from tombstone x where x.table_id = t and x.ref_id = r and x.begin_seq = s
+      union select x.file_id from tombstone x where x.table_id = t and x.ref_id = r and x.end_seq = s and x.end_seq <> open
+      union select x.file_id from deletion_vector x where x.table_id = t and x.ref_id = r and x.begin_seq = s
+      union select x.file_id from deletion_vector x where x.table_id = t and x.ref_id = r and x.end_seq = s and x.end_seq <> open
+      union select x.file_id from plan(r, t, s - 1) x where rebased
+      union select x.file_id from plan(r, t, s) x where rebased),
+    reads as (
+      select u.id, a as before, b as after,
+             (select to_jsonb(d) - 'ref_id' - 'begin_seq' - 'end_seq' from file_dv(r, t, s - 1, u.id) d
+               where d.file_id is not null) as vb,
+             (select to_jsonb(d) - 'ref_id' - 'begin_seq' - 'end_seq' from file_dv(r, t, s, u.id) d
+               where d.file_id is not null) as va
+        from touched u
+       cross join lateral visible_file(r, t, s - 1, u.id) a
+       cross join lateral visible_file(r, t, s, u.id) b),
+    changed as (
+      select y.id, (y.before).file_id is null as added, (y.after).file_id is null as removed,
+             case when (y.after).file_id is null then y.before else y.after end as f, y.vb, y.va
+        from reads y
+       where (y.before).file_id is not null or (y.after).file_id is not null)
+    select case when v.added then 'added' when v.removed then 'removed' else 'vector' end, v.id, (v.f).path,
+           (v.f).spec_id, (v.f).partition, (v.f).record_count, (v.f).file_size, (v.f).footer_size, (v.f).first_row_id,
+           (select i.content from inline_file i where i.table_id = t and i.file_id = v.id),
+           (select x.footer from file_footer x where x.table_id = t and x.file_id = v.id),
+           v.vb, v.va
+      from changed v
+     where v.added or v.removed or v.vb is distinct from v.va;
 end $$;

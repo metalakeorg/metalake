@@ -170,6 +170,25 @@ pub struct FileChange {
     pub vector_after: Option<Value>,
 }
 
+/// A file that a commit changed in a table (CHG-3): `added`, `removed`, or `vector`, with what opens it, of the read that
+/// sees it, and its vector at each read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommitChange {
+    pub change: String,
+    pub file_id: i64,
+    pub path: Option<String>,
+    pub spec_id: i32,
+    pub partition: Value,
+    pub record_count: i64,
+    pub file_size: i64,
+    pub footer_size: i32,
+    pub first_row_id: Option<i64>,
+    pub content: Option<Vec<u8>>,
+    pub footer: Option<Vec<u8>>,
+    pub vector_before: Option<Value>,
+    pub vector_after: Option<Value>,
+}
+
 /// A stable read point (VIS-11): the sequence to read at, and the horizon after which it is repeatable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StablePoint {
@@ -345,6 +364,26 @@ impl FeedCommit {
             ref_id: row.get("ref_id"),
             committed_at: row.get("committed_at"),
             operation: row.get("operation"),
+        }
+    }
+}
+
+impl CommitChange {
+    pub(crate) fn from_row(row: &Row) -> Self {
+        Self {
+            change: row.get("change"),
+            file_id: row.get("file_id"),
+            path: row.get("path"),
+            spec_id: row.get("spec_id"),
+            partition: row.get("partition"),
+            record_count: row.get("record_count"),
+            file_size: row.get("file_size"),
+            footer_size: row.get("footer_size"),
+            first_row_id: row.get("first_row_id"),
+            content: row.get("content"),
+            footer: row.get("footer"),
+            vector_before: row.get("vector_before"),
+            vector_after: row.get("vector_after"),
         }
     }
 }

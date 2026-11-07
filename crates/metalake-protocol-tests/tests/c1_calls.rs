@@ -177,6 +177,14 @@ async fn calls_match_functions() -> Result<(), Error> {
             .collect::<Vec<_>>(),
         [("added", Some("gs://lake/b.parquet"))]
     );
+    let of_commit = p.commit_changes(&on, 1, t, merged.commit_seq).await?;
+    assert_eq!(
+        of_commit
+            .iter()
+            .map(|c| (c.change.as_str(), c.path.as_deref(), c.record_count))
+            .collect::<Vec<_>>(),
+        [("added", Some("gs://lake/b.parquet"), 10)]
+    );
 
     // Time: the feed and a read as of a time deliver only what committed more than a second ago.
     std::thread::sleep(Duration::from_millis(1200));
@@ -284,6 +292,55 @@ async fn refusal_error_kind_and_rule() -> Result<(), Error> {
 }
 
 /// A read of a long history pays for what it returns: from each head, through at most `depth` snapshots, once each.
+#[tokio::test]
+async fn chg3_tombstones_and_new_base() -> Result<(), Error> {
+    let on = connect().await?;
+    let schema = fresh_schema("c1");
+    install_protocol(&on, &schema).await?;
+    let p = Protocol::new(&schema);
+    let t = Uuid::from_u128(0xc5);
+    let first = p.commit(&on, &create(t)).await?.commit_seq;
+    let file_id = p.commit_changes(&on, 1, t, first).await?[0].file_id;
+    let dev = p.create_ref(&on, &CreateRef::branch("dev", 1)).await?;
+    p.commit(&on, &append(1, t, "gs://lake/main.parquet", 10)).await?;
+    p.commit(&on, &append(dev, t, "gs://lake/dev.parquet", 20)).await?;
+    let removal = Commit {
+        ref_id: dev,
+        operation: "delete".into(),
+        removed: vec![FileRef { table_id: t, file_id }],
+        ..Default::default()
+    };
+    let removed = p.commit(&on, &removal).await?.commit_seq;
+    let of = |r: i32, s: i64| {
+        let (p, on) = (&p, &on);
+        async move {
+            let mut changes: Vec<(String, Option<String>)> = p
+                .commit_changes(on, r, t, s)
+                .await?
+                .into_iter()
+                .map(|c| (c.change, c.path))
+                .collect();
+            changes.sort();
+            Ok::<_, Error>(changes)
+        }
+    };
+    let file = |change: &str, name: &str| (change.to_string(), Some(format!("gs://lake/{name}.parquet")));
+    assert_eq!(of(dev, removed).await?, [file("removed", "a")], "by a tombstone");
+    assert_eq!(of(1, removed).await?, [], "its parent keeps the file");
+    let merged = p
+        .merge(&on, &Merge::of(dev))
+        .await?
+        .expect("a commit to merge")
+        .commit_seq;
+    assert_eq!(of(1, merged).await?, [file("added", "dev"), file("removed", "a")]);
+    assert_eq!(
+        of(dev, merged).await?,
+        [file("added", "main")],
+        "what its new base brings"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn ancestors_bounded_per_head() -> Result<(), Error> {
     let on = connect().await?;

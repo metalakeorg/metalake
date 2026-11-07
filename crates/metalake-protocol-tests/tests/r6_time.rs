@@ -200,6 +200,7 @@ async fn change_feed_and_time_travel_match_reference() -> Result<(), Error> {
         .map(|row| (row.get(0), row.get(1), row.get(2), row.get(3)))
         .collect();
     let changes = "select change, file_id, path, vector_before, vector_after from {s}.table_changes($1, $2, $3, $4)";
+    let of_commit = "select * from {s}.commit_changes($1, $2, $3)";
     for retained in [false, true] {
         if retained {
             for s in [&r, &p] {
@@ -216,6 +217,9 @@ async fn change_feed_and_time_travel_match_reference() -> Result<(), Error> {
         }
         for (rf, t, a, b) in &pairs {
             same(&on, &r, &p, changes, &[rf, t, a, b]).await?;
+            if a == b {
+                same(&on, &r, &p, of_commit, &[rf, t, b]).await?;
+            }
         }
     }
     same(&on, &r, &p, "select {s}.fill_committed_at(1)", &[]).await?;

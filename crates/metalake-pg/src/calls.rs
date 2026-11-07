@@ -12,8 +12,9 @@ use tokio_postgres::{GenericClient, Row};
 use uuid::Uuid;
 
 use crate::records::{
-    CommitEntry, CommitResult, FeedCommit, FileAdd, FileChange, FileRef, LATEST, ListedFile, NamespaceRow, PlannedFile,
-    RefRow, SnapshotEntry, StablePoint, TableAsOf, TableExpect, TableLatest, TableName, TableSnapshot, VectorSet,
+    CommitChange, CommitEntry, CommitResult, FeedCommit, FileAdd, FileChange, FileRef, LATEST, ListedFile,
+    NamespaceRow, PlannedFile, RefRow, SnapshotEntry, StablePoint, TableAsOf, TableExpect, TableLatest, TableName,
+    TableSnapshot, VectorSet,
 };
 use crate::{Result, Session, quote_ident};
 
@@ -557,6 +558,24 @@ impl Protocol {
         Ok(rows.iter().map(FileChange::from_row).collect())
     }
 
+    /// The files a commit changed in a table, with what opens each one (CHG-3).
+    pub async fn commit_changes(
+        &self,
+        s: &impl Session,
+        ref_id: i32,
+        table_id: Uuid,
+        seq: i64,
+    ) -> Result<Vec<CommitChange>> {
+        let rows = self
+            .all(
+                s,
+                "commit_changes(r => $1, t => $2, s => $3)",
+                &[&ref_id, &table_id, &seq],
+            )
+            .await?;
+        Ok(rows.iter().map(CommitChange::from_row).collect())
+    }
+
     /// A commit's time (TT-1).
     pub async fn commit_time(&self, s: &impl Session, seq: i64) -> Result<SystemTime> {
         Ok(self.one(s, "commit_time(seq => $1)", &[&seq]).await?.get(0))
@@ -738,6 +757,7 @@ pub const INTERFACE: &[(&str, &[&str], bool)] = &[
     ("is_stable", &["horizon"], false),
     ("changes", &["after_at", "after_seq", "lim", "tab"], false),
     ("table_changes", &["r", "t", "a", "b"], false),
+    ("commit_changes", &["r", "t", "s"], false),
     ("ancestors", &["table_id", "heads", "keep", "max_age_ms"], false),
     ("added_files", &["ref_id", "table_id", "at"], false),
     ("commit_time", &["seq"], false),
