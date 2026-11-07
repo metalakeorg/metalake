@@ -112,8 +112,6 @@ alter function @schema@.chain(int, bigint) set search_path = @schema@, pg_catalo
 -- VIS-11: so is `stable_point`, which reads the commit sequence.
 alter function @schema@.stable_point() set search_path = @schema@, pg_catalog, pg_temp;
 alter function @schema@.stream_point() set search_path = @schema@, pg_catalog, pg_temp;
--- CHG-4: a reader asks for a ref's floor too.
-alter function @schema@.retention_floor(int) set search_path = @schema@, pg_catalog, pg_temp;
 
 -- A table as a read sees it (TBL-1, VIS-9, §6, §7), for the core, which needs the definition at a ref and a
 -- sequence and not only at LATEST: the tables visible at (ref_id, at), and one table's definition there, or null if

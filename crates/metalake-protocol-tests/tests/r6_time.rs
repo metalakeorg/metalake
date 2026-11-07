@@ -201,6 +201,24 @@ async fn change_feed_and_time_travel_match_reference() -> Result<(), Error> {
         .collect();
     let changes = "select change, file_id, path, vector_before, vector_after from {s}.table_changes($1, $2, $3, $4)";
     let of_commit = "select * from {s}.commit_changes($1, $2, $3)";
+    for policy in [
+        "min_seq => 3",
+        "min_snapshots => 2",
+        "min_snapshots => 1000",
+        "min_snapshots => 0",
+        "max_age => interval '1 day'",
+        "max_age => interval '1 microsecond'",
+        "min_seq => 5, max_age => interval '1 day', min_snapshots => 4",
+    ] {
+        for s in [&r, &p] {
+            on.batch_execute(&format!("select {s}.set_retention(1, {policy})"))
+                .await?;
+        }
+        same(&on, &r, &p, "select {s}.retention_floor(1)", &[]).await?;
+    }
+    for s in [&r, &p] {
+        on.batch_execute(&format!("delete from {s}.retention")).await?;
+    }
     for retained in [false, true] {
         if retained {
             for s in [&r, &p] {

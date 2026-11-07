@@ -42,11 +42,51 @@ begin
   end if;
 end $$;
 
--- RET-1, RET-9: the reference's floor and the end of a sweep, callable from outside the catalog's search_path.
-alter function @schema@.retention_floor(int) set search_path = @schema@, pg_catalog, pg_temp;
+-- RET-9: the end of a sweep, callable from outside the catalog's search_path.
 alter function @schema@.sweep_done(text[]) set search_path = @schema@, pg_catalog, pg_temp;
 -- INL-2: whether a table's inline files are due, callable from outside too.
 alter function @schema@.inline_flush_due(int, uuid) set search_path = @schema@, pg_catalog, pg_temp;
+
+-- RET-1: the reference's floor, by what it keeps and not by the ref's history, since a reader and every read of changes
+-- asks for it (CHG-2, CHG-3). min_snapshots walks that many snapshots down from the latest, each sequence once however many
+-- tables it wrote. max_age walks up from the oldest to the first one young enough, as times follow sequences only roughly:
+-- it costs the snapshots past their age that expiring has not taken yet.
+create or replace function @schema@.retention_floor(r int) returns bigint language plpgsql stable
+set search_path = @schema@, pg_catalog, pg_temp as $$
+declare
+  open constant bigint := 9223372036854775807;
+  pol retention;
+  aged bigint;
+  counted bigint;
+begin
+  select * into pol from retention x where x.ref_id = r;
+  if not found then
+    return 0;
+  end if;
+  if pol.max_age is not null then
+    select s.snapshot_id into aged from snapshot s join commit c on c.commit_seq = s.snapshot_id
+     where s.ref_id = r
+       and coalesce(c.committed_at, pg_xact_commit_timestamp(xid32(c.xid)), no_time(c.commit_seq, c.xid))
+           >= now() - pol.max_age
+     order by s.ref_id, s.snapshot_id limit 1;
+    if not found then
+      aged := open;
+    end if;
+  end if;
+  if pol.min_snapshots is not null then
+    if pol.min_snapshots <= 0 then
+      counted := open;
+    else
+      with recursive w (s, n) as (
+        select (select max(x.snapshot_id) from snapshot x where x.ref_id = r), 1
+        union all
+        select (select max(x.snapshot_id) from snapshot x where x.ref_id = r and x.snapshot_id < w.s), w.n + 1
+          from w where w.s is not null and w.n < pol.min_snapshots)
+      select coalesce((select w.s from w where w.n = pol.min_snapshots), 0) into counted;
+    end if;
+  end if;
+  return coalesce(least(pol.min_seq, aged, counted), 0);
+end $$;
 
 -- RET-3 (note): the protocol's indexes for a ref's snapshots and commits below its floor, and for whether a snapshot
 -- of a commit remains.
