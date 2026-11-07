@@ -70,6 +70,8 @@ struct Reading {
     filter: Option<Filter>,
     positions: bool,
     batch_size: usize,
+    /// Only these rows of the file, whatever its vector says.
+    only: Option<DeletionVector>,
 }
 
 /// A range on one field, its ends as bounds (STA-5), each inclusive.
@@ -283,6 +285,25 @@ impl Scan {
 
     /// One task's batches.
     pub fn open(&self, task: ScanTask, storage: &Storage) -> BoxStream<'static, Result<RecordBatch>> {
+        self.opened(task, None, storage)
+    }
+
+    /// The batches of those rows of one task's file, deleted or not.
+    pub(crate) fn open_only(
+        &self,
+        task: ScanTask,
+        rows: DeletionVector,
+        storage: &Storage,
+    ) -> BoxStream<'static, Result<RecordBatch>> {
+        self.opened(task, Some(rows), storage)
+    }
+
+    fn opened(
+        &self,
+        task: ScanTask,
+        only: Option<DeletionVector>,
+        storage: &Storage,
+    ) -> BoxStream<'static, Result<RecordBatch>> {
         let reading = Reading {
             columns: self.columns.clone(),
             schema: self.schema.clone(),
@@ -290,6 +311,7 @@ impl Scan {
             filter: self.filter.clone(),
             positions: self.positions,
             batch_size: self.batch_size,
+            only,
         };
         let storage = storage.clone();
         stream::once(async move { batches(task, &storage, reading).await })
@@ -307,6 +329,7 @@ async fn batches(task: ScanTask, storage: &Storage, r: Reading) -> Result<BoxStr
         filter,
         positions,
         batch_size,
+        only,
     } = r;
     let file_id = task.file_id;
     let mut source = Source::of(task.content, task.path.as_deref(), file_id, storage)?;
@@ -361,7 +384,7 @@ async fn batches(task: ScanTask, storage: &Storage, r: Reading) -> Result<BoxStr
     let mut builder = ParquetRecordBatchStreamBuilder::new_with_metadata(source, reader)
         .with_projection(mask)
         .with_batch_size(batch_size);
-    if let Some(vector) = vector {
+    if only.is_some() || vector.is_some() {
         let mut first = 0u64;
         let starts: Vec<u64> = metadata
             .row_groups()
@@ -376,7 +399,11 @@ async fn batches(task: ScanTask, storage: &Storage, r: Reading) -> Result<BoxStr
             .iter()
             .map(|g| (starts[*g], metadata.row_group(*g).num_rows() as u64))
             .collect();
-        builder = builder.with_row_selection(vector.row_selection(&read));
+        builder = builder.with_row_selection(match (&only, &vector) {
+            (Some(only), _) => only.only_these(&read),
+            (None, Some(vector)) => vector.row_selection(&read),
+            (None, None) => unreachable!("one of them is there"),
+        });
     }
     let stream = builder.with_row_groups(groups).build().map_err(read_error)?;
     Ok(stream

@@ -108,6 +108,20 @@ impl DeletionVector {
     /// The rows a reader keeps of the row groups it reads, each `(first row, rows)` in the file and in ascending
     /// order: a selection over those groups' rows, one after the other, as Parquet applies it.
     pub fn row_selection(&self, groups: &[(u64, u64)]) -> RowSelection {
+        self.selection(groups, RowSelector::select, RowSelector::skip)
+    }
+
+    /// The opposite: only these positions of those row groups.
+    pub fn only_these(&self, groups: &[(u64, u64)]) -> RowSelection {
+        self.selection(groups, RowSelector::skip, RowSelector::select)
+    }
+
+    fn selection(
+        &self,
+        groups: &[(u64, u64)],
+        rest: fn(usize) -> RowSelector,
+        listed: fn(usize) -> RowSelector,
+    ) -> RowSelection {
         let mut selectors: Vec<RowSelector> = Vec::new();
         let mut push = |s: RowSelector| match selectors.last_mut() {
             Some(last) if last.skip == s.skip => last.row_count += s.row_count,
@@ -126,13 +140,13 @@ impl DeletionVector {
                     continue;
                 }
                 if p > at {
-                    push(RowSelector::select((p - at) as usize));
+                    push(rest((p - at) as usize));
                 }
-                push(RowSelector::skip(1));
+                push(listed(1));
                 at = p + 1;
             }
             if end > at {
-                push(RowSelector::select((end - at) as usize));
+                push(rest((end - at) as usize));
             }
         }
         selectors.into()
