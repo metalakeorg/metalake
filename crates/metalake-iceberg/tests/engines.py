@@ -265,6 +265,7 @@ def flink_recovery(uri):
     def streaming(restored=None):
         options = {
             "parallelism.default": "1",
+            "restart-strategy.type": "none",
             "execution.checkpointing.interval": "5 s",
             "execution.checkpointing.externalized-checkpoint-retention": "RETAIN_ON_CANCELLATION",
             "state.checkpoints.dir": f"file://{root}/checkpoints",
