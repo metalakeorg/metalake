@@ -189,6 +189,14 @@ fn summary(of: &TableSnapshot) -> BTreeMap<String, String> {
 /// asks, so that a client that rebases finds its base (REST-5).
 pub const SERVED_PER_REF: i32 = 11;
 
+/// How many snapshots of each ref a table's load serves: what its property `iceberg.served-snapshots` says, if that is a
+/// count, so that a table written by any client is still served.
+pub fn served_per_ref(definition: &Value) -> i32 {
+    let property = definition["properties"]["iceberg.served-snapshots"].as_str();
+    let count = property.and_then(|value| value.parse().ok()).filter(|count| *count > 0);
+    count.unwrap_or(SERVED_PER_REF)
+}
+
 /// The write modes every table is served with: a client that wrote position deletes would be refused (REST-4).
 pub const COPY_ON_WRITE: [&str; 3] = ["write.delete.mode", "write.update.mode", "write.merge.mode"];
 
@@ -340,6 +348,16 @@ mod tests {
             !adds_only(&of(5, 1, json!({"operation": "rebase"}))),
             "what it did is not stated"
         );
+    }
+
+    #[test]
+    fn rest5_served_per_ref_read_from_property() {
+        let of = |value: &str| json!({"properties": {"iceberg.served-snapshots": value}});
+        assert_eq!(served_per_ref(&of("500")), 500);
+        assert_eq!(served_per_ref(&of("0")), SERVED_PER_REF);
+        assert_eq!(served_per_ref(&of("-1")), SERVED_PER_REF);
+        assert_eq!(served_per_ref(&of("many")), SERVED_PER_REF);
+        assert_eq!(served_per_ref(&json!({"properties": {}})), SERVED_PER_REF);
     }
 
     #[test]

@@ -17,7 +17,7 @@ use crate::project::manifest::{
     Context, Delete, Inherited, Listed, data_manifest, delete_manifest, listed_manifests, manifest_list, roll_up_due,
     rolled_manifest, rolled_up, served_path, taken,
 };
-use crate::project::metadata::{Rows, SERVED_PER_REF, adds_only, metadata, schema};
+use crate::project::metadata::{Rows, adds_only, metadata, schema, served_per_ref};
 use crate::state::State;
 use crate::wire::metadata::{LoadTableResult, TableMetadata};
 
@@ -51,7 +51,8 @@ async fn rows(state: &State, table: &Table) -> Result<Rows> {
         refs.push((described.name.clone(), described.kind.clone(), current));
     }
     let heads: Vec<i64> = refs.iter().filter_map(|(.., current)| *current).collect();
-    let snapshots = state.catalog().ancestors(table, &heads, SERVED_PER_REF).await?;
+    let depth = served_per_ref(&definition);
+    let snapshots = state.catalog().ancestors(table, &heads, depth).await?;
     let mut schemas = BTreeMap::new();
     for snapshot in &snapshots {
         if let Entry::Vacant(schema) = schemas.entry(snapshot.schema_seq) {
