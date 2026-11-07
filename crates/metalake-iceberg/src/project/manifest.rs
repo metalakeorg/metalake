@@ -1,11 +1,12 @@
 //! A snapshot's files as manifests, one per partition spec and kind, and its manifests as a manifest list (ICE-2, ICE-3,
 //! ICE-4). Unknown to these: where a file comes from, and when it is written.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use apache_avro::schema::RecordField;
 use apache_avro::types::Value;
 use apache_avro::{Codec, DeflateSettings, Reader, Schema, Writer};
+use bytes::Bytes;
 use metalake::partition::{Scalar, Transform};
 use metalake::{Error, ListedFile, Result};
 use serde_json::{Value as Json, json};
@@ -309,14 +310,159 @@ pub fn delete_manifest(deletes: &[Delete<'_>], context: &Context<'_>) -> Result<
     writer.into_inner().map_err(avro_failed)
 }
 
+/// How many manifests of one spec and level a list holds before they become one, so that it stays short for who plans a
+/// read. It is below Iceberg's `commit.manifest.min-count-to-merge`, so that a client's commit rewrites none of them.
+pub const ROLL_UP: usize = 50;
+
+/// A row of a parent's manifest list, which a snapshot lists again as it is (ICE-2).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Inherited {
+    pub row: Value,
+    pub path: String,
+    pub spec_id: i32,
+    pub deletes: bool,
+    pub files: i32,
+    pub rows: i64,
+    pub min_sequence: i64,
+    pub added_snapshot: i64,
+}
+
+impl Inherited {
+    fn of(row: Value) -> Result<Self> {
+        let corrupt = |name: &str| Error::Corrupt(format!("a manifest list has no {name}"));
+        let Value::Record(fields) = &row else {
+            return Err(corrupt("record"));
+        };
+        let value = |name: &str| fields.iter().find(|(key, _)| key == name).map(|(_, value)| value);
+        let number = |name: &str| match value(name) {
+            Some(Value::Int(n)) => Ok(i64::from(*n)),
+            Some(Value::Long(n)) => Ok(*n),
+            _ => Err(corrupt(name)),
+        };
+        let Some(Value::String(path)) = value("manifest_path") else {
+            return Err(corrupt("manifest_path"));
+        };
+        Ok(Self {
+            path: path.clone(),
+            spec_id: number("partition_spec_id")? as i32,
+            deletes: number("content")? == i64::from(POSITION_DELETES),
+            files: (number("added_files_count")? + number("existing_files_count")?) as i32,
+            rows: number("added_rows_count")? + number("existing_rows_count")?,
+            min_sequence: number("min_sequence_number")?,
+            added_snapshot: number("added_snapshot_id")?,
+            row: row.clone(),
+        })
+    }
+
+    /// How many times its files were rolled up: none for what one snapshot added, and no level at all for what a snapshot
+    /// wrote of all it saw, which has no bound worth keeping.
+    fn level(&self) -> Option<u32> {
+        let name = self.path.rsplit('/').next().unwrap_or_default();
+        if name.starts_with("a-") {
+            return Some(0);
+        }
+        name.strip_prefix('r')?.split('-').next()?.parse().ok()
+    }
+
+    fn is_at(&self, spec_id: i32, level: u32) -> bool {
+        !self.deletes && self.spec_id == spec_id && self.level() == Some(level)
+    }
+}
+
 /// The rows of a manifest list this server wrote, to be listed again as they are (ICE-2).
-pub fn listed_manifests(bytes: &[u8]) -> Result<Vec<Value>> {
+pub fn listed_manifests(bytes: &[u8]) -> Result<Vec<Inherited>> {
     let reader = Reader::new(bytes).map_err(avro_failed)?;
-    reader.map(|row| row.map_err(avro_failed)).collect()
+    reader.map(|row| Inherited::of(row.map_err(avro_failed)?)).collect()
+}
+
+/// The spec and level of manifests that are due to become one, if any.
+pub fn roll_up_due(manifests: &[Inherited]) -> Option<(i32, u32)> {
+    let mut counts = BTreeMap::new();
+    for manifest in manifests.iter().filter(|m| !m.deletes) {
+        if let Some(level) = manifest.level() {
+            *counts.entry((manifest.spec_id, level)).or_insert(0) += 1;
+        }
+    }
+    let due = counts.into_iter().find(|(_, count)| *count >= ROLL_UP);
+    due.map(|(at, _)| at)
+}
+
+/// Takes from `manifests` those of a spec and a level.
+pub fn taken(manifests: &mut Vec<Inherited>, spec_id: i32, level: u32) -> Vec<Inherited> {
+    let (parts, rest) = std::mem::take(manifests)
+        .into_iter()
+        .partition(|m| m.is_at(spec_id, level));
+    *manifests = rest;
+    parts
+}
+
+/// One data manifest of what the manifests `parts` hold, as files `snapshot` found there. Its files are not touched, and each
+/// entry keeps the snapshot and the sequence that added it. A list's manifests share a schema, as one that changes it writes
+/// them all.
+pub fn rolled_manifest(parts: &[Bytes], context: &Context<'_>) -> Result<Vec<u8>> {
+    let schema = entry_schema(context)?;
+    let mut writer = writer(&schema, context, "data")?;
+    for part in parts {
+        for entry in Reader::new(&part[..]).map_err(avro_failed)? {
+            let Value::Record(mut fields) = entry.map_err(avro_failed)? else {
+                return Err(Error::Corrupt("a manifest entry is not a record".into()));
+            };
+            for (name, value) in &mut fields {
+                if name == "status" {
+                    *value = Value::Int(EXISTING);
+                }
+            }
+            writer.append_value(Value::Record(fields)).map_err(avro_failed)?;
+        }
+    }
+    writer.into_inner().map_err(avro_failed)
+}
+
+/// How a list shows the manifest of the files of `parts`, of `spec_id`, which `snapshot` rolled up.
+pub fn rolled_up(parts: &[Inherited], path: String, length: usize, spec_id: i32, snapshot: i64) -> Result<Inherited> {
+    let listed = Listed {
+        path,
+        length: length as i64,
+        spec_id,
+        deletes: false,
+        added_files: 0,
+        existing_files: parts.iter().map(|m| m.files).sum(),
+        added_rows: 0,
+        existing_rows: parts.iter().map(|m| m.rows).sum(),
+        min_sequence: parts.iter().map(|m| m.min_sequence).min().unwrap_or(0),
+        added_snapshot: parts.iter().map(|m| m.added_snapshot).max().unwrap_or(0),
+    };
+    Inherited::of(list_row(&listed, snapshot))
+}
+
+fn list_row(m: &Listed, snapshot: i64) -> Value {
+    Value::Record(vec![
+        ("manifest_path".into(), Value::String(m.path.clone())),
+        ("manifest_length".into(), Value::Long(m.length)),
+        ("partition_spec_id".into(), Value::Int(m.spec_id)),
+        (
+            "content".into(),
+            Value::Int(if m.deletes { POSITION_DELETES } else { DATA }),
+        ),
+        ("sequence_number".into(), Value::Long(snapshot)),
+        ("min_sequence_number".into(), Value::Long(m.min_sequence)),
+        ("added_snapshot_id".into(), Value::Long(m.added_snapshot)),
+        ("added_files_count".into(), Value::Int(m.added_files)),
+        ("existing_files_count".into(), Value::Int(m.existing_files)),
+        ("deleted_files_count".into(), Value::Int(0)),
+        ("added_rows_count".into(), Value::Long(m.added_rows)),
+        ("existing_rows_count".into(), Value::Long(m.existing_rows)),
+        ("deleted_rows_count".into(), Value::Long(0)),
+    ])
 }
 
 /// The manifest list of `snapshot`, whose parent, if any, is `parent`: its own manifests, and those it carries.
-pub fn manifest_list(snapshot: i64, parent: Option<i64>, manifests: &[Listed], carried: Vec<Value>) -> Result<Vec<u8>> {
+pub fn manifest_list(
+    snapshot: i64,
+    parent: Option<i64>,
+    manifests: &[Listed],
+    carried: Vec<Inherited>,
+) -> Result<Vec<u8>> {
     let schema = avro::manifest_file();
     let mut writer = Writer::with_codec(&schema, Vec::new(), codec()).map_err(avro_failed)?;
     let parent = parent.map_or_else(|| "null".to_string(), |id| id.to_string());
@@ -329,28 +475,10 @@ pub fn manifest_list(snapshot: i64, parent: Option<i64>, manifests: &[Listed], c
         writer.add_user_metadata(key.into(), value).map_err(avro_failed)?;
     }
     for m in manifests {
-        let row = Value::Record(vec![
-            ("manifest_path".into(), Value::String(m.path.clone())),
-            ("manifest_length".into(), Value::Long(m.length)),
-            ("partition_spec_id".into(), Value::Int(m.spec_id)),
-            (
-                "content".into(),
-                Value::Int(if m.deletes { POSITION_DELETES } else { DATA }),
-            ),
-            ("sequence_number".into(), Value::Long(snapshot)),
-            ("min_sequence_number".into(), Value::Long(m.min_sequence)),
-            ("added_snapshot_id".into(), Value::Long(m.added_snapshot)),
-            ("added_files_count".into(), Value::Int(m.added_files)),
-            ("existing_files_count".into(), Value::Int(m.existing_files)),
-            ("deleted_files_count".into(), Value::Int(0)),
-            ("added_rows_count".into(), Value::Long(m.added_rows)),
-            ("existing_rows_count".into(), Value::Long(m.existing_rows)),
-            ("deleted_rows_count".into(), Value::Long(0)),
-        ]);
-        writer.append_value(row).map_err(avro_failed)?;
+        writer.append_value(list_row(m, snapshot)).map_err(avro_failed)?;
     }
-    for row in carried {
-        writer.append_value(row).map_err(avro_failed)?;
+    for m in carried {
+        writer.append_value(m.row).map_err(avro_failed)?;
     }
     writer.into_inner().map_err(avro_failed)
 }

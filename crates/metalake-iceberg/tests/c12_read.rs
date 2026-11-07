@@ -158,6 +158,35 @@ async fn ice2_added_files_manifest_apart() -> Result<(), Failure> {
 }
 
 #[tokio::test]
+async fn ice2_manifests_roll_up() -> Result<(), Failure> {
+    let schema = fresh_schema();
+    let (catalog, _storage, directory) = local_catalog(&schema).await?;
+    let main = catalog.branch("main").await?;
+    main.transaction().create_namespace(&["db"]).commit().await?;
+    create(&main, "rolled", "0", vec![]).await?;
+
+    let (_server, uri) = server(&schema)?;
+    let said = client("rolled", &uri)?;
+    let _ = std::fs::remove_dir_all(&directory);
+    let mut counts = vec![json!([0, 50]), json!([0, 50])];
+    counts.splice(0..0, std::iter::repeat_n(json!([1, 0]), 5));
+    counts.sort_by_key(ToString::to_string);
+    assert_eq!(said["counts"], json!(counts), "the last five, and two of fifty: {said}");
+    assert_eq!(said["statuses"], json!(["EXISTING"]), "{said}");
+    assert_eq!(
+        said["sequences"], 100,
+        "each entry keeps the sequence that added it: {said}"
+    );
+    assert_eq!(said["rows"], json!((0..105).collect::<Vec<_>>()));
+    assert_eq!(
+        said["before"],
+        json!((0..99).collect::<Vec<_>>()),
+        "a list stays as it was"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn ice6_pyiceberg_append() -> Result<(), Failure> {
     let schema = fresh_schema();
     let (catalog, storage, directory) = local_catalog(&schema).await?;

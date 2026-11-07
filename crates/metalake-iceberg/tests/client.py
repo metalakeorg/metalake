@@ -101,6 +101,26 @@ def manifests(uri):
     }
 
 
+def rolled(uri):
+    table = connect(uri).load_table("db.rolled")
+    shape = table.schema().as_arrow()
+    for k in range(105):
+        table.append(pyarrow.Table.from_pylist([{"k": k}], schema=shape))
+        if k == 98:
+            before = table.current_snapshot().snapshot_id
+    reread = connect(uri).load_table("db.rolled")
+    listed = reread.current_snapshot().manifests(reread.io)
+    entries = [entry for m in listed for entry in m.fetch_manifest_entry(reread.io) if m.existing_files_count]
+    keys = lambda scan: sorted(row["k"] for row in scan.to_arrow().to_pylist())
+    return {
+        "counts": sorted([m.added_files_count, m.existing_files_count] for m in listed),
+        "statuses": sorted({entry.status.name for entry in entries}),
+        "sequences": len({entry.sequence_number for entry in entries}),
+        "rows": keys(reread.scan()),
+        "before": keys(reread.scan(snapshot_id=before)),
+    }
+
+
 def rows_of(table, keys):
     return pyarrow.Table.from_pylist([{"k": k} for k in keys], schema=table.schema().as_arrow())
 
@@ -255,4 +275,4 @@ def wide(uri):
 
 
 if __name__ == "__main__":
-    print(json.dumps({"namespaces": namespaces, "read": read, "wide": wide, "append": append, "retry": retry, "lifecycle": lifecycle, "manifests": manifests}[sys.argv[1]](sys.argv[2])))
+    print(json.dumps({"namespaces": namespaces, "read": read, "wide": wide, "append": append, "retry": retry, "lifecycle": lifecycle, "manifests": manifests, "rolled": rolled}[sys.argv[1]](sys.argv[2])))

@@ -7,14 +7,15 @@ use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::hash::{Hash, Hasher};
 
-use apache_avro::types::Value as AvroValue;
 use bytes::Bytes;
 use futures_util::TryStreamExt;
+use futures_util::future::try_join_all;
 use metalake::{Error, ListedFile, Ref, Result, Scan, Storage, Table, TableSnapshot, listed_vector};
 
 use crate::project::deletes::position_deletes;
 use crate::project::manifest::{
-    Context, Delete, Listed, data_manifest, delete_manifest, listed_manifests, manifest_list, served_path,
+    Context, Delete, Inherited, Listed, data_manifest, delete_manifest, listed_manifests, manifest_list, roll_up_due,
+    rolled_manifest, rolled_up, served_path, taken,
 };
 use crate::project::metadata::{Rows, SERVED_PER_REF, adds_only, metadata, schema};
 use crate::state::State;
@@ -106,7 +107,7 @@ async fn materialize<'f>(files: &'f [ListedFile], location: &str, storage: &Stor
 }
 
 /// The manifests a snapshot takes from its parent, when it only added to it and the parent's list is there.
-async fn inherited(storage: &Storage, table: &Table, snapshot: &TableSnapshot) -> Result<Option<Vec<AvroValue>>> {
+async fn inherited(storage: &Storage, table: &Table, snapshot: &TableSnapshot) -> Result<Option<Vec<Inherited>>> {
     let Some(parent) = snapshot.parent_snapshot_id.filter(|_| adds_only(snapshot)) else {
         return Ok(None);
     };
@@ -115,6 +116,29 @@ async fn inherited(storage: &Storage, table: &Table, snapshot: &TableSnapshot) -
         return Ok(None);
     }
     Ok(Some(listed_manifests(&storage.get(&path).await?)?))
+}
+
+/// Rolls up what `manifests` holds of one spec and level, level by level, so that a list stays short: a client that plans a
+/// read opens all of it. It reads what it rolls up and nothing else of the table. What a snapshot added is not among them:
+/// a reader finds it by its own manifest.
+async fn roll_up<'c>(
+    storage: &Storage,
+    location: &str,
+    snapshot: i64,
+    manifests: &mut Vec<Inherited>,
+    context_of: impl Fn(i32) -> Context<'c>,
+) -> Result<()> {
+    while let Some((spec_id, level)) = roll_up_due(manifests) {
+        let parts = taken(manifests, spec_id, level);
+        let bytes = try_join_all(parts.iter().map(|m| storage.get(&m.path))).await?;
+        let written = rolled_manifest(&bytes, &context_of(spec_id))?;
+        let lo = parts.iter().map(|m| m.min_sequence).min().unwrap_or(0);
+        let hi = parts.iter().map(|m| m.added_snapshot).max().unwrap_or(0);
+        let path = format!("{}/r{}-{lo}-{hi}-{spec_id}.avro", generated(location), level + 1);
+        manifests.push(rolled_up(&parts, path.clone(), written.len(), spec_id, snapshot)?);
+        storage.put(&path, written.into()).await?;
+    }
+    Ok(())
 }
 
 /// A snapshot's manifests and manifest list: what it added, and its parent's manifests when it only added to them, which
@@ -141,19 +165,19 @@ async fn generate(on: &Ref, state: &State, storage: &Storage, table: &Table, sna
     spec_ids.sort_unstable();
     spec_ids.dedup();
 
+    let empty = Vec::new();
+    let context_of = |spec_id: i32| Context {
+        location,
+        snapshot: at,
+        types: &types,
+        schema: &rendered,
+        schema_id: snapshot.schema_seq,
+        spec_id,
+        spec: definition["specs"][spec_id.to_string()].as_array().unwrap_or(&empty),
+    };
     let mut manifests = Vec::new();
     for spec_id in spec_ids {
-        let empty = Vec::new();
-        let spec = definition["specs"][spec_id.to_string()].as_array().unwrap_or(&empty);
-        let context = Context {
-            location,
-            snapshot: at,
-            types: &types,
-            schema: &rendered,
-            schema_id: snapshot.schema_seq,
-            spec_id,
-            spec,
-        };
+        let context = context_of(spec_id);
         // What the snapshot added apart from the rest, so that a reader finds it by its manifest (ICE-2).
         for (added, name) in [(true, "a"), (false, "m")] {
             let of_spec = files.iter().filter(|f| f.spec_id == spec_id);
@@ -188,7 +212,8 @@ async fn generate(on: &Ref, state: &State, storage: &Storage, table: &Table, sna
             storage.put(&path, bytes.into()).await?;
         }
     }
-    let carried = carried.unwrap_or_default();
+    let mut carried = carried.unwrap_or_default();
+    roll_up(storage, location, at, &mut carried, context_of).await?;
     let list = manifest_list(at, snapshot.parent_snapshot_id, &manifests, carried)?;
     storage.put(&list_path(location, at), list.into()).await
 }
@@ -287,9 +312,11 @@ mod tests {
     use std::cell::{Cell, RefCell};
     use std::collections::HashSet;
 
+    use apache_avro::types::Value as AvroValue;
     use serde_json::json;
 
     use super::*;
+    use crate::project::manifest::ROLL_UP;
 
     fn snapshot(id: i64, parent: Option<i64>) -> TableSnapshot {
         TableSnapshot {
@@ -318,6 +345,56 @@ mod tests {
         };
         let missing = unlisted(snapshots, heads, exists).await.expect("no storage to fail");
         (missing.iter().map(|s| s.snapshot_id).collect(), requests.get())
+    }
+
+    fn manifest(name: &str, spec_id: i32, deletes: bool) -> Inherited {
+        Inherited {
+            row: AvroValue::Null,
+            path: format!("gs://t/metalake-manifests/{name}"),
+            spec_id,
+            deletes,
+            files: 1,
+            rows: 1,
+            min_sequence: 1,
+            added_snapshot: 1,
+        }
+    }
+
+    fn many(prefix: &str, count: usize, spec_id: i32) -> Vec<Inherited> {
+        (0..count)
+            .map(|i| manifest(&format!("{prefix}{i}-{spec_id}.avro"), spec_id, false))
+            .collect()
+    }
+
+    #[test]
+    fn ice2_roll_up_due_by_spec_and_level() {
+        assert_eq!(roll_up_due(&many("a-", ROLL_UP - 1, 0)), None);
+        assert_eq!(roll_up_due(&many("a-", ROLL_UP, 0)), Some((0, 0)));
+        assert_eq!(roll_up_due(&many("a-", ROLL_UP, 3)), Some((3, 0)));
+        assert_eq!(roll_up_due(&many("r2-", ROLL_UP, 0)), Some((0, 2)));
+        let mut split = many("a-", ROLL_UP - 1, 0);
+        split.extend(many("a-", 1, 1));
+        split.extend(many("r1-", ROLL_UP - 1, 0));
+        assert_eq!(roll_up_due(&split), None, "a spec and a level at a time");
+    }
+
+    #[test]
+    fn ice2_roll_up_leaves_what_has_no_level() {
+        let whole = many("m-", ROLL_UP, 0);
+        assert_eq!(roll_up_due(&whole), None, "all a snapshot saw");
+        let deletes: Vec<Inherited> = (0..ROLL_UP)
+            .map(|i| manifest(&format!("a-{i}-0.avro"), 0, true))
+            .collect();
+        assert_eq!(roll_up_due(&deletes), None, "deletes stay apart");
+    }
+
+    #[test]
+    fn ice2_taken_leaves_the_rest() {
+        let mut manifests = many("a-", 2, 0);
+        manifests.extend(many("r1-", 1, 0));
+        manifests.extend(many("a-", 1, 1));
+        let parts = taken(&mut manifests, 0, 0);
+        assert_eq!((parts.len(), manifests.len()), (2, 2));
     }
 
     #[tokio::test]
