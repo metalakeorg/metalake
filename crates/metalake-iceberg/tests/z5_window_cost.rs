@@ -11,7 +11,9 @@ use metalake::{TableWriter, WriteOptions};
 use serde_json::{Value, json};
 
 const SNAPSHOTS: i64 = 10_000;
-const WINDOWS: [i32; 4] = [11, 100, 1_000, 10_000];
+/// The snapshots to keep, and the age past which the rest expire. The last asks as a load of a table with no properties does,
+/// which looks at the time of every snapshot: the others keep theirs by count.
+const WINDOWS: [(i32, i64); 5] = [(11, 1), (100, 1), (1_000, 1), (10_000, 1), (1, 5 * 24 * 60 * 60 * 1000)];
 const SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/load_cost.py");
 
 /// What a client takes to load the table `times` times: milliseconds of each, and the bytes of the answer.
@@ -82,9 +84,9 @@ async fn rest5_load_cost_by_window() -> Result<(), Failure> {
     let (_server, uri) = server(&schema)?;
     println!("window | first load ms | unchanged ms | after a commit ms | answer KB | ancestors ms");
     let mut at = SNAPSHOTS;
-    for window in WINDOWS {
+    for (window, age) in WINDOWS {
         let property = json!({"properties": {
-            "history.expire.max-snapshot-age-ms": "1",
+            "history.expire.max-snapshot-age-ms": age.to_string(),
             "history.expire.min-snapshots-to-keep": window.to_string(),
         }});
         main.transaction().define(t.id(), property).commit().await?;
@@ -105,9 +107,9 @@ async fn rest5_load_cost_by_window() -> Result<(), Failure> {
             .into_iter()
             .collect::<Vec<_>>();
         let start = std::time::Instant::now();
-        let read = catalog.ancestors(&t, &head, window, Some(1)).await?;
+        let read = catalog.ancestors(&t, &head, window, Some(age)).await?;
         let ancestors = start.elapsed().as_secs_f64() * 1000.0;
-        assert_eq!(read.len(), window as usize);
+        assert!(read.len() >= window as usize);
         println!(
             "{window} | {:.0} | {:.1} | {:.1} | {:.0} | {ancestors:.1}",
             median(&first),

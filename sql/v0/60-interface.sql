@@ -66,7 +66,8 @@ create view @schema@.snapshots as
     from @schema@.snapshot s join @schema@.ref r on r.ref_id = s.ref_id;
 
 -- The snapshots of table $1 reached from each of the snapshots $2 that remain, back through the last $3 of each and those
--- committed within $4 milliseconds: a reader of a long history pays for what it reads.
+-- committed within $4 milliseconds: a reader of a long history pays for what it reads. A commit's time is taken from its
+-- row, as a call of commit_time per snapshot costs seventeen times the rest, and that call stays for what has no time (TT-1).
 create function @schema@.ancestors(table_id uuid, heads bigint[], keep int, max_age_ms bigint default null)
 returns table (snapshot_id bigint, parent_snapshot_id bigint, ref text, schema_seq bigint, summary jsonb,
                committed_at timestamptz)
@@ -77,11 +78,15 @@ language sql stable as $$
     union
     select s.snapshot_id, s.parent_snapshot_id, a.kept + 1
       from a join @schema@.snapshot s on s.table_id = $1 and s.snapshot_id = a.parent_snapshot_id
+      join @schema@.commit c on c.commit_seq = s.snapshot_id
      where a.kept < $3
-        or @schema@.commit_time(s.snapshot_id) >= now() - $4::double precision * interval '1 millisecond')
-  select s.snapshot_id, s.parent_snapshot_id, r.name, s.schema_seq, s.summary, @schema@.commit_time(s.snapshot_id)
+        or coalesce(c.committed_at, pg_xact_commit_timestamp(@schema@.xid32(c.xid)), @schema@.commit_time(c.commit_seq))
+           >= now() - $4::double precision * interval '1 millisecond')
+  select s.snapshot_id, s.parent_snapshot_id, r.name, s.schema_seq, s.summary,
+         coalesce(c.committed_at, pg_xact_commit_timestamp(@schema@.xid32(c.xid)), @schema@.commit_time(c.commit_seq))
     from (select distinct x.snapshot_id from a x) d
     join @schema@.snapshot s on s.table_id = $1 and s.snapshot_id = d.snapshot_id
+    join @schema@.commit c on c.commit_seq = s.snapshot_id
     join @schema@.ref r on r.ref_id = s.ref_id
    order by 1;
 $$;
