@@ -1,6 +1,6 @@
 //! The rows of a table as `TableMetadata` (ICE-1). The reference's `iceberg_metadata` is the oracle this is tested against.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
 
 use metalake::TableSnapshot;
 use serde_json::{Value, json};
@@ -179,30 +179,9 @@ fn summary(of: &TableSnapshot) -> BTreeMap<String, String> {
     said
 }
 
-/// How many ancestors of each ref's current snapshot are served, so that a client that rebases finds its base (REST-5).
-const ANCESTORS: usize = 10;
-
-/// The snapshots a load serves: each ref's current one and its last ten ancestors that remain, whatever a client asks.
-pub fn served(snapshots: Vec<TableSnapshot>, refs: &[(String, String, Option<i64>)]) -> Vec<TableSnapshot> {
-    let parents: HashMap<i64, Option<i64>> = snapshots
-        .iter()
-        .map(|s| (s.snapshot_id, s.parent_snapshot_id))
-        .collect();
-    let mut kept = HashSet::new();
-    for (.., current) in refs {
-        let mut at = *current;
-        for _ in 0..=ANCESTORS {
-            let Some(id) = at.filter(|id| parents.contains_key(id)) else {
-                break;
-            };
-            kept.insert(id);
-            at = parents[&id];
-        }
-    }
-    let mut served = snapshots;
-    served.retain(|s| kept.contains(&s.snapshot_id));
-    served
-}
+/// How many snapshots of each ref a load serves: its current one and its last ten ancestors that remain, whatever a client
+/// asks, so that a client that rebases finds its base (REST-5).
+pub const SERVED_PER_REF: i32 = 11;
 
 /// The write modes every table is served with: a client that wrote position deletes would be refused (REST-4).
 pub const COPY_ON_WRITE: [&str; 3] = ["write.delete.mode", "write.update.mode", "write.merge.mode"];
@@ -294,40 +273,6 @@ pub fn metadata(rows: &Rows, manifest_list: impl Fn(i64) -> String) -> TableMeta
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn chain(ids: std::ops::RangeInclusive<i64>) -> Vec<TableSnapshot> {
-        ids.map(|id| TableSnapshot {
-            snapshot_id: id,
-            parent_snapshot_id: (id > 1).then_some(id - 1),
-            ref_name: "main".into(),
-            schema_seq: 1,
-            summary: Value::Null,
-            timestamp_ms: None,
-        })
-        .collect()
-    }
-
-    fn ids(served: Vec<TableSnapshot>) -> Vec<i64> {
-        served.iter().map(|s| s.snapshot_id).collect()
-    }
-
-    #[test]
-    fn rest5_ancestor_limit() {
-        let refs = [("main".to_string(), "branch".to_string(), Some(20))];
-        assert_eq!(ids(served(chain(1..=20), &refs)), (10..=20).collect::<Vec<_>>());
-    }
-
-    #[test]
-    fn rest5_ancestors_per_ref() {
-        let refs = [
-            ("main".to_string(), "branch".to_string(), Some(20)),
-            ("old".to_string(), "tag".to_string(), Some(5)),
-            ("empty".to_string(), "branch".to_string(), None),
-        ];
-        let kept = ids(served(chain(3..=20), &refs));
-        assert_eq!(kept[..3], [3, 4, 5]);
-        assert_eq!(kept[3], 10);
-    }
 
     fn snapshot(id: i64, parent: Option<i64>, added: i64) -> TableSnapshot {
         TableSnapshot {

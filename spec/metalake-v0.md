@@ -353,8 +353,8 @@ order and the cluster key.
   `parent_snapshot_id` (the table's current snapshot on the ref before the commit, `NULL` for a new table),
   `schema_seq` (the `commit_seq` of the latest commit that changed the table's fields, as seen by this
   snapshot), the default `spec_id` and `sort_order_id` (0 when unsorted) after the commit, and a `summary`
-  with `operation`, `added-data-files`, `deleted-data-files`, `added-records` and `deleted-records`, and what
-  the commit adds to it (CMT-12).
+  with `operation`, `added-data-files`, `deleted-data-files`, `added-records`, `deleted-records` and
+  `changed-vectors`, the vectors it sets, and what the commit adds to it (CMT-12).
 - **CMT-2.** The snapshot of table `t` at `(r, s)` is found through the chain: at the lowest level i that has
   one, the greatest `snapshot_id` of `ref_i` that is at most `s_i` and at least the `begin_seq` of the
   `ref_base` row that level reads through (0 for a ref without one). The **current** snapshot is the one at
@@ -525,8 +525,8 @@ blob type `deletion-vector-v1`.
     version first closes `p`'s own live row of the same key;
   - a tombstone of `b` closes `p`'s own live row of the file, or, if `p` inherits the file, opens a tombstone
     of `p`;
-  - `p` gets a snapshot (CMT-1, operation `merge`), whose summary also has `changed-vectors`, the vectors that
-    open on `p` at `m`, and its head for every table that changed;
+  - `p` gets a snapshot (CMT-1, operation `merge`), whose `changed-vectors` counts the vectors that open on `p`
+    at `m`, and its head for every table that changed;
   - `b`'s live `ref_base` row closes at `m` and a new one opens: `(b, m, p, fork_seq = m)`. `b` is now an empty
     child of `p`, and its reads below `m` are unchanged (VIS-8). Its heads become its current snapshots.
 - **MRG-5.** When both sides changed the vector of a file, the merged vector holds every position of both. If

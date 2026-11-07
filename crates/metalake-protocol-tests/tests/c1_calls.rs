@@ -283,6 +283,43 @@ async fn refusal_error_kind_and_rule() -> Result<(), Error> {
     Ok(())
 }
 
+/// A read of a long history pays for what it returns: from each head, through at most `depth` snapshots, once each.
+#[tokio::test]
+async fn ancestors_bounded_per_head() -> Result<(), Error> {
+    let on = connect().await?;
+    let schema = fresh_schema("c1");
+    install_protocol(&on, &schema).await?;
+    let p = Protocol::new(&schema);
+    let t = Uuid::from_u128(0xc4);
+    let mut seqs = vec![p.commit(&on, &create(t)).await?.commit_seq];
+    for i in 0..4 {
+        let commit = append(1, t, &format!("gs://lake/{i}.parquet"), i * 10);
+        seqs.push(p.commit(&on, &commit).await?.commit_seq);
+    }
+    let found = |heads: Vec<i64>, depth: i32| {
+        let (p, on) = (&p, &on);
+        async move {
+            let snapshots = p.ancestors(on, t, &heads, depth).await?;
+            Ok::<_, Error>(snapshots.iter().map(|s| s.snapshot_id).collect::<Vec<_>>())
+        }
+    };
+    assert_eq!(found(vec![seqs[4]], 3).await?, seqs[2..].to_vec());
+    assert_eq!(found(vec![seqs[4]], 1).await?, [seqs[4]]);
+    assert_eq!(found(vec![seqs[4]], 0).await?, Vec::<i64>::new());
+    assert_eq!(found(vec![seqs[4]], 100).await?, seqs, "as far as they remain");
+    assert_eq!(
+        found(vec![seqs[4], seqs[1]], 2).await?,
+        [seqs[0], seqs[1], seqs[3], seqs[4]],
+        "each head its own"
+    );
+    assert_eq!(found(vec![seqs[4], seqs[3]], 2).await?, seqs[2..].to_vec(), "once each");
+    let all = p.table_snapshots(&on, t).await?;
+    assert_eq!(p.ancestors(&on, t, &[seqs[4]], 100).await?, all, "the same rows");
+    on.batch_execute(&format!("drop schema {} cascade", quote_ident(&schema)))
+        .await?;
+    Ok(())
+}
+
 /// CMT-12 against the protocol's own function: a commit adds keys to a summary, those of the snapshot prevail, and keys
 /// alone touch the table.
 #[tokio::test]

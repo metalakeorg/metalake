@@ -258,6 +258,19 @@ pub struct TableSnapshot {
     pub timestamp_ms: Option<i64>,
 }
 
+impl TableSnapshot {
+    pub(crate) fn from_row(row: &Row) -> Self {
+        Self {
+            snapshot_id: row.get("snapshot_id"),
+            parent_snapshot_id: row.get("parent_snapshot_id"),
+            ref_name: row.get("ref"),
+            schema_seq: row.get("schema_seq"),
+            summary: row.get("summary"),
+            timestamp_ms: row.get("timestamp_ms"),
+        }
+    }
+}
+
 /// A namespace of a ref, as the view `namespaces` shows it (NS-1, NS-4).
 #[derive(Debug, Clone, PartialEq)]
 pub struct NamespaceRow {

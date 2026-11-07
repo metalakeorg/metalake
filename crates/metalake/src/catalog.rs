@@ -141,6 +141,17 @@ impl Catalog {
             .await?)
     }
 
+    /// The snapshots of a table reached from `heads` through at most `depth` snapshots each, the earliest first. Its
+    /// cost is what it returns, not the table's history.
+    pub async fn ancestors(&self, table: &Table, heads: &[i64], depth: i32) -> Result<Vec<TableSnapshot>> {
+        let session = self.session().await?;
+        Ok(self
+            .inner
+            .protocol
+            .ancestors(&session, table.id(), heads, depth)
+            .await?)
+    }
+
     /// A branch, by name.
     pub async fn branch(&self, name: &str) -> Result<Ref> {
         self.find(name, "branch").await

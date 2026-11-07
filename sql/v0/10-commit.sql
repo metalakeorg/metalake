@@ -540,6 +540,7 @@ begin
          coalesce(notes -> t::text, '{}') || jsonb_build_object('operation', op,
            'added-data-files', (select count(*) from unnest(adds) f where (f).table_id = t),
            'deleted-data-files', (select count(*) from unnest(rems) x where (x).table_id = t),
+           'changed-vectors', (select count(*) from unnest(vecs) v where (v).table_id = t),
            'added-records', coalesce((select sum((f).record_count) from unnest(adds) f where (f).table_id = t), 0),
            'deleted-records', case when cardinality(rems) = 0 then 0 else coalesce((select sum(d.record_count) from data_file d
                                          where d.table_id = t

@@ -65,6 +65,26 @@ create view @schema@.snapshots as
          as operation, @schema@.commit_time(s.snapshot_id) as committed_at, s.summary
     from @schema@.snapshot s join @schema@.ref r on r.ref_id = s.ref_id;
 
+-- The snapshots of table $1 reached from each of the snapshots $2 through at most $3 snapshots, itself included, and
+-- those that remain: a reader of a long history pays for what it reads.
+create function @schema@.ancestors(table_id uuid, heads bigint[], depth int)
+returns table (snapshot_id bigint, parent_snapshot_id bigint, ref text, schema_seq bigint, summary jsonb,
+               committed_at timestamptz)
+language sql stable as $$
+  with recursive a (snapshot_id, parent_snapshot_id, remaining) as (
+    select s.snapshot_id, s.parent_snapshot_id, $3 - 1
+      from @schema@.snapshot s where s.table_id = $1 and s.snapshot_id = any ($2) and $3 > 0
+    union
+    select s.snapshot_id, s.parent_snapshot_id, a.remaining - 1
+      from a join @schema@.snapshot s on s.table_id = $1 and s.snapshot_id = a.parent_snapshot_id
+     where a.remaining > 0)
+  select s.snapshot_id, s.parent_snapshot_id, r.name, s.schema_seq, s.summary, @schema@.commit_time(s.snapshot_id)
+    from (select distinct x.snapshot_id from a x) d
+    join @schema@.snapshot s on s.table_id = $1 and s.snapshot_id = d.snapshot_id
+    join @schema@.ref r on r.ref_id = s.ref_id
+   order by 1;
+$$;
+
 create view @schema@.history as
   select c.commit_seq, r.name as ref, @schema@.commit_time(c.commit_seq) as committed_at, c.author, c.actor,
          c.operation, c.app_id, c.app_version, c.message

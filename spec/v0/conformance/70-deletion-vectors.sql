@@ -74,6 +74,15 @@ select cm(format('[{"table_id": "%s", "remove": [1]}]', :'t')::jsonb, '{"operati
 select expect((select count(*) from visible_dvs(1, :'t', 9223372036854775806)) = 0 and rows_of(1, :'t') = 10,
   'a vector applies only while its file is visible');
 
+-- case: a snapshot counts the vectors its commit sets
+-- rules: CMT-1
+select mk('t') as t \gset
+select cm(format('[{"table_id": "%s", "add": [%s, %s]}]', :'t', fj(1), fj(2))::jsonb) as added \gset
+select cm(jsonb_build_array(jsonb_build_object('table_id', :'t', 'dvs', jsonb_build_array(dvj(1, '{0}'), dvj(2, '{1}')))),
+          '{"operation": "delete"}') as deleted \gset
+select expect((select summary ->> 'changed-vectors' = '0' from snapshot where snapshot_id = :added), 'a commit of files');
+select expect((select summary ->> 'changed-vectors' = '2' from snapshot where snapshot_id = :deleted), 'a commit of vectors');
+
 -- case: a Puffin file is under its intent as a file is: an expired one is refused, a valid one goes with the commit
 -- rules: RET-7 CMT-10
 select mk('tp') as t \gset

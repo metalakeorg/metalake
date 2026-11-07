@@ -12,7 +12,7 @@ use metalake::{Error, ListedFile, Ref, Result, Scan, Storage, Table, TableSnapsh
 
 use crate::project::deletes::position_deletes;
 use crate::project::manifest::{Context, Delete, Listed, data_manifest, delete_manifest, manifest_list, served_path};
-use crate::project::metadata::{Rows, metadata, schema, served};
+use crate::project::metadata::{Rows, SERVED_PER_REF, metadata, schema};
 use crate::state::State;
 use crate::wire::metadata::{LoadTableResult, TableMetadata};
 
@@ -45,8 +45,8 @@ async fn rows(state: &State, table: &Table) -> Result<Rows> {
         let current = seen.and_then(|d| d["snapshot_id"].as_i64());
         refs.push((described.name.clone(), described.kind.clone(), current));
     }
-    let snapshots = state.catalog().table_snapshots(table).await?;
-    let snapshots = served(snapshots, &refs);
+    let heads: Vec<i64> = refs.iter().filter_map(|(.., current)| *current).collect();
+    let snapshots = state.catalog().ancestors(table, &heads, SERVED_PER_REF).await?;
     let mut schemas = BTreeMap::new();
     for snapshot in &snapshots {
         if let Entry::Vacant(schema) = schemas.entry(snapshot.schema_seq) {

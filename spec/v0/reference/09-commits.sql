@@ -412,6 +412,7 @@ begin
       coalesce(e -> 'summary', '{}') || jsonb_build_object('operation', c ->> 'operation',
         'added-data-files', jsonb_array_length(coalesce(e -> 'add', '[]')),
         'deleted-data-files', jsonb_array_length(coalesce(e -> 'remove', '[]')),
+        'changed-vectors', jsonb_array_length(coalesce(e -> 'dvs', '[]')),
         'added-records', coalesce((select sum((y ->> 'record_count')::bigint) from jsonb_array_elements(e -> 'add') y), 0),
         'deleted-records', coalesce((select sum(d.record_count) from data_file d
                                       where d.table_id = t and d.file_id in (

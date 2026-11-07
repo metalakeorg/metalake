@@ -116,10 +116,9 @@ async fn resolve(on: &Ref, target: &Target) -> Result<(Uuid, Option<Table>), App
 /// What a client that saw a table with no snapshot expects: the snapshot its creation wrote, which it is not served
 /// (ICE-1). A table that has been written since keeps `None`, so the commit conflicts.
 async fn base_of_unwritten(state: &State, table: &Table) -> Result<Option<i64>, ApplyError> {
-    let snapshots = state.catalog().table_snapshots(table).await?;
-    let unwritten = snapshots
-        .iter()
-        .find(|s| Some(s.snapshot_id) == table.snapshot_id() && is_empty_creation(s));
+    let heads: Vec<i64> = table.snapshot_id().into_iter().collect();
+    let snapshots = state.catalog().ancestors(table, &heads, 1).await?;
+    let unwritten = snapshots.iter().find(|s| is_empty_creation(s));
     Ok(unwritten.map(|s| s.snapshot_id))
 }
 

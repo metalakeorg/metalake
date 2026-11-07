@@ -42,7 +42,7 @@ select expect((select array_agg(snapshot_id order by snapshot_id) from snapshot 
   and (select parent_snapshot_id from snapshot where snapshot_id = :s2) = :s1
   and (select parent_snapshot_id from snapshot where snapshot_id = :s1 - 1) is null, 'a chain of snapshots');
 select expect((select schema_seq = :s1 - 1 and spec_id = 0 and sort_order_id = 0
-                  and summary = '{"operation": "overwrite", "added-data-files": 1, "deleted-data-files": 1, "added-records": 10, "deleted-records": 10}'
+                  and summary = '{"operation": "overwrite", "added-data-files": 1, "deleted-data-files": 1, "added-records": 10, "deleted-records": 10, "changed-vectors": 0}'
                  from snapshot where snapshot_id = :s2), 'schema_seq, spec, sort order and summary');
 select expect((select snapshot_id from head where ref_id = 1 and table_id = :'t') = :s2, 'the head');
 
@@ -52,7 +52,7 @@ select mk('t') as t \gset
 select cm(jsonb_build_array(jsonb_build_object('table_id', :'t', 'add', jsonb_build_array(fj(1)),
           'summary', '{"engine": "spark", "epoch": "7", "operation": "delete", "added-data-files": "9"}'::jsonb))) as s1 \gset
 select expect((select summary = '{"operation": "append", "added-data-files": 1, "deleted-data-files": 0, "added-records": 10,
-                                  "deleted-records": 0, "engine": "spark", "epoch": "7"}'
+                                  "deleted-records": 0, "changed-vectors": 0, "engine": "spark", "epoch": "7"}'
                  from snapshot where snapshot_id = :s1), 'its keys are kept, and the snapshot''s prevail');
 select cm(jsonb_build_array(jsonb_build_object('table_id', :'t', 'summary', '{"epoch": "8"}'::jsonb))) as s2 \gset
 select expect((select parent_snapshot_id = :s1 and summary ->> 'epoch' = '8' from snapshot where snapshot_id = :s2),
