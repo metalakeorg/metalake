@@ -187,3 +187,59 @@ select expect((select vector_before is null and vector_after ->> 'path' = 'gs://
 select expect_error(format('select * from table_changes(1, %L, %s, %s)', :'t', :s4, :s1), '22023', 'not in order');
 select set_retention(1, min_snapshots => 1);
 select expect_error(format('select * from table_changes(1, %L, %s, %s)', :'t', :s1, :s4), '22023', 'a read no longer kept');
+
+-- case: a commit's changes are those of its read against the one before, with what opens each file and its vectors
+-- rules: CHG-3
+select mk('t') as t \gset
+select mk('u') as u \gset
+select cm(jsonb_build_array(jsonb_build_object('table_id', :'t', 'add', jsonb_build_array(fj(1), fj(2),
+  jsonb_build_object('file_id', 3, 'inline', repeat('ab', 50), 'record_count', 1, 'file_size', 50, 'footer_size', 10,
+                     'footer', repeat('cd', 10)))))) as s1 \gset
+select expect((select array_agg(change || ':' || file_id order by file_id) from commit_changes(1, :'t', :s1))
+              = '{added:1,added:2,added:3}', 'what it added');
+select expect((select path = 'gs://lake/t/1.parquet' and record_count = 1 and file_size = 1000 and footer_size = 100
+                      and content is null and spec_id = 0 and vector_before is null and vector_after is null
+                 from commit_changes(1, :'t', :s1) where file_id = 1), 'a stored file, as a reader opens it');
+select expect((select path is null and length(content) = 50 and length(footer) = 10
+                 from commit_changes(1, :'t', :s1) where file_id = 3), 'an inline file, with its bytes');
+select add(:'u', 9) as other \gset
+select expect(not exists (select 1 from commit_changes(1, :'t', :other)), 'a commit of another table changed nothing here');
+select commit(jsonb_build_object('ref', 1, 'author', 'ana', 'actor', 'test', 'operation', 'delete',
+  'tables', jsonb_build_array(jsonb_build_object('table_id', :'t',
+    'dvs', '[{"file_id": 1, "base_seq": null, "path": "gs://lake/t/dv.puffin", "content_offset": 4, "content_size": 40, "cardinality": 1}]'::jsonb)))) as s2 \gset
+select expect((select count(*) = 1 and bool_and(change = 'vector' and file_id = 1 and vector_before is null
+                                                and vector_after ->> 'path' = 'gs://lake/t/dv.puffin')
+                 from commit_changes(1, :'t', :s2)), 'a vector, with the file it applies to');
+select commit(jsonb_build_object('ref', 1, 'author', 'ana', 'actor', 'test', 'operation', 'delete',
+  'tables', jsonb_build_array(jsonb_build_object('table_id', :'t', 'remove', '[1]'::jsonb)))) as s3 \gset
+select expect((select count(*) = 1 and bool_and(change = 'removed' and file_id = 1 and path = 'gs://lake/t/1.parquet'
+                                                and vector_before ->> 'path' = 'gs://lake/t/dv.puffin' and vector_after is null)
+                 from commit_changes(1, :'t', :s3)), 'a file removed, with the vector its live rows need');
+select commit(jsonb_build_object('ref', 1, 'author', 'ana', 'actor', 'test', 'operation', 'replace',
+  'tables', jsonb_build_array(jsonb_build_object('table_id', :'t', 'remove', '[2]'::jsonb, 'add', jsonb_build_array(fj(4)))))) as s4 \gset
+select expect((select array_agg(change || ':' || file_id order by file_id) from commit_changes(1, :'t', :s4))
+              = '{removed:2,added:4}', 'a replace states what it did, and its operation lets a reader skip it');
+select expect((select array_agg(change || ':' || file_id order by file_id) from commit_changes(1, :'t', :s4))
+              = (select array_agg(change || ':' || file_id order by file_id) from table_changes(1, :'t', :s4 - 1, :s4)),
+  'the same as the changes of its two reads');
+select set_retention(1, min_snapshots => 1);
+select expect_error(format('select * from commit_changes(1, %L, %s)', :'t', :s2), '22023', 'a read no longer kept');
+select expect_error(format('select * from commit_changes(99, %L, %s)', :'t', :s4), '22023', 'a ref that does not exist');
+
+-- case: a file a branch inherits leaves it by a tombstone, and a new base brings what the parent changed
+-- rules: CHG-3
+select mk('t') as t \gset
+select add(:'t', 1) as s1 \gset
+select create_ref('b', 1) as b \gset
+select add(:'t', 2) as s2 \gset
+select add(:'t', 9, :b) as s3 \gset
+select commit(jsonb_build_object('ref', :b, 'author', 'ana', 'actor', 'test', 'operation', 'delete',
+  'tables', jsonb_build_array(jsonb_build_object('table_id', :'t', 'remove', '[1]'::jsonb)))) as s4 \gset
+select expect((select array_agg(change || ':' || file_id) from commit_changes(:b, :'t', :s4)) = '{removed:1}',
+  'a tombstone removes the file on the branch');
+select expect(not exists (select 1 from commit_changes(1, :'t', :s4)), 'and not on its parent');
+select merge(:b) as m \gset
+select expect((select array_agg(change || ':' || file_id order by file_id) from commit_changes(1, :'t', :m))
+              = '{removed:1,added:9}', 'the merge, on the parent');
+select expect((select array_agg(change || ':' || file_id) from commit_changes(:b, :'t', :m)) = '{added:2}',
+  'on the branch, what its new base brings, though the branch wrote nothing and has no snapshot at the merge');

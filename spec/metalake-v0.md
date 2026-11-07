@@ -667,6 +667,15 @@ referred to. Retention says how much history each ref keeps.
   (removed); and the files visible at both whose deletion vector differs, with the vector at each. Files are told
   apart by `file_id`. A read that is not retained is refused with SQLSTATE `22023`. An engine turns the changes
   into rows inserted and deleted.
+- **CHG-3.** *0.2.* The **changes of a commit** `s` to table `t` on ref `r` are the changes of CHG-2 between
+  `(r, s - 1)` and `(r, s)`. Each also gives what a reader needs to open its file: its object or inline bytes, its
+  sizes, its stored footer, its spec, its partition and its `first_row_id`, of the read that sees it. A file added
+  also gives its vector at `s`, and a file removed its vector at `s - 1`, so that a reader knows which of its rows
+  are live. A read that is not retained is refused with SQLSTATE `22023`. Finding them costs what the commit
+  touched, whatever the table holds, unless the base of `r` changed at `s`. A reader of rows MAY skip a commit whose
+  `operation` is `replace`, which changes no row (CMT-11).
+  *Note.* A full merge of `b` gives `b` a new base at `m` and no snapshot (MRG-4), so the feed of a table does not
+  announce on `b` what `b` inherits at `m`, though the changes of `m` on `b` state it.
 
 ## 15. Partition values
 
