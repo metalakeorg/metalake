@@ -1,8 +1,12 @@
-//! Following a table (CHG-3, CHG-4): what a table holds, then what each commit changes, as rows inserted and deleted.
+//! Following a table (CHG-3 to CHG-5): what a table holds, then what each commit changes, as rows inserted and deleted.
 //!
 //! It is a library, as a scan is: no thread and no timer of its own. [`TableStream::next`] says what is new, as tasks an
 //! engine may hand to its workers, and a cursor. The caller keeps the cursor, and a stream opened from it goes on from
 //! there, so that a reader that keeps its cursor with what it did with the rows takes each commit once.
+//!
+//! A reader starts now, or from a time when its ref is read as of one ([`Ref::as_of`]). Readers given the same time
+//! take the same read and the same commits, whenever each starts (CHG-5), so that an engine's workers can each follow
+//! some of a table's files and together take each commit whole.
 //!
 //! The rows are the table's columns and three more: [`CHANGE_TYPE`], [`COMMIT_SEQ`] and [`COMMIT_TIMESTAMP`].
 
@@ -38,9 +42,9 @@ const FEED_BATCH: i32 = 1000;
 /// Where a reader starts.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Start {
-    /// What the table holds now, then what comes.
+    /// What the table holds at the start, then what comes.
     Snapshot,
-    /// Only what comes.
+    /// Only what comes after the start.
     Latest,
     /// Where a reader was.
     Cursor(StreamCursor),
@@ -107,14 +111,26 @@ pub struct TableStream {
     schema: SchemaRef,
     schema_seq: i64,
     start: Start,
+    /// The time it follows from and the sequence of the read as of it, when it was given one.
+    from: Option<(SystemTime, i64)>,
     cursor: Option<StreamCursor>,
 }
 
 impl Ref {
-    /// A reader of `table` on this ref. A ref with a parent is refused: a merge changes what it inherits with no snapshot
-    /// of it, so the feed would not say (CHG-3).
+    /// A reader of `table` on this branch, from now or, read as of a time, from that time (CHG-5): it reads the table as
+    /// it was then, whichever handle of it is given, once that time is a second past. A ref with a parent is refused: a
+    /// merge changes what it inherits with no snapshot of it, so the feed would not say (CHG-3).
     pub async fn stream(&self, table: &Table, start: Start) -> Result<TableStream> {
-        self.writable()?;
+        let from = self.time();
+        if from.is_some() && matches!(start, Start::Cursor(_)) {
+            return Err(Error::Invalid(format!(
+                "following {}: a reader from a cursor goes on from it, not from a time",
+                table.name()
+            )));
+        }
+        // A sequence has no time to follow the feed from; a time does.
+        let branch = if from.is_some() { self.latest() } else { self.clone() };
+        branch.writable()?;
         let catalog = self.catalog();
         let refs = catalog.describe_refs().await?;
         if refs.iter().any(|r| r.ref_id == self.id() && r.parent.is_some()) {
@@ -123,6 +139,14 @@ impl Ref {
                 self.name()
             )));
         }
+        let (table, from) = match from {
+            Some(time) => {
+                let seq = seq_as_of(&branch, table, time).await?;
+                (branch.table_at(table, seq).await?, Some((time, seq)))
+            }
+            None => (table.clone(), None),
+        };
+        let table = &table;
         let head = table
             .snapshot_id()
             .ok_or_else(|| Error::Invalid(format!("{} has no snapshot to follow from", table.name())))?;
@@ -142,12 +166,13 @@ impl Ref {
         };
         Ok(TableStream {
             catalog: catalog.clone(),
-            branch: self.clone(),
+            branch,
             table: table.clone(),
             scan,
             schema: Arc::new(Schema::new(fields)),
             schema_seq,
             start,
+            from,
             cursor,
         })
     }
@@ -197,9 +222,12 @@ impl TableStream {
         .boxed()
     }
 
-    /// CHG-4: the read at a stream point, and a cursor for the feed from the time taken before it.
+    /// CHG-4 and CHG-5: the read at a stream point or as of a time, and a cursor for the feed from that time.
     async fn begin(&mut self) -> Result<StreamStep> {
-        let (at, seq) = self.point().await?;
+        let (at, seq) = match self.from {
+            Some(from) => from,
+            None => self.point().await?,
+        };
         let cursor = StreamCursor { at, seq: 0, floor: seq };
         let tasks = match self.start {
             Start::Snapshot => {
@@ -291,6 +319,30 @@ impl TableStream {
         self.cursor = Some(cursor.clone());
         Ok(Some(StreamStep { tasks, cursor }))
     }
+}
+
+/// CHG-5: the sequence of a read of `table` as of `time` (TT-3), once that time is a second past by the catalog's clock,
+/// as TT-3 requires.
+async fn seq_as_of(branch: &Ref, table: &Table, time: SystemTime) -> Result<i64> {
+    let catalog = branch.catalog();
+    let session = catalog.session().await?;
+    let p = catalog.protocol();
+    let answered = time + Duration::from_secs(1);
+    loop {
+        let now = p.stream_point(&session).await?.at;
+        match answered.duration_since(now) {
+            Ok(wait) if !wait.is_zero() => tokio::time::sleep(wait + Duration::from_millis(10)).await,
+            _ => break,
+        }
+    }
+    let seq = p.as_of_time(&session, branch.id(), table.id(), time).await?;
+    seq.ok_or_else(|| {
+        Error::Invalid(format!(
+            "following {} from {time:?}: {} did not exist then",
+            table.name(),
+            branch.name()
+        ))
+    })
 }
 
 /// The definition a snapshot of `table` was written under.

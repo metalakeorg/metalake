@@ -113,6 +113,17 @@ async fn settle() {
     tokio::time::sleep(Duration::from_millis(1150)).await;
 }
 
+/// The time a commit has in the catalog (TT-1), read apart from the feed.
+async fn commit_time(schema: &str, seq: i64) -> Result<std::time::SystemTime, Box<dyn std::error::Error>> {
+    let pool = Pool::new(&url(), 1)?;
+    let row = pool
+        .get()
+        .await?
+        .query_one(&format!("select {schema}.commit_time($1)"), &[&seq])
+        .await?;
+    Ok(row.get(0))
+}
+
 /// The rows of a step: each `(what, key, commit)`, sorted.
 async fn rows_of(stream: &TableStream, step: &StreamStep, storage: &Storage) -> Result<Vec<(String, i64, i64)>, Error> {
     let mut rows = Vec::new();
@@ -249,15 +260,9 @@ async fn each_change_has_its_commits_time() -> Result<(), Box<dyn std::error::Er
         tail.extend(step.tasks);
     }
 
-    // The time a commit has in the catalog (TT-1), read apart from the feed.
-    let pool = Pool::new(&url(), 1)?;
-    let session = pool.get().await?;
     let mut time = std::collections::HashMap::new();
     for seq in [first, added, deleted] {
-        let row = session
-            .query_one(&format!("select {schema}.commit_time($1)"), &[&seq])
-            .await?;
-        time.insert(seq, row.get::<_, std::time::SystemTime>(0));
+        time.insert(seq, commit_time(&schema, seq).await?);
     }
 
     // The first read has its own time: after what it holds, before what follows it.
@@ -512,6 +517,51 @@ async fn start_at_latest() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(stream.next().await?.expect("its cursor").tasks, []);
     let later = append(&catalog, &main, &storage, 5..6).await?;
     assert_eq!(drain(&mut stream, &storage).await?, [row("insert", 5, later)]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn start_from_a_time() -> Result<(), Box<dyn std::error::Error>> {
+    let schema = fresh_schema();
+    let (catalog, main, storage) = lake_in(&schema, vec![]).await?;
+    let first = append(&catalog, &main, &storage, 0..2).await?;
+    let from = commit_time(&schema, first).await?;
+    let second = append(&catalog, &main, &storage, 2..3).await?;
+    let on = main.as_of(from);
+    let t = main.table(&["db"], "t").await?;
+
+    // A reader from that time, given the table as it is now, reads what was made by then and follows what came after.
+    let mut early = on.stream(&t, Start::Snapshot).await?;
+    let read = early.next().await?.expect("the first read");
+    let held = rows_of(&early, &read, &storage).await?;
+    assert_eq!(held, [row("insert", 0, first), row("insert", 1, first)]);
+    assert!(read.tasks.iter().all(|r| r.committed_at == from));
+
+    // One that starts later, with a commit in between, takes the same: the same read, and the same commits after it.
+    let third = append(&catalog, &main, &storage, 3..4).await?;
+    let mut late = on.stream(&t, Start::Snapshot).await?;
+    let again = late.next().await?.expect("the first read");
+    assert_eq!(again.cursor, read.cursor);
+    assert_eq!(rows_of(&late, &again, &storage).await?, held);
+    let after = [row("insert", 2, second), row("insert", 3, third)];
+    assert_eq!(drain(&mut early, &storage).await?, after);
+    assert_eq!(drain(&mut late, &storage).await?, after);
+
+    // From that time with no read, only what came after it.
+    let mut only_after = on.stream(&t, Start::Latest).await?;
+    assert_eq!(only_after.next().await?.expect("its cursor").tasks, []);
+    assert_eq!(drain(&mut only_after, &storage).await?, after);
+
+    // A time less than a second ago is waited for, not refused.
+    let fourth = append(&catalog, &main, &storage, 4..5).await?;
+    let now = main.as_of(commit_time(&schema, fourth).await?);
+    let mut recent = now.stream(&t, Start::Snapshot).await?;
+    let read = recent.next().await?.expect("the first read");
+    assert_eq!(rows_of(&recent, &read, &storage).await?.len(), 5);
+
+    // A reader from a cursor goes on from it, and is given no time.
+    let cursor = read.cursor;
+    assert!(on.stream(&t, Start::Cursor(cursor)).await.is_err());
     Ok(())
 }
 

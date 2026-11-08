@@ -499,6 +499,22 @@ impl Ref {
         matches!(self.at, Point::Latest)
     }
 
+    /// The time this handle reads the ref as of, if it reads it as of one.
+    pub(crate) fn time(&self) -> Option<SystemTime> {
+        match self.at {
+            Point::Time(time) => Some(time),
+            _ => None,
+        }
+    }
+
+    /// The same ref, at its latest state.
+    pub(crate) fn latest(&self) -> Self {
+        Self {
+            at: Point::Latest,
+            ..self.clone()
+        }
+    }
+
     /// Whether a commit may write this ref: a branch, at its latest state.
     pub fn writable(&self) -> Result<()> {
         if self.kind != "branch" {
