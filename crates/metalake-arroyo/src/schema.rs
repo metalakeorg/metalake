@@ -72,7 +72,7 @@ pub fn check_columns(declared: &Schema, table: &Schema) -> Result<(), String> {
 
 /// Whether a column of type `table` can be read as `declared`. A timestamp is an instant in any unit, and Arroyo's SQL
 /// declares no time zone, so the source casts timestamps; strings are strings in any of Arrow's layouts.
-fn compatible(table: &DataType, declared: &DataType) -> bool {
+pub(crate) fn compatible(table: &DataType, declared: &DataType) -> bool {
     use DataType::*;
     let text = |t: &DataType| matches!(t, Utf8 | LargeUtf8 | Utf8View);
     match (table, declared) {

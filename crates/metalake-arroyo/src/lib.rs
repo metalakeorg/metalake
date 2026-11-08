@@ -6,7 +6,9 @@
 //! a table's files at each checkpoint and commits them once it is complete.
 
 pub mod config;
+pub mod envelope;
 pub mod schema;
+pub mod split;
 
 use anyhow::{anyhow, bail};
 use arrow_schema::{Field, Schema};
