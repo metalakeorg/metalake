@@ -1,12 +1,14 @@
 //! The sink: one per subtask, in Arroyo's worker. Each writes its rows into files through the core's writer, which
 //! registers each file's intent before its upload (CMT-10). At a checkpoint each keeps the files it prepared; once the
 //! checkpoint is complete, subtask 0 commits every subtask's files in one transaction, keyed by the job and the epoch,
-//! so that a commit replayed after a failure applies nothing twice (CMT-8).
+//! so that a commit replayed after a failure applies nothing twice (CMT-8). Arroyo gives it Debezium's envelope, as to
+//! any updating sink; it inserts the rows inserted, and refuses deletes until the core can apply them by value.
 
 use std::collections::HashMap;
 use std::time::SystemTime;
 
 use arrow_array::RecordBatch;
+use arrow_schema::Schema;
 use arroyo_operator::context::{Collector, OperatorContext};
 use arroyo_operator::operator::ArrowOperator;
 use arroyo_rpc::errors::{DataflowError, DataflowResult};
@@ -18,6 +20,7 @@ use metalake::{FileAdd, TableWriter, WriteOptions};
 use prost::Message;
 use tracing::{debug, info};
 
+use crate::changelog::{ChangelogError, changes, declared};
 use crate::config::{MetaLakeProfile, MetaLakeSink, MetaLakeTable, MetaLakeTableType};
 use crate::conform::{ConformError, conform};
 use crate::epoch::SinkEpoch;
@@ -146,11 +149,8 @@ impl ArrowOperator for MetaLakeSinkFunc {
     async fn on_start(&mut self, ctx: &mut OperatorContext) -> DataflowResult<()> {
         let name = self.table.qualified_name();
         let lake = Lake::open(&self.profile, &self.table).await?;
-        let input = ctx
-            .in_schemas
-            .first()
-            .expect("a sink has an input")
-            .schema_without_timestamp();
+        let input = &ctx.in_schemas.first().expect("a sink has an input").schema;
+        let input = Schema::new(declared(input).map_err(|e| internal(&name, e))?);
         check_sink_columns(&input, lake.table.schema()).map_err(|e| user(&name, e))?;
         info!(
             table = name,
@@ -169,7 +169,20 @@ impl ArrowOperator for MetaLakeSinkFunc {
     ) -> DataflowResult<()> {
         let name = self.table.qualified_name();
         let lake = self.lake.as_ref().expect("opened on start");
-        let rows = conform(&batch, lake.table.schema()).map_err(|e| conform_error(&name, e))?;
+        let changes = changes(&batch).map_err(|e| changelog_error(&name, e))?;
+        if changes.deletes.num_rows() > 0 {
+            return Err(user(
+                &name,
+                format!(
+                    "{} rows deleted or updated, and a MetaLake sink takes only inserts for now",
+                    changes.deletes.num_rows()
+                ),
+            ));
+        }
+        if changes.inserts.num_rows() == 0 {
+            return Ok(());
+        }
+        let rows = conform(&changes.inserts, lake.table.schema()).map_err(|e| conform_error(&name, e))?;
         if self.writer.is_none() {
             let options = WriteOptions {
                 intent_ttl: self.sink.intent_ttl(),
@@ -224,6 +237,13 @@ impl ArrowOperator for MetaLakeSinkFunc {
             .send(ControlResp::CheckpointEvent(event))
             .await
             .map_err(|_| internal(&self.table.qualified_name(), "the controller is gone"))
+    }
+}
+
+fn changelog_error(table: &str, e: ChangelogError) -> DataflowError {
+    match e {
+        ChangelogError::UnknownChange(_) => user(table, e),
+        ChangelogError::Internal(_) => internal(table, e),
     }
 }
 

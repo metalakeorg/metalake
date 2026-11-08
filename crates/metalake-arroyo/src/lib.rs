@@ -5,6 +5,7 @@
 //! does Debezium's, and every subtask starts from one time, stamped when the pipeline is planned (CHG-5). A sink writes
 //! a table's files at each checkpoint and commits them once it is complete.
 
+pub mod changelog;
 pub mod config;
 pub mod conform;
 pub mod envelope;
@@ -157,8 +158,8 @@ impl Connector for MetaLakeConnector {
             &config,
             description,
         )
-        // a source emits rows inserted and deleted; a sink takes only inserts until it can delete
-        .with_updating(connection_type == ConnectionType::Source))
+        // a source emits rows inserted and deleted, and a sink takes them
+        .with_updating(true))
     }
 
     fn make_operator(
@@ -284,9 +285,9 @@ mod tests {
     }
 
     #[test]
-    fn sink_connection_not_updating() {
+    fn sink_connection_updating() {
         let connection = connect(MetaLakeTableType::Sink(MetaLakeSink::default()), Some(&columns(None))).unwrap();
-        assert!(!connection.updating);
+        assert!(connection.updating);
         assert_eq!(connection.connection_type, ConnectionType::Sink);
         assert_eq!(connection.description, "MetaLakeSink<main:shop.orders>");
     }

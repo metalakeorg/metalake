@@ -7,8 +7,9 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
 
-use arrow_array::{ArrayRef, Int64Array, RecordBatch, TimestampNanosecondArray};
-use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray, StructArray, TimestampNanosecondArray};
+use arrow_buffer::NullBuffer;
+use arrow_schema::{DataType, Field, Fields, Schema, TimeUnit};
 use arroyo_operator::context::{Collector, OperatorContext};
 use arroyo_operator::operator::ArrowOperator;
 use arroyo_rpc::df::ArroyoSchema;
@@ -25,22 +26,42 @@ mod common;
 
 use common::{Lake, task_info, unique};
 
-/// A sink's input: the declared `k`, and Arroyo's event time.
-fn arroyo_rows(keys: Range<i64>) -> RecordBatch {
+/// The declared columns: `k`.
+fn declared() -> Fields {
+    Fields::from(vec![Field::new("k", DataType::Int64, true)])
+}
+
+/// A sink's input, in Debezium's envelope as Arroyo gives it to an updating sink: each key inserted, or deleted.
+fn arroyo_rows(keys: Range<i64>, op: &str) -> RecordBatch {
     let n = keys.clone().count();
-    let columns: Vec<(&str, ArrayRef)> = vec![
-        ("k", Arc::new(Int64Array::from_iter_values(keys))),
-        (TIMESTAMP_FIELD, Arc::new(TimestampNanosecondArray::from(vec![0; n]))),
-    ];
-    RecordBatch::try_from_iter(columns).unwrap()
+    let k: ArrayRef = Arc::new(Int64Array::from_iter_values(keys));
+    let side = |present: bool| -> ArrayRef {
+        Arc::new(StructArray::new(
+            declared(),
+            vec![k.clone()],
+            Some(NullBuffer::from(vec![present; n])),
+        ))
+    };
+    RecordBatch::try_new(
+        input_schema().schema.clone(),
+        vec![
+            side(op == "d"),
+            side(op == "c"),
+            Arc::new(StringArray::from(vec![op; n])),
+            Arc::new(TimestampNanosecondArray::from(vec![0; n])),
+        ],
+    )
+    .unwrap()
 }
 
 fn input_schema() -> Arc<ArroyoSchema> {
     let schema = Schema::new(vec![
-        Field::new("k", DataType::Int64, true),
+        Field::new("before", DataType::Struct(declared()), true),
+        Field::new("after", DataType::Struct(declared()), true),
+        Field::new("op", DataType::Utf8, false),
         Field::new(TIMESTAMP_FIELD, DataType::Timestamp(TimeUnit::Nanosecond, None), false),
     ]);
-    Arc::new(ArroyoSchema::new_unkeyed(Arc::new(schema), 1))
+    Arc::new(ArroyoSchema::new_unkeyed(Arc::new(schema), 3))
 }
 
 /// A sink emits nothing downstream.
@@ -77,10 +98,13 @@ impl Subtask {
     }
 
     async fn write(&mut self, keys: Range<i64>) {
+        self.change(keys, "c").await.unwrap();
+    }
+
+    async fn change(&mut self, keys: Range<i64>, op: &str) -> DataflowResult<()> {
         self.sink
-            .process_batch(arroyo_rows(keys), &mut self.ctx, &mut Nowhere)
+            .process_batch(arroyo_rows(keys, op), &mut self.ctx, &mut Nowhere)
             .await
-            .unwrap();
     }
 
     /// What its checkpoint keeps as pre-commit data.
@@ -203,4 +227,14 @@ async fn sink_empty_epoch_skips() {
     let prepared = HashMap::from([(0, sink.prepare().await)]);
     sink.commit(1, &prepared).await;
     assert_eq!(commits_of(&lake, &job, 1).await, 0, "no commit, and still the ack");
+}
+
+#[tokio::test]
+async fn sink_delete_refused() {
+    let lake = Lake::new().await;
+    let job = unique();
+    let mut sink = Subtask::start(&lake, task_info(&job, 0, 1)).await;
+    sink.write(0..2).await;
+    let e = sink.change(0..1, "d").await.unwrap_err();
+    assert!(e.to_string().contains("takes only inserts"), "{e}");
 }
