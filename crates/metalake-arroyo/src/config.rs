@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::str::FromStr;
+use std::time::Duration;
 
 use arroyo_rpc::var_str::VarStr;
 use arroyo_rpc::{ConnectorOptions, FromOpts};
@@ -159,14 +160,42 @@ impl FromStr for StartMode {
 }
 
 /// A table written in two phases: its files at each checkpoint, committed once the checkpoint is complete.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(title = "Sink")]
-pub struct MetaLakeSink {}
+pub struct MetaLakeSink {
+    /// How long a file written and not yet committed may wait for its commit, in seconds; 24 hours if not given. A
+    /// commit past it is refused (CMT-9), so it must cover the longest a pipeline may be down before it's restored
+    pub intent_ttl_seconds: Option<u64>,
+}
+
+/// The intent lifetime when none is given: a night's outage, restored in the morning.
+const INTENT_TTL: Duration = Duration::from_secs(24 * 3600);
+/// Below this, an ordinary restart may outlive a file's intent.
+const MIN_INTENT_TTL: Duration = Duration::from_secs(10 * 60);
+
+impl MetaLakeSink {
+    pub fn intent_ttl(&self) -> Duration {
+        self.intent_ttl_seconds.map_or(INTENT_TTL, Duration::from_secs)
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.intent_ttl() < MIN_INTENT_TTL {
+            anyhow::bail!(
+                "'sink.intent_ttl' is {:?}, and must be at least {:?}: a file waits that long for its commit, which a                  restart may delay",
+                self.intent_ttl(),
+                MIN_INTENT_TTL
+            );
+        }
+        Ok(())
+    }
+}
 
 impl FromOpts for MetaLakeSink {
-    fn from_opts(_: &mut ConnectorOptions) -> Result<Self, DataFusionError> {
-        Ok(Self {})
+    fn from_opts(opts: &mut ConnectorOptions) -> Result<Self, DataFusionError> {
+        Ok(Self {
+            intent_ttl_seconds: opts.pull_opt_duration("sink.intent_ttl")?.map(|d| d.as_secs()),
+        })
     }
 }
 
@@ -294,7 +323,7 @@ mod tests {
         assert!(opts.is_empty());
         assert_eq!(profile.schema, "lake");
         assert_eq!(profile.storage.keys().collect::<Vec<_>>(), ["aws_region"]);
-        assert_eq!(table.table_type, MetaLakeTableType::Sink(MetaLakeSink {}));
+        assert_eq!(table.table_type, MetaLakeTableType::Sink(MetaLakeSink::default()));
         assert_eq!(table.qualified_name(), "dev:shop.orders");
     }
 
@@ -326,6 +355,19 @@ mod tests {
         assert_eq!(source.from_time().unwrap(), Some(stamped), "a time it has stays");
         source.from = Some("yesterday".into());
         assert!(source.from_time().is_err());
+    }
+
+    #[test]
+    fn sink_intent_ttl() {
+        assert_eq!(MetaLakeSink::default().intent_ttl(), Duration::from_secs(24 * 3600));
+        let mut opts = options(&[("sink.intent_ttl", "2 hours")]);
+        let sink: MetaLakeSink = opts.pull_struct().unwrap();
+        assert_eq!(sink.intent_ttl(), Duration::from_secs(7200));
+        assert!(sink.validate().is_ok());
+        let short = MetaLakeSink {
+            intent_ttl_seconds: Some(60),
+        };
+        assert!(short.validate().unwrap_err().to_string().contains("at least"));
     }
 
     #[test]

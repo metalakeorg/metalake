@@ -6,9 +6,13 @@
 //! a table's files at each checkpoint and commits them once it is complete.
 
 pub mod config;
+pub mod conform;
 pub mod envelope;
+pub mod epoch;
+pub mod lake;
 pub mod progress;
 pub mod schema;
+pub mod sink;
 pub mod source;
 pub mod split;
 
@@ -24,7 +28,8 @@ use metalake::{Catalog, CatalogConfig};
 use tokio::sync::mpsc::Sender;
 
 use crate::config::{MetaLakeProfile, MetaLakeTable, MetaLakeTableType};
-use crate::schema::{check_columns, render_schema};
+use crate::schema::{check_columns, check_sink_columns, render_schema};
+use crate::sink::MetaLakeSinkFunc;
 use crate::source::MetaLakeSourceFunc;
 
 const ICON: &str = include_str!("../metalake.svg");
@@ -49,8 +54,7 @@ impl Connector for MetaLakeConnector {
             source: true,
             sink: true,
             testing: true,
-            // until its operators are built
-            hidden: true,
+            hidden: false,
             custom_schemas: true,
             connection_config: Some(render_schema::<Self::ProfileT>()),
             table_config: render_schema::<Self::TableT>(),
@@ -127,7 +131,10 @@ impl Connector for MetaLakeConnector {
                 source.stamp(Utc::now());
                 (ConnectionType::Source, "Source")
             }
-            MetaLakeTableType::Sink(_) => (ConnectionType::Sink, "Sink"),
+            MetaLakeTableType::Sink(sink) => {
+                sink.validate()?;
+                (ConnectionType::Sink, "Sink")
+            }
         };
         let description = format!("MetaLake{kind}<{}>", table.qualified_name());
 
@@ -164,7 +171,9 @@ impl Connector for MetaLakeConnector {
             MetaLakeTableType::Source(_) => Ok(ConstructedOperator::from_source(Box::new(MetaLakeSourceFunc::new(
                 profile, table,
             )?))),
-            MetaLakeTableType::Sink(_) => bail!("the MetaLake sink isn't built yet"),
+            MetaLakeTableType::Sink(_) => Ok(ConstructedOperator::from_operator(Box::new(MetaLakeSinkFunc::new(
+                profile, table,
+            )?))),
         }
     }
 }
@@ -186,7 +195,11 @@ async fn test_table(profile: &MetaLakeProfile, table: &MetaLakeTable, declared: 
         .table(&namespace, &table.table)
         .await?;
     if let Some(declared) = declared {
-        check_columns(&declared, found.schema()).map_err(|e| anyhow!("{}: {e}", table.qualified_name()))?;
+        let checked = match table.table_type {
+            MetaLakeTableType::Source(_) => check_columns(&declared, found.schema()),
+            MetaLakeTableType::Sink(_) => check_sink_columns(&declared, found.schema()),
+        };
+        checked.map_err(|e| anyhow!("{}: {e}", table.qualified_name()))?;
     }
     catalog.close();
     Ok(())
@@ -272,7 +285,7 @@ mod tests {
 
     #[test]
     fn sink_connection_not_updating() {
-        let connection = connect(MetaLakeTableType::Sink(MetaLakeSink {}), Some(&columns(None))).unwrap();
+        let connection = connect(MetaLakeTableType::Sink(MetaLakeSink::default()), Some(&columns(None))).unwrap();
         assert!(!connection.updating);
         assert_eq!(connection.connection_type, ConnectionType::Sink);
         assert_eq!(connection.description, "MetaLakeSink<main:shop.orders>");
@@ -290,7 +303,7 @@ mod tests {
     #[test]
     fn connector_metadata() {
         let metadata = MetaLakeConnector {}.metadata();
-        assert_eq!((metadata.source, metadata.sink, metadata.hidden), (true, true, true));
+        assert_eq!((metadata.source, metadata.sink, metadata.hidden), (true, true, false));
         assert!(metadata.icon.starts_with("<svg"));
         let profile: serde_json::Value = serde_json::from_str(&metadata.connection_config.unwrap()).unwrap();
         assert_eq!(profile["title"], "MetaLake catalog");

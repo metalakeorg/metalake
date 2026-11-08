@@ -2,14 +2,14 @@
 //! its checkpoints and restores. It needs a Postgres with `track_commit_timestamp = on` at `DATABASE_URL`, as the
 //! core's tests do (`sql/test.sh`).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
-use arrow_array::{Array, ArrayRef, BooleanArray, Int64Array, RecordBatch};
+use arrow_array::{Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use arroyo_operator::SourceFinishType;
 use arroyo_operator::context::{
@@ -19,134 +19,29 @@ use arroyo_operator::operator::SourceOperator;
 use arroyo_rpc::df::ArroyoSchema;
 use arroyo_rpc::errors::DataflowResult;
 use arroyo_rpc::grpc::rpc::{CheckpointMetadata, OperatorCheckpointMetadata, OperatorMetadata, StopMode};
-use arroyo_rpc::var_str::VarStr;
 use arroyo_rpc::{CheckpointCompleted, ControlMessage, ControlResp, MetadataOrManifest, TIMESTAMP_FIELD};
 use arroyo_state::tables::ErasedTable;
 use arroyo_state::tables::global_keyed_map::GlobalKeyedTable;
 use arroyo_state::{BackingStore, StateBackend, StorageProviderFor};
 use arroyo_types::{ArrowMessage, ChainInfo, CheckpointBarrier, TaskInfo, to_micros};
 use chrono::{DateTime, SecondsFormat, Utc};
-use futures::TryStreamExt;
-use metalake::vectors::Deletes;
-use metalake::{Catalog, CatalogConfig, NewTable, Ref, Scan, Storage, TableWriter, WriteOptions};
-use metalake_arroyo::config::{MetaLakeProfile, MetaLakeSource, MetaLakeTable, MetaLakeTableType, StartMode};
+use metalake_arroyo::config::{MetaLakeSource, MetaLakeTableType, StartMode};
 use metalake_arroyo::source::MetaLakeSourceFunc;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::task::JoinHandle;
 
-fn url() -> String {
-    std::env::var("DATABASE_URL").expect("DATABASE_URL: a Postgres with track_commit_timestamp = on")
-}
+mod common;
 
-fn unique() -> String {
-    format!("t{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos())
-}
+use common::{Lake, task_info, unique};
 
-/// A catalog in a schema of its own, with `shop.orders (k bigint)`, its files on local disk.
-struct Lake {
-    catalog: Catalog,
-    main: Ref,
-    storage: Storage,
-    schema: String,
-}
-
-impl Lake {
-    async fn new() -> Self {
-        let schema = unique();
-        let dir = std::env::temp_dir().join("metalake-arroyo").join(&schema);
-        std::fs::create_dir_all(&dir).unwrap();
-        let warehouse = format!("file://{}", dir.display());
-        let catalog = Catalog::init(CatalogConfig::new(url(), &schema).warehouse(&warehouse), None)
-            .await
-            .unwrap();
-        let main = catalog.branch("main").await.unwrap();
-        let (tx, _) = main
-            .transaction()
-            .create_namespace(&["shop"])
-            .create_table(NewTable {
-                namespace: &["shop"],
-                name: "orders",
-                schema: &keys(0..1).schema(),
-                location: None,
-                cluster_key: vec![],
-                partitioning: vec![],
-                properties: vec![],
-            })
-            .unwrap();
-        tx.commit().await.unwrap();
-        let storage = Storage::new(&warehouse, Vec::<(String, String)>::new()).unwrap();
-        Lake {
-            catalog,
-            main,
-            storage,
-            schema,
-        }
-    }
-
-    /// Commits the rows `keys`, in a file of their own.
-    async fn append(&self, keys: Range<i64>) -> i64 {
-        let t = self.main.table(&["shop"], "orders").await.unwrap();
-        let options = WriteOptions {
-            stored: true,
-            ..Default::default()
-        };
-        let mut writer = TableWriter::new(&self.catalog, &t, self.storage.clone(), options).unwrap();
-        writer.write(&self::keys(keys)).await.unwrap();
-        let files = writer.finish().await.unwrap();
-        self.main.transaction().append(files).commit().await.unwrap().seq()
-    }
-
-    /// Deletes the rows whose key `chosen` keeps, as an engine does.
-    async fn delete(&self, chosen: impl Fn(i64) -> bool) -> i64 {
-        let t = self.main.table(&["shop"], "orders").await.unwrap();
-        let scan = Scan::new(&self.catalog, &t).with_positions();
-        let batches: Vec<RecordBatch> = scan
-            .read(scan.plan().await.unwrap(), &self.storage)
-            .try_collect()
-            .await
-            .unwrap();
-        let mut deletes = Deletes::new();
-        for b in &batches {
-            let keys = b.column(0).as_primitive::<Int64Type>();
-            let keep = BooleanArray::from_iter(keys.iter().map(|k| Some(chosen(k.unwrap()))));
-            deletes
-                .add(&arrow_select::filter::filter_record_batch(b, &keep).unwrap())
-                .unwrap();
-        }
-        self.main
-            .transaction()
-            .delete(&t, &self.storage, deletes)
-            .commit()
-            .await
-            .unwrap()
-            .seq()
-    }
-
-    fn source(&self, from: SystemTime) -> MetaLakeSourceFunc {
-        let profile = MetaLakeProfile {
-            postgres: VarStr::new(url()),
-            schema: self.schema.clone(),
-            storage: BTreeMap::new(),
-        };
-        let from: DateTime<Utc> = from.into();
-        let table = MetaLakeTable {
-            branch: "main".to_string(),
-            namespace: vec!["shop".to_string()],
-            table: "orders".to_string(),
-            table_type: MetaLakeTableType::Source(MetaLakeSource {
-                start: StartMode::Snapshot,
-                from: Some(from.to_rfc3339_opts(SecondsFormat::Micros, true)),
-                poll_interval_ms: Some(100),
-            }),
-        };
-        MetaLakeSourceFunc::new(profile, table).unwrap()
-    }
-}
-
-fn keys(keys: Range<i64>) -> RecordBatch {
-    let schema = Schema::new(vec![Field::new("k", DataType::Int64, true)]);
-    let columns: Vec<ArrayRef> = vec![Arc::new(Int64Array::from_iter_values(keys))];
-    RecordBatch::try_new(Arc::new(schema), columns).unwrap()
+fn source_of(lake: &Lake, from: SystemTime) -> MetaLakeSourceFunc {
+    let from: DateTime<Utc> = from.into();
+    let table = lake.table(MetaLakeTableType::Source(MetaLakeSource {
+        start: StartMode::Snapshot,
+        from: Some(from.to_rfc3339_opts(SecondsFormat::Micros, true)),
+        poll_interval_ms: Some(100),
+    }));
+    MetaLakeSourceFunc::new(lake.profile(), table).unwrap()
 }
 
 /// What the planner gives a source of `shop.orders (k bigint)`.
@@ -308,14 +203,6 @@ fn rows(op: &str, keys: Range<i64>) -> Vec<(String, i64)> {
     keys.map(|k| (op.to_string(), k)).collect()
 }
 
-fn task_info(job: &str, index: u32, parallelism: u32) -> TaskInfo {
-    let mut info = arroyo_types::get_test_task_info();
-    info.job_id = job.to_string();
-    info.task_index = index;
-    info.parallelism = parallelism;
-    info
-}
-
 /// Writes what a completed checkpoint of one subtask leaves, so that a source can be restored from it.
 async fn keep_checkpoint(info: &TaskInfo, epoch: u32, completed: CheckpointCompleted) {
     let subtask = completed.subtask_metadata;
@@ -364,7 +251,7 @@ async fn chg5_follow_snapshot_and_changes() {
     let lake = Lake::new().await;
     lake.append(0..3).await;
     let from = SystemTime::now();
-    let mut source = run(lake.source(from), task_info(&unique(), 0, 1), None).await;
+    let mut source = run(source_of(&lake, from), task_info(&unique(), 0, 1), None).await;
 
     // the table at its start time, then what each commit changed
     assert_eq!(sorted(source.rows(3).await), rows("c", 0..3));
@@ -383,8 +270,8 @@ async fn follow_files_split_across_subtasks() {
         lake.append(2 * k..2 * k + 2).await;
     }
     let (job, from) = (unique(), SystemTime::now());
-    let mut first = run(lake.source(from), task_info(&job, 0, 2), None).await;
-    let mut second = run(lake.source(from), task_info(&job, 1, 2), None).await;
+    let mut first = run(source_of(&lake, from), task_info(&job, 0, 2), None).await;
+    let mut second = run(source_of(&lake, from), task_info(&job, 1, 2), None).await;
 
     // each row once, from one of them; neither waits for the other
     let mut by_subtask = [Vec::new(), Vec::new()];
@@ -432,7 +319,7 @@ async fn follow_recovers_from_checkpoint() {
     let lake = Lake::new().await;
     lake.append(0..3).await;
     let (info, from) = (task_info(&unique(), 0, 1), SystemTime::now());
-    let mut source = run(lake.source(from), info.clone(), None).await;
+    let mut source = run(source_of(&lake, from), info.clone(), None).await;
     assert_eq!(sorted(source.rows(3).await), rows("c", 0..3));
 
     let completed = source.checkpoint(1).await;
@@ -442,7 +329,7 @@ async fn follow_recovers_from_checkpoint() {
     source.stop().await.unwrap();
 
     // what came after the checkpoint again, and nothing from before it
-    let mut restored = run(lake.source(from), info.clone(), Some(1)).await;
+    let mut restored = run(source_of(&lake, from), info.clone(), Some(1)).await;
     assert_eq!(sorted(restored.rows(2).await), rows("c", 3..5));
     lake.append(5..6).await;
     assert_eq!(restored.rows(1).await, rows("c", 5..6));
@@ -456,13 +343,13 @@ async fn restore_other_parallelism_refused() {
     let lake = Lake::new().await;
     lake.append(0..3).await;
     let (info, from) = (task_info(&unique(), 0, 1), SystemTime::now());
-    let mut source = run(lake.source(from), info.clone(), None).await;
+    let mut source = run(source_of(&lake, from), info.clone(), None).await;
     assert_eq!(sorted(source.rows(3).await), rows("c", 0..3));
     let completed = source.checkpoint(1).await;
     keep_checkpoint(&info, 1, completed).await;
     source.stop().await.unwrap();
 
-    let wider = run(lake.source(from), task_info(&info.job_id, 0, 2), Some(1)).await;
+    let wider = run(source_of(&lake, from), task_info(&info.job_id, 0, 2), Some(1)).await;
     let Err(error) = wider.handle.await.unwrap() else {
         panic!("a restore at another parallelism ran")
     };

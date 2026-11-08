@@ -70,6 +70,23 @@ pub fn check_columns(declared: &Schema, table: &Schema) -> Result<(), String> {
     Ok(())
 }
 
+/// Checks the columns a sink is declared with against its table's: each is one of the table's, of a type it can be
+/// written as, and every column the table requires is declared, since nothing else could fill it.
+pub fn check_sink_columns(declared: &Schema, table: &Schema) -> Result<(), String> {
+    check_columns(declared, table)?;
+    match table
+        .fields()
+        .iter()
+        .find(|c| !c.is_nullable() && declared.field_with_name(c.name()).is_err())
+    {
+        Some(column) => Err(format!(
+            "the table requires column '{}', and it isn't declared",
+            column.name()
+        )),
+        None => Ok(()),
+    }
+}
+
 /// Whether a column of type `table` can be read as `declared`. A timestamp is an instant in any unit, and Arroyo's SQL
 /// declares no time zone, so the source casts timestamps; strings are strings in any of Arrow's layouts.
 pub(crate) fn compatible(table: &DataType, declared: &DataType) -> bool {
@@ -127,6 +144,27 @@ mod tests {
                 .unwrap_err()
                 .contains("is Int64 in the table")
         );
+    }
+
+    #[test]
+    fn check_sink_columns_required_and_unknown() {
+        let table = Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("note", DataType::Utf8, true),
+        ]);
+        let id_only = schema(vec![("id", DataType::Int64)]);
+        assert_eq!(
+            check_sink_columns(&id_only, &table),
+            Ok(()),
+            "an optional column may be left out"
+        );
+        let note_only = schema(vec![("note", DataType::Utf8)]);
+        assert_eq!(
+            check_sink_columns(&note_only, &table),
+            Err("the table requires column 'id', and it isn't declared".into())
+        );
+        let unknown = schema(vec![("id", DataType::Int64), ("other", DataType::Int64)]);
+        assert!(check_sink_columns(&unknown, &table).is_err());
     }
 
     #[test]

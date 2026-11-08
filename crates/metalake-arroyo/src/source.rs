@@ -11,21 +11,21 @@ use arroyo_operator::SourceFinishType;
 use arroyo_operator::context::{SourceCollector, SourceContext};
 use arroyo_operator::operator::SourceOperator;
 use arroyo_rpc::df::ArroyoSchema;
-use arroyo_rpc::errors::{DataflowError, DataflowResult, ErrorDomain, RetryHint};
+use arroyo_rpc::errors::{DataflowError, DataflowResult};
 use arroyo_rpc::grpc::rpc::{StopMode, TableConfig};
 use arroyo_rpc::{ControlMessage, connector_err};
 use arroyo_types::{SignalMessage, Watermark};
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use metalake::{Catalog, CatalogConfig, Start, Storage};
-use metalake_pg::ErrorKind;
+use metalake::Start;
 use tokio::select;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, warn};
 
 use crate::config::{MetaLakeProfile, MetaLakeSource, MetaLakeTable, MetaLakeTableType, StartMode};
 use crate::envelope::{EnvelopeError, declared, envelope};
+use crate::lake::{Lake, core, internal, user};
 use crate::progress::{SourceProgress, unseen};
 use crate::schema::check_columns;
 
@@ -48,32 +48,13 @@ impl MetaLakeSourceFunc {
         Ok(Self { profile, table, source })
     }
 
-    /// What every subtask opens: the catalog, the table on its branch, and the store of its files.
-    async fn open(&self, out: &ArroyoSchema) -> DataflowResult<(metalake::Ref, metalake::Table, Storage)> {
+    /// The table on its branch, once its declared columns are checked against the table's.
+    async fn open(&self, out: &ArroyoSchema) -> DataflowResult<Lake> {
         let name = self.table.qualified_name();
-        let postgres = self.profile.postgres.sub_env_vars().map_err(|e| user(&name, e))?;
-        let mut config = CatalogConfig::new(postgres, &self.profile.schema);
-        config.connections = 2;
-        let catalog = Catalog::connect(config).await.map_err(|e| core(&name, e))?;
-        let branch = catalog.branch(&self.table.branch).await.map_err(|e| core(&name, e))?;
-        let namespace: Vec<&str> = self.table.namespace.iter().map(String::as_str).collect();
-        let table = branch
-            .table(&namespace, &self.table.table)
-            .await
-            .map_err(|e| core(&name, e))?;
-
+        let lake = Lake::open(&self.profile, &self.table).await?;
         let declared = declared(out).map_err(|e| envelope_error(&name, e))?;
-        check_columns(&Schema::new(declared), table.schema()).map_err(|e| user(&name, e))?;
-
-        let options = self
-            .profile
-            .storage
-            .iter()
-            .map(|(k, v)| Ok((k.clone(), v.sub_env_vars()?)))
-            .collect::<anyhow::Result<Vec<(String, String)>>>()
-            .map_err(|e| user(&name, e))?;
-        let storage = Storage::new(table.location(), options).map_err(|e| core(&name, e))?;
-        Ok((branch, table, storage))
+        check_columns(&Schema::new(declared), lake.table.schema()).map_err(|e| user(&name, e))?;
+        Ok(lake)
     }
 
     /// This subtask's progress as the last checkpoint left it, or a new one.
@@ -104,7 +85,9 @@ impl MetaLakeSourceFunc {
     ) -> DataflowResult<SourceFinishType> {
         let name = self.table.qualified_name();
         let (index, parallelism) = (ctx.task_info.task_index as usize, ctx.task_info.parallelism as usize);
-        let (branch, table, storage) = self.open(&ctx.out_schema.clone()).await?;
+        let Lake {
+            branch, table, storage, ..
+        } = self.open(&ctx.out_schema.clone()).await?;
         let mut progress = self.restore(ctx).await?;
 
         // from its cursor if it took a step; otherwise from the source's time, the same for every subtask (CHG-5)
@@ -231,47 +214,10 @@ async fn next_batch(
     }
 }
 
-/// A core error by what to do about it: try again for what may pass, stop for what the user has to change.
-fn core(table: &str, e: metalake::Error) -> DataflowError {
-    let (domain, retry) = classify(&e);
-    DataflowError::ConnectorError {
-        domain,
-        retry,
-        error: format!("{table}: {e}"),
-        source: Some(e.into()),
-    }
-}
-
-fn classify(e: &metalake::Error) -> (ErrorDomain, RetryHint) {
-    use metalake::Error;
-    match e {
-        Error::Protocol(p) => match p.kind() {
-            ErrorKind::Conflict | ErrorKind::Serialization | ErrorKind::Unknown | ErrorKind::Postgres => {
-                (ErrorDomain::External, RetryHint::WithBackoff)
-            }
-            ErrorKind::Invalid | ErrorKind::Unsupported | ErrorKind::Permission => {
-                (ErrorDomain::User, RetryHint::NoRetry)
-            }
-            ErrorKind::Corrupt => (ErrorDomain::Internal, RetryHint::NoRetry),
-            _ => (ErrorDomain::Internal, RetryHint::NoRetry),
-        },
-        Error::Storage(_) => (ErrorDomain::External, RetryHint::WithBackoff),
-        Error::NotFound(_) | Error::Invalid(_) | Error::Unsupported(_) | Error::Location(_) => {
-            (ErrorDomain::User, RetryHint::NoRetry)
-        }
-        Error::Schema(_) | Error::Corrupt(_) => (ErrorDomain::Internal, RetryHint::NoRetry),
-        _ => (ErrorDomain::Internal, RetryHint::NoRetry),
-    }
-}
-
 fn envelope_error(table: &str, e: EnvelopeError) -> DataflowError {
     if e.is_data() {
-        connector_err!(User, NoRetry, "{table}: {e}")
+        user(table, e)
     } else {
-        connector_err!(Internal, NoRetry, "{table}: {e}")
+        internal(table, e)
     }
-}
-
-fn user(table: &str, e: impl std::fmt::Display) -> DataflowError {
-    connector_err!(User, NoRetry, "{table}: {e}")
 }

@@ -3471,6 +3471,7 @@ dependencies = [
  "futures",
  "metalake",
  "metalake-pg",
+ "prost",
  "schemars 1.2.3",
  "serde",
  "serde_json",

@@ -26,6 +26,7 @@ datafusion = "=54.1.0"
 anyhow = "1.0.82"
 async-trait = "0.1.80"
 chrono = "0.4"
+prost = "0.14"
 futures = "0.3"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
