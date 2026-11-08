@@ -29,7 +29,7 @@ mod tests {
     }
 
     #[test]
-    fn each_file_has_one_reader() {
+    fn reads_one_subtask_per_file() {
         for parallelism in 1..=16 {
             for file_id in (-50..2_000).chain([i64::MIN, i64::MAX]) {
                 subtask(file_id, parallelism);
@@ -38,7 +38,7 @@ mod tests {
     }
 
     #[test]
-    fn strided_files_spread_evenly() {
+    fn reads_strided_ids_balanced() {
         for (stride, parallelism) in [(2, 2), (2, 4), (7, 7), (16, 8), (3, 5)] {
             let mut counts = vec![0usize; parallelism];
             for k in 0..10_000 {
@@ -56,7 +56,7 @@ mod tests {
 
     /// A restore finds each file where it was read before: these must never change.
     #[test]
-    fn the_hash_is_fixed() {
+    fn reads_assignment_preserved() {
         for (file_id, parallelism, index) in [
             (1, 4, 1),
             (2, 4, 2),

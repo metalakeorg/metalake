@@ -360,7 +360,7 @@ async fn keep_checkpoint(info: &TaskInfo, epoch: u32, completed: CheckpointCompl
 }
 
 #[tokio::test]
-async fn reads_a_table_then_its_changes() {
+async fn chg5_follow_snapshot_and_changes() {
     let lake = Lake::new().await;
     lake.append(0..3).await;
     let from = SystemTime::now();
@@ -377,7 +377,7 @@ async fn reads_a_table_then_its_changes() {
 }
 
 #[tokio::test]
-async fn subtasks_share_the_files_and_each_keeps_its_own() {
+async fn follow_files_split_across_subtasks() {
     let lake = Lake::new().await;
     for k in 0..8 {
         lake.append(2 * k..2 * k + 2).await;
@@ -428,7 +428,7 @@ fn sorted_keys(mut keys: Vec<i64>) -> Vec<i64> {
 }
 
 #[tokio::test]
-async fn a_restore_goes_on_from_the_checkpoint() {
+async fn follow_recovers_from_checkpoint() {
     let lake = Lake::new().await;
     lake.append(0..3).await;
     let (info, from) = (task_info(&unique(), 0, 1), SystemTime::now());
@@ -448,8 +448,20 @@ async fn a_restore_goes_on_from_the_checkpoint() {
     assert_eq!(restored.rows(1).await, rows("c", 5..6));
     restored.quiet().await;
     restored.stop().await.unwrap();
+}
 
-    // and not at another parallelism, where its files would be other subtasks'
+/// Files go to subtasks by their number, and each subtask's cursor is its own: another parallelism can't restore.
+#[tokio::test]
+async fn restore_other_parallelism_refused() {
+    let lake = Lake::new().await;
+    lake.append(0..3).await;
+    let (info, from) = (task_info(&unique(), 0, 1), SystemTime::now());
+    let mut source = run(lake.source(from), info.clone(), None).await;
+    assert_eq!(sorted(source.rows(3).await), rows("c", 0..3));
+    let completed = source.checkpoint(1).await;
+    keep_checkpoint(&info, 1, completed).await;
+    source.stop().await.unwrap();
+
     let wider = run(lake.source(from), task_info(&info.job_id, 0, 2), Some(1)).await;
     let Err(error) = wider.handle.await.unwrap() else {
         panic!("a restore at another parallelism ran")

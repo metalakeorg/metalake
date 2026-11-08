@@ -227,7 +227,7 @@ mod tests {
     }
 
     #[test]
-    fn inserts_go_in_after_and_deletes_in_before() {
+    fn envelope_maps_inserts_and_deletes() {
         let enveloped = envelope(
             &core(
                 &[Some(1), Some(2), Some(3)],
@@ -257,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn the_row_time_is_its_commits_in_nanoseconds() {
+    fn envelope_maps_commit_timestamp() {
         let enveloped = envelope(&core(&[Some(1), Some(2)], &["insert", "delete"], &[3, 4]), &key_only()).unwrap();
         let times = enveloped
             .column(3)
@@ -273,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn the_declared_columns_in_their_order_cast_to_their_types() {
+    fn envelope_projects_and_casts_declared_columns() {
         let declared = out(vec![
             Field::new("at", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
             Field::new("name", DataType::Utf8, true),
@@ -294,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn a_null_in_a_required_column_names_its_commit() {
+    fn envelope_null_in_required_column_refused() {
         let required = out(vec![Field::new("k", DataType::Int64, false)]);
         let batch = core(&[Some(1), None], &["insert", "insert"], &[10, 11]);
         let error = envelope(&batch, &required).unwrap_err();
@@ -314,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn what_it_refuses() {
+    fn envelope_invalid_input_refused() {
         let error = |batch: RecordBatch, out: ArroyoSchema| envelope(&batch, &out).unwrap_err();
         let unknown = error(core(&[Some(1)], &["update"], &[4]), key_only());
         assert_eq!(

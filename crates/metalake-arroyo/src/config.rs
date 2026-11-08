@@ -238,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    fn namespaces_as_sql_writes_them() {
+    fn ns1_namespace_quoting_round_trips() {
         let levels = |l: &[&str]| Ok(l.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert_eq!(parse_namespace("shop"), levels(&["shop"]));
         assert_eq!(parse_namespace("shop.eu"), levels(&["shop", "eu"]));
@@ -254,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn a_source_from_sql_options() {
+    fn source_options() {
         let mut opts = options(&[
             ("namespace", "shop.eu"),
             ("table", "orders"),
@@ -279,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sink_and_a_catalog_from_sql_options() {
+    fn sink_and_profile_options() {
         let mut opts = options(&[
             ("catalog.postgres", "host=pg user={{ PG_USER }}"),
             ("catalog.schema", "lake"),
@@ -299,7 +299,7 @@ mod tests {
     }
 
     #[test]
-    fn what_sql_options_refuse() {
+    fn invalid_table_options_refused() {
         let table = |pairs: &[(&str, &str)]| options(pairs).pull_struct::<MetaLakeTable>();
         let base = [("namespace", "shop"), ("table", "orders")];
         assert!(
@@ -312,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn a_source_is_stamped_once() {
+    fn chg5_start_time_stamp_is_idempotent() {
         let mut source = MetaLakeSource {
             start: StartMode::Snapshot,
             from: None,
@@ -329,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn the_api_json_round_trips() {
+    fn table_config_json_round_trips() {
         let json = serde_json::json!({
             "namespace": ["a.b", "c"],
             "table": "t",

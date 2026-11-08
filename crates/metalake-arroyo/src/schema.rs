@@ -97,7 +97,7 @@ mod tests {
     }
 
     #[test]
-    fn declared_columns_against_the_table() {
+    fn check_columns_subset_and_mismatch() {
         let table = schema(vec![
             ("id", DataType::Int64),
             ("name", DataType::Utf8),
@@ -130,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn rendered_schemas_are_what_the_console_reads() {
+    fn render_schema_console_format() {
         let rendered: Value = serde_json::from_str(&render_schema::<crate::config::MetaLakeTable>()).unwrap();
         let text = rendered.to_string();
         assert!(!text.contains("\"default\""));

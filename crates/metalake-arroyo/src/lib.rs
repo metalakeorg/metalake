@@ -248,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn a_source_is_updating_and_starts_from_one_time() {
+    fn chg5_source_connection_updating_and_stamped() {
         let schema = columns(None);
         let connection = connect(source(None), Some(&schema)).unwrap();
         assert!(connection.updating);
@@ -271,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sink_is_not_updating() {
+    fn sink_connection_not_updating() {
         let connection = connect(MetaLakeTableType::Sink(MetaLakeSink {}), Some(&columns(None))).unwrap();
         assert!(!connection.updating);
         assert_eq!(connection.connection_type, ConnectionType::Sink);
@@ -279,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn what_a_table_is_refused_for() {
+    fn connection_invalid_schema_refused() {
         let error = |result: anyhow::Result<Connection>| result.unwrap_err().to_string();
         assert!(error(connect(source(None), None)).contains("columns declared"));
         let json = Format::Json(JsonFormat::default());
@@ -288,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn its_metadata_renders() {
+    fn connector_metadata() {
         let metadata = MetaLakeConnector {}.metadata();
         assert_eq!((metadata.source, metadata.sink, metadata.hidden), (true, true, true));
         assert!(metadata.icon.starts_with("<svg"));

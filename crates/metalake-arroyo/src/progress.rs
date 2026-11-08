@@ -138,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn a_step_gives_each_subtask_its_files() {
+    fn take_splits_step_across_subtasks() {
         let files_of = |index| {
             let mut progress = SourceProgress::default();
             progress.take(step(&(1..=20).collect::<Vec<_>>(), 5), index, 3);
@@ -153,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn a_subtask_goes_through_its_tasks_in_order() {
+    fn pending_tasks_in_commit_order() {
         let mut progress = SourceProgress::default();
         progress.take(step(&[1, 2], 5), 0, 1);
         progress.take(step(&[3], 6), 0, 1);
@@ -172,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn it_restores_as_it_was() {
+    fn progress_round_trips() {
         let mut progress = SourceProgress::default();
         assert_eq!(
             SourceProgress::from_bytes(&progress.to_bytes()),
@@ -187,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn it_refuses_what_it_cannot_read() {
+    fn progress_unknown_version_refused() {
         let mut stored: serde_json::Value = serde_json::from_slice(&SourceProgress::default().to_bytes()).unwrap();
         stored["version"] = json!(2);
         let error = SourceProgress::from_bytes(&serde_json::to_vec(&stored).unwrap()).unwrap_err();
@@ -196,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn a_reopened_task_skips_what_was_emitted() {
+    fn reopened_task_skips_emitted_rows() {
         // a task of 25 rows in batches of 10, 7 of which were emitted before a restore
         let batches = [10, 10, 5];
         let mut read = 0;
