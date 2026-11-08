@@ -4,13 +4,13 @@
 //! engine may hand to its workers, and a cursor. The caller keeps the cursor, and a stream opened from it goes on from
 //! there, so that a reader that keeps its cursor with what it did with the rows takes each commit once.
 //!
-//! The rows are the table's columns and two more: [`CHANGE_TYPE`] and [`COMMIT_SEQ`].
+//! The rows are the table's columns and three more: [`CHANGE_TYPE`], [`COMMIT_SEQ`] and [`COMMIT_TIMESTAMP`].
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
-use arrow_schema::{DataType, Field as ArrowField, Schema, SchemaRef};
+use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray, TimestampMicrosecondArray};
+use arrow_schema::{DataType, Field as ArrowField, Schema, SchemaRef, TimeUnit};
 use futures_util::stream::{self, BoxStream};
 use futures_util::{StreamExt, TryStreamExt};
 use metalake_pg::records::CommitChange;
@@ -28,6 +28,9 @@ use crate::vectors::DeletionVector;
 pub const CHANGE_TYPE: &str = "_change_type";
 /// The column that says which commit did it. A row of the first read has that read's sequence.
 pub const COMMIT_SEQ: &str = "_commit_seq";
+/// The column that says when that commit was made (TT-1), in microseconds, as Postgres keeps it. A row of the first read
+/// has the time of that read.
+pub const COMMIT_TIMESTAMP: &str = "_commit_timestamp";
 
 /// Commits a step looks at, at most.
 const FEED_BATCH: i32 = 1000;
@@ -80,6 +83,7 @@ pub enum TaskRows {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StreamTask {
     pub seq: i64,
+    pub committed_at: SystemTime,
     pub change: RowChange,
     pub rows: TaskRows,
     pub file: ScanTask,
@@ -127,6 +131,11 @@ impl Ref {
         let mut fields = scan.schema().fields().to_vec();
         fields.push(Arc::new(ArrowField::new(CHANGE_TYPE, DataType::Utf8, false)));
         fields.push(Arc::new(ArrowField::new(COMMIT_SEQ, DataType::Int64, false)));
+        fields.push(Arc::new(ArrowField::new(
+            COMMIT_TIMESTAMP,
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            false,
+        )));
         let cursor = match &start {
             Start::Cursor(cursor) => Some(cursor.clone()),
             _ => None,
@@ -168,6 +177,7 @@ impl TableStream {
         let (scan, schema, storage) = (self.scan.clone(), self.schema.clone(), storage.clone());
         let StreamTask {
             seq,
+            committed_at,
             change,
             rows,
             file,
@@ -183,7 +193,7 @@ impl TableStream {
             Ok::<_, Error>(batches)
         })
         .try_flatten()
-        .map(move |batch| with_change(&schema, &batch?, change, seq))
+        .map(move |batch| with_change(&schema, &batch?, change, seq, committed_at))
         .boxed()
     }
 
@@ -197,6 +207,7 @@ impl TableStream {
                 let files: Vec<ScanTask> = Scan::new(&self.catalog, &read).plan().await?.try_collect().await?;
                 let task = |file| StreamTask {
                     seq,
+                    committed_at: at,
                     change: RowChange::Insert,
                     rows: TaskRows::Live,
                     file,
@@ -274,7 +285,7 @@ impl TableStream {
             }
             let changes = p.commit_changes(&session, id, table_id, commit.commit_seq).await?;
             for change in changes {
-                tasks.push(task_of(commit.commit_seq, change)?);
+                tasks.push(task_of(commit.commit_seq, commit.committed_at, change)?);
             }
         }
         self.cursor = Some(cursor.clone());
@@ -291,7 +302,7 @@ async fn schema_seq(catalog: &Catalog, table: &Table, snapshot: i64) -> Result<i
 
 /// What a file's change delivers: an added file's live rows; a removed file's rows that were live, by the vector it had;
 /// and the rows a new vector took from a file that stays.
-fn task_of(seq: i64, c: CommitChange) -> Result<StreamTask> {
+fn task_of(seq: i64, committed_at: SystemTime, c: CommitChange) -> Result<StreamTask> {
     let (before, after) = (optional_vector(&c.vector_before)?, optional_vector(&c.vector_after)?);
     let (change, rows, vector) = match c.change.as_str() {
         "added" => (RowChange::Insert, TaskRows::Live, after),
@@ -313,6 +324,7 @@ fn task_of(seq: i64, c: CommitChange) -> Result<StreamTask> {
     };
     Ok(StreamTask {
         seq,
+        committed_at,
         change,
         rows,
         file,
@@ -360,10 +372,24 @@ async fn deleted_since(file: &ScanTask, before: Option<&TaskVector>, storage: &S
     ))
 }
 
-fn with_change(schema: &SchemaRef, batch: &RecordBatch, change: RowChange, seq: i64) -> Result<RecordBatch> {
+fn with_change(
+    schema: &SchemaRef,
+    batch: &RecordBatch,
+    change: RowChange,
+    seq: i64,
+    committed_at: SystemTime,
+) -> Result<RecordBatch> {
     let rows = batch.num_rows();
+    let micros = committed_at
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_micros()).ok())
+        .ok_or_else(|| Error::Corrupt(format!("commit {seq} has a time before 1970")))?;
     let mut columns: Vec<ArrayRef> = batch.columns().to_vec();
     columns.push(Arc::new(StringArray::from(vec![change.name(); rows])));
     columns.push(Arc::new(Int64Array::from(vec![seq; rows])));
+    columns.push(Arc::new(
+        TimestampMicrosecondArray::from(vec![micros; rows]).with_timezone("UTC"),
+    ));
     RecordBatch::try_new(schema.clone(), columns).map_err(|e| Error::Schema(e.to_string()))
 }

@@ -40,7 +40,8 @@ pub use metalake_pg::records::{
 pub use scan::{Scan, ScanTask, TaskReader, TaskVector, listed_vector};
 pub use storage::Storage;
 pub use stream::{
-    CHANGE_TYPE, COMMIT_SEQ, RowChange, Start, StreamCursor, StreamStep, StreamTask, TableStream, TaskRows,
+    CHANGE_TYPE, COMMIT_SEQ, COMMIT_TIMESTAMP, RowChange, Start, StreamCursor, StreamStep, StreamTask, TableStream,
+    TaskRows,
 };
 pub use table::{Field, Table};
 pub use write::{Merge, MergeReport, NewTable, Outcome, TableWriter, Transaction, WriteOptions};

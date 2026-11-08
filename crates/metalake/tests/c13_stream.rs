@@ -9,15 +9,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::cast::AsArray;
-use arrow_array::types::Int64Type;
+use arrow_array::types::{Int64Type, TimestampMicrosecondType};
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use common::{fresh_schema, url};
 use futures_util::TryStreamExt;
 use metalake::vectors::Deletes;
 use metalake::{
-    CHANGE_TYPE, COMMIT_SEQ, Catalog, CatalogConfig, Error, FileAdd, NewTable, Outcome, Ref, Retention, Scan, Start,
-    Storage, StreamCursor, StreamStep, Table, TableStream, TableWriter, WriteOptions,
+    CHANGE_TYPE, COMMIT_SEQ, COMMIT_TIMESTAMP, Catalog, CatalogConfig, Error, FileAdd, NewTable, Outcome, Ref,
+    Retention, Scan, Start, Storage, StreamCursor, StreamStep, Table, TableStream, TableWriter, WriteOptions,
 };
 use metalake_pg::{Commit, Pool, Protocol};
 use object_store::ObjectStoreExt;
@@ -230,6 +230,59 @@ async fn follow_each_change() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(drain(&mut stream, &storage).await?, [], "{compacted:?}");
     let after = append(&catalog, &main, &storage, 8..9).await?;
     assert_eq!(drain(&mut stream, &storage).await?, [row("insert", 8, after)]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn each_change_has_its_commits_time() -> Result<(), Box<dyn std::error::Error>> {
+    let schema = fresh_schema();
+    let (catalog, main, storage) = lake_in(&schema, vec![("inline.flush-bytes", "1")]).await?;
+    let first = append(&catalog, &main, &storage, 0..3).await?;
+    let t = main.table(&["db"], "t").await?;
+    let mut stream = main.stream(&t, Start::Snapshot).await?;
+    let read = stream.next().await?.expect("the first read");
+    let added = append(&catalog, &main, &storage, 3..5).await?;
+    let deleted = delete(&catalog, &main, &storage, |k| k == 1).await?;
+    settle().await;
+    let mut tail = Vec::new();
+    while let Some(step) = stream.next().await? {
+        tail.extend(step.tasks);
+    }
+
+    // The time a commit has in the catalog (TT-1), read apart from the feed.
+    let pool = Pool::new(&url(), 1)?;
+    let session = pool.get().await?;
+    let mut time = std::collections::HashMap::new();
+    for seq in [first, added, deleted] {
+        let row = session
+            .query_one(&format!("select {schema}.commit_time($1)"), &[&seq])
+            .await?;
+        time.insert(seq, row.get::<_, std::time::SystemTime>(0));
+    }
+
+    // The first read has its own time: after what it holds, before what follows it.
+    assert!(
+        read.tasks
+            .iter()
+            .all(|r| time[&first] <= r.committed_at && r.committed_at <= time[&added])
+    );
+    assert_eq!(
+        tail.iter().map(|r| (r.seq, r.committed_at)).collect::<Vec<_>>(),
+        [(added, time[&added]), (deleted, time[&deleted])]
+    );
+
+    // And each row carries its task's, in microseconds.
+    for task in read.tasks.into_iter().chain(tail) {
+        let micros = task.committed_at.duration_since(std::time::UNIX_EPOCH)?.as_micros() as i64;
+        let batches: Vec<RecordBatch> = stream.open(task, &storage).try_collect().await?;
+        for b in &batches {
+            let column = b
+                .column_by_name(COMMIT_TIMESTAMP)
+                .unwrap()
+                .as_primitive::<TimestampMicrosecondType>();
+            assert!(column.iter().all(|v| v == Some(micros)));
+        }
+    }
     Ok(())
 }
 
@@ -546,7 +599,7 @@ async fn definition_change_stops_it() -> Result<(), Box<dyn std::error::Error>> 
     // A stream of the table as it is now goes on from where that one was.
     let now = main.table(&["db"], "t").await?;
     let mut stream = main.stream(&now, Start::Cursor(cursor)).await?;
-    assert_eq!(stream.schema().fields().len(), 4);
+    assert_eq!(stream.schema().fields().len(), 5);
     let rows = drain(&mut stream, &storage).await?;
     assert_eq!(rows, [row("insert", 2, later)]);
     Ok(())
