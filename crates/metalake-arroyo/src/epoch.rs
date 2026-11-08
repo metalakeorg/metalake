@@ -1,7 +1,13 @@
 //! What one subtask of a sink wrote in an epoch: the files it prepared, which its checkpoint keeps as pre-commit data
 //! and the commit adds once the checkpoint is complete (CMT-10), and the rows of them it deleted, which the same
-//! commit deletes (DV-4).
+//! commit deletes (DV-4), and the rows it was asked to delete that it had not written, which the commit finds in the
+//! table.
 
+use arrow_array::RecordBatch;
+use arrow_ipc::reader::StreamReader;
+use arrow_ipc::writer::StreamWriter;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use metalake::{FileAdd, RowLocation};
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +21,9 @@ pub struct SinkEpoch {
     /// Rows of `files`, by file id and position, deleted before the commit.
     #[serde(default)]
     deleted: Vec<(i64, u64)>,
+    /// Rows to delete that the epoch did not write, with the declared columns: an Arrow IPC stream, in base64.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    to_find: Option<String>,
 }
 
 impl SinkEpoch {
@@ -23,7 +32,34 @@ impl SinkEpoch {
             version: VERSION,
             files,
             deleted: deleted.iter().map(|at| (at.file_id, at.position)).collect(),
+            to_find: None,
         }
+    }
+
+    /// With `rows` to find in the table and delete, all of one schema.
+    pub fn with_rows_to_find(mut self, rows: &[RecordBatch]) -> Result<Self, String> {
+        let Some(first) = rows.first() else {
+            return Ok(self);
+        };
+        let mut writer = StreamWriter::try_new(Vec::new(), &first.schema()).map_err(|e| e.to_string())?;
+        for batch in rows {
+            writer.write(batch).map_err(|e| e.to_string())?;
+        }
+        let bytes = writer.into_inner().map_err(|e| e.to_string())?;
+        self.to_find = Some(STANDARD.encode(bytes));
+        Ok(self)
+    }
+
+    /// The rows to find in the table and delete.
+    pub fn rows_to_find(&self) -> Result<Vec<RecordBatch>, String> {
+        let Some(encoded) = &self.to_find else {
+            return Ok(Vec::new());
+        };
+        let bytes = STANDARD.decode(encoded).map_err(|e| format!("rows to find: {e}"))?;
+        let reader = StreamReader::try_new(bytes.as_slice(), None).map_err(|e| format!("rows to find: {e}"))?;
+        reader
+            .collect::<Result<_, _>>()
+            .map_err(|e| format!("rows to find: {e}"))
     }
 
     pub fn deleted(&self) -> impl Iterator<Item = RowLocation> + '_ {
@@ -89,6 +125,22 @@ mod tests {
         ] {
             assert_eq!(SinkEpoch::from_bytes(&epoch.to_bytes()), Ok(epoch));
         }
+    }
+
+    #[test]
+    fn sink_epoch_rows_to_find_round_trips() {
+        use arrow_array::{ArrayRef, Int64Array};
+        use std::sync::Arc;
+
+        let batch = |keys: Vec<i64>| {
+            let k: ArrayRef = Arc::new(Int64Array::from(keys));
+            RecordBatch::try_from_iter([("k", k)]).unwrap()
+        };
+        let rows = vec![batch(vec![1, 2]), batch(vec![3])];
+        let epoch = SinkEpoch::new(vec![], &[]).with_rows_to_find(&rows).unwrap();
+        let back = SinkEpoch::from_bytes(&epoch.to_bytes()).unwrap();
+        assert_eq!(back.rows_to_find().unwrap(), rows);
+        assert_eq!(SinkEpoch::new(vec![], &[]).rows_to_find().unwrap(), []);
     }
 
     #[test]

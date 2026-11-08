@@ -43,6 +43,12 @@ impl Lake {
             storage,
         })
     }
+
+    /// The table as its branch has it now, for a commit that reads it.
+    pub async fn latest_table(&self) -> metalake::Result<Table> {
+        let namespace: Vec<&str> = self.table.namespace().iter().map(String::as_str).collect();
+        self.branch.table(&namespace, self.table.name()).await
+    }
 }
 
 /// A core error by what to do about it: try again for what may pass, stop for what the user has to change.

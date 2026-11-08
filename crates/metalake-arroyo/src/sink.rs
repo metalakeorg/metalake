@@ -3,13 +3,15 @@
 //! checkpoint is complete, subtask 0 commits every subtask's files in one transaction, keyed by the job and the epoch,
 //! so that a commit replayed after a failure applies nothing twice (CMT-8). Arroyo gives it Debezium's envelope, as to
 //! any updating sink. A delete of a row the subtask inserted in the same epoch deletes it where the writer put it, in
-//! the commit that adds its file (DV-4); a delete of any other row is refused until the commit can find it.
+//! the commit that adds its file (DV-4); a delete of any other row goes with the epoch, and the commit finds it in the
+//! table, as it reads it, and deletes it there.
 
 use std::collections::HashMap;
 use std::time::SystemTime;
 
-use arrow_array::RecordBatch;
+use arrow_array::{RecordBatch, UInt32Array};
 use arrow_schema::Schema;
+use arrow_select::take::take_record_batch;
 use arroyo_operator::context::{Collector, OperatorContext};
 use arroyo_operator::operator::ArrowOperator;
 use arroyo_rpc::errors::{DataflowError, DataflowResult};
@@ -20,7 +22,7 @@ use async_trait::async_trait;
 use metalake::vectors::Deletes;
 use metalake::{FileAdd, RowLocation, TableWriter, WriteOptions};
 use prost::Message;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::changelog::{ChangelogError, Run, declared, runs};
 use crate::config::{MetaLakeProfile, MetaLakeSink, MetaLakeTable, MetaLakeTableType};
@@ -28,6 +30,7 @@ use crate::conform::{ConformError, conform};
 use crate::epoch::SinkEpoch;
 use crate::inserted::InsertedRows;
 use crate::lake::{Lake, core, internal, user};
+use crate::locate::{LocateError, locate};
 use crate::schema::check_sink_columns;
 
 /// The pre-commit table: each subtask's files of an epoch.
@@ -44,6 +47,8 @@ pub struct MetaLakeSinkFunc {
     inserted: Option<InsertedRows>,
     /// The rows of this epoch's files that it deleted.
     deleted: Vec<RowLocation>,
+    /// The rows it was asked to delete that it did not write, for the commit to find.
+    to_find: Vec<RecordBatch>,
     /// Whether this run's first commit, which may replay the last checkpoint's, has restored its files.
     restored: bool,
 }
@@ -62,6 +67,7 @@ impl MetaLakeSinkFunc {
             writer: None,
             inserted: None,
             deleted: Vec::new(),
+            to_find: Vec::new(),
             restored: false,
         })
     }
@@ -85,21 +91,18 @@ impl MetaLakeSinkFunc {
         inserted.insert(rows, &located).map_err(|e| internal(&name, e))
     }
 
-    /// Deletes rows this epoch inserted, where they went.
+    /// Deletes rows this epoch inserted, where they went; keeps the others for the commit to find.
     fn delete(&mut self, rows: &RecordBatch) -> DataflowResult<()> {
         let name = self.table.qualified_name();
         let inserted = self.inserted.as_mut().expect("built on start");
         let taken = inserted.take(rows).map_err(|e| internal(&name, e))?;
         self.deleted.extend(taken.located);
-        match taken.unmatched.len() {
-            0 => Ok(()),
-            n => Err(user(
-                &name,
-                format!(
-                    "{n} rows deleted that this epoch did not insert, and a MetaLake sink deletes only those for now"
-                ),
-            )),
+        if !taken.unmatched.is_empty() {
+            let unmatched = UInt32Array::from(taken.unmatched);
+            let others = take_record_batch(rows, &unmatched).map_err(|e| internal(&name, e))?;
+            self.to_find.push(others);
         }
+        Ok(())
     }
 
     /// This subtask's files of the epoch a checkpoint ends: its writer's, closed, which the next batch replaces. Arroyo
@@ -115,12 +118,15 @@ impl MetaLakeSinkFunc {
         if let Some(inserted) = self.inserted.as_mut() {
             inserted.clear();
         }
-        Ok(SinkEpoch::new(files, &std::mem::take(&mut self.deleted)))
+        SinkEpoch::new(files, &std::mem::take(&mut self.deleted))
+            .with_rows_to_find(&std::mem::take(&mut self.to_find))
+            .map_err(|e| internal(&self.table.qualified_name(), e))
     }
 
-    /// Commits every subtask's files of `epoch`, once. The first commit of a run may replay the last checkpoint's, after
-    /// a failure, long after its files were written: their intents are renewed first, and if that version committed
-    /// already, nothing is (CMT-10).
+    /// Commits every subtask's files of `epoch`, and its deletes, once. The first commit of a run may replay the last
+    /// checkpoint's, after a failure, long after its files were written: their intents are renewed first, and if that
+    /// version committed already, nothing is (CMT-10). Rows to delete that the epoch did not write are found in the
+    /// table as the commit reads it; if another commit changes a vector first (DV-4), they are found again.
     async fn commit(
         &mut self,
         epoch: u32,
@@ -131,13 +137,18 @@ impl MetaLakeSinkFunc {
         let mut by_subtask: Vec<_> = prepared.into_iter().flatten().collect();
         by_subtask.sort_by_key(|(subtask, _)| **subtask);
         let mut files: Vec<FileAdd> = Vec::new();
-        let mut deletes = Deletes::new();
+        let mut own = Deletes::new();
+        let mut to_find: Vec<RecordBatch> = Vec::new();
         for (subtask, bytes) in by_subtask {
             let epoch = SinkEpoch::from_bytes(bytes)
                 .map_err(|e| internal(&name, format!("the files of subtask {subtask} are {e}")))?;
             for at in epoch.deleted() {
-                deletes.insert(at.file_id, at.position);
+                own.insert(at.file_id, at.position);
             }
+            let rows = epoch
+                .rows_to_find()
+                .map_err(|e| internal(&name, format!("subtask {subtask}: {e}")))?;
+            to_find.extend(rows);
             files.extend(epoch.files);
         }
 
@@ -151,26 +162,72 @@ impl MetaLakeSinkFunc {
                 .map_err(|e| core(&name, e))?;
         }
         self.restored = true;
-        if files.is_empty() {
-            debug!(table = name, "nothing to commit");
-            return Ok(());
-        }
 
-        let count = files.len();
-        let deleted: u64 = deletes.files().values().map(|v| v.cardinality()).sum();
-        let outcome = lake
-            .branch
-            .transaction()
-            .append(files)
-            .delete(&lake.table, &lake.storage, deletes)
-            .idempotent(&app_id, version)
-            .author("arroyo")
-            .message(format!("job {}, epoch {epoch}", task.job_id))
-            .commit()
-            .await
-            .map_err(|e| core(&name, e))?;
-        info!(table = name, files = count, deleted, ?outcome, "committed");
-        Ok(())
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let table = lake.latest_table().await.map_err(|e| core(&name, e))?;
+            let found = locate(&lake.catalog, &table, &lake.storage, &to_find, &self.sink.key)
+                .await
+                .map_err(|e| locate_error(&name, e))?;
+            if found.unmatched > 0 {
+                warn!(table = name, rows = found.unmatched, "rows to delete not in the table");
+            }
+            let mut deletes = own.clone();
+            for (file_id, vector) in found.deletes.files() {
+                for position in vector.positions() {
+                    deletes.insert(*file_id, position);
+                }
+            }
+            if files.is_empty() && deletes.is_empty() {
+                debug!(table = name, "nothing to commit");
+                return Ok(());
+            }
+            let (count, deleted) = (files.len(), cardinality(&deletes));
+            let outcome = lake
+                .branch
+                .transaction()
+                .append(files.clone())
+                .delete(&table, &lake.storage, deletes)
+                .idempotent(&app_id, version)
+                .author("arroyo")
+                .message(format!("job {}, epoch {epoch}", task.job_id))
+                .commit()
+                .await;
+            match outcome {
+                Ok(outcome) => {
+                    info!(table = name, files = count, deleted, ?outcome, "committed");
+                    return Ok(());
+                }
+                Err(e) if attempt < ATTEMPTS && vector_changed(&e) => {
+                    debug!(
+                        table = name,
+                        attempt, "a vector changed under the commit: finding the rows again"
+                    );
+                }
+                Err(e) => return Err(core(&name, e)),
+            }
+        }
+    }
+}
+
+/// Commits a sink tries, finding its rows again each time another commit changed a vector under it.
+const ATTEMPTS: u32 = 3;
+
+fn cardinality(deletes: &Deletes) -> u64 {
+    deletes.files().values().map(|v| v.cardinality()).sum()
+}
+
+/// Whether a commit was refused because a vector it replaces changed (DV-4): the rows are found again.
+fn vector_changed(e: &metalake::Error) -> bool {
+    use metalake_pg::ErrorKind;
+    matches!(e, metalake::Error::Protocol(p) if p.kind() == ErrorKind::Conflict && p.rule() == Some("DV-4"))
+}
+
+fn locate_error(table: &str, e: LocateError) -> DataflowError {
+    match e {
+        LocateError::Core(e) => core(table, e),
+        LocateError::Arrow(e) => internal(table, e),
     }
 }
 

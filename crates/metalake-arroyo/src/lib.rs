@@ -12,6 +12,7 @@ pub mod envelope;
 pub mod epoch;
 pub mod inserted;
 pub mod lake;
+pub mod locate;
 pub mod progress;
 pub mod schema;
 pub mod sink;
