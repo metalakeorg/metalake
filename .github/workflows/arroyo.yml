@@ -41,5 +41,13 @@ jobs:
         run: cargo fmt --check
       - name: Lints
         run: cargo clippy --locked --all-targets -- -D warnings
+      - name: A Postgres for the source's tests, as sql/test.sh starts one
+        run: |
+          docker run -d --name pg -p 5432:5432 -e POSTGRES_HOST_AUTH_METHOD=trust \
+            postgres:17@sha256:3b0cda93be7c8dba2ed484d19393d93845dc3dafb88973e248ba8e6d99d784e1 \
+            -c track_commit_timestamp=on -c fsync=off
+          until docker exec pg pg_isready -q -U postgres; do sleep 1; done
       - name: Tests
+        env:
+          DATABASE_URL: host=localhost user=postgres dbname=postgres
         run: cargo test --locked
