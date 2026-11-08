@@ -102,6 +102,18 @@ struct OpenFile {
     writer: AsyncArrowWriter<Spill>,
     nan_counts: HashMap<i32, i64>,
     partition: Value,
+    /// Drawn once a row of it is located, so that a commit's vector can name the file it adds (ID-4).
+    file_id: Option<i64>,
+    /// Rows written so far: the position of the next one.
+    rows: u64,
+}
+
+/// Where a written row is: its file, by the id the file will have once committed, and its position in it, counted
+/// from 0. A vector of the commit that adds the file deletes it there (DV-4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RowLocation {
+    pub file_id: i64,
+    pub position: u64,
 }
 
 impl TableWriter {
@@ -156,16 +168,45 @@ impl TableWriter {
     /// Writes a batch: its columns are the table's, by name and in order, of the same types; a required column
     /// holds no null.
     pub async fn write(&mut self, batch: &RecordBatch) -> Result<()> {
+        self.write_rows(batch, None).await
+    }
+
+    /// Writes a batch as `write` does, and answers where each of its rows is, in the batch's order: for a writer that
+    /// deletes rows it wrote before they are committed.
+    pub async fn write_located(&mut self, batch: &RecordBatch) -> Result<Vec<RowLocation>> {
+        let mut located = vec![None; batch.num_rows()];
+        self.write_rows(batch, Some(&mut located)).await?;
+        Ok(located.into_iter().map(|l| l.expect("every row is written")).collect())
+    }
+
+    async fn write_rows(&mut self, batch: &RecordBatch, mut located: Option<&mut [Option<RowLocation>]>) -> Result<()> {
         let batch = conform(self.table.schema(), batch)?;
-        for (partition, rows) in self.split(&batch)? {
+        for (partition, indices, rows) in self.split(&batch)? {
             let key = partition.to_string();
             if !self.open.contains_key(&key) {
                 let file = self.open_file(partition)?;
                 self.open.insert(key.clone(), file);
             }
             let open = self.open.get_mut(&key).expect("a file is open");
+            if let Some(located) = located.as_deref_mut() {
+                let file_id = match open.file_id {
+                    Some(id) => id,
+                    None => {
+                        let session = self.catalog.session().await?;
+                        let id = self.catalog.protocol().next_file_id(&session).await?;
+                        *open.file_id.insert(id)
+                    }
+                };
+                for (i, row) in indices.iter().enumerate() {
+                    located[*row as usize] = Some(RowLocation {
+                        file_id,
+                        position: open.rows + i as u64,
+                    });
+                }
+            }
             count_nans(self.table.schema(), rows.columns(), &mut open.nan_counts);
             open.writer.write(&rows).await.map_err(parquet_error)?;
+            open.rows += rows.num_rows() as u64;
             if open.writer.bytes_written() + open.writer.in_progress_size() >= self.target {
                 self.close_file(&key).await?;
             }
@@ -183,10 +224,12 @@ impl TableWriter {
         Ok(self.done)
     }
 
-    /// The batch's rows by partition value, in the order the values first appear.
-    fn split(&self, batch: &RecordBatch) -> Result<Vec<(Value, RecordBatch)>> {
+    /// The batch's rows by partition value, in the order the values first appear, each with the indices of its rows
+    /// in the batch.
+    fn split(&self, batch: &RecordBatch) -> Result<Vec<(Value, Vec<u32>, RecordBatch)>> {
         if self.partitioning.is_empty() {
-            return Ok(vec![(json!([]), batch.clone())]);
+            let all = (0..batch.num_rows() as u32).collect();
+            return Ok(vec![(json!([]), all, batch.clone())]);
         }
         let sources = self
             .partitioning
@@ -214,10 +257,10 @@ impl TableWriter {
         }
         groups
             .into_iter()
-            .map(|(value, rows)| {
-                let rows =
-                    take_record_batch(batch, &UInt32Array::from(rows)).map_err(|e| Error::Schema(e.to_string()))?;
-                Ok((value, rows))
+            .map(|(value, indices)| {
+                let rows = take_record_batch(batch, &UInt32Array::from(indices.clone()))
+                    .map_err(|e| Error::Schema(e.to_string()))?;
+                Ok((value, indices, rows))
             })
             .collect()
     }
@@ -251,6 +294,8 @@ impl TableWriter {
             writer,
             nan_counts: HashMap::new(),
             partition,
+            file_id: None,
+            rows: 0,
         })
     }
 
@@ -275,7 +320,7 @@ impl TableWriter {
             }
         };
         let statistics = stats::of_footer(&self.table, &metadata, &open.nan_counts);
-        self.done.push(statistics.into_file_add(
+        let mut file = statistics.into_file_add(
             self.table.id(),
             FileFacts {
                 path,
@@ -287,7 +332,9 @@ impl TableWriter {
                 partition: open.partition,
                 sort_order_id: None,
             },
-        ));
+        );
+        file.file_id = open.file_id;
+        self.done.push(file);
         Ok(())
     }
 }

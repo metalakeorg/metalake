@@ -189,7 +189,8 @@ async fn union_of(
         let (a, b) = (read(ours.clone().into()).await?, read(theirs.clone().into()).await?);
         vectors.push((*file_id, None, a.union(&b)));
     }
-    delete::stored(catalog, table, storage, &mine, vectors, upload).await
+    let paths = mine.iter().filter_map(|(id, f)| Some((*id, f.path.clone()?))).collect();
+    delete::stored(catalog, table, storage, &paths, vectors, upload).await
 }
 
 async fn files(catalog: &Catalog, ref_id: i32, table: &Table, at: Option<i64>) -> Result<BTreeMap<i64, PlannedFile>> {

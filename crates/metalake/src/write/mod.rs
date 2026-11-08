@@ -9,4 +9,4 @@ mod writer;
 pub use merge::{Merge, MergeReport};
 pub use transaction::{NewTable, Outcome, Transaction};
 pub(crate) use writer::target_size;
-pub use writer::{TableWriter, WriteOptions};
+pub use writer::{RowLocation, TableWriter, WriteOptions};

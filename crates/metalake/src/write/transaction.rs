@@ -111,7 +111,8 @@ impl Transaction {
     }
 
     /// Deletes rows of a table's files, which `storage` holds, as `table` read them: each file's vector becomes the
-    /// union of these and the one it has. If another commit changes a vector first, the union is taken again over
+    /// union of these and the one it has. A file this commit adds may be among them, by the id its writer drew
+    /// (`TableWriter::write_located`): its vector is these alone. If another commit changes a vector first, the union is taken again over
     /// the new one, and the commit retried (DV-4), unless this commit also adds files, as an update does: then it is
     /// refused.
     pub fn delete(mut self, table: &Table, storage: &Storage, deletes: Deletes) -> Self {
@@ -295,7 +296,7 @@ impl Transaction {
                 call.vectors.clear();
                 for d in &self.deletes {
                     let at = if rebase { None } else { Some(d.table.seq()) };
-                    call.vectors.extend(d.vectors(catalog, at).await?);
+                    call.vectors.extend(d.vectors(catalog, at, &call.files).await?);
                 }
             }
             let result = async { catalog.protocol().commit(&catalog.pg_session().await?, &call).await }.await;

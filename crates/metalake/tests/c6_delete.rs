@@ -268,3 +268,59 @@ async fn large_vector_stored_in_puffin() -> Result<(), Box<dyn std::error::Error
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn dv4_delete_added_file_rows_applies() -> Result<(), Box<dyn std::error::Error>> {
+    let schema = fresh_schema();
+    let catalog = Catalog::init(CatalogConfig::new(url(), &schema).warehouse("memory:///wh"), None).await?;
+    table(&catalog, vec![]).await?;
+    let main = catalog.branch("main").await?;
+    let storage = Storage::in_memory();
+    write(&catalog, &main, &storage, batch(0..10), WriteOptions::default()).await?;
+
+    // An inline file and a stored one, written and located, lose rows in the commit that adds them, along with a row
+    // of a file committed before.
+    let t = main.table(&["db"], "t").await?;
+    let mut deletes = delete_where(&storage, Scan::new(&catalog, &t), |k| k == 4).await?;
+    let mut files = Vec::new();
+    for (keys, stored) in [(10..20, false), (20..30, true)] {
+        let options = WriteOptions {
+            stored,
+            ..Default::default()
+        };
+        let mut writer = TableWriter::new(&catalog, &t, storage.clone(), options)?;
+        let located = writer.write_located(&batch(keys.clone())).await?;
+        for (k, at) in keys.zip(located) {
+            if k % 5 == 0 {
+                deletes.insert(at.file_id, at.position);
+            }
+        }
+        files.extend(writer.finish().await?);
+    }
+    assert_eq!(
+        files.iter().map(|f| f.path.is_some()).collect::<Vec<_>>(),
+        [false, true]
+    );
+    main.transaction()
+        .append(files)
+        .delete(&t, &storage, deletes)
+        .commit()
+        .await?;
+    let live: Vec<i64> = (0..30).filter(|k| *k != 4 && !(*k >= 10 && k % 5 == 0)).collect();
+    assert_eq!(keys(&catalog, &main.table(&["db"], "t").await?, &storage).await?, live);
+
+    // A position past an added file's rows never reaches the protocol.
+    let t = main.table(&["db"], "t").await?;
+    let mut writer = TableWriter::new(&catalog, &t, storage.clone(), WriteOptions::default())?;
+    let at = writer.write_located(&batch(30..31)).await?[0];
+    let mut past = Deletes::new();
+    past.insert(at.file_id, 1);
+    let refused = main
+        .transaction()
+        .append(writer.finish().await?)
+        .delete(&t, &storage, past)
+        .commit()
+        .await;
+    assert!(matches!(refused, Err(Error::Invalid(_))), "{refused:?}");
+    Ok(())
+}

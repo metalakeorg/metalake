@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use futures_util::TryStreamExt;
-use metalake_pg::records::{PlannedFile, VectorSet};
+use metalake_pg::records::{FileAdd, PlannedFile, VectorSet};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -37,11 +37,20 @@ pub(crate) struct TableDeletes {
 
 impl TableDeletes {
     /// The vectors that set this table's deletes over the vectors its files have at `at` (the table's read point,
-    /// or the latest when retrying); files whose vector would not change are left out.
-    pub async fn vectors(&self, catalog: &Catalog, at: Option<i64>) -> Result<Vec<VectorSet>> {
+    /// or the latest when retrying); files whose vector would not change are left out. A file among `added`, which
+    /// the same commit adds under an id drawn for it, has no vector yet: its own is these deletes, with no base (DV-4).
+    pub async fn vectors(&self, catalog: &Catalog, at: Option<i64>, added: &[FileAdd]) -> Result<Vec<VectorSet>> {
         let t = &self.table;
-        let wanted = self.deletes.files();
-        let planned: BTreeMap<i64, PlannedFile> = {
+        let added: BTreeMap<i64, &FileAdd> = added
+            .iter()
+            .filter(|f| f.table_id == t.id())
+            .filter_map(|f| Some((f.file_id?, f)))
+            .collect();
+        let (new, wanted): (BTreeMap<_, _>, BTreeMap<_, _>) =
+            self.deletes.files().iter().partition(|(id, _)| added.contains_key(id));
+        let planned: BTreeMap<i64, PlannedFile> = if wanted.is_empty() {
+            BTreeMap::new()
+        } else {
             let session = catalog.session().await?;
             catalog
                 .protocol()
@@ -53,17 +62,19 @@ impl TableDeletes {
                 .await?
         };
         let mut changed = Vec::new();
+        let mut paths: BTreeMap<i64, String> = BTreeMap::new();
+        for (file_id, deletes) in new {
+            let file = added[file_id];
+            check_positions(*file_id, file.record_count, deletes)?;
+            paths.extend(file.path.clone().map(|p| (*file_id, p)));
+            changed.push((*file_id, None, deletes.clone()));
+        }
         for (file_id, deletes) in wanted {
             let file = planned
                 .get(file_id)
                 .ok_or_else(|| Error::NotFound(format!("file {file_id} of {}", t.name())))?;
-            if deletes.max().is_some_and(|p| p >= file.record_count as u64) {
-                return Err(Error::Invalid(format!(
-                    "file {file_id} has {} rows, and position {} is not one",
-                    file.record_count,
-                    deletes.max().unwrap_or_default()
-                )));
-            }
+            check_positions(*file_id, file.record_count, deletes)?;
+            paths.extend(file.path.clone().map(|p| (*file_id, p)));
             let current = file.vector.clone().map(TaskVector::from);
             let now = scan::vector(*file_id, current.as_ref(), &self.storage)
                 .await?
@@ -74,17 +85,28 @@ impl TableDeletes {
             }
             changed.push((*file_id, current.map(|v| v.begin_seq), merged));
         }
-        stored(catalog, t, &self.storage, &planned, changed, true).await
+        stored(catalog, t, &self.storage, &paths, changed, true).await
+    }
+}
+
+/// Refuses a position past a file's rows.
+fn check_positions(file_id: i64, record_count: i64, deletes: &DeletionVector) -> Result<()> {
+    match deletes.max() {
+        Some(p) if p >= record_count as u64 => Err(Error::Invalid(format!(
+            "file {file_id} has {record_count} rows, and position {p} is not one"
+        ))),
+        _ => Ok(()),
     }
 }
 
 /// The sets of `vectors`, each a file, the vector it replaces and the new one: inline within the table's limit, the
-/// larger in one Puffin file, written unless `upload` is false, for a merge tried without effect.
+/// larger in one Puffin file, written unless `upload` is false, for a merge tried without effect. `paths` are the
+/// stored files' paths, which a Puffin blob references.
 pub(crate) async fn stored(
     catalog: &Catalog,
     t: &Table,
     storage: &Storage,
-    planned: &BTreeMap<i64, PlannedFile>,
+    paths: &BTreeMap<i64, String>,
     vectors: Vec<(i64, Option<i64>, DeletionVector)>,
     upload: bool,
 ) -> Result<Vec<VectorSet>> {
@@ -117,7 +139,7 @@ pub(crate) async fn stored(
         }
     }
     if !large.is_empty() {
-        sets.extend(puffin(catalog, t, storage, planned, large, upload).await?);
+        sets.extend(puffin(catalog, t, storage, paths, large, upload).await?);
     }
     Ok(sets)
 }
@@ -127,7 +149,7 @@ async fn puffin(
     catalog: &Catalog,
     t: &Table,
     storage: &Storage,
-    planned: &BTreeMap<i64, PlannedFile>,
+    paths: &BTreeMap<i64, String>,
     large: Vec<(VectorSet, Vec<u8>)>,
     upload: bool,
 ) -> Result<Vec<VectorSet>> {
@@ -143,7 +165,7 @@ async fn puffin(
         let offset = bytes.len() as i64;
         bytes.extend_from_slice(&blob);
         let mut properties = json!({"cardinality": set.cardinality.to_string()});
-        if let Some(data) = planned.get(&set.file_id).and_then(|f| f.path.as_ref()) {
+        if let Some(data) = paths.get(&set.file_id) {
             properties["referenced-data-file"] = json!(data);
         }
         blobs.push(json!({

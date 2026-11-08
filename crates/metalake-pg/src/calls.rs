@@ -217,6 +217,11 @@ impl Protocol {
             .get(0))
     }
 
+    /// Draws a file id ahead of the commit that adds the file (ID-4).
+    pub async fn next_file_id(&self, s: &impl Session) -> Result<i64> {
+        Ok(self.one(s, "next_file_id()", &[]).await?.get(0))
+    }
+
     // Reading.
 
     /// The files a read of `table_id` on `ref_id` at `at` opens, pruned on one field, as they stream from Postgres.
@@ -772,6 +777,7 @@ pub const INTERFACE: &[(&str, &[&str], bool)] = &[
     ),
     ("register_intents", &["ref_id", "table_id", "paths", "ttl"], true),
     ("next_id", &["t", "kind"], true),
+    ("next_file_id", &[], true),
     ("plan", &["ref_id", "table_id", "at", "field_id", "lo", "hi"], false),
     ("listed_files", &["ref_id", "table_id", "at"], false),
     ("files_at_paths", &["ref_id", "table_id", "paths", "file_ids"], false),

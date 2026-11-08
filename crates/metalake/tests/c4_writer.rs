@@ -311,3 +311,91 @@ async fn writer_partition_fanout() -> Result<(), Box<dyn std::error::Error>> {
     main.transaction().append(files).commit().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn write_located_partitioned_rows_matches_scan() -> Result<(), Box<dyn std::error::Error>> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use arrow_array::cast::AsArray;
+    use arrow_array::types::Int64Type;
+    use metalake::vectors::{FILE_ID, POSITION};
+    use metalake::{RowLocation, Scan};
+
+    let schema = fresh_schema();
+    let catalog = Catalog::init(CatalogConfig::new(url(), &schema).warehouse("memory:///wh"), None).await?;
+    let main = catalog.branch("main").await?;
+    let columns = Schema::new(vec![
+        Field::new("region", DataType::Utf8, false),
+        Field::new("k", DataType::Int64, false),
+    ]);
+    let (tx, _) = main.transaction().create_namespace(&["db"]).create_table(NewTable {
+        namespace: &["db"],
+        name: "visits",
+        schema: &columns,
+        location: None,
+        cluster_key: vec!["k"],
+        partitioning: vec![("region", "identity")],
+        properties: vec![],
+    })?;
+    tx.commit().await?;
+    let table = main.table(&["db"], "visits").await?;
+    let storage = Storage::in_memory();
+    // the regions interleaved, so that a batch's rows go to files out of order
+    let rows = |keys: std::ops::Range<i64>| {
+        RecordBatch::try_new(
+            Arc::new(columns.clone()),
+            vec![
+                Arc::new(StringArray::from_iter_values(
+                    keys.clone().map(|k| ["eu", "us"][(k % 2) as usize]),
+                )),
+                Arc::new(Int64Array::from_iter_values(keys)),
+            ],
+        )
+    };
+
+    // a file rolled every few rows: positions start again in the next one
+    let options = WriteOptions {
+        target_file_size: Some(1),
+        row_group_rows: 2,
+        ..Default::default()
+    };
+    let mut writer = TableWriter::new(&catalog, &table, storage.clone(), options)?;
+    let mut located: BTreeMap<i64, RowLocation> = BTreeMap::new();
+    for keys in [0..6, 6..10] {
+        let at = writer.write_located(&rows(keys.clone())?).await?;
+        assert_eq!(at.len(), keys.clone().count());
+        located.extend(keys.zip(at));
+    }
+    let files = writer.finish().await?;
+    let ids: BTreeSet<i64> = files.iter().map(|f| f.file_id.expect("drawn")).collect();
+    assert_eq!(ids.len(), files.len(), "each file its own id");
+    main.transaction().append(files).commit().await?;
+
+    let t = main.table(&["db"], "visits").await?;
+    let scan = Scan::new(&catalog, &t).with_positions();
+    let batches: Vec<RecordBatch> = scan.read(scan.plan().await?, &storage).try_collect().await?;
+    let mut scanned: BTreeMap<i64, RowLocation> = BTreeMap::new();
+    for b in &batches {
+        let column = |name: &str| b.column_by_name(name).unwrap().as_primitive::<Int64Type>().clone();
+        let (keys, files, positions) = (column("k"), column(FILE_ID), column(POSITION));
+        for i in 0..b.num_rows() {
+            let at = RowLocation {
+                file_id: files.value(i),
+                position: positions.value(i) as u64,
+            };
+            scanned.insert(keys.value(i), at);
+        }
+    }
+    assert_eq!(scanned, located);
+    Ok(())
+}
+
+#[tokio::test]
+async fn write_unlocated_draws_no_file_id() -> Result<(), Box<dyn std::error::Error>> {
+    let (_, catalog, table, storage) = setup().await?;
+    let mut writer = TableWriter::new(&catalog, &table, storage, WriteOptions::default())?;
+    writer.write(&batch(0, 10)).await?;
+    let files = writer.finish().await?;
+    assert_eq!(files[0].file_id, None, "the commit draws it");
+    Ok(())
+}

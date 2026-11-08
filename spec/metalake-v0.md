@@ -50,7 +50,8 @@ and changes complete) follows it: its rules are marked *0.2*.
   exists from the creation of the catalog with `created_seq = 0`.
 - **ID-3.** `table_id` is a UUID assigned when the table is created and never reused.
 - **ID-4.** `file_id` values are drawn from `file_id_gen`. A `file_id` is unique in the catalog, across
-  tables.
+  tables. A writer MAY draw a file's id before its commit and give it in the file it adds, as a commit that
+  deletes rows of a file it adds must (DV-4); a commit draws the ids of the others.
 - **ID-5.** Field ids, partition spec ids, partition field ids and sort order ids are unique per table. They
   are drawn from the table's row in `table_counter`, which only increases, under a lock on that row. They are
   never drawn per ref, so two branches never assign the same id to different things. The first field id is 1,

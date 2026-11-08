@@ -14,6 +14,13 @@ set search_path = @schema@, pg_catalog, pg_temp as $$
   on conflict (path) do update set expires_at = excluded.expires_at;
 $$;
 
+-- ID-4: a writer draws a file's id ahead of its commit, to name the file before the commit adds it: a vector of the
+-- same commit deletes rows of it (DV-4).
+create function @schema@.next_file_id() returns bigint language sql
+set search_path = @schema@, pg_catalog, pg_temp as $$
+  select nextval('file_id_gen');
+$$;
+
 -- RET-7b: objects found in storage that nothing knows become expired intents, for orphans to take. An intent that is
 -- there stays as it is: its writer may be at work.
 create function @schema@.adopt_orphans(ref_id int, table_id uuid, paths text[])
@@ -36,7 +43,7 @@ create function @schema@.writing_functions() returns setof regprocedure language
    where p.pronamespace = '@schema@'::regnamespace
      and p.proname in ('commit', 'merge', 'merge_report', 'create_ref', 'delete_ref', 'set_retention',
                        'set_collect_grace',
-                       'expire', 'sweep_done', 'forget_intents', 'fill_committed_at', 'next_id',
+                       'expire', 'sweep_done', 'forget_intents', 'fill_committed_at', 'next_id', 'next_file_id',
                        'register_intents', 'adopt_orphans');
 $$;
 

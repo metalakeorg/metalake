@@ -44,4 +44,4 @@ pub use stream::{
     TaskRows,
 };
 pub use table::{Field, Table};
-pub use write::{Merge, MergeReport, NewTable, Outcome, TableWriter, Transaction, WriteOptions};
+pub use write::{Merge, MergeReport, NewTable, Outcome, RowLocation, TableWriter, Transaction, WriteOptions};

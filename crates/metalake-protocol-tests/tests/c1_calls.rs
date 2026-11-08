@@ -137,6 +137,8 @@ async fn calls_match_functions() -> Result<(), Error> {
     let again = p.commit(&on, &create(t)).await?;
     assert_eq!((again.commit_seq, again.applied), (first.commit_seq, false));
     assert!(p.next_id(&on, t, "field").await? > 1);
+    let drawn = p.next_file_id(&on).await?;
+    assert!(p.next_file_id(&on).await? > drawn, "each file id once");
 
     // Reading: the plan streams the file, and prunes it on its field.
     let files: Vec<_> = p.plan(&on, 1, t, None, None).await?.try_collect().await?;

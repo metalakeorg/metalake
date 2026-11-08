@@ -665,3 +665,30 @@ async fn follow_definition_change_refused() -> Result<(), Box<dyn std::error::Er
     assert_eq!(rows, [row("insert", 2, later)]);
     Ok(())
 }
+
+#[tokio::test]
+async fn chg3_follow_row_deleted_by_adding_commit_skips() -> Result<(), Box<dyn std::error::Error>> {
+    let (catalog, main, storage) = lake(vec![]).await?;
+    append(&catalog, &main, &storage, 0..1).await?;
+    let t = main.table(&["db"], "t").await?;
+    let mut stream = main.stream(&t, Start::Latest).await?;
+    drain(&mut stream, &storage).await?;
+
+    // A file added with a vector of its own: its deleted rows never reach the feed (CHG-3).
+    let mut writer = TableWriter::new(&catalog, &t, storage.clone(), WriteOptions::default())?;
+    let located = writer.write_located(&batch(1..4)).await?;
+    let mut deletes = Deletes::new();
+    deletes.insert(located[1].file_id, located[1].position);
+    let seq = main
+        .transaction()
+        .append(writer.finish().await?)
+        .delete(&t, &storage, deletes)
+        .commit()
+        .await?
+        .seq();
+    assert_eq!(
+        drain(&mut stream, &storage).await?,
+        [row("insert", 1, seq), row("insert", 3, seq)]
+    );
+    Ok(())
+}
