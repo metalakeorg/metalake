@@ -13,3 +13,6 @@ __pycache__/
 /crates/metalake-py/python/metalake/postgres/
 /crates/metalake-py/python/metalake/_metalake.*
 !/crates/metalake-py/python/metalake/_metalake.pyi
+
+# Resolved fresh by its CI job.
+/ci/arrow-58/Cargo.lock

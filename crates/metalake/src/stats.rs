@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use metalake_pg::records::FileAdd;
-use parquet::basic::{LogicalType, TimeUnit};
+use parquet::basic::{ConvertedType, LogicalType};
 use parquet::file::metadata::ParquetMetaData;
 use parquet::file::statistics::Statistics;
 use serde_json::Value;
@@ -203,14 +203,17 @@ fn bounds_of(field: &Field, logical: Option<&LogicalType>, scale: i32, s: &Stati
             )
         }
         Statistics::Int64(v) => {
-            let unit = |u: &TimeUnit| match u {
-                TimeUnit::MILLIS => 1_000_000,
-                TimeUnit::MICROS => 1_000,
-                TimeUnit::NANOS => 1,
-            };
+            // The unit, by the converted type: the shape of `LogicalType::Timestamp` differs between parquet 58 and 59,
+            // its converted type does not, and only nanoseconds have none.
             let nanos_per = match logical {
-                Some(LogicalType::Timestamp(t)) => Some(unit(&t.unit)),
-                Some(LogicalType::Time(t)) => Some(unit(&t.unit)),
+                Some(LogicalType::Timestamp { .. } | LogicalType::Time { .. }) => {
+                    match ConvertedType::from(logical.cloned()) {
+                        ConvertedType::TIMESTAMP_MILLIS | ConvertedType::TIME_MILLIS => Some(1_000_000),
+                        ConvertedType::TIMESTAMP_MICROS | ConvertedType::TIME_MICROS => Some(1_000),
+                        ConvertedType::NONE => Some(1),
+                        _ => None,
+                    }
+                }
                 _ => None,
             };
             let encode = |x: i64| -> Option<Vec<u8>> {
@@ -286,6 +289,11 @@ fn unscaled(b: &[u8]) -> Option<i128> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use parquet::schema::parser::parse_message_type;
+    use parquet::schema::types::SchemaDescriptor;
+
     use super::*;
 
     #[test]
@@ -315,6 +323,36 @@ mod tests {
         assert_eq!(bounds_of(&field("timestamp"), date, 0, &s), want(86_400_000_000));
         assert_eq!(bounds_of(&field("timestamp_ns"), date, 0, &s), want(86_400_000_000_000));
         assert_eq!(bounds_of(&field("timestamp"), None, 0, &s), None);
+    }
+
+    #[test]
+    fn time_bounds_by_unit() {
+        let field = |ty: &str| Field {
+            field_id: 1,
+            parent_field_id: None,
+            position: 1,
+            name: "at".into(),
+            ty: ty.into(),
+            required: false,
+            doc: None,
+            initial_default: None,
+            write_default: None,
+        };
+        // The column from a schema's text, which reads the same in every version of parquet.
+        let bounds = |annotation: &str, ty: &str| {
+            let text = format!("message m {{ required int64 at ({annotation}); }}");
+            let descr = SchemaDescriptor::new(Arc::new(parse_message_type(&text).unwrap()));
+            let s = Statistics::int64(Some(1_000), Some(2_000), None, Some(0), false);
+            bounds_of(&field(ty), descr.column(0).logical_type_ref(), 0, &s)
+        };
+        let want = |lo: i64| Some((bounds::long(lo), bounds::long(2 * lo)));
+        assert_eq!(bounds("TIMESTAMP(MILLIS,true)", "timestamptz"), want(1_000_000));
+        assert_eq!(bounds("TIMESTAMP(MICROS,false)", "timestamp"), want(1_000));
+        assert_eq!(bounds("TIMESTAMP(NANOS,false)", "timestamp"), want(1));
+        assert_eq!(bounds("TIMESTAMP(MILLIS,false)", "timestamp_ns"), want(1_000_000_000));
+        assert_eq!(bounds("TIMESTAMP(NANOS,true)", "timestamptz_ns"), want(1_000));
+        assert_eq!(bounds("TIME(MICROS,false)", "time"), want(1_000));
+        assert_eq!(bounds("INTEGER(64,true)", "timestamp"), None);
     }
 
     #[test]

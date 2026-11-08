@@ -1,0 +1,33 @@
+# The core with the oldest Arrow it accepts (`>=58.4, <60`), the one Arroyo pins, so that the range stays true.
+name: arrow
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arrow-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  arrow-58:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Cargo takes the highest version a range allows, 59, and keeps it beside the 58 pinned here: a consumer locks the
+      # range down, as Arroyo has to.
+      - name: The core with Arrow 58
+        working-directory: ci/arrow-58
+        run: |
+          cargo generate-lockfile
+          cargo update parquet@59 --precise 58.4.0
+          if grep -A1 -E '^name = "(arrow-[a-z]+|parquet)"$' Cargo.lock | grep -q 'version = "59'; then
+            echo "Arrow 59 is still in the lock" && exit 1
+          fi
+          cargo check

@@ -1,0 +1,13 @@
+# The core as Arroyo builds it: with the oldest Arrow and parquet it accepts, the ones Arroyo pins.
+[package]
+name = "arrow-58"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+metalake = { path = "../../crates/metalake" }
+arrow-array = "=58.4.0"
+arrow-schema = "=58.4.0"
+arrow-select = "=58.4.0"
+parquet = { version = "=58.4.0", default-features = false }
