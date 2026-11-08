@@ -1,11 +1,13 @@
 //! A sink's rows as Arroyo gives them to an updating sink: Debezium's envelope, the row in `after` with `op = c` when
-//! inserted, in `before` with `op = d` when deleted, and in both with `op = u` when updated. The sink takes them apart
-//! into the rows to insert and the rows to delete, each with the declared columns.
+//! inserted, in `before` with `op = d` when deleted, and in both with `op = u` when updated. The sink takes them as
+//! runs of rows to insert and rows to delete, in the order they came, each with the declared columns: a delete may
+//! undo an insert before it, never one after it.
+
+use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
-use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch, StructArray};
+use arrow_array::{Array, ArrayRef, RecordBatch, RecordBatchOptions, StructArray, UInt32Array};
 use arrow_schema::{DataType, Fields, Schema};
-use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ChangelogError {
@@ -21,11 +23,11 @@ impl From<arrow_schema::ArrowError> for ChangelogError {
     }
 }
 
-/// The rows of an epoch's batch, apart: those to insert and those to delete.
-#[derive(Debug)]
-pub struct Changes {
-    pub inserts: RecordBatch,
-    pub deletes: RecordBatch,
+/// Consecutive rows of one kind of change.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Run {
+    Insert(RecordBatch),
+    Delete(RecordBatch),
 }
 
 /// The declared columns of an updating sink's input `schema`: the fields of its `after` struct.
@@ -36,42 +38,51 @@ pub fn declared(schema: &Schema) -> Result<Fields, ChangelogError> {
     }
 }
 
-/// `batch`, in Debezium's envelope, apart: an insert is its `after`, a delete its `before`, an update both.
-pub fn changes(batch: &RecordBatch) -> Result<Changes, ChangelogError> {
+/// `batch`, in Debezium's envelope, as runs in its order: an insert is its `after`, a delete its `before`, and an
+/// update a delete of the one then an insert of the other.
+pub fn runs(batch: &RecordBatch) -> Result<Vec<Run>, ChangelogError> {
     let op = column(batch, "op")?
         .as_string_opt::<i32>()
         .ok_or_else(|| internal("op is not Utf8"))?;
-    let mut inserted = Vec::with_capacity(op.len());
-    let mut deleted = Vec::with_capacity(op.len());
-    for change in op.iter() {
-        let (insert, delete) = match change {
-            Some("c" | "r") => (true, false),
-            Some("u") => (true, true),
-            Some("d") => (false, true),
+    let mut kinds: Vec<(bool, u32)> = Vec::with_capacity(op.len());
+    for (row, change) in op.iter().enumerate() {
+        let row = row as u32;
+        match change {
+            Some("c" | "r") => kinds.push((true, row)),
+            Some("d") => kinds.push((false, row)),
+            Some("u") => kinds.extend([(false, row), (true, row)]),
             other => return Err(ChangelogError::UnknownChange(other.unwrap_or("null").to_string())),
-        };
-        inserted.push(insert);
-        deleted.push(delete);
+        }
     }
-    Ok(Changes {
-        inserts: rows(column(batch, "after")?, &BooleanArray::from(inserted))?,
-        deletes: rows(column(batch, "before")?, &BooleanArray::from(deleted))?,
-    })
+    let (before, after) = (side(batch, "before")?, side(batch, "after")?);
+    kinds
+        .chunk_by(|a, b| a.0 == b.0)
+        .map(|run| {
+            let indices = UInt32Array::from_iter_values(run.iter().map(|(_, row)| *row));
+            Ok(match run[0].0 {
+                true => Run::Insert(rows(after, &indices)?),
+                false => Run::Delete(rows(before, &indices)?),
+            })
+        })
+        .collect()
 }
 
-/// The rows of `side`, a struct of the declared columns, where `chosen`.
-fn rows(side: &ArrayRef, chosen: &BooleanArray) -> Result<RecordBatch, ChangelogError> {
-    let side: &StructArray = side
+fn side<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StructArray, ChangelogError> {
+    column(batch, name)?
         .as_struct_opt()
-        .ok_or_else(|| internal("before and after are not structs"))?;
-    // filtered before the batch is built: a column NOT NULL holds nulls where its side is absent
+        .ok_or_else(|| internal("before and after are not structs"))
+}
+
+/// The rows of `side`, a struct of the declared columns, at `indices`.
+fn rows(side: &StructArray, indices: &UInt32Array) -> Result<RecordBatch, ChangelogError> {
+    // taken before the batch is built: a column NOT NULL holds nulls where its side is absent
     let columns = side
         .columns()
         .iter()
-        .map(|c| arrow_select::filter::filter(c, chosen))
+        .map(|c| arrow_select::take::take(c, indices, None))
         .collect::<Result<Vec<_>, _>>()?;
     let schema = Arc::new(Schema::new(side.fields().clone()));
-    let options = arrow_array::RecordBatchOptions::new().with_row_count(Some(chosen.true_count()));
+    let options = RecordBatchOptions::new().with_row_count(Some(indices.len()));
     Ok(RecordBatch::try_new_with_options(schema, columns, &options)?)
 }
 
@@ -125,30 +136,43 @@ mod tests {
         batch.column(0).as_primitive::<Int64Type>().values().to_vec()
     }
 
-    #[test]
-    fn changelog_maps_inserts_updates_and_deletes() {
-        let changes = changes(&envelope(&[
-            ("c", None, Some(1)),
-            ("u", Some(2), Some(3)),
-            ("d", Some(4), None),
-            ("r", None, Some(5)),
-        ]))
-        .unwrap();
-        assert_eq!(keys(&changes.inserts), [1, 3, 5]);
-        assert_eq!(keys(&changes.deletes), [2, 4]);
-        assert_eq!(changes.inserts.schema().fields(), &fields(), "the declared columns");
+    /// The kind and keys of each run.
+    fn shape(runs: &[Run]) -> Vec<(&str, Vec<i64>)> {
+        runs.iter()
+            .map(|r| match r {
+                Run::Insert(b) => ("insert", keys(b)),
+                Run::Delete(b) => ("delete", keys(b)),
+            })
+            .collect()
     }
 
     #[test]
-    fn changelog_inserts_only_has_no_deletes() {
-        let changes = changes(&envelope(&[("c", None, Some(1)), ("c", None, Some(2))])).unwrap();
-        assert_eq!(keys(&changes.inserts), [1, 2]);
-        assert_eq!(changes.deletes.num_rows(), 0);
+    fn changelog_runs_preserves_order() {
+        let runs = runs(&envelope(&[
+            ("c", None, Some(1)),
+            ("r", None, Some(2)),
+            ("d", Some(1), None),
+            ("u", Some(2), Some(3)),
+            ("c", None, Some(4)),
+        ]))
+        .unwrap();
+        assert_eq!(
+            shape(&runs),
+            [("insert", vec![1, 2]), ("delete", vec![1, 2]), ("insert", vec![3, 4])],
+            "an update is a delete then an insert"
+        );
+        let Run::Insert(first) = &runs[0] else { unreachable!() };
+        assert_eq!(first.schema().fields(), &fields(), "the declared columns");
+    }
+
+    #[test]
+    fn changelog_empty_batch_skips() {
+        assert_eq!(runs(&envelope(&[])).unwrap(), []);
     }
 
     #[test]
     fn changelog_unknown_change_refused() {
-        let e = changes(&envelope(&[("x", None, Some(1))])).unwrap_err();
+        let e = runs(&envelope(&[("x", None, Some(1))])).unwrap_err();
         assert_eq!(e, ChangelogError::UnknownChange("x".to_string()));
     }
 

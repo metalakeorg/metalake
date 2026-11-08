@@ -2,7 +2,8 @@
 //! registers each file's intent before its upload (CMT-10). At a checkpoint each keeps the files it prepared; once the
 //! checkpoint is complete, subtask 0 commits every subtask's files in one transaction, keyed by the job and the epoch,
 //! so that a commit replayed after a failure applies nothing twice (CMT-8). Arroyo gives it Debezium's envelope, as to
-//! any updating sink; it inserts the rows inserted, and refuses deletes until the core can apply them by value.
+//! any updating sink. A delete of a row the subtask inserted in the same epoch deletes it where the writer put it, in
+//! the commit that adds its file (DV-4); a delete of any other row is refused until the commit can find it.
 
 use std::collections::HashMap;
 use std::time::SystemTime;
@@ -16,14 +17,16 @@ use arroyo_rpc::grpc::rpc::{GlobalKeyedTableConfig, TableConfig, TableEnum, Task
 use arroyo_rpc::{CheckpointEvent, ControlResp};
 use arroyo_types::{CheckpointBarrier, TaskInfo};
 use async_trait::async_trait;
-use metalake::{FileAdd, TableWriter, WriteOptions};
+use metalake::vectors::Deletes;
+use metalake::{FileAdd, RowLocation, TableWriter, WriteOptions};
 use prost::Message;
 use tracing::{debug, info};
 
-use crate::changelog::{ChangelogError, changes, declared};
+use crate::changelog::{ChangelogError, Run, declared, runs};
 use crate::config::{MetaLakeProfile, MetaLakeSink, MetaLakeTable, MetaLakeTableType};
 use crate::conform::{ConformError, conform};
 use crate::epoch::SinkEpoch;
+use crate::inserted::InsertedRows;
 use crate::lake::{Lake, core, internal, user};
 use crate::schema::check_sink_columns;
 
@@ -37,6 +40,10 @@ pub struct MetaLakeSinkFunc {
     lake: Option<Lake>,
     /// This epoch's files, from its first batch to its checkpoint.
     writer: Option<TableWriter>,
+    /// The rows this epoch inserted, and where: built on start, emptied at each checkpoint.
+    inserted: Option<InsertedRows>,
+    /// The rows of this epoch's files that it deleted.
+    deleted: Vec<RowLocation>,
     /// Whether this run's first commit, which may replay the last checkpoint's, has restored its files.
     restored: bool,
 }
@@ -53,8 +60,46 @@ impl MetaLakeSinkFunc {
             sink,
             lake: None,
             writer: None,
+            inserted: None,
+            deleted: Vec::new(),
             restored: false,
         })
+    }
+
+    /// Writes rows inserted, and keeps where each went.
+    async fn insert(&mut self, rows: &RecordBatch) -> DataflowResult<()> {
+        let name = self.table.qualified_name();
+        let lake = self.lake.as_ref().expect("opened on start");
+        let conformed = conform(rows, lake.table.schema()).map_err(|e| conform_error(&name, e))?;
+        if self.writer.is_none() {
+            let options = WriteOptions {
+                intent_ttl: self.sink.intent_ttl(),
+                ..Default::default()
+            };
+            let writer = TableWriter::new(&lake.catalog, &lake.table, lake.storage.clone(), options);
+            self.writer = Some(writer.map_err(|e| core(&name, e))?);
+        }
+        let writer = self.writer.as_mut().expect("opened above");
+        let located = writer.write_located(&conformed).await.map_err(|e| core(&name, e))?;
+        let inserted = self.inserted.as_mut().expect("built on start");
+        inserted.insert(rows, &located).map_err(|e| internal(&name, e))
+    }
+
+    /// Deletes rows this epoch inserted, where they went.
+    fn delete(&mut self, rows: &RecordBatch) -> DataflowResult<()> {
+        let name = self.table.qualified_name();
+        let inserted = self.inserted.as_mut().expect("built on start");
+        let taken = inserted.take(rows).map_err(|e| internal(&name, e))?;
+        self.deleted.extend(taken.located);
+        match taken.unmatched.len() {
+            0 => Ok(()),
+            n => Err(user(
+                &name,
+                format!(
+                    "{n} rows deleted that this epoch did not insert, and a MetaLake sink deletes only those for now"
+                ),
+            )),
+        }
     }
 
     /// This subtask's files of the epoch a checkpoint ends: its writer's, closed, which the next batch replaces. Arroyo
@@ -67,7 +112,10 @@ impl MetaLakeSinkFunc {
                 .map_err(|e| core(&self.table.qualified_name(), e))?,
             None => Vec::new(),
         };
-        Ok(SinkEpoch::new(files))
+        if let Some(inserted) = self.inserted.as_mut() {
+            inserted.clear();
+        }
+        Ok(SinkEpoch::new(files, &std::mem::take(&mut self.deleted)))
     }
 
     /// Commits every subtask's files of `epoch`, once. The first commit of a run may replay the last checkpoint's, after
@@ -83,9 +131,13 @@ impl MetaLakeSinkFunc {
         let mut by_subtask: Vec<_> = prepared.into_iter().flatten().collect();
         by_subtask.sort_by_key(|(subtask, _)| **subtask);
         let mut files: Vec<FileAdd> = Vec::new();
+        let mut deletes = Deletes::new();
         for (subtask, bytes) in by_subtask {
             let epoch = SinkEpoch::from_bytes(bytes)
                 .map_err(|e| internal(&name, format!("the files of subtask {subtask} are {e}")))?;
+            for at in epoch.deleted() {
+                deletes.insert(at.file_id, at.position);
+            }
             files.extend(epoch.files);
         }
 
@@ -105,17 +157,19 @@ impl MetaLakeSinkFunc {
         }
 
         let count = files.len();
+        let deleted: u64 = deletes.files().values().map(|v| v.cardinality()).sum();
         let outcome = lake
             .branch
             .transaction()
             .append(files)
+            .delete(&lake.table, &lake.storage, deletes)
             .idempotent(&app_id, version)
             .author("arroyo")
             .message(format!("job {}, epoch {epoch}", task.job_id))
             .commit()
             .await
             .map_err(|e| core(&name, e))?;
-        info!(table = name, files = count, ?outcome, "committed");
+        info!(table = name, files = count, deleted, ?outcome, "committed");
         Ok(())
     }
 }
@@ -150,8 +204,9 @@ impl ArrowOperator for MetaLakeSinkFunc {
         let name = self.table.qualified_name();
         let lake = Lake::open(&self.profile, &self.table).await?;
         let input = &ctx.in_schemas.first().expect("a sink has an input").schema;
-        let input = Schema::new(declared(input).map_err(|e| internal(&name, e))?);
-        check_sink_columns(&input, lake.table.schema()).map_err(|e| user(&name, e))?;
+        let fields = declared(input).map_err(|e| internal(&name, e))?;
+        check_sink_columns(&Schema::new(fields.clone()), lake.table.schema()).map_err(|e| user(&name, e))?;
+        self.inserted = Some(InsertedRows::new(&fields, &self.sink.key).map_err(|e| user(&name, e))?);
         info!(
             table = name,
             subtask = ctx.task_info.task_index,
@@ -168,31 +223,13 @@ impl ArrowOperator for MetaLakeSinkFunc {
         _: &mut dyn Collector,
     ) -> DataflowResult<()> {
         let name = self.table.qualified_name();
-        let lake = self.lake.as_ref().expect("opened on start");
-        let changes = changes(&batch).map_err(|e| changelog_error(&name, e))?;
-        if changes.deletes.num_rows() > 0 {
-            return Err(user(
-                &name,
-                format!(
-                    "{} rows deleted or updated, and a MetaLake sink takes only inserts for now",
-                    changes.deletes.num_rows()
-                ),
-            ));
+        for run in runs(&batch).map_err(|e| changelog_error(&name, e))? {
+            match run {
+                Run::Insert(rows) => self.insert(&rows).await?,
+                Run::Delete(rows) => self.delete(&rows)?,
+            }
         }
-        if changes.inserts.num_rows() == 0 {
-            return Ok(());
-        }
-        let rows = conform(&changes.inserts, lake.table.schema()).map_err(|e| conform_error(&name, e))?;
-        if self.writer.is_none() {
-            let options = WriteOptions {
-                intent_ttl: self.sink.intent_ttl(),
-                ..Default::default()
-            };
-            let writer = TableWriter::new(&lake.catalog, &lake.table, lake.storage.clone(), options);
-            self.writer = Some(writer.map_err(|e| core(&name, e))?);
-        }
-        let writer = self.writer.as_mut().expect("opened above");
-        writer.write(&rows).await.map_err(|e| core(&name, e))
+        Ok(())
     }
 
     async fn handle_checkpoint(

@@ -230,11 +230,44 @@ async fn sink_empty_epoch_skips() {
 }
 
 #[tokio::test]
-async fn sink_delete_refused() {
+async fn dv4_sink_delete_same_epoch_applies() {
+    let lake = Lake::new().await;
+    let job = unique();
+    let mut sink = Subtask::start(&lake, task_info(&job, 0, 1)).await;
+    sink.write(0..4).await;
+    sink.change(1..3, "d").await.unwrap();
+    sink.write(4..5).await;
+    let prepared = HashMap::from([(0, sink.prepare().await)]);
+    sink.commit(1, &prepared).await;
+    assert_eq!(lake.keys().await, [0, 3, 4]);
+    assert_eq!(commits_of(&lake, &job, 1).await, 1, "added and deleted in one commit");
+}
+
+#[tokio::test]
+async fn cmt10_sink_recovers_epoch_deletes() {
+    let lake = Lake::new().await;
+    let job = unique();
+    let mut failed = Subtask::start(&lake, task_info(&job, 0, 1)).await;
+    failed.write(0..4).await;
+    failed.change(2..3, "d").await.unwrap();
+    let prepared = HashMap::from([(0, failed.prepare().await)]);
+    drop(failed);
+
+    let mut restored = Subtask::start(&lake, task_info(&job, 0, 1)).await;
+    restored.commit(1, &prepared).await;
+    assert_eq!(lake.keys().await, [0, 1, 3]);
+}
+
+#[tokio::test]
+async fn sink_delete_committed_row_refused() {
     let lake = Lake::new().await;
     let job = unique();
     let mut sink = Subtask::start(&lake, task_info(&job, 0, 1)).await;
     sink.write(0..2).await;
+    let prepared = HashMap::from([(0, sink.prepare().await)]);
+    sink.commit(1, &prepared).await;
+
+    // the next epoch did not insert it: a later piece finds it in the table
     let e = sink.change(0..1, "d").await.unwrap_err();
-    assert!(e.to_string().contains("takes only inserts"), "{e}");
+    assert!(e.to_string().contains("did not insert"), "{e}");
 }

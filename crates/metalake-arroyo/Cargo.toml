@@ -21,6 +21,7 @@ arroyo-types = { git = "https://github.com/describeloai/arroyo", rev = "b02c16da
 arrow-array = "=58.4.0"
 arrow-buffer = "=58.4.0"
 arrow-cast = "=58.4.0"
+arrow-row = "=58.4.0"
 arrow-schema = "=58.4.0"
 arrow-select = "=58.4.0"
 datafusion = "=54.1.0"
@@ -37,7 +38,6 @@ tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 tracing = "0.1"
 
 [dev-dependencies]
-arrow-select = "=58.4.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 # Arroyo's, verbatim from its Cargo.toml at the rev above: a dependency's patches don't reach the crate that depends on

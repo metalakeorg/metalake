@@ -1,24 +1,36 @@
 //! What one subtask of a sink wrote in an epoch: the files it prepared, which its checkpoint keeps as pre-commit data
-//! and the commit adds once the checkpoint is complete (CMT-10).
+//! and the commit adds once the checkpoint is complete (CMT-10), and the rows of them it deleted, which the same
+//! commit deletes (DV-4).
 
-use metalake::FileAdd;
+use metalake::{FileAdd, RowLocation};
 use serde::{Deserialize, Serialize};
 
-/// The version of an epoch as it is stored; a commit refuses any other.
-const VERSION: u32 = 1;
+/// The version of an epoch as it is stored. Version 1, files alone, is still read; a commit refuses any other.
+const VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SinkEpoch {
     version: u32,
     pub files: Vec<FileAdd>,
+    /// Rows of `files`, by file id and position, deleted before the commit.
+    #[serde(default)]
+    deleted: Vec<(i64, u64)>,
 }
 
 impl SinkEpoch {
-    pub fn new(files: Vec<FileAdd>) -> Self {
+    pub fn new(files: Vec<FileAdd>, deleted: &[RowLocation]) -> Self {
         Self {
             version: VERSION,
             files,
+            deleted: deleted.iter().map(|at| (at.file_id, at.position)).collect(),
         }
+    }
+
+    pub fn deleted(&self) -> impl Iterator<Item = RowLocation> + '_ {
+        self.deleted.iter().map(|(file_id, position)| RowLocation {
+            file_id: *file_id,
+            position: *position,
+        })
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -27,8 +39,11 @@ impl SinkEpoch {
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
         let epoch: Self = serde_json::from_slice(bytes).map_err(|e| format!("unreadable: {e}"))?;
-        if epoch.version != VERSION {
-            return Err(format!("version {}, and this connector reads {VERSION}", epoch.version));
+        if !(1..=VERSION).contains(&epoch.version) {
+            return Err(format!(
+                "version {}, and this connector reads 1 to {VERSION}",
+                epoch.version
+            ));
         }
         Ok(epoch)
     }
@@ -64,9 +79,13 @@ mod tests {
 
     #[test]
     fn sink_epoch_round_trips() {
+        let deleted = [RowLocation {
+            file_id: 3,
+            position: 9,
+        }];
         for epoch in [
-            SinkEpoch::new(vec![]),
-            SinkEpoch::new(vec![file("file:///t/a.parquet"), file("file:///t/b.parquet")]),
+            SinkEpoch::new(vec![], &[]),
+            SinkEpoch::new(vec![file("file:///t/a.parquet"), file("file:///t/b.parquet")], &deleted),
         ] {
             assert_eq!(SinkEpoch::from_bytes(&epoch.to_bytes()), Ok(epoch));
         }
@@ -74,9 +93,16 @@ mod tests {
 
     #[test]
     fn sink_epoch_unknown_version_refused() {
-        let mut stored: serde_json::Value = serde_json::from_slice(&SinkEpoch::new(vec![]).to_bytes()).unwrap();
-        stored["version"] = json!(2);
+        let mut stored: serde_json::Value = serde_json::from_slice(&SinkEpoch::new(vec![], &[]).to_bytes()).unwrap();
+        stored["version"] = json!(3);
         let error = SinkEpoch::from_bytes(&serde_json::to_vec(&stored).unwrap()).unwrap_err();
-        assert!(error.contains("version 2"), "{error}");
+        assert!(error.contains("version 3"), "{error}");
+    }
+
+    #[test]
+    fn sink_epoch_version_1_maps() {
+        let stored = json!({"version": 1, "files": [file("file:///t/a.parquet")]});
+        let epoch = SinkEpoch::from_bytes(&serde_json::to_vec(&stored).unwrap()).unwrap();
+        assert_eq!((epoch.files.len(), epoch.deleted().count()), (1, 0));
     }
 }

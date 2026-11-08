@@ -167,6 +167,10 @@ pub struct MetaLakeSink {
     /// How long a file written and not yet committed may wait for its commit, in seconds; 24 hours if not given. A
     /// commit past it is refused (CMT-9), so it must cover the longest a pipeline may be down before it's restored
     pub intent_ttl_seconds: Option<u64>,
+    /// The columns of the `PRIMARY KEY` declared, which tell a deleted row from the others; without them, every
+    /// declared column does
+    #[serde(default)]
+    pub key: Vec<String>,
 }
 
 /// The intent lifetime when none is given: a night's outage, restored in the morning.
@@ -195,6 +199,7 @@ impl FromOpts for MetaLakeSink {
     fn from_opts(opts: &mut ConnectorOptions) -> Result<Self, DataFusionError> {
         Ok(Self {
             intent_ttl_seconds: opts.pull_opt_duration("sink.intent_ttl")?.map(|d| d.as_secs()),
+            key: Vec::new(),
         })
     }
 }
@@ -366,6 +371,7 @@ mod tests {
         assert!(sink.validate().is_ok());
         let short = MetaLakeSink {
             intent_ttl_seconds: Some(60),
+            ..Default::default()
         };
         assert!(short.validate().unwrap_err().to_string().contains("at least"));
     }

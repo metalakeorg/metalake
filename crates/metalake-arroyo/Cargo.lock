@@ -3459,6 +3459,7 @@ dependencies = [
  "arrow-array",
  "arrow-buffer",
  "arrow-cast",
+ "arrow-row",
  "arrow-schema",
  "arrow-select",
  "arroyo-operator",

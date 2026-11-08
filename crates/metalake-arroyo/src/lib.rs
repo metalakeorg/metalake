@@ -10,6 +10,7 @@ pub mod config;
 pub mod conform;
 pub mod envelope;
 pub mod epoch;
+pub mod inserted;
 pub mod lake;
 pub mod progress;
 pub mod schema;
@@ -134,6 +135,9 @@ impl Connector for MetaLakeConnector {
             }
             MetaLakeTableType::Sink(sink) => {
                 sink.validate()?;
+                let mut key: Vec<String> = schema.primary_keys.iter().cloned().collect();
+                key.sort();
+                sink.key = key;
                 (ConnectionType::Sink, "Sink")
             }
         };
@@ -286,8 +290,14 @@ mod tests {
 
     #[test]
     fn sink_connection_updating() {
-        let connection = connect(MetaLakeTableType::Sink(MetaLakeSink::default()), Some(&columns(None))).unwrap();
+        let mut schema = columns(None);
+        schema.primary_keys = ["id".to_string()].into_iter().collect();
+        let connection = connect(MetaLakeTableType::Sink(MetaLakeSink::default()), Some(&schema)).unwrap();
         assert!(connection.updating);
+        let MetaLakeTableType::Sink(sink) = planned(&connection).table_type else {
+            panic!("a sink")
+        };
+        assert_eq!(sink.key, ["id"], "the declared primary key");
         assert_eq!(connection.connection_type, ConnectionType::Sink);
         assert_eq!(connection.description, "MetaLakeSink<main:shop.orders>");
     }
