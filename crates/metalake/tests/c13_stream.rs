@@ -176,7 +176,7 @@ fn row(what: &str, key: i64, seq: i64) -> (String, i64, i64) {
 }
 
 #[tokio::test]
-async fn follow_each_change() -> Result<(), Box<dyn std::error::Error>> {
+async fn chg3_follow_changes() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, main, storage) = lake(vec![("inline.flush-bytes", "1")]).await?;
     let first = append(&catalog, &main, &storage, 0..3).await?;
     let t = main.table(&["db"], "t").await?;
@@ -245,7 +245,7 @@ async fn follow_each_change() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[tokio::test]
-async fn each_change_has_its_commits_time() -> Result<(), Box<dyn std::error::Error>> {
+async fn chg4_commit_timestamp_per_change() -> Result<(), Box<dyn std::error::Error>> {
     let schema = fresh_schema();
     let (catalog, main, storage) = lake_in(&schema, vec![("inline.flush-bytes", "1")]).await?;
     let first = append(&catalog, &main, &storage, 0..3).await?;
@@ -317,7 +317,7 @@ async fn start_among_commits() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[tokio::test]
-async fn start_over_a_commit_in_flight() -> Result<(), Box<dyn std::error::Error>> {
+async fn chg4_start_concurrent_commit() -> Result<(), Box<dyn std::error::Error>> {
     let schema = fresh_schema();
     let (catalog, main, storage) = lake_in(&schema, vec![]).await?;
     append(&catalog, &main, &storage, 0..1).await?;
@@ -377,7 +377,7 @@ fn stored(ttl: Duration) -> WriteOptions {
 }
 
 #[tokio::test]
-async fn commit_each_epoch_once() -> Result<(), Box<dyn std::error::Error>> {
+async fn cmt8_epoch_commit_is_idempotent() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, main, storage) = lake(vec![]).await?;
     let t = main.table(&["db"], "t").await?;
 
@@ -440,7 +440,7 @@ async fn restore_after_intent_expired() -> Result<(), Box<dyn std::error::Error>
 }
 
 #[tokio::test]
-async fn restore_refuses_what_collection_took() -> Result<(), Box<dyn std::error::Error>> {
+async fn cmt10_restore_collected_file_refused() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, main, storage) = lake(vec![]).await?;
     let t = main.table(&["db"], "t").await?;
     let files = prepare(&catalog, &t, &storage, 0..3, stored(Duration::from_millis(1))).await?;
@@ -457,7 +457,7 @@ async fn restore_refuses_what_collection_took() -> Result<(), Box<dyn std::error
 }
 
 #[tokio::test]
-async fn restore_leaves_what_committed() -> Result<(), Box<dyn std::error::Error>> {
+async fn cmt10_restore_committed_version_skips() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, main, storage) = lake(vec![]).await?;
     let t = main.table(&["db"], "t").await?;
     let hour = Duration::from_secs(3600);
@@ -521,7 +521,7 @@ async fn start_at_latest() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[tokio::test]
-async fn start_from_a_time() -> Result<(), Box<dyn std::error::Error>> {
+async fn chg5_start_from_time() -> Result<(), Box<dyn std::error::Error>> {
     let schema = fresh_schema();
     let (catalog, main, storage) = lake_in(&schema, vec![]).await?;
     let first = append(&catalog, &main, &storage, 0..2).await?;
@@ -566,7 +566,7 @@ async fn start_from_a_time() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[tokio::test]
-async fn behind_retention_fails() -> Result<(), Box<dyn std::error::Error>> {
+async fn chg4_follow_behind_retention_refused() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, main, storage) = lake(vec![]).await?;
     add_table(&main, "u").await?;
     append(&catalog, &main, &storage, 0..1).await?;
@@ -598,7 +598,7 @@ async fn behind_retention_fails() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[tokio::test]
-async fn refuse_what_it_cannot_follow() -> Result<(), Box<dyn std::error::Error>> {
+async fn chg3_follow_unsupported_refs_refused() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, main, storage) = lake(vec![]).await?;
     let seq = append(&catalog, &main, &storage, 0..1).await?;
     let t = main.table(&["db"], "t").await?;
@@ -619,7 +619,7 @@ async fn refuse_what_it_cannot_follow() -> Result<(), Box<dyn std::error::Error>
 }
 
 #[tokio::test]
-async fn definition_change_stops_it() -> Result<(), Box<dyn std::error::Error>> {
+async fn follow_definition_change_refused() -> Result<(), Box<dyn std::error::Error>> {
     let schema = fresh_schema();
     let (catalog, main, storage) = lake_in(&schema, vec![]).await?;
     append(&catalog, &main, &storage, 0..2).await?;
