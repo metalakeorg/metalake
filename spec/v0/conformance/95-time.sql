@@ -260,6 +260,29 @@ select add(:'t', 4) as s4 \gset
 select add(:'u', 5) as s5 \gset
 select expect(snapshot_at(1, :'t', retention_floor(1)) = :s4, 'once it changed past the floor, a commit may be gone');
 
+-- case: readers that start from one time take the same read and the same commits, one in flight at that time among them
+-- rules: CHG-5
+select mk('t') as t \gset
+select add(:'t', 1) as s1 \gset
+select conn('slow');
+select public.dblink_exec('slow', 'begin');
+select a as flying from public.dblink('slow', format('select add(%L, 2)', :'t')) as x(a bigint) \gset
+select clock_timestamp() as from_at \gset
+select public.dblink_exec('slow', 'commit');
+select pg_sleep(1.1);
+select as_of_time(1, :'t', :'from_at') as first \gset
+select add(:'t', 3) as s3 \gset
+select pg_sleep(1.1);
+select as_of_time(1, :'t', :'from_at') as second \gset
+select expect(:first = :s1 and :second = :s1,
+  'one that starts later reads the same: what was committed by then, not the commit in flight');
+select expect(files(1, :'t', :first) = '{1}', 'its files');
+select expect((select array_agg(c.commit_seq order by c.committed_at, c.commit_seq) from changes(:'from_at', 0, 1000, :'t') c
+               where c.commit_seq > :first) = array[:flying, :s3]::bigint[],
+  'and both follow the same commits after it, each once, the one in flight first');
+select expect(not exists (select 1 from changes(:'from_at', 0, 1000, :'t') c where c.commit_seq = :s1),
+  'a commit made by then is not in the feed');
+
 -- case: a file a branch inherits leaves it by a tombstone, and a new base brings what the parent changed
 -- rules: CHG-3
 select mk('t') as t \gset

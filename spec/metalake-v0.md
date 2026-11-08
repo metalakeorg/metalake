@@ -686,6 +686,15 @@ referred to. Retention says how much history each ref keeps.
   above `s` drew its sequence after `at`, so its timestamp is later.
   The feed does not say that a commit was collected (CHG-1). A reader that took the commits of `t` up to `p`, with
   `p` below the retention floor of `r`, has lost none only if the snapshot of `t` at the floor is at or below `p`.
+- **CHG-5.** *0.2.* A reader may instead follow table `t` on ref `r` from a time `T`. It reads `(r, s)`, where `s`
+  is the sequence of a read as of `T` (TT-3), and then follows the feed of CHG-1 from the cursor `(T, 0)`, leaving
+  out every commit at or below `s`. It takes each commit once: commits of a `(ref, table)` land in sequence order
+  (TT-2), so a commit of `t` on `r` made by `T` is at or below `s`, in that read, and one made after `T` is above
+  `s`, in the feed.
+  It takes no transaction id and waits for no horizon: TT-3 answers for `T` once every commit with a timestamp up
+  to `T` is visible. Readers given the same `T` therefore take the same read and the same commits, whenever each
+  starts, so that the workers of an engine can each follow part of a table's files and together take each commit
+  whole. If `r` did not exist at `T`, there is no read to start from, and the reader is refused.
 
 ## 15. Partition values
 
