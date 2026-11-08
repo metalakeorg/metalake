@@ -410,6 +410,17 @@ async fn cmt8_epoch_commit_is_idempotent() -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+/// An engine runs a sink's commit as a boxed `Send` future, as `async_trait` makes one: what it awaits on a restore must
+/// be `Send` for any lifetime of its arguments. This only has to compile.
+#[allow(dead_code)]
+fn cmt10_restore_prepared_is_send<'a>(
+    on: &'a Ref,
+    files: &'a [FileAdd],
+    storage: &'a Storage,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Error>> + Send + 'a>> {
+    Box::pin(async move { on.restore_prepared("app", 1, files, storage, Duration::ZERO).await })
+}
+
 #[tokio::test]
 async fn restore_after_intent_expired() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, main, storage) = lake(vec![]).await?;

@@ -50,7 +50,8 @@ impl Ref {
         for (table_id, paths) in &by_table {
             p.register_intents(&session, self.id(), *table_id, paths, ttl).await?;
         }
-        stream::iter(by_table.values().flatten())
+        // owned paths: a closure from a borrowed one to a future can't be shown Send, which an engine's operator needs
+        stream::iter(by_table.into_values().flatten())
             .map(|path| check(storage, path))
             .buffer_unordered(CONCURRENCY)
             .try_collect::<Vec<()>>()
@@ -59,8 +60,8 @@ impl Ref {
     }
 }
 
-async fn check(storage: &Storage, path: &str) -> Result<()> {
-    match storage.store().head(&storage.path(path)?).await {
+async fn check(storage: &Storage, path: String) -> Result<()> {
+    match storage.store().head(&storage.path(&path)?).await {
         Ok(_) => Ok(()),
         Err(object_store::Error::NotFound { .. }) => Err(Error::NotFound(format!(
             "{path}, prepared and not committed: that epoch has to be written again"
