@@ -7,7 +7,9 @@
 
 pub mod config;
 pub mod envelope;
+pub mod progress;
 pub mod schema;
+pub mod source;
 pub mod split;
 
 use anyhow::{anyhow, bail};
@@ -23,6 +25,7 @@ use tokio::sync::mpsc::Sender;
 
 use crate::config::{MetaLakeProfile, MetaLakeTable, MetaLakeTableType};
 use crate::schema::{check_columns, render_schema};
+use crate::source::MetaLakeSourceFunc;
 
 const ICON: &str = include_str!("../metalake.svg");
 
@@ -153,17 +156,16 @@ impl Connector for MetaLakeConnector {
 
     fn make_operator(
         &self,
-        _: Self::ProfileT,
+        profile: Self::ProfileT,
         table: Self::TableT,
         _: OperatorConfig,
     ) -> anyhow::Result<ConstructedOperator> {
-        bail!(
-            "the MetaLake {} isn't built yet",
-            match table.table_type {
-                MetaLakeTableType::Source(_) => "source",
-                MetaLakeTableType::Sink(_) => "sink",
-            }
-        )
+        match table.table_type {
+            MetaLakeTableType::Source(_) => Ok(ConstructedOperator::from_source(Box::new(MetaLakeSourceFunc::new(
+                profile, table,
+            )?))),
+            MetaLakeTableType::Sink(_) => bail!("the MetaLake sink isn't built yet"),
+        }
     }
 }
 

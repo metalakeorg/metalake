@@ -150,7 +150,7 @@ pub fn envelope(batch: &RecordBatch, out: &ArroyoSchema) -> Result<RecordBatch, 
 }
 
 /// The declared columns: the fields of `out`'s `after` struct.
-fn declared(out: &ArroyoSchema) -> Result<Fields, EnvelopeError> {
+pub(crate) fn declared(out: &ArroyoSchema) -> Result<Fields, EnvelopeError> {
     match out.schema.field_with_name("after").map(|f| f.data_type()) {
         Ok(DataType::Struct(fields)) => Ok(fields.clone()),
         _ => Err(internal("the source's schema is not an updating table's".to_string())),

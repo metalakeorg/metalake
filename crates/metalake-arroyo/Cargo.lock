@@ -3462,14 +3462,20 @@ dependencies = [
  "arrow-schema",
  "arroyo-operator",
  "arroyo-rpc",
+ "arroyo-state",
+ "arroyo-types",
+ "async-trait",
  "chrono",
  "datafusion",
+ "futures",
  "metalake",
+ "metalake-pg",
  "schemars 1.2.3",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
