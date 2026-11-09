@@ -833,6 +833,11 @@ Iceberg REST server of the projection, and are checked by its tests.
   can always be generated again. A snapshot's manifests are grouped by `commit.manifest.target-size-bytes` as the
   load that generates them serves it, not as it was at that snapshot: any grouping states the same files.
   A table keeps its latest metadata file and the `write.metadata.previous-versions-max` before it (100 when absent).
+  A table whose `metalake.iceberg.metadata` is `on-commit` on a ref (REST-9) SHOULD have its manifests and a metadata
+  file generated, seconds after each of its commits there, with no client asking; the commit never waits for them, so a
+  load answers the same either way, sooner. A service that starts generates what such tables miss, as a load would.
+  One process of a catalog MAY generate them for all, as several would generate the same. A reader of the metadata file
+  alone finds such a table that far behind its commits, and any other as the last load left it.
 - **REST-7.** `createTable` is a commit that creates the table, and assigns its ids from 1, as what a client sends
   is a shape. With `stage-create` it writes nothing and answers
   the metadata, and the `updateTable` that follows, with `assert-create`, is one commit of the definition and the
