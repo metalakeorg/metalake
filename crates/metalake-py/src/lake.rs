@@ -9,6 +9,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
 use crate::errors::to_python;
+use crate::iceberg::PyIceberg;
 use crate::info::{History, PyDone, PyMerged, PyRef, PyStatus};
 use crate::owner::Owner;
 use crate::result::QueryResult;
@@ -103,6 +104,13 @@ impl PyLake {
     }
 
     /// A table by the name a statement would use: `t`, `namespace.t` or `ref.namespace.t`.
+    /// The lake's Iceberg face: when Iceberg clients find each table's metadata written.
+    #[getter]
+    fn iceberg(&self, py: Python<'_>) -> PyResult<PyIceberg> {
+        self.owner.check(py, "Lake")?;
+        Ok(PyIceberg::new(self.owner.clone(), self.lake.clone()))
+    }
+
     fn table(&self, py: Python<'_>, name: &str) -> PyResult<PyTable> {
         self.owner.check(py, "Lake")?;
         PyTable::open(py, self.owner.clone(), self.lake.clone(), self.session.clone(), name)

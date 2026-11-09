@@ -2,6 +2,7 @@
 //! both load, since a wheel with a binary beside it would carry the engine twice.
 
 mod errors;
+mod iceberg;
 mod info;
 mod lake;
 mod owner;
@@ -23,6 +24,8 @@ fn cli(py: Python<'_>, args: Vec<OsString>) -> i32 {
 fn _metalake(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     module.add_class::<lake::PyLake>()?;
+    module.add_class::<iceberg::PyIceberg>()?;
+    module.add_class::<iceberg::PyIcebergTable>()?;
     module.add_class::<info::PyRef>()?;
     module.add_class::<info::PyCommit>()?;
     module.add_class::<info::PyDone>()?;

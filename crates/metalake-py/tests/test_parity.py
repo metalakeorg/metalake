@@ -32,6 +32,9 @@ FACES = {
     ("retain",): (Lake.retain, {}),
     ("maintain",): (Lake.maintain, {"ref": "on"}),
     ("stop",): (metalake.stop, {}),
+    ("iceberg", "on-commit"): (metalake.Iceberg.on_commit, {"ref": "on"}),
+    ("iceberg", "on-load"): (metalake.Iceberg.on_load, {"ref": "on"}),
+    ("iceberg", "status"): (metalake.Iceberg.status, {"ref": "on"}),
 }
 
 # What belongs to a terminal, or to the process of a command, and has no meaning in a program.
