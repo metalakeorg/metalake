@@ -6,6 +6,7 @@ mod footers;
 mod load;
 mod materialize;
 pub mod project;
+mod prune;
 mod rest;
 mod state;
 pub mod wire;

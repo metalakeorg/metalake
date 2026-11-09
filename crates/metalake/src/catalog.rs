@@ -122,6 +122,12 @@ impl Catalog {
     }
 
     /// How long a queued object waits before a sweep deletes it (RET-9), which reads should end within.
+    pub async fn collect_grace(&self) -> Result<Duration> {
+        let session = self.session().await?;
+        Ok(self.inner.protocol.collect_grace(&session).await?)
+    }
+
+    /// How long a queued object waits before a sweep deletes it (RET-9), which reads should end within.
     pub async fn set_collect_grace(&self, grace: Duration) -> Result<()> {
         let session = self.session().await?;
         Ok(self.inner.protocol.set_collect_grace(&session, grace).await?)

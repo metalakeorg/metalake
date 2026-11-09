@@ -643,7 +643,11 @@ referred to. Retention says how much history each ref keeps.
 - **RET-7b.** *0.2.* A writer that does not register intents, as an Iceberg client does not, may leave objects
   nothing records. A collector MAY list a table's location and, for an object older than any write in progress
   that no row refers to, insert an `intent` that has expired, unless one exists. RET-7 then applies to it, and
-  CMT-9 refuses a writer that commits it late. Objects the projection generates (`metalake-*`) are not listed.
+  CMT-9 refuses a writer that commits it late. Objects the projection generates (`metalake-*`) are not listed: no
+  row refers to them, and the projection prunes them itself (REST-6). Its lists, manifests, delete files and inline
+  files that no snapshot it serves reaches, through those lists and manifests, are deleted once older than the grace of
+  RET-9, as Iceberg's expiration reaches them from the snapshots it retains. A metadata file kept may name a snapshot
+  that expired, as in Iceberg.
 
 ## 14. Time and changes
 

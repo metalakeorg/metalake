@@ -29,7 +29,7 @@ const PUTS: usize = 16;
 const ASKED: usize = 1_000;
 
 /// Where what is generated for a table lies, away from data (REST-6).
-fn generated(location: &str) -> String {
+pub(crate) fn generated(location: &str) -> String {
     format!("{}/metalake-manifests", location.trim_end_matches('/'))
 }
 
@@ -38,7 +38,7 @@ fn metadata_files(location: &str) -> String {
     format!("{}/metalake-metadata", location.trim_end_matches('/'))
 }
 
-fn list_path(location: &str, snapshot: i64) -> String {
+pub(crate) fn list_path(location: &str, snapshot: i64) -> String {
     format!("{}/snap-{snapshot}.avro", generated(location))
 }
 
@@ -516,6 +516,8 @@ pub(crate) async fn load(state: &State, table: &Table) -> Result<LoadTableResult
         for stale in stale_versions(found, previous_versions(&rows.definition) + 1) {
             storage.delete(&stale).await?;
         }
+        let kept: Vec<i64> = rows.snapshots.iter().map(|s| s.snapshot_id).collect();
+        state.prune_later(table, kept);
     }
     Ok(LoadTableResult {
         metadata_location: Some(metadata_location),

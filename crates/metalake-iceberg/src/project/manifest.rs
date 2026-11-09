@@ -378,6 +378,25 @@ pub fn listed_manifests(bytes: &[u8]) -> Result<Vec<Inherited>> {
     reader.map(|row| Inherited::of(row.map_err(avro_failed)?)).collect()
 }
 
+/// The paths a manifest this server wrote names: each entry's `data_file.file_path`, a data file or a delete file.
+pub fn manifest_files(bytes: &[u8]) -> Result<Vec<String>> {
+    let mut paths = Vec::new();
+    for entry in Reader::new(bytes).map_err(avro_failed)? {
+        let Value::Record(fields) = entry.map_err(avro_failed)? else {
+            return Err(Error::Corrupt("a manifest entry is not a record".into()));
+        };
+        let file = fields.into_iter().find(|(name, _)| name == "data_file");
+        let Some((_, Value::Record(file))) = file else {
+            return Err(Error::Corrupt("a manifest entry has no data_file".into()));
+        };
+        match file.into_iter().find(|(name, _)| name == "file_path") {
+            Some((_, Value::String(path))) => paths.push(path),
+            _ => return Err(Error::Corrupt("a manifest entry has no file_path".into())),
+        }
+    }
+    Ok(paths)
+}
+
 /// The spec and level of manifests that are due to become one, if any.
 pub fn roll_up_due(manifests: &[Inherited], target: i64) -> Option<(i32, u32)> {
     let mut counts = BTreeMap::new();

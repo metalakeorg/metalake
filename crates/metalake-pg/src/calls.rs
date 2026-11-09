@@ -797,6 +797,12 @@ impl Protocol {
         Ok(())
     }
 
+    /// How long a queued object waits before a sweep may delete it (RET-9), as the catalog has it.
+    pub async fn collect_grace(&self, s: &impl Session) -> Result<Duration> {
+        let row = self.one(s, "collect_grace_seconds()", &[]).await?;
+        Ok(Duration::from_secs_f64(row.get::<_, f64>(0).max(0.0)))
+    }
+
     /// How long a queued object waits before a sweep may delete it (RET-9).
     pub async fn set_collect_grace(&self, s: &impl Session, grace: Duration) -> Result<()> {
         let grace = grace.as_secs_f64();
@@ -940,6 +946,7 @@ pub const INTERFACE: &[(&str, &[&str], bool)] = &[
         true,
     ),
     ("set_retention", &["r", "min_seq", "max_age", "min_snapshots"], true),
+    ("collect_grace_seconds", &[], false),
     ("set_collect_grace", &["grace"], true),
     ("expire", &["lim"], true),
     ("sweep_due", &["lim"], false),

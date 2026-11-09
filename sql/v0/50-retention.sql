@@ -30,6 +30,12 @@ set search_path = @schema@, pg_catalog, pg_temp as $$
     on conflict (key) do update set value = excluded.value;
 $$;
 
+-- RET-9: the grace a queued object waits, in seconds, for a client that keeps objects of its own by it.
+create function @schema@.collect_grace_seconds() returns float8 language sql stable
+set search_path = @schema@, pg_catalog, pg_temp as $$
+  select extract(epoch from collect_grace())::float8;
+$$;
+
 -- RET-5 (0.2): expiring and a commit exclude each other on a path's bucket, under the reference's key
 -- (09-commits.sql, path_bucket). Callers take a set of buckets in one statement, each once, in ascending order.
 create function @schema@.path_lock(path text, exclusive boolean) returns void language plpgsql

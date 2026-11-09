@@ -1,13 +1,17 @@
 //! What every request shares: the catalog, reached once, the ref an Iceberg catalog's tables are read on, the worker
 //! that keeps the footers of what clients commit, and the one that materializes tables marked on commit.
 
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use metalake::{Catalog, CatalogConfig, Error, Ref, Result, Storage};
+use metalake::{Catalog, CatalogConfig, Error, Ref, Result, Storage, Table};
+use uuid::Uuid;
 
 use crate::footers::{Footers, Job, QUEUE};
 use crate::load::load;
 use crate::materialize::Materializer;
+use crate::prune::{PRUNE_EVERY, prune};
 
 /// How long stopping waits for footers still queued, which are maintenance's after it.
 const FOOTERS_DRAIN: Duration = Duration::from_secs(10);
@@ -19,6 +23,8 @@ pub struct State {
     main: Ref,
     footers: Footers,
     materializer: Option<Materializer>,
+    /// When each table's projection was last pruned, or began to be, by this process.
+    pruned: Arc<Mutex<HashMap<Uuid, Instant>>>,
 }
 
 impl State {
@@ -41,6 +47,7 @@ impl State {
             main,
             footers,
             materializer: None,
+            pruned: Arc::default(),
         })
     }
 
@@ -58,6 +65,35 @@ impl State {
         };
         self.materializer = Some(Materializer::start(self.catalog.clone(), load));
         self
+    }
+
+    /// Prunes, off the request's path, what the projection of `table` holds that the snapshots `kept` do not reach, unless
+    /// this process did within [`PRUNE_EVERY`]: a table committed to every second would list its projection as often.
+    pub(crate) fn prune_later(&self, table: &Table, kept: Vec<i64>) {
+        let now = Instant::now();
+        {
+            let mut pruned = self.pruned.lock().expect("not poisoned");
+            if pruned
+                .get(&table.id())
+                .is_some_and(|at| now.duration_since(*at) < PRUNE_EVERY)
+            {
+                return;
+            }
+            pruned.insert(table.id(), now);
+        }
+        let (catalog, id, location) = (self.catalog.clone(), table.id(), table.location().to_string());
+        tokio::spawn(async move {
+            let pruned = async {
+                let storage = warehouse(&catalog)?;
+                let grace = catalog.collect_grace().await?;
+                prune(&storage, &location, &kept, grace).await
+            };
+            if let Err(e) = pruned.await {
+                eprintln!(
+                    "metalake-iceberg: pruning the projection of table {id} failed, and waits for a later load: {e}"
+                );
+            }
+        });
     }
 
     /// Tells the worker that materializes on commit, if this process runs one, that a commit changed which tables are
