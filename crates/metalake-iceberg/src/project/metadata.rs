@@ -1,6 +1,6 @@
 //! The rows of a table as `TableMetadata` (ICE-1). The reference's `iceberg_metadata` is the oracle this is tested against.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 
 use metalake::TableSnapshot;
@@ -271,6 +271,27 @@ pub fn is_empty_creation(snapshot: &TableSnapshot) -> bool {
     snapshot.parent_snapshot_id.is_none() && added == 0
 }
 
+/// The history of the table's current snapshot, oldest first: `main`'s, whose snapshots each follow the one before, so
+/// that history is the ancestry of its current snapshot among those served (ICE-1). An engine reads a table as of a time
+/// by it, at the last entry not after that time, which is the snapshot MetaLake reads at that time (TT-3). The snapshots
+/// not served are expired, and their entries go with them, as Iceberg has it.
+fn snapshot_log(rows: &Rows, current: Option<i64>, unwritten: Option<i64>) -> Vec<Value> {
+    let served: HashMap<i64, &TableSnapshot> = rows
+        .snapshots
+        .iter()
+        .filter(|s| Some(s.snapshot_id) != unwritten)
+        .map(|s| (s.snapshot_id, s))
+        .collect();
+    let mut log = Vec::new();
+    let mut at = current.and_then(|id| served.get(&id));
+    while let Some(snapshot) = at.filter(|_| log.len() < served.len()) {
+        log.push(json!({"snapshot-id": snapshot.snapshot_id, "timestamp-ms": snapshot.timestamp_ms.unwrap_or(0)}));
+        at = snapshot.parent_snapshot_id.and_then(|parent| served.get(&parent));
+    }
+    log.reverse();
+    log
+}
+
 /// The table's metadata, each snapshot naming the manifest list `manifest_list` gives it.
 pub fn metadata(rows: &Rows, manifest_list: impl Fn(i64) -> String) -> TableMetadata {
     let d = &rows.definition;
@@ -330,7 +351,8 @@ pub fn metadata(rows: &Rows, manifest_list: impl Fn(i64) -> String) -> TableMeta
                 ))
             })
             .collect(),
-        snapshot_log: Vec::new(),
+        snapshot_log: snapshot_log(rows, current, unwritten),
+        // A metadata file names no other: it can always be generated again, whatever files lie beside it (REST-6).
         metadata_log: Vec::new(),
     }
 }
@@ -445,6 +467,47 @@ mod tests {
         let served = metadata(&with_head(chain, 2), |_| String::new());
         assert_eq!(served.current_snapshot_id, Some(2));
         assert_eq!(served.snapshots.len(), 2);
+    }
+
+    #[test]
+    fn ice1_snapshot_log_follows_main_ancestry() {
+        let at = |id: i64, parent: Option<i64>, ms: i64| TableSnapshot {
+            timestamp_ms: Some(ms),
+            ..snapshot(id, parent, 1)
+        };
+        let log = |rows: &Rows| metadata(rows, |_| String::new()).snapshot_log;
+        // 2 was expired, so 3 heads what is served; 6 is a branch's, off 4.
+        let chain = vec![
+            at(3, Some(2), 300),
+            at(4, Some(3), 400),
+            at(5, Some(4), 500),
+            at(6, Some(4), 600),
+        ];
+        assert_eq!(
+            log(&with_head(chain, 5)),
+            vec![
+                json!({"snapshot-id": 3, "timestamp-ms": 300}),
+                json!({"snapshot-id": 4, "timestamp-ms": 400}),
+                json!({"snapshot-id": 5, "timestamp-ms": 500}),
+            ]
+        );
+        let creation = TableSnapshot {
+            timestamp_ms: Some(100),
+            ..snapshot(1, None, 0)
+        };
+        let created = vec![creation, at(2, Some(1), 200)];
+        assert_eq!(
+            log(&with_head(created.clone(), 2)),
+            vec![
+                json!({"snapshot-id": 1, "timestamp-ms": 100}),
+                json!({"snapshot-id": 2, "timestamp-ms": 200})
+            ],
+            "once written to, its creation is served as any snapshot"
+        );
+        assert!(
+            log(&with_head(created, 1)).is_empty(),
+            "an unwritten table has no history"
+        );
     }
 
     #[test]
