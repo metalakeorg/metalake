@@ -63,5 +63,6 @@ async fn run(cli: Cli) -> Result<(), Error> {
         Verb::Maintain(maintain) => commands::maintain::run(maintain, &Lake::open(dir).await?, &out).await,
         Verb::Stop => commands::stop::run(dir, &out).await,
         Verb::Log(log) => commands::log::run(log, &Lake::open(dir).await?, &out).await,
+        Verb::Iceberg { verb } => commands::iceberg::run(verb, &Lake::open(dir).await?, &out).await,
     }
 }

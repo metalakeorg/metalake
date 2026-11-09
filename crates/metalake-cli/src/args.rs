@@ -55,6 +55,35 @@ pub enum Verb {
     Stop,
     /// Lists a ref's own commits, the latest first; their sequences read the past as `"main@1234"`.
     Log(Log),
+    /// When Iceberg clients find each table's metadata written: when one loads it, or after each commit.
+    Iceberg {
+        #[command(subcommand)]
+        verb: IcebergVerb,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum IcebergVerb {
+    /// Has the Iceberg service write these tables' metadata after each of their commits, in one commit.
+    OnCommit(IcebergTables),
+    /// Has it written when a client loads them, as every table has unless set.
+    OnLoad(IcebergTables),
+    /// Lists the tables set on-commit on a ref, and how far their metadata is behind.
+    Status {
+        /// The ref.
+        #[arg(long = "ref", value_name = "REF", default_value = "main")]
+        on: String,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct IcebergTables {
+    /// The tables, each `namespace.table`.
+    #[arg(required = true, value_name = "TABLE")]
+    pub tables: Vec<String>,
+    /// The ref.
+    #[arg(long = "ref", value_name = "REF", default_value = "main")]
+    pub on: String,
 }
 
 #[derive(Debug, Args)]
