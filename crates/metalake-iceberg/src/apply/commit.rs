@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use metalake::{Error, FileAdd, Ref, Table};
+use metalake_pg::ErrorKind;
 use serde_json::{Value as Json, json};
 use uuid::Uuid;
 
@@ -212,7 +213,11 @@ pub async fn apply(state: &State, targets: &[Target]) -> Result<Vec<Table>, Appl
                 Err(failure) => return Err(failure),
             }
         }
-        for job in commit(&on, prepared, key).await? {
+        let jobs = match commit(&on, prepared, key).await {
+            Err(failure) if is_conflict(&failure) => return Err(taken(&on, targets).await.unwrap_or(failure)),
+            done => done?,
+        };
+        for job in jobs {
             state.footers().queue(job);
         }
         if targets.iter().any(|t| t.change.changes_materialize()) {
@@ -220,6 +225,23 @@ pub async fn apply(state: &State, targets: &[Target]) -> Result<Vec<Table>, Appl
         }
     }
     tables(&on, targets).await
+}
+
+fn is_conflict(failure: &ApplyError) -> bool {
+    matches!(failure, ApplyError::Core(Error::Protocol(e)) if e.kind() == ErrorKind::Conflict)
+}
+
+/// Why a commit that creates a table conflicted, when another took its name first: as Iceberg's catalogs word the
+/// failed `assert-create`, which a client reads.
+async fn taken(on: &Ref, targets: &[Target]) -> Option<ApplyError> {
+    for target in targets.iter().filter(|t| t.change.creation.is_some()) {
+        if on.table(&target.levels(), &target.name).await.is_ok() {
+            let name = format!("{}.{}", target.namespace.join("."), target.name);
+            let message = format!("Requirement failed: table already exists: {name}");
+            return Some(Refused::Conflict(message).into());
+        }
+    }
+    None
 }
 
 async fn was_applied(on: &Ref, key: Option<&str>) -> Result<bool, ApplyError> {

@@ -87,12 +87,17 @@ impl Change {
 
     /// Holds `assert-table-uuid` to the table the name resolved to. A table's id never changes, so this needs no lock.
     pub fn check_table(&self, table_id: &str) -> Result<(), Refused> {
-        match &self.table_uuid {
-            Some(uuid) if !uuid.eq_ignore_ascii_case(table_id) => {
-                Err(Refused::Conflict(format!("the table is {table_id}, not {uuid}")))
-            }
-            _ => Ok(()),
+        check_uuid(self.table_uuid.as_deref(), table_id)
+    }
+}
+
+/// Holds an asserted uuid to the table's id: another table under the name is a conflict, as the client's is gone.
+pub fn check_uuid(asserted: Option<&str>, table_id: &str) -> Result<(), Refused> {
+    match asserted {
+        Some(uuid) if !uuid.eq_ignore_ascii_case(table_id) => {
+            Err(Refused::Conflict(format!("the table is {table_id}, not {uuid}")))
         }
+        _ => Ok(()),
     }
 }
 
@@ -206,6 +211,15 @@ fn target_ref(snapshots: &[ProposedSnapshot], moves: &[(String, i64)]) -> Result
 }
 
 /// What a commit asks, or why it is refused: no read of the table can change the answer.
+/// The uuid a commit asserts of its table, read apart so that it is held before anything the commit asks is refused: a
+/// client told its table is another rebuilds on it, where one told only what it may not ask fails (REST-3).
+pub fn asserted_uuid(request: &CommitTableRequest) -> Option<String> {
+    request.requirements.iter().find_map(|entry| match &entry.known {
+        Requirement::AssertTableUuid { uuid } => Some(uuid.clone()),
+        _ => None,
+    })
+}
+
 pub fn change(request: CommitTableRequest) -> Result<Change, Refused> {
     let (creates, table_uuid, expected) = requirements(request.requirements)?;
     let mut definition = Definition::default();

@@ -31,9 +31,17 @@ impl Failure {
         Self::new(StatusCode::NOT_FOUND, "NoSuchEndpointException", "no such route")
     }
 
+    // The messages are Iceberg's: a client, and Iceberg's own compatibility kit, read them as its catalogs word them.
+
+    /// `name` as a client names it, its namespace's levels and its own name joined with dots.
     pub(crate) fn already_exists(name: &str) -> Self {
-        let message = format!("table {name} already exists");
+        let message = format!("Table already exists: {name}");
         Self::new(StatusCode::CONFLICT, "AlreadyExistsException", message)
+    }
+
+    pub(crate) fn no_table(name: &str) -> Self {
+        let message = format!("Table does not exist: {name}");
+        Self::new(StatusCode::NOT_FOUND, "NoSuchTableException", message)
     }
 
     /// Whether a commit was refused because the state moved.
@@ -42,7 +50,7 @@ impl Failure {
     }
 
     pub(crate) fn namespace_exists(name: &str) -> Self {
-        let message = format!("namespace {name} already exists");
+        let message = format!("Namespace already exists: {name}");
         Self::new(StatusCode::CONFLICT, "AlreadyExistsException", message)
     }
 
@@ -52,7 +60,7 @@ impl Failure {
     }
 
     pub(crate) fn no_namespace(name: &str) -> Self {
-        let message = format!("no namespace {name}");
+        let message = format!("Namespace does not exist: {name}");
         Self::new(StatusCode::NOT_FOUND, "NoSuchNamespaceException", message)
     }
 }
@@ -142,7 +150,7 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(
             body,
-            json!({"error": {"message": "no namespace a.b", "type": "NoSuchNamespaceException", "code": 404}})
+            json!({"error": {"message": "Namespace does not exist: a.b", "type": "NoSuchNamespaceException", "code": 404}})
         );
     }
 }

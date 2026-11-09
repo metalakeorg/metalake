@@ -78,7 +78,10 @@ async fn pyiceberg_list_namespaces() -> Result<(), Box<dyn std::error::Error>> {
     assert!(said["top"].as_array().unwrap().contains(&json!(["other"])));
     assert_eq!(said["under_db"], json!([["db", "sub"]]));
     assert!(
-        said["nowhere"].as_str().unwrap().contains("no namespace nowhere"),
+        said["nowhere"]
+            .as_str()
+            .unwrap()
+            .contains("Namespace does not exist: nowhere"),
         "{said}"
     );
     Ok(())

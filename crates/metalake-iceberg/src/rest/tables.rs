@@ -6,13 +6,15 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, State as Shared};
 use axum::http::StatusCode;
+use metalake::{Error, Table};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use super::errors::Failure;
 use super::namespaces::SEPARATOR;
+
 use crate::apply::commit::Target;
-use crate::apply::update::change;
+use crate::apply::update::{Change, asserted_uuid, change, check_uuid};
 use crate::apply::{Refused, commit, create, ddl};
 use crate::load::load;
 use crate::project::metadata::staged;
@@ -39,6 +41,20 @@ pub(crate) async fn list(Shared(state): Shared<State>, Path(namespace): Path<Str
     Ok(Json(json!({"identifiers": identifiers})))
 }
 
+/// A table as a client names it: its namespace's levels and its name, joined with dots.
+fn qualified<S: AsRef<str>>(namespace: &[S], name: &str) -> String {
+    let levels: Vec<&str> = namespace.iter().map(AsRef::as_ref).collect();
+    format!("{}.{name}", levels.join("."))
+}
+
+/// The table a client names on `main`, or Iceberg's `NoSuchTableException` naming it.
+async fn found(state: &State, namespace: &[&str], name: &str) -> Result<Table, Failure> {
+    state.main().table(namespace, name).await.map_err(|e| match e {
+        Error::NotFound(_) => Failure::no_table(&qualified(namespace, name)),
+        other => other.into(),
+    })
+}
+
 pub(super) fn decoded<T: DeserializeOwned>(body: &Bytes) -> Result<T, Failure> {
     let malformed = |e: serde_json::Error| Refused::Invalid(format!("a malformed request: {e}"));
     Ok(serde_json::from_slice(body).map_err(malformed)?)
@@ -59,7 +75,7 @@ pub(crate) async fn create(
         return Err(Failure::no_namespace(&wanted.join(".")));
     }
     if state.main().table(&wanted, &name).await.is_ok() {
-        return Err(Failure::already_exists(&name));
+        return Err(Failure::already_exists(&qualified(&wanted, &name)));
     }
     let new = create::requested(&state, &wanted, request)?;
     if new.stage {
@@ -73,7 +89,7 @@ pub(crate) async fn create(
     let table = create::create(&state, &wanted, &name, new).await.map_err(|e| {
         let failure = Failure::from(e);
         if failure.is_conflict() {
-            Failure::already_exists(&name)
+            Failure::already_exists(&qualified(&wanted, &name))
         } else {
             failure
         }
@@ -86,9 +102,30 @@ pub(crate) async fn get(
     Shared(state): Shared<State>,
     Path((namespace, name)): Path<(String, String)>,
 ) -> Result<Json<LoadTableResult>, Failure> {
-    let wanted = levels(&namespace);
-    let table = state.main().table(&wanted, &name).await?;
+    let table = found(&state, &levels(&namespace), &name).await?;
     Ok(Json(load(&state, &table).await?))
+}
+
+/// What a commit asks of one table. Refused, it answers first that the table is not the one the client asserts, if so
+/// (REST-3): reading the table is left to that case alone.
+async fn checked(
+    state: &State,
+    namespace: &[String],
+    name: &str,
+    request: CommitTableRequest,
+) -> Result<Change, Failure> {
+    let asserted = asserted_uuid(&request);
+    let refused = match change(request) {
+        Ok(change) => return Ok(change),
+        Err(refused) => refused,
+    };
+    if asserted.is_some() {
+        let levels: Vec<&str> = namespace.iter().map(String::as_str).collect();
+        if let Ok(table) = state.main().table(&levels, name).await {
+            check_uuid(asserted.as_deref(), &table.id().to_string())?;
+        }
+    }
+    Err(refused.into())
 }
 
 /// `POST /v1/namespaces/{namespace}/tables/{table}`: `updateTable`, one commit (ICE-6).
@@ -98,10 +135,12 @@ pub(crate) async fn update(
     body: Bytes,
 ) -> Result<Json<LoadTableResult>, Failure> {
     let request: CommitTableRequest = decoded(&body)?;
+    let namespace: Vec<String> = levels(&namespace).iter().map(|l| l.to_string()).collect();
+    let change = checked(&state, &namespace, &name, request).await?;
     let target = Target {
-        namespace: levels(&namespace).iter().map(|l| l.to_string()).collect(),
+        namespace,
         name,
-        change: change(request)?,
+        change,
     };
     let tables = commit::apply(&state, std::slice::from_ref(&target)).await?;
     Ok(Json(load(&state, &tables[0]).await?))
@@ -114,10 +153,11 @@ pub(crate) async fn commit_transaction(Shared(state): Shared<State>, body: Bytes
     for mut entry in request.table_changes {
         let identifier = entry.identifier.take();
         let identifier = identifier.ok_or_else(|| Refused::Invalid("a table change names no table".into()))?;
+        let change = checked(&state, &identifier.namespace, &identifier.name, entry).await?;
         targets.push(Target {
             namespace: identifier.namespace,
             name: identifier.name,
-            change: change(entry)?,
+            change,
         });
     }
     commit::apply(&state, &targets).await?;
@@ -129,7 +169,7 @@ pub(crate) async fn exists(
     Shared(state): Shared<State>,
     Path((namespace, name)): Path<(String, String)>,
 ) -> Result<StatusCode, Failure> {
-    state.main().table(&levels(&namespace), &name).await?;
+    found(&state, &levels(&namespace), &name).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -138,7 +178,7 @@ pub(crate) async fn drop(
     Shared(state): Shared<State>,
     Path((namespace, name)): Path<(String, String)>,
 ) -> Result<StatusCode, Failure> {
-    let table = state.main().table(&levels(&namespace), &name).await?;
+    let table = found(&state, &levels(&namespace), &name).await?;
     ddl::drop_table(&state, &table).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -147,7 +187,7 @@ pub(crate) async fn drop(
 pub(crate) async fn rename(Shared(state): Shared<State>, body: Bytes) -> Result<StatusCode, Failure> {
     let request: RenameTableRequest = decoded(&body)?;
     let source: Vec<&str> = request.source.namespace.iter().map(String::as_str).collect();
-    let table = state.main().table(&source, &request.source.name).await?;
+    let table = found(&state, &source, &request.source.name).await?;
     let destination = &request.destination;
     let namespaces = state.main().namespaces().await?;
     if !namespaces.iter().any(|n| n.namespace == destination.namespace) {
@@ -156,7 +196,9 @@ pub(crate) async fn rename(Shared(state): Shared<State>, body: Bytes) -> Result<
     ddl::rename_table(&state, &table, &destination.namespace, &destination.name)
         .await
         .map_err(|e| match Failure::from(e) {
-            failure if failure.is_conflict() => Failure::already_exists(&destination.name),
+            failure if failure.is_conflict() => {
+                Failure::already_exists(&qualified(&destination.namespace, &destination.name))
+            }
             failure => failure,
         })?;
     Ok(StatusCode::NO_CONTENT)
