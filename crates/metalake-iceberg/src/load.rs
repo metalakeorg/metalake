@@ -669,7 +669,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rest6_first_load_lists_once() {
+    async fn rest6_first_load_single_listing() {
         let mut snapshots = chain(1..=1000);
         snapshots.push(snapshot(1001, Some(500)));
         let (missing, requests) = found(&snapshots, &[1000, 1001], &[]).await;
@@ -706,7 +706,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rest6_writing_cut_short_leaves_no_list_before_what_it_names() {
+    async fn rest6_interrupted_write_preserves_list_order() {
         let total = pending().objects.len() + pending().lists.len();
         for cut in 0..=total {
             let written = RefCell::new(Vec::new());

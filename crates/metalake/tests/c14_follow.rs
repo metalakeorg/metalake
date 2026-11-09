@@ -46,7 +46,7 @@ async fn create(main: &Ref, name: &str) -> Result<Uuid, Error> {
 }
 
 #[tokio::test]
-async fn chg1_feed_from_now_in_order_once() -> Result<(), Error> {
+async fn chg1_feed_from_start_in_order() -> Result<(), Error> {
     let (catalog, main) = lake().await?;
     create(&main, "before").await?;
     let start = catalog.feed_start().await?;
@@ -86,7 +86,7 @@ async fn chg1_feed_from_now_in_order_once() -> Result<(), Error> {
 }
 
 #[tokio::test]
-async fn one_process_leads() -> Result<(), Error> {
+async fn lead_single_holder() -> Result<(), Error> {
     let schema = fresh_schema();
     let (catalog, _) = lake_in(&schema).await?;
     let other = Catalog::connect(CatalogConfig::new(url(), &schema)).await?;
@@ -116,7 +116,7 @@ async fn one_process_leads() -> Result<(), Error> {
 }
 
 #[tokio::test]
-async fn a_lead_is_a_catalogs() -> Result<(), Error> {
+async fn lead_isolates_catalogs() -> Result<(), Error> {
     let (one, _) = lake().await?;
     let (two, _) = lake().await?;
     let _held = one.lead("materialize").await?.expect("taken");
@@ -128,7 +128,7 @@ async fn a_lead_is_a_catalogs() -> Result<(), Error> {
 }
 
 #[tokio::test]
-async fn table_with_id_as_a_read_by_name_opens_it() -> Result<(), Error> {
+async fn table_with_id_resolves_by_name() -> Result<(), Error> {
     let (_catalog, main) = lake().await?;
     let id = create(&main, "t").await?;
     let opened = main.table_with_id(id).await?;

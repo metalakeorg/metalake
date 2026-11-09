@@ -477,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn rest9_materialize_on_load_unless_on_commit() {
+    fn rest9_materialize_default_on_load() {
         let of = |properties: Value| Materialize::of(&json!({ "properties": properties }));
         assert_eq!(of(json!({})), Materialize::OnLoad, "absent");
         assert_eq!(of(json!({MATERIALIZE: "on-load"})), Materialize::OnLoad);

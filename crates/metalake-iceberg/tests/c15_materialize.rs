@@ -140,7 +140,7 @@ async fn led(schema: &str) -> Result<bool, Failure> {
 }
 
 #[tokio::test]
-async fn rest6_a_table_marked_is_materialized_with_no_load() -> Result<(), Failure> {
+async fn rest6_marked_table_materialized_without_load() -> Result<(), Failure> {
     let (schema, catalog, main, storage, directory) = lake(&["marked", "plain"]).await?;
     mark(&main, "marked", "on-commit").await?;
     let (_server, _) = server(&schema)?;
@@ -158,7 +158,7 @@ async fn rest6_a_table_marked_is_materialized_with_no_load() -> Result<(), Failu
 }
 
 #[tokio::test]
-async fn rest6_marking_through_the_service_wakes_the_worker() -> Result<(), Failure> {
+async fn rest6_marking_through_service_wakes_worker() -> Result<(), Failure> {
     let (schema, catalog, main, storage, directory) = lake(&["t"]).await?;
     commit(&catalog, &main, &storage, "t", 0).await?;
     let (_server, uri) = server(&schema)?;
@@ -176,7 +176,7 @@ async fn rest6_marking_through_the_service_wakes_the_worker() -> Result<(), Fail
 }
 
 #[tokio::test]
-async fn rest6_a_commit_on_a_ref_not_marked_is_not_materialized() -> Result<(), Failure> {
+async fn rest6_commit_on_unmarked_ref_skips() -> Result<(), Failure> {
     let (schema, catalog, main, storage, directory) = lake(&["t"]).await?;
     mark(&main, "t", "on-commit").await?;
     let (_server, _) = server(&schema)?;
@@ -200,7 +200,7 @@ async fn rest6_a_commit_on_a_ref_not_marked_is_not_materialized() -> Result<(), 
 }
 
 #[tokio::test]
-async fn rest6_one_process_materializes_and_another_takes_over() -> Result<(), Failure> {
+async fn rest6_standby_process_takes_over_lead() -> Result<(), Failure> {
     let (schema, catalog, main, storage, directory) = lake(&["t"]).await?;
     mark(&main, "t", "on-commit").await?;
     let first = server(&schema)?;
@@ -220,7 +220,7 @@ async fn rest6_one_process_materializes_and_another_takes_over() -> Result<(), F
 }
 
 #[tokio::test]
-async fn rest6_a_process_that_starts_again_catches_up() -> Result<(), Failure> {
+async fn rest6_restart_materializes_missed_commits() -> Result<(), Failure> {
     let (schema, catalog, main, storage, directory) = lake(&["t"]).await?;
     mark(&main, "t", "on-commit").await?;
     let first = server(&schema)?;
@@ -239,7 +239,7 @@ async fn rest6_a_process_that_starts_again_catches_up() -> Result<(), Failure> {
 }
 
 #[tokio::test]
-async fn rest6_a_process_told_not_to_materializes_nothing() -> Result<(), Failure> {
+async fn rest6_materialize_off_skips() -> Result<(), Failure> {
     let (schema, catalog, main, storage, directory) = lake(&["t"]).await?;
     mark(&main, "t", "on-commit").await?;
     let (_server, _) = server_with(&schema, &["--materialize", "off"])?;

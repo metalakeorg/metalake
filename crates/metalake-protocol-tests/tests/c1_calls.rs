@@ -176,7 +176,7 @@ async fn ftr1_add_footers_by_path() -> Result<(), Error> {
 }
 
 #[tokio::test]
-async fn rest6_added_files_of_many_commits() -> Result<(), Error> {
+async fn rest6_added_files_of_matches_added_files() -> Result<(), Error> {
     let on = connect().await?;
     let schema = fresh_schema("c1");
     install_protocol(&on, &schema).await?;
@@ -235,7 +235,7 @@ async fn rest6_added_files_of_many_commits() -> Result<(), Error> {
 }
 
 #[tokio::test]
-async fn chg1_commit_tables_of_many_commits() -> Result<(), Error> {
+async fn chg1_commit_tables_many_commits() -> Result<(), Error> {
     let on = connect().await?;
     let schema = fresh_schema("c1");
     install_protocol(&on, &schema).await?;

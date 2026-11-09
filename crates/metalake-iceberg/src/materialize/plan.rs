@@ -225,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn rest6_commits_while_loading_load_once_more() {
+    fn rest6_commits_during_load_coalesce() {
         let (now, t) = (Instant::now(), table(1));
         let mut plan = loading(&[t], now);
         for _ in 0..50 {
@@ -239,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn rest6_marking_makes_a_table_due_once() {
+    fn rest6_marked_table_due_once() {
         let now = Instant::now();
         let (t, u) = (table(1), table(2));
         let mut plan = Plan::default();
@@ -251,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn rest6_a_commit_on_a_ref_not_marked_is_not_due() {
+    fn rest6_commit_on_unmarked_ref_skips() {
         let (now, t) = (Instant::now(), table(1));
         let mut plan = Plan::default();
         plan.marked([(MAIN, t)]);
@@ -264,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn rest6_at_most_at_once() {
+    fn rest6_concurrent_loads_bounded() {
         let now = Instant::now();
         let tables: Vec<Uuid> = (1..=10).map(table).collect();
         let mut plan = Plan::default();
@@ -286,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn rest6_a_failure_is_tried_again_after_a_wait_that_doubles() {
+    fn rest6_failed_load_retries_with_backoff() {
         let (now, t) = (Instant::now(), table(1));
         let mut plan = loading(&[t], now);
         let mut at = now;
@@ -313,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn rest6_a_table_unmarked_is_left() {
+    fn rest6_unmarked_table_skips() {
         let (now, t, u) = (Instant::now(), table(1), table(2));
         let mut plan = loading(&[t, u], now);
         plan.done(u, false, now);
@@ -330,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn rest6_marked_again_while_loading_loads_again() {
+    fn rest6_marked_again_during_load_reloads() {
         let (now, t) = (Instant::now(), table(1));
         let mut plan = loading(&[t], now);
         plan.marked([]);
@@ -340,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn rest6_the_feed_is_looked_at_as_often_as_commits_come() {
+    fn rest6_feed_poll_interval_adapts() {
         let t = table(1);
         let mut plan = Plan::default();
         assert_eq!(plan.pause(), UNMARKED, "nothing marked");

@@ -153,7 +153,7 @@ fn manifest_schema(path: &std::path::Path) -> Result<(Vec<String>, String), Fail
 }
 
 #[tokio::test]
-async fn rest6_manifests_carry_their_snapshot_schema() -> Result<(), Failure> {
+async fn rest6_manifest_schema_matches_snapshot() -> Result<(), Failure> {
     let schema = fresh_schema();
     let (catalog, storage, directory) = local_catalog(&schema).await?;
     let main = catalog.branch("main").await?;
@@ -551,7 +551,7 @@ fn manifests_of(directory: &std::path::Path) -> Result<std::collections::BTreeMa
 /// A history generated at once writes what it writes generated a snapshot at a time, byte for byte: appends past a roll-up,
 /// inline files, a delete, and a branch with its own chain.
 #[tokio::test]
-async fn rest6_a_chain_at_once_writes_what_one_at_a_time_writes() -> Result<(), Failure> {
+async fn rest6_batch_generation_matches_incremental() -> Result<(), Failure> {
     let schema = fresh_schema();
     let (catalog, storage, directory) = local_catalog(&schema).await?;
     let main = catalog.branch("main").await?;
