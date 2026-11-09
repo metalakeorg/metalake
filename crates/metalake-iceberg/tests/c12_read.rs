@@ -496,3 +496,76 @@ async fn ice4_overwrite_writes_only_new_objects() -> Result<(), Failure> {
     assert!(rewritten.is_empty(), "written again: {rewritten:?}");
     Ok(())
 }
+
+/// A `loadTable`, asked as any client asks it.
+fn load_table(uri: &str, name: &str) -> Result<(), Failure> {
+    use std::io::{Read, Write};
+    let address = uri.trim_start_matches("http://");
+    let mut stream = std::net::TcpStream::connect(address)?;
+    let request = format!("GET /v1/namespaces/db/tables/{name} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes())?;
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer)?;
+    assert!(answer.starts_with("HTTP/1.1 200"), "{}", &answer[..answer.len().min(300)]);
+    Ok(())
+}
+
+/// What a table's manifests and lists hold, by name: their key-value metadata and their records. An Avro file's sync
+/// marker is drawn anew each time it is written, so their bytes are not what they hold.
+fn manifests_of(directory: &std::path::Path) -> Result<std::collections::BTreeMap<String, String>, Failure> {
+    let table = directory.join("db").read_dir()?.flatten().find(|e| e.file_name().to_string_lossy().starts_with("plain"));
+    let mut found = std::collections::BTreeMap::new();
+    for entry in table.expect("the table's directory").path().join("metalake-manifests").read_dir()?.flatten() {
+        let reader = apache_avro::Reader::new(std::fs::File::open(entry.path())?)?;
+        let meta: std::collections::BTreeMap<_, _> = reader.user_metadata().clone().into_iter().collect();
+        let records = reader.collect::<Result<Vec<_>, _>>()?;
+        found.insert(entry.file_name().to_string_lossy().into_owned(), format!("{meta:?} {records:?}"));
+    }
+    Ok(found)
+}
+
+/// A history generated at once writes what it writes generated a snapshot at a time, byte for byte: appends past a roll-up,
+/// inline files, a delete, and a branch with its own chain.
+#[tokio::test]
+async fn rest6_a_chain_at_once_writes_what_one_at_a_time_writes() -> Result<(), Failure> {
+    let schema = fresh_schema();
+    let (catalog, storage, directory) = local_catalog(&schema).await?;
+    let main = catalog.branch("main").await?;
+    main.transaction().create_namespace(&["db"]).commit().await?;
+    create(&main, "plain", "65536", vec![]).await?;
+    let (_server, uri) = server(&schema)?;
+    load_table(&uri, "plain")?;
+    for k in 0..100 {
+        append(&catalog, &main, &storage, "plain", k..k + 1).await?;
+        load_table(&uri, "plain")?;
+        if k == 30 {
+            delete_key(&catalog, &main, &storage, 30).await?;
+            load_table(&uri, "plain")?;
+        }
+        if k == 40 {
+            let branch = main.create_branch("b").await?;
+            for j in 100..103 {
+                append(&catalog, &branch, &storage, "plain", j..j + 1).await?;
+                load_table(&uri, "plain")?;
+            }
+        }
+    }
+    let one_at_a_time = manifests_of(&directory)?;
+
+    let table = directory.join("db").read_dir()?.flatten().find(|e| e.file_name().to_string_lossy().starts_with("plain"));
+    let table = table.expect("the table's directory").path();
+    std::fs::remove_dir_all(table.join("metalake-manifests"))?;
+    std::fs::remove_dir_all(table.join("metalake-metadata"))?;
+    load_table(&uri, "plain")?;
+    let at_once = manifests_of(&directory)?;
+    let _ = std::fs::remove_dir_all(&directory);
+
+    assert!(at_once.keys().any(|name| name.starts_with('r')), "a roll-up among them");
+    assert_eq!(
+        one_at_a_time.keys().collect::<Vec<_>>(),
+        at_once.keys().collect::<Vec<_>>()
+    );
+    let differ: Vec<_> = at_once.iter().filter(|(name, bytes)| one_at_a_time[*name] != **bytes).map(|(n, _)| n).collect();
+    assert!(differ.is_empty(), "written otherwise: {differ:?}");
+    Ok(())
+}

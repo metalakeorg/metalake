@@ -1,9 +1,9 @@
 //! What a `loadTable` takes: gathering a table's rows, and generating its files the first time a client asks (REST-6). A
-//! snapshot's files never change, so what is there is there for good, and a repeat writes the same bytes.
+//! snapshot's files never change, so what is there is there for good, and a repeat writes what it wrote.
 
 use std::collections::btree_map::Entry;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::hash::{Hash, Hasher};
 
@@ -23,8 +23,10 @@ use crate::project::metadata::{
 use crate::state::State;
 use crate::wire::metadata::{LoadTableResult, TableMetadata};
 
-/// Objects written at once when a snapshot is generated.
+/// Objects written at once when a snapshot is generated, and snapshots generated before what they wrote is written.
 const PUTS: usize = 16;
+/// Snapshots whose added files a load asks for at once.
+const ASKED: usize = 1_000;
 
 /// Where what is generated for a table lies, away from data (REST-6).
 fn generated(location: &str) -> String {
@@ -148,7 +150,53 @@ struct Base {
     carried: Option<Vec<Inherited>>,
 }
 
-async fn base(storage: &Storage, table: &Table, snapshot: &TableSnapshot) -> Result<Base> {
+/// What a load has generated and not yet written, and what it holds of what it wrote. A chain is generated a few snapshots
+/// at a time: their objects are written at once, and then their lists, each after its parent's, so that a list there says
+/// that its parent's is (`unlisted`). The next snapshot of a chain is generated on its parent's list as it is, and a roll-up
+/// reads from what is held what the last list names.
+#[derive(Default)]
+struct Pending {
+    objects: Vec<(String, Bytes)>,
+    lists: Vec<(i64, Bytes)>,
+    /// The lists not yet written, and the last written, by snapshot.
+    held: HashMap<i64, Bytes>,
+    /// The manifests this load wrote that the last list names, and those not yet written, by path.
+    manifests: HashMap<String, Bytes>,
+    /// What the last list names.
+    named: HashSet<String>,
+}
+
+impl Pending {
+    fn object(&mut self, path: String, bytes: Bytes) {
+        self.manifests.insert(path.clone(), bytes.clone());
+        self.objects.push((path, bytes));
+    }
+
+    /// Writes the objects at once with `put`, and then the lists in order.
+    async fn write<Put, Done>(&mut self, location: &str, put: Put) -> Result<()>
+    where
+        Put: Fn(String, Bytes) -> Done,
+        Done: Future<Output = Result<()>>,
+    {
+        stream::iter(std::mem::take(&mut self.objects))
+            .map(|(path, bytes)| put(path, bytes))
+            .buffer_unordered(PUTS)
+            .try_collect::<Vec<()>>()
+            .await?;
+        let lists = std::mem::take(&mut self.lists);
+        for (at, list) in &lists {
+            put(list_path(location, *at), list.clone()).await?;
+        }
+        if let Some((last, _)) = lists.last() {
+            self.held.retain(|at, _| at == last);
+        }
+        let named = &self.named;
+        self.manifests.retain(|path, _| named.contains(path));
+        Ok(())
+    }
+}
+
+async fn base(storage: &Storage, table: &Table, snapshot: &TableSnapshot, held: &HashMap<i64, Bytes>) -> Result<Base> {
     let none = Base {
         since: None,
         carried: None,
@@ -156,13 +204,20 @@ async fn base(storage: &Storage, table: &Table, snapshot: &TableSnapshot) -> Res
     let Some(parent) = snapshot.parent_snapshot_id else {
         return Ok(none);
     };
-    let path = list_path(table.location(), parent);
-    if !storage.exists(&path).await? {
-        return Ok(none);
-    }
-    let carried = match adds_only(snapshot) {
-        true => Some(listed_manifests(&storage.get(&path).await?)?),
-        false => None,
+    let list = match held.get(&parent).cloned() {
+        Some(list) => Some(list),
+        None => {
+            let path = list_path(table.location(), parent);
+            match storage.exists(&path).await? {
+                true => None,
+                false => return Ok(none),
+            }
+        }
+    };
+    let carried = match (adds_only(snapshot), list) {
+        (false, _) => None,
+        (true, Some(list)) => Some(listed_manifests(&list)?),
+        (true, None) => Some(listed_manifests(&storage.get(&list_path(table.location(), parent)).await?)?),
     };
     Ok(Base {
         since: Some(parent),
@@ -173,8 +228,10 @@ async fn base(storage: &Storage, table: &Table, snapshot: &TableSnapshot) -> Res
 /// Rolls up what `manifests` holds of one spec and level, level by level, so that a list stays short: a client that plans a
 /// read opens all of it. It reads what it rolls up and nothing else of the table. What a snapshot added is not among them:
 /// a reader finds it by its own manifest.
+#[allow(clippy::too_many_arguments)]
 async fn roll_up<'c>(
     storage: &Storage,
+    pending: &mut Pending,
     location: &str,
     snapshot: i64,
     manifests: &mut Vec<Inherited>,
@@ -183,13 +240,20 @@ async fn roll_up<'c>(
 ) -> Result<()> {
     while let Some((spec_id, level)) = roll_up_due(manifests, target) {
         let parts = taken(manifests, spec_id, level, target);
-        let bytes = try_join_all(parts.iter().map(|m| storage.get(&m.path))).await?;
+        let held = &pending.manifests;
+        let bytes = try_join_all(parts.iter().map(|m| async move {
+            match held.get(&m.path) {
+                Some(bytes) => Ok(bytes.clone()),
+                None => storage.get(&m.path).await,
+            }
+        }))
+        .await?;
         let written = rolled_manifest(&bytes, &context_of(spec_id))?;
         let lo = parts.iter().map(|m| m.min_sequence).min().unwrap_or(0);
         let hi = parts.iter().map(|m| m.added_snapshot).max().unwrap_or(0);
         let path = format!("{}/r{}-{lo}-{hi}-{spec_id}.avro", generated(location), level + 1);
         manifests.push(rolled_up(&parts, path.clone(), written.len(), spec_id, snapshot)?);
-        storage.put(&path, written.into()).await?;
+        pending.object(path, written.into());
     }
     Ok(())
 }
@@ -205,11 +269,16 @@ async fn generate(
     table: &Table,
     rows: &Rows,
     snapshot: &TableSnapshot,
+    added: &mut HashMap<i64, Vec<ListedFile>>,
+    pending: &mut Pending,
 ) -> Result<()> {
     let (location, at) = (table.location(), snapshot.snapshot_id);
-    let base = base(storage, table, snapshot).await?;
+    let base = base(storage, table, snapshot, &pending.held).await?;
     let files: Vec<ListedFile> = match base.carried {
-        Some(_) => on.added_files(table, at).await?,
+        Some(_) => match added.remove(&at) {
+            Some(files) => files,
+            None => on.added_files(table, at).await?,
+        },
         None => {
             let namespace: Vec<&str> = table.namespace().iter().map(String::as_str).collect();
             let read = on.at(at).table(&namespace, table.name()).await?;
@@ -256,7 +325,7 @@ async fn generate(
             let path = format!("{}/{name}-{at}-{spec_id}.avro", generated(location));
             let shown: Vec<_> = here.iter().map(|f| (added, f.record_count, f.begin_seq)).collect();
             manifests.push(listed(path.clone(), bytes.len(), spec_id, false, &shown));
-            storage.put(&path, bytes.into()).await?;
+            pending.object(path, bytes.into());
         }
 
         let here: Vec<Delete<'_>> = deletes
@@ -276,14 +345,43 @@ async fn generate(
                 .map(|v| (v.begin_seq == at, v.cardinality, v.begin_seq))
                 .collect();
             manifests.push(listed(path.clone(), bytes.len(), spec_id, true, &shown));
-            storage.put(&path, bytes.into()).await?;
+            pending.object(path, bytes.into());
         }
     }
     let mut carried = base.carried.unwrap_or_default();
     let target = manifest_target_size(definition);
-    roll_up(storage, location, at, &mut carried, target, context_of).await?;
-    let list = manifest_list(at, snapshot.parent_snapshot_id, &manifests, carried)?;
-    storage.put(&list_path(location, at), list.into()).await
+    roll_up(storage, pending, location, at, &mut carried, target, context_of).await?;
+    pending.named = manifests
+        .iter()
+        .map(|m| m.path.clone())
+        .chain(carried.iter().map(|m| m.path.clone()))
+        .collect();
+    let list = Bytes::from(manifest_list(at, snapshot.parent_snapshot_id, &manifests, carried)?);
+    pending.held.insert(at, list.clone());
+    pending.lists.push((at, list));
+    Ok(())
+}
+
+/// The files each of `snapshots` that only adds added, asked for at once a ref, by snapshot.
+async fn added_at_once(
+    live: &[Ref],
+    table: &Table,
+    snapshots: &[&TableSnapshot],
+) -> Result<HashMap<i64, Vec<ListedFile>>> {
+    let mut by_ref: BTreeMap<&str, Vec<i64>> = BTreeMap::new();
+    for snapshot in snapshots.iter().filter(|s| adds_only(s)) {
+        by_ref.entry(&snapshot.ref_name).or_default().push(snapshot.snapshot_id);
+    }
+    let mut added: HashMap<i64, Vec<ListedFile>> = HashMap::new();
+    for (name, ats) in by_ref {
+        for file in known(live, name)?.added_files_of(table, &ats).await? {
+            added.entry(file.begin_seq).or_default().push(file);
+        }
+        for at in ats {
+            added.entry(at).or_default();
+        }
+    }
+    Ok(added)
 }
 
 /// The metadata a load serves, as the file that holds it and where it lies. A ref can change it with no new sequence, so
@@ -376,9 +474,21 @@ pub(crate) async fn load(state: &State, table: &Table) -> Result<LoadTableResult
             let (storage, path) = (&storage, list_path(location, id));
             async move { storage.exists(&path).await }
         };
-        for snapshot in unlisted(&rows.snapshots, &heads, exists).await? {
-            let on = known(&live, &snapshot.ref_name)?;
-            generate(on, state, &storage, table, &rows, snapshot).await?;
+        let missing = unlisted(&rows.snapshots, &heads, exists).await?;
+        let mut pending = Pending::default();
+        for asked in missing.chunks(ASKED) {
+            let mut added = added_at_once(&live, table, asked).await?;
+            for few in asked.chunks(PUTS) {
+                for snapshot in few {
+                    let on = known(&live, &snapshot.ref_name)?;
+                    generate(on, state, &storage, table, &rows, snapshot, &mut added, &mut pending).await?;
+                }
+                let put = |path: String, bytes: Bytes| {
+                    let storage = &storage;
+                    async move { storage.put(&path, bytes).await }
+                };
+                pending.write(location, put).await?;
+            }
         }
         storage.put(&metadata_location, body).await?;
         let found = storage.list(&metadata_files(location)).await?;
@@ -540,5 +650,47 @@ mod tests {
             requests, 4,
             "a list is asked for once, and a head with no snapshot for none"
         );
+    }
+
+    /// A chain of three, each with two objects, as generated and not yet written.
+    fn pending() -> Pending {
+        let mut pending = Pending::default();
+        for at in 1..=3 {
+            for name in ["a", "r"] {
+                pending.object(format!("{name}-{at}"), Bytes::new());
+            }
+            pending.lists.push((at, Bytes::new()));
+        }
+        pending
+    }
+
+    #[tokio::test]
+    async fn rest6_writing_cut_short_leaves_no_list_before_what_it_names() {
+        let total = pending().objects.len() + pending().lists.len();
+        for cut in 0..=total {
+            let written = RefCell::new(Vec::new());
+            let put = |path: String, _: Bytes| {
+                let written = &written;
+                async move {
+                    if written.borrow().len() == cut {
+                        return Err(Error::Corrupt("cut".into()));
+                    }
+                    written.borrow_mut().push(path);
+                    Ok(())
+                }
+            };
+            let _ = pending().write("t", put).await;
+            let written: HashSet<String> = written.into_inner().into_iter().collect();
+            for at in 1..=3i64 {
+                if !written.contains(&list_path("t", at)) {
+                    continue;
+                }
+                let before = (1..at).map(|parent| list_path("t", parent));
+                let objects = (1..=3).flat_map(|of| [format!("a-{of}"), format!("r-{of}")]);
+                for needed in before.chain(objects) {
+                    assert!(written.contains(&needed), "cut at {cut}: list {at} before {needed}");
+                }
+            }
+        }
     }
 }
