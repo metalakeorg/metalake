@@ -8,8 +8,8 @@ use std::future::Future;
 use std::hash::{Hash, Hasher};
 
 use bytes::Bytes;
-use futures_util::TryStreamExt;
 use futures_util::future::try_join_all;
+use futures_util::{StreamExt, TryStreamExt, stream};
 use metalake::{Error, ListedFile, Ref, Result, Scan, Storage, Table, TableSnapshot, listed_vector};
 
 use crate::project::deletes::position_deletes;
@@ -22,6 +22,9 @@ use crate::project::metadata::{
 };
 use crate::state::State;
 use crate::wire::metadata::{LoadTableResult, TableMetadata};
+
+/// Objects written at once when a snapshot is generated.
+const PUTS: usize = 16;
 
 /// Where what is generated for a table lies, away from data (REST-6).
 fn generated(location: &str) -> String {
@@ -94,36 +97,70 @@ fn listed(path: String, length: usize, spec_id: i32, deletes: bool, entries: &[(
     }
 }
 
-/// Writes what a snapshot's manifests name and nothing holds: inline files (ICE-5) and position delete files (ICE-4).
-async fn materialize<'f>(files: &'f [ListedFile], location: &str, storage: &Storage) -> Result<Vec<Delete<'f>>> {
+/// Writes what a snapshot's manifests name and nothing holds: inline files (ICE-5) and position delete files (ICE-4),
+/// each at a path of its file and vector alone. Those its parent saw are there already when `since`, the parent, has its
+/// list, as a list is written after its objects: only what is new since is written, so an overwrite pays for what it
+/// changed. A vector's delete file is encoded all the same, as the manifest states its size.
+async fn materialize<'f>(
+    files: &'f [ListedFile],
+    location: &str,
+    storage: &Storage,
+    since: Option<i64>,
+) -> Result<Vec<Delete<'f>>> {
+    let new = |seq: i64| since.is_none_or(|parent| seq > parent);
     let mut deletes = Vec::new();
+    let mut puts: Vec<(String, Bytes)> = Vec::new();
     for file in files {
-        if file.path.is_none() {
+        if file.path.is_none() && new(file.begin_seq) {
             let held = || Error::Corrupt(format!("file {} has no bytes", file.file_id));
             let bytes = file.content.clone().ok_or_else(held)?;
-            storage.put(&served_path(location, file), bytes.into()).await?;
+            puts.push((served_path(location, file), bytes.into()));
         }
         if let (Some(at), Some(vector)) = (&file.vector, listed_vector(file, storage).await?) {
             let path = delete_path(location, file, at.begin_seq);
             let bytes = position_deletes(&served_path(location, file), vector.positions())?;
             let size = bytes.len() as i64;
-            storage.put(&path, bytes.into()).await?;
+            if new(at.begin_seq) {
+                puts.push((path.clone(), bytes.into()));
+            }
             deletes.push(Delete { file, path, size });
         }
     }
+    stream::iter(puts)
+        .map(|(path, bytes)| async move { storage.put(&path, bytes).await })
+        .buffer_unordered(PUTS)
+        .try_collect::<Vec<()>>()
+        .await?;
     Ok(deletes)
 }
 
-/// The manifests a snapshot takes from its parent, when it only added to it and the parent's list is there.
-async fn inherited(storage: &Storage, table: &Table, snapshot: &TableSnapshot) -> Result<Option<Vec<Inherited>>> {
-    let Some(parent) = snapshot.parent_snapshot_id.filter(|_| adds_only(snapshot)) else {
-        return Ok(None);
+/// What a snapshot is generated on: its parent, if the parent's list is there, and with it every object the parent
+/// names; and the parent's manifests, when the snapshot only added to them.
+struct Base {
+    since: Option<i64>,
+    carried: Option<Vec<Inherited>>,
+}
+
+async fn base(storage: &Storage, table: &Table, snapshot: &TableSnapshot) -> Result<Base> {
+    let none = Base {
+        since: None,
+        carried: None,
+    };
+    let Some(parent) = snapshot.parent_snapshot_id else {
+        return Ok(none);
     };
     let path = list_path(table.location(), parent);
     if !storage.exists(&path).await? {
-        return Ok(None);
+        return Ok(none);
     }
-    Ok(Some(listed_manifests(&storage.get(&path).await?)?))
+    let carried = match adds_only(snapshot) {
+        true => Some(listed_manifests(&storage.get(&path).await?)?),
+        false => None,
+    };
+    Ok(Base {
+        since: Some(parent),
+        carried,
+    })
 }
 
 /// Rolls up what `manifests` holds of one spec and level, level by level, so that a list stays short: a client that plans a
@@ -156,12 +193,12 @@ async fn generate(on: &Ref, state: &State, storage: &Storage, table: &Table, sna
     let (location, at) = (table.location(), snapshot.snapshot_id);
     let namespace: Vec<&str> = table.namespace().iter().map(String::as_str).collect();
     let read = on.at(at).table(&namespace, table.name()).await?;
-    let carried = inherited(storage, table, snapshot).await?;
-    let files: Vec<ListedFile> = match carried {
+    let base = base(storage, table, snapshot).await?;
+    let files: Vec<ListedFile> = match base.carried {
         Some(_) => on.added_files(table, at).await?,
         None => Scan::new(state.catalog(), &read).list().await?.try_collect().await?,
     };
-    let deletes = materialize(&files, location, storage).await?;
+    let deletes = materialize(&files, location, storage, base.since).await?;
 
     let definition = on.definition(table, Some(at)).await?;
     let fields = definition["fields"].as_array().cloned().unwrap_or_default();
@@ -221,7 +258,7 @@ async fn generate(on: &Ref, state: &State, storage: &Storage, table: &Table, sna
             storage.put(&path, bytes.into()).await?;
         }
     }
-    let mut carried = carried.unwrap_or_default();
+    let mut carried = base.carried.unwrap_or_default();
     let target = manifest_target_size(&definition);
     roll_up(storage, location, at, &mut carried, target, context_of).await?;
     let list = manifest_list(at, snapshot.parent_snapshot_id, &manifests, carried)?;

@@ -67,6 +67,11 @@ def read(uri):
     return said
 
 
+def rows(uri):
+    table = connect(uri).load_table("db.plain")
+    return {"rows": sorted(row["k"] for row in table.scan().to_arrow().to_pylist())}
+
+
 def append(uri):
     table = connect(uri).load_table("db.plain")
     before = table.current_snapshot().snapshot_id
@@ -275,4 +280,4 @@ def wide(uri):
 
 
 if __name__ == "__main__":
-    print(json.dumps({"namespaces": namespaces, "read": read, "wide": wide, "append": append, "retry": retry, "lifecycle": lifecycle, "manifests": manifests, "rolled": rolled}[sys.argv[1]](sys.argv[2])))
+    print(json.dumps({"namespaces": namespaces, "read": read, "rows": rows, "wide": wide, "append": append, "retry": retry, "lifecycle": lifecycle, "manifests": manifests, "rolled": rolled}[sys.argv[1]](sys.argv[2])))

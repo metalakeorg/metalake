@@ -4,6 +4,7 @@
 //! and a catalog with the reference of the specification (`spec/v0/schema/` and `spec/v0/reference/`), and compares
 //! their rows. The reference is the oracle: whatever both are asked to do, they must end with the same rows.
 
+pub mod cost;
 pub mod differential;
 pub mod records;
 

@@ -340,3 +340,89 @@ async fn ice3_bounds_match_reference() -> Result<(), Failure> {
     catalog.close();
     Ok(())
 }
+
+/// The objects a table's generation wrote that an overwrite need not touch, each with when it was last written.
+fn derived(directory: &std::path::Path) -> std::collections::BTreeMap<String, std::time::SystemTime> {
+    fn walk(dir: &std::path::Path, found: &mut std::collections::BTreeMap<String, std::time::SystemTime>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, found);
+            } else {
+                let name = path.display().to_string().replace('\\', "/");
+                if name.contains("/metalake-inline/") || name.contains("/metalake-deletes/") {
+                    found.insert(name, entry.metadata().and_then(|m| m.modified()).unwrap());
+                }
+            }
+        }
+    }
+    let mut found = std::collections::BTreeMap::new();
+    walk(directory, &mut found);
+    found
+}
+
+/// Deletes the row of key `k`, as an engine does: by its file and position.
+async fn delete_key(catalog: &Catalog, on: &metalake::Ref, storage: &metalake::Storage, k: i64) -> Result<(), Failure> {
+    use arrow_array::cast::AsArray;
+    use arrow_array::types::Int64Type;
+    use metalake::vectors::{FILE_ID, POSITION};
+
+    let t = on.table(&["db"], "plain").await?;
+    let scan = Scan::new(catalog, &t).with_positions();
+    let batches: Vec<arrow_array::RecordBatch> = scan.read(scan.plan().await?, storage).try_collect().await?;
+    let mut deletes = Deletes::new();
+    for b in &batches {
+        let column = |name: &str| b.column_by_name(name).unwrap().as_primitive::<Int64Type>().clone();
+        let (keys, files, positions) = (column("k"), column(FILE_ID), column(POSITION));
+        for i in (0..b.num_rows()).filter(|i| keys.value(*i) == k) {
+            deletes.insert(files.value(i), positions.value(i) as u64);
+        }
+    }
+    on.transaction().delete(&t, storage, deletes).commit().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn ice4_overwrite_writes_only_new_objects() -> Result<(), Failure> {
+    let schema = fresh_schema();
+    let (catalog, storage, directory) = local_catalog(&schema).await?;
+    let main = catalog.branch("main").await?;
+    main.transaction().create_namespace(&["db"]).commit().await?;
+    create(&main, "plain", "65536", vec![]).await?;
+    // four inline files, and rows deleted in two of them
+    for keys in [0..3, 3..6, 6..9, 9..12] {
+        append(&catalog, &main, &storage, "plain", keys).await?;
+    }
+    delete_key(&catalog, &main, &storage, 1).await?;
+    delete_key(&catalog, &main, &storage, 4).await?;
+
+    let (_server, uri) = server(&schema)?;
+    let first = client("rows", &uri)?;
+    let before = derived(&directory);
+
+    // one more row deleted, in a third file: only its delete file is new, and nothing else is written again
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    delete_key(&catalog, &main, &storage, 7).await?;
+    let second = client("rows", &uri)?;
+    let after = derived(&directory);
+    let _ = std::fs::remove_dir_all(&directory);
+
+    assert_eq!(first["rows"], json!([0, 2, 3, 5, 6, 7, 8, 9, 10, 11]));
+    assert_eq!(second["rows"], json!([0, 2, 3, 5, 6, 8, 9, 10, 11]));
+    let deletes = |objects: &std::collections::BTreeMap<String, std::time::SystemTime>| {
+        objects.keys().filter(|k| k.contains("/metalake-deletes/")).count()
+    };
+    assert_eq!(
+        (deletes(&before), before.len() - deletes(&before)),
+        (2, 4),
+        "two vectors, four inline files"
+    );
+    assert_eq!(deletes(&after), 3, "the new vector's delete file");
+    let rewritten: Vec<&String> = before
+        .iter()
+        .filter(|(k, at)| after.get(*k) != Some(at))
+        .map(|(k, _)| k)
+        .collect();
+    assert!(rewritten.is_empty(), "written again: {rewritten:?}");
+    Ok(())
+}

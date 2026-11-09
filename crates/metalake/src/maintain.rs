@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use futures_util::{StreamExt, TryStreamExt, stream};
 use metalake_pg::BATCH;
-use uuid::Uuid;
 use parquet::file::metadata::ParquetMetaDataReader;
+use uuid::Uuid;
 
 use crate::catalog::Catalog;
 use crate::error::{Error, Result};

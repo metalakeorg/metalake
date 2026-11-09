@@ -188,21 +188,28 @@ fn entries(bytes: &[u8], spec_id: i32) -> Result<Vec<(i32, ManifestFile)>, Refus
 }
 
 /// Folds the entries of a commit's snapshots, in order: a file added and then deleted within the commit never existed.
+/// Each entry costs the same whatever the commit holds.
 fn folded(entries: impl IntoIterator<Item = (i32, ManifestFile)>) -> ProposedFiles {
-    let mut files = ProposedFiles::default();
+    let mut added: Vec<Option<ManifestFile>> = Vec::new();
+    let mut by_path: HashMap<String, usize> = HashMap::new();
+    let mut removed = Vec::new();
     for (status, file) in entries {
         match status {
-            ADDED => files.added.push(file),
-            DELETED => match files.added.iter().position(|added| added.path == file.path) {
-                Some(at) => {
-                    files.added.remove(at);
-                }
-                None => files.removed.push(file.path),
+            ADDED => {
+                by_path.insert(file.path.clone(), added.len());
+                added.push(Some(file));
+            }
+            DELETED => match by_path.remove(&file.path) {
+                Some(at) => added[at] = None,
+                None => removed.push(file.path),
             },
             _ => {}
         }
     }
-    files
+    ProposedFiles {
+        added: added.into_iter().flatten().collect(),
+        removed,
+    }
 }
 
 /// An object a client said it wrote. One that is not there is the request's fault, and will not be there on a retry.
@@ -476,6 +483,20 @@ mod tests {
         let added: Vec<&str> = files.added.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(added, ["b"]);
         assert_eq!(files.removed, ["old"]);
+
+        // a rewrite of 20,000 files, each added then deleted: as many steps as entries
+        let n = 20_000;
+        let entries = (0..n)
+            .map(|i| (ADDED, file(&format!("n{i}"))))
+            .chain((0..n).map(|i| (DELETED, file(&format!("n{i}")))));
+        let started = std::time::Instant::now();
+        let files = folded(entries);
+        assert!(files.added.is_empty() && files.removed.is_empty());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[tokio::test]
