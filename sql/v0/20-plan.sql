@@ -125,6 +125,20 @@ returns setof @schema@.listed_file language sql stable as $$
    order by f.file_id;
 $$;
 
+-- What added_files gives for each of the commits `ats`, in one statement: a chain of snapshots generated at once asks
+-- once, not once a snapshot (REST-6). Each row's begin_seq names its commit; the index finds each, whatever the table
+-- holds.
+create function @schema@.added_files_of(ref_id int, table_id uuid, ats bigint[])
+returns setof @schema@.listed_file language sql stable as $$
+  select f.file_id, f.begin_seq, f.path, f.spec_id, f.partition, f.record_count, f.file_size, f.footer_size,
+         f.sort_order_id, f.stat_field_ids, f.lower, f.upper, f.null_count, f.nan_count, f.value_count,
+         i.content, null::bigint, null::text, null::bigint, null::bigint, null::bigint, null::bytea
+    from @schema@.data_file f
+    left join @schema@.inline_file i on i.table_id = $2 and i.file_id = f.file_id
+   where f.table_id = $2 and f.ref_id = $1 and f.begin_seq = any ($3)
+   order by f.begin_seq, f.file_id;
+$$;
+
 -- The version an idempotency key reached on a ref, if any (CMT-5). A key whose commit rolled back is not there.
 create function @schema@.key_version(ref_id int, app_id text) returns bigint language sql stable as $$
   select i.version from @schema@.idempotency i where i.ref_id = $1 and i.app_id = $2 and i.version > 0;

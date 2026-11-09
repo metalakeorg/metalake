@@ -280,6 +280,15 @@ impl Ref {
         Ok(files.try_collect().await?)
     }
 
+    /// The files each commit of `ats` added to `table` on this ref, with no vectors, in one call: by commit, as each
+    /// file's `begin_seq` names it, and then by file. Its cost is what it returns, not the table.
+    pub async fn added_files_of(&self, table: &Table, ats: &[i64]) -> Result<Vec<ListedFile>> {
+        let p = self.catalog.protocol();
+        let session = self.catalog.session().await?;
+        let files = p.added_files_of(&session, self.id(), table.id(), ats).await?;
+        Ok(files.try_collect().await?)
+    }
+
     /// The files of `table` this ref sees among `paths` and `file_ids`, as a path, if there is one, and an id.
     pub async fn files_at_paths(
         &self,

@@ -298,6 +298,22 @@ impl Protocol {
         Ok(rows.map_ok(|r| ListedFile::from_row(&r)).map_err(Into::into))
     }
 
+    /// What `added_files` gives for each commit of `ats`, in one statement, by commit and then by file.
+    pub async fn added_files_of<S: Session>(
+        &self,
+        s: &S,
+        ref_id: i32,
+        table_id: Uuid,
+        ats: &[i64],
+    ) -> Result<impl Stream<Item = Result<ListedFile>> + Send + use<S>> {
+        let statement = s
+            .statement(&self.sql("added_files_of(ref_id => $1, table_id => $2, ats => $3)"))
+            .await?;
+        let params: [Param<'_>; 3] = [&ref_id, &table_id, &ats];
+        let rows = s.client().query_raw(&statement, params).await?;
+        Ok(rows.map_ok(|r| ListedFile::from_row(&r)).map_err(Into::into))
+    }
+
     /// The visible files of `table_id` among `paths` and `file_ids`, each as its path, if it has one, and its id.
     pub async fn files_at_paths(
         &self,
@@ -842,6 +858,7 @@ pub const INTERFACE: &[(&str, &[&str], bool)] = &[
     ("commit_changes", &["r", "t", "s"], false),
     ("ancestors", &["table_id", "heads", "keep", "max_age_ms"], false),
     ("added_files", &["ref_id", "table_id", "at"], false),
+    ("added_files_of", &["ref_id", "table_id", "ats"], false),
     ("commit_time", &["seq"], false),
     ("create_ref", &["name", "parent", "kind", "at", "author"], true),
     ("delete_ref", &["ref_id"], true),

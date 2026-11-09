@@ -176,6 +176,53 @@ async fn ftr1_add_footers_by_path() -> Result<(), Error> {
 }
 
 #[tokio::test]
+async fn rest6_added_files_of_many_commits() -> Result<(), Error> {
+    let on = connect().await?;
+    let schema = fresh_schema("c1");
+    install_protocol(&on, &schema).await?;
+    let p = Protocol::new(&schema);
+    let t = Uuid::from_u128(0xc1);
+    let first = p.commit(&on, &create(t)).await?.commit_seq;
+    let dev = p.create_ref(&on, &CreateRef::branch("dev", 1)).await?;
+    let on_dev = p.commit(&on, &append(dev, t, "gs://lake/dev.parquet", 100)).await?.commit_seq;
+    let second = p.commit(&on, &append(1, t, "gs://lake/b.parquet", 200)).await?.commit_seq;
+    let mut two = append(1, t, "gs://lake/c.parquet", 300);
+    two.files.push(stored_file(t, "gs://lake/d.parquet".into(), 10, 1, 400, 409));
+    let third = p.commit(&on, &two).await?.commit_seq;
+
+    let shown = |files: Vec<metalake_pg::records::ListedFile>| -> Vec<(i64, i64, Option<String>)> {
+        files.into_iter().map(|f| (f.begin_seq, f.file_id, f.path)).collect()
+    };
+    let one_by_one = async |r: i32, ats: &[i64]| -> Result<Vec<(i64, i64, Option<String>)>, Error> {
+        let mut all = Vec::new();
+        for at in ats {
+            all.extend(shown(p.added_files(&on, r, t, *at).await?.try_collect().await?));
+        }
+        Ok(all)
+    };
+    let at_once = async |r: i32, ats: &[i64]| -> Result<Vec<(i64, i64, Option<String>)>, Error> {
+        Ok(shown(p.added_files_of(&on, r, t, ats).await?.try_collect().await?))
+    };
+
+    // the same as a call a commit, in the order of commits and then of files, whatever order they are asked in
+    let main = [third, first, second];
+    let mut ordered = main;
+    ordered.sort_unstable();
+    let found = at_once(1, &main).await?;
+    assert_eq!(found, one_by_one(1, &ordered).await?);
+    let paths: Vec<_> = found.iter().filter_map(|(.., path)| path.as_deref()).collect();
+    assert_eq!(
+        paths,
+        ["gs://lake/a.parquet", "gs://lake/b.parquet", "gs://lake/c.parquet", "gs://lake/d.parquet"]
+    );
+    // a commit of another ref adds nothing here, and nothing asked finds nothing
+    assert!(at_once(1, &[on_dev]).await?.is_empty());
+    assert_eq!(at_once(dev, &[on_dev]).await?, one_by_one(dev, &[on_dev]).await?);
+    assert!(at_once(1, &[]).await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn tbl1_table_named_by_ref() -> Result<(), Error> {
     let on = connect().await?;
     let schema = fresh_schema("c1");
