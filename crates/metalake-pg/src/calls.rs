@@ -412,7 +412,7 @@ impl Protocol {
         let statement = s
             .statement(&format!(
                 "select snapshot_id, parent_snapshot_id, ref, schema_seq, summary, \
-                 (extract(epoch from committed_at) * 1000)::bigint as timestamp_ms from {}.snapshots \
+                 ceil(extract(epoch from committed_at) * 1000)::bigint as timestamp_ms from {}.snapshots \
                  where table_id = $1 order by snapshot_id",
                 self.schema
             ))
@@ -434,7 +434,7 @@ impl Protocol {
         let statement = s
             .statement(&format!(
                 "select snapshot_id, parent_snapshot_id, ref, schema_seq, summary, \
-                 (extract(epoch from committed_at) * 1000)::bigint as timestamp_ms \
+                 ceil(extract(epoch from committed_at) * 1000)::bigint as timestamp_ms \
                  from {}.ancestors(table_id => $1, heads => $2, keep => $3, max_age_ms => $4)",
                 self.schema
             ))
