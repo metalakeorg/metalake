@@ -41,7 +41,6 @@ testConcurrentReplaceTransactionPartitionSpec2()          §19
 testConcurrentReplaceTransactionSchema2()                 §19
 testConcurrentReplaceTransactionSortOrder()               §19
 testConcurrentReplaceTransactionSortOrderConflict()       §19
-# Before its replace it asserts the snapshot log of a plain append, which is served empty: a bug of its own, to fix.
 testReplaceTableKeepsSnapshotLog()                        §19
 
 # REST-7: what a client sends at creation is one shape, a single schema.
