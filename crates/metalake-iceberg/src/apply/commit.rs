@@ -215,6 +215,9 @@ pub async fn apply(state: &State, targets: &[Target]) -> Result<Vec<Table>, Appl
         for job in commit(&on, prepared, key).await? {
             state.footers().queue(job);
         }
+        if targets.iter().any(|t| t.change.changes_materialize()) {
+            state.wake_materializer();
+        }
     }
     tables(&on, targets).await
 }

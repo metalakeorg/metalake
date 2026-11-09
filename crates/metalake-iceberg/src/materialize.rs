@@ -2,6 +2,235 @@
 //! the service after each of its commits there, so that a client's load finds it there. The commit never waits for it.
 //!
 //! It is split as a core and a shell: [`plan`] decides, from what it is told, which tables to load and when to look at
-//! the feed again, with no I/O of its own; the worker follows the feed and loads what it is told to.
+//! the feed again, with no I/O of its own; the worker here follows the feed, tells the plan what it finds, and loads
+//! what the plan says. One process of a catalog does it, the one that holds its lead; the others stand by. Nothing of it
+//! is kept: a worker that takes the lead loads every table marked once, which brings each up to date, and follows the
+//! feed from then.
 
 pub(crate) mod plan;
+
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use futures_util::FutureExt;
+use metalake::{Catalog, FeedCursor, Lead, Result};
+use tokio::sync::{Notify, watch};
+use tokio::task::{JoinHandle, JoinSet};
+use uuid::Uuid;
+
+use crate::project::metadata::MATERIALIZE;
+use plan::Plan;
+
+/// The name of the lead among a catalog's processes.
+pub(crate) const LEAD: &str = "materialize";
+/// How often a process that does not lead tries to.
+const STANDBY: Duration = Duration::from_secs(30);
+/// Commits a read of the feed takes at most.
+const FEED_BATCH: usize = 1000;
+/// How long stopping waits for the loads running.
+pub(crate) const DRAIN: Duration = Duration::from_secs(10);
+
+/// The worker that materializes on commit: a clone stops or wakes the same one.
+#[derive(Debug, Clone)]
+pub(crate) struct Materializer {
+    stop: watch::Sender<bool>,
+    bell: Arc<Notify>,
+    worker: Arc<Mutex<Option<JoinHandle<()>>>>,
+}
+
+impl Materializer {
+    /// A worker that follows `catalog` and runs `load` on each table it is to materialize, by its id.
+    pub(crate) fn start<L, F>(catalog: Catalog, load: L) -> Self
+    where
+        L: Fn(Uuid) -> F + Clone + Send + Sync + 'static,
+        F: Future<Output = Result<()>> + Send + 'static,
+    {
+        let (stop, stopped) = watch::channel(false);
+        let bell = Arc::new(Notify::new());
+        let worker = tokio::spawn(run(catalog, load, stopped, bell.clone()));
+        Self {
+            stop,
+            bell,
+            worker: Arc::new(Mutex::new(Some(worker))),
+        }
+    }
+
+    /// A table was marked through the service: the worker looks at the feed at once.
+    pub(crate) fn wake(&self) {
+        self.bell.notify_one();
+    }
+
+    /// Stops the worker: the loads running finish within [`DRAIN`], and the lead is given up for another process.
+    pub(crate) async fn stop(&self) {
+        let _ = self.stop.send(true);
+        let worker = self.worker.lock().expect("not poisoned").take();
+        if let Some(worker) = worker
+            && tokio::time::timeout(DRAIN + Duration::from_secs(1), worker)
+                .await
+                .is_err()
+        {
+            eprintln!("metalake-iceberg: materializing stopped with loads still running");
+        }
+    }
+}
+
+/// How leading ended.
+enum Ended {
+    Stopped,
+    Lost,
+}
+
+/// Stands by until this process leads, then leads until it stops or the lead is lost, and stands by again.
+async fn run<L, F>(catalog: Catalog, load: L, mut stop: watch::Receiver<bool>, bell: Arc<Notify>)
+where
+    L: Fn(Uuid) -> F + Clone + Send + Sync + 'static,
+    F: Future<Output = Result<()>> + Send + 'static,
+{
+    loop {
+        if *stop.borrow() {
+            return;
+        }
+        let lead = match catalog.lead(LEAD).await {
+            Ok(Some(lead)) => lead,
+            Ok(None) => {
+                if stopped_within(&mut stop, STANDBY).await {
+                    return;
+                }
+                continue;
+            }
+            Err(e) => {
+                eprintln!("metalake-iceberg: materializing could not try the lead: {e}");
+                if stopped_within(&mut stop, STANDBY).await {
+                    return;
+                }
+                continue;
+            }
+        };
+        match leading(&catalog, &load, &lead, &mut stop, &bell).await {
+            Ended::Stopped => {
+                let _ = lead.release().await;
+                return;
+            }
+            Ended::Lost => eprintln!("metalake-iceberg: materializing lost the lead, and stands by"),
+        }
+    }
+}
+
+/// Whether `stop` came within `wait`.
+async fn stopped_within(stop: &mut watch::Receiver<bool>, wait: Duration) -> bool {
+    tokio::select! {
+        changed = stop.changed() => changed.is_err() || *stop.borrow(),
+        () = tokio::time::sleep(wait) => false,
+    }
+}
+
+/// Follows the feed and loads what the plan says, while the lead is held.
+async fn leading<L, F>(
+    catalog: &Catalog,
+    load: &L,
+    lead: &Lead,
+    stop: &mut watch::Receiver<bool>,
+    bell: &Notify,
+) -> Ended
+where
+    L: Fn(Uuid) -> F + Clone + Send + Sync + 'static,
+    F: Future<Output = Result<()>> + Send + 'static,
+{
+    let mut plan = Plan::default();
+    let mut cursor = None;
+    let mut loads: JoinSet<(Uuid, bool)> = JoinSet::new();
+    let mut look_at = Instant::now();
+    loop {
+        let now = Instant::now();
+        if now >= look_at {
+            if !lead.held().await {
+                loads.abort_all();
+                return Ended::Lost;
+            }
+            if let Err(e) = look(catalog, &mut plan, &mut cursor).await {
+                eprintln!("metalake-iceberg: materializing could not read the feed: {e}");
+            }
+            look_at = Instant::now() + plan.pause();
+        }
+        for table in plan.start(Instant::now()) {
+            let load = load.clone();
+            loads.spawn(async move {
+                // A load that panics is a load that failed, and the table is tried again, not left loading.
+                let loaded = AssertUnwindSafe(load(table)).catch_unwind().await;
+                match &loaded {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        eprintln!("metalake-iceberg: materializing table {table} failed, and is tried again: {e}")
+                    }
+                    Err(_) => eprintln!("metalake-iceberg: materializing table {table} panicked, and is tried again"),
+                }
+                (table, matches!(loaded, Ok(Ok(()))))
+            });
+        }
+        let wake = plan.wake_at().map_or(look_at, |at| at.min(look_at));
+        tokio::select! {
+            changed = stop.changed() => {
+                if changed.is_err() || *stop.borrow() {
+                    drain(&mut loads).await;
+                    return Ended::Stopped;
+                }
+            }
+            Some(done) = loads.join_next() => {
+                // A task is only cancelled when leading ends, and then the plan goes with it.
+                if let Ok((table, loaded)) = done {
+                    plan.done(table, loaded, Instant::now());
+                }
+            }
+            () = bell.notified() => {
+                plan.woken();
+                look_at = Instant::now();
+            }
+            () = tokio::time::sleep_until(tokio::time::Instant::from_std(wake)) => {}
+        }
+    }
+}
+
+/// Lets the loads running finish within [`DRAIN`], and abandons the rest: what they would have generated, a load
+/// generates (REST-6).
+async fn drain(loads: &mut JoinSet<(Uuid, bool)>) {
+    let finished = tokio::time::timeout(DRAIN, async { while loads.join_next().await.is_some() {} }).await;
+    if finished.is_err() {
+        loads.abort_all();
+    }
+}
+
+/// One look: with no table marked, whether one is; with some, the feed since the last look, the tables marked first,
+/// so that the commit that marked a table counts as one of it.
+async fn look(catalog: &Catalog, plan: &mut Plan, cursor: &mut Option<FeedCursor>) -> Result<()> {
+    let Some(at) = cursor.as_mut().filter(|_| plan.any_marked()) else {
+        // The cursor is taken before the tables marked: a commit after it comes by the feed, and each table marked is
+        // loaded once now, which takes what came before.
+        let start = catalog.feed_start().await?;
+        let marked = catalog.tables_with_property(MATERIALIZE, "on-commit").await?;
+        *cursor = (!marked.is_empty()).then_some(start);
+        plan.marked(marked);
+        return Ok(());
+    };
+    loop {
+        let commits = catalog.feed(at, FEED_BATCH).await?;
+        let Some(last) = commits.last() else {
+            plan.committed(&[]);
+            return Ok(());
+        };
+        plan.marked(catalog.tables_with_property(MATERIALIZE, "on-commit").await?);
+        let seqs: Vec<i64> = commits.iter().map(|c| c.commit_seq).collect();
+        let touched: Vec<(i32, Uuid)> = catalog
+            .commit_tables(&seqs)
+            .await?
+            .into_iter()
+            .map(|(_, ref_id, table)| (ref_id, table))
+            .collect();
+        plan.committed(&touched);
+        *at = at.after(last);
+        if commits.len() < FEED_BATCH {
+            return Ok(());
+        }
+    }
+}

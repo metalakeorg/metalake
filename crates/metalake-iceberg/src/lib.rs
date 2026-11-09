@@ -4,7 +4,6 @@
 pub mod apply;
 mod footers;
 mod load;
-#[cfg_attr(not(test), allow(dead_code))] // the worker that uses it is the next step (M4)
 mod materialize;
 pub mod project;
 mod rest;

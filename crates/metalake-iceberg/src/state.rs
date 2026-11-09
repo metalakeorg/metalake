@@ -1,11 +1,13 @@
-//! What every request shares: the catalog, reached once, the ref an Iceberg catalog's tables are read on, and the
-//! worker that keeps the footers of what clients commit.
+//! What every request shares: the catalog, reached once, the ref an Iceberg catalog's tables are read on, the worker
+//! that keeps the footers of what clients commit, and the one that materializes tables marked on commit.
 
 use std::time::Duration;
 
 use metalake::{Catalog, CatalogConfig, Error, Ref, Result, Storage};
 
 use crate::footers::{Footers, Job, QUEUE};
+use crate::load::load;
+use crate::materialize::Materializer;
 
 /// How long stopping waits for footers still queued, which are maintenance's after it.
 const FOOTERS_DRAIN: Duration = Duration::from_secs(10);
@@ -16,6 +18,7 @@ pub struct State {
     catalog: Catalog,
     main: Ref,
     footers: Footers,
+    materializer: Option<Materializer>,
 }
 
 impl State {
@@ -33,7 +36,36 @@ impl State {
                 kept.map_err(|e| e.to_string())
             }
         });
-        Ok(Self { catalog, main, footers })
+        Ok(Self {
+            catalog,
+            main,
+            footers,
+            materializer: None,
+        })
+    }
+
+    /// The same, materializing the tables marked `on-commit` after each of their commits (REST-6), when this process
+    /// leads the catalog's, as the service does unless told not to. A load is what a client's load is, of the table on
+    /// `main`, as the service serves its tables there.
+    pub fn materializing(mut self) -> Self {
+        let serving = self.clone();
+        let load = move |table: uuid::Uuid| {
+            let state = serving.clone();
+            async move {
+                let table = state.main().table_with_id(table).await?;
+                load(&state, &table).await.map(|_| ())
+            }
+        };
+        self.materializer = Some(Materializer::start(self.catalog.clone(), load));
+        self
+    }
+
+    /// Tells the worker that materializes on commit, if this process runs one, that a commit changed which tables are
+    /// marked: it looks at the feed at once, rather than within its pause.
+    pub(crate) fn wake_materializer(&self) {
+        if let Some(materializer) = &self.materializer {
+            materializer.wake();
+        }
     }
 
     pub(crate) fn footers(&self) -> &Footers {
@@ -61,8 +93,11 @@ impl State {
         &self.main
     }
 
-    /// Lets the footers queued finish for a while, then closes the catalog's connections.
+    /// Stops materializing, lets the footers queued finish for a while, then closes the catalog's connections.
     pub(crate) async fn close(&self) {
+        if let Some(materializer) = &self.materializer {
+            materializer.stop().await;
+        }
         self.footers.stop(FOOTERS_DRAIN).await;
         self.catalog.close();
     }

@@ -250,15 +250,7 @@ impl TableStream {
 
     /// A stream point, once its sequence is stable (VIS-11).
     async fn point(&self) -> Result<(SystemTime, i64)> {
-        let session = self.catalog.session().await?;
-        let p = self.catalog.protocol();
-        let point = p.stream_point(&session).await?;
-        let mut pause = Duration::from_millis(1);
-        while !p.is_stable(&session, point.horizon).await? {
-            tokio::time::sleep(pause).await;
-            pause = (pause * 2).min(Duration::from_millis(50));
-        }
-        Ok((point.at, point.seq))
+        self.catalog.stable_point().await
     }
 
     /// The commits after the cursor, each one whole, as a step of its tasks.

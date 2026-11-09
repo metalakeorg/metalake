@@ -125,10 +125,16 @@ impl Drop for Running {
 }
 
 pub fn server(schema: &str) -> Result<(Running, String), Failure> {
+    server_with(schema, &[])
+}
+
+/// The server, with `more` arguments.
+pub fn server_with(schema: &str, more: &[&str]) -> Result<(Running, String), Failure> {
     use std::io::{BufRead, BufReader};
     let mut running = Running(
         Command::new(env!("CARGO_BIN_EXE_metalake-iceberg"))
             .args(["--schema", schema, "--listen", "127.0.0.1:0"])
+            .args(more)
             .env("METALAKE_POSTGRES", url())
             .stdout(Stdio::piped())
             .spawn()?,

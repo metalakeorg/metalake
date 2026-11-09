@@ -19,6 +19,16 @@ struct Args {
     /// Where to listen; port 0 takes a free one, which the first line says.
     #[arg(long, default_value = "127.0.0.1:8181")]
     listen: String,
+    /// Whether this process materializes the tables marked `on-commit` after each commit, when it leads the catalog's
+    /// processes; one leads, whatever their number.
+    #[arg(long, env = "METALAKE_MATERIALIZE", value_enum, default_value_t = Switch::On)]
+    materialize: Switch,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum Switch {
+    On,
+    Off,
 }
 
 /// Ctrl-C, or, where there is one, the signal a service manager stops a process with.
@@ -40,7 +50,10 @@ async fn stopped() {
 async fn main() -> ExitCode {
     let args = Args::parse();
     let run = async {
-        let state = State::connect(&args.postgres, &args.schema).await?;
+        let mut state = State::connect(&args.postgres, &args.schema).await?;
+        if args.materialize == Switch::On {
+            state = state.materializing();
+        }
         let listener = TcpListener::bind(&args.listen).await?;
         println!("listening on {}", listener.local_addr()?);
         serve(listener, state, stopped()).await?;

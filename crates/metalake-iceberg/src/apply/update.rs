@@ -55,6 +55,12 @@ pub struct Change {
 }
 
 impl Change {
+    /// Whether the commit sets or removes when the table is materialized (REST-9), which the worker that materializes
+    /// on commit is told of at once.
+    pub fn changes_materialize(&self) -> bool {
+        self.properties.contains_key(MATERIALIZE)
+    }
+
     /// The key that makes a repeat of this commit apply nothing (REST-3). A change of properties has none, as repeating
     /// it changes nothing.
     pub fn app_id(&self, table_id: &str) -> Option<String> {
@@ -512,11 +518,21 @@ mod tests {
         // when to materialize is one of two, and removing it is on load again
         let set = |value: &str| json!([{"action": "set-properties", "updates": {MATERIALIZE: value}}]);
         for named in ["on-load", "on-commit"] {
-            assert!(asked(with_updates(append(), set(named))).is_ok(), "{named}");
+            let change = asked(with_updates(append(), set(named))).unwrap();
+            assert!(change.changes_materialize(), "setting it, {named}, wakes the worker");
         }
         refused(with_updates(append(), set("always")), MATERIALIZE);
         let remove = json!([{"action": "remove-properties", "removals": [MATERIALIZE]}]);
-        assert!(asked(with_updates(append(), remove)).is_ok());
+        assert!(
+            asked(with_updates(append(), remove)).unwrap().changes_materialize(),
+            "and removing it"
+        );
+        let other = json!([{"action": "set-properties", "updates": {"a": "1"}}]);
+        assert!(
+            !asked(with_updates(append(), other)).unwrap().changes_materialize(),
+            "another property does not"
+        );
+        assert!(!asked(append()).unwrap().changes_materialize(), "nor files");
     }
 
     #[test]

@@ -59,6 +59,8 @@ pub struct Catalog {
 #[derive(Debug)]
 struct Inner {
     pool: Pool,
+    /// Where the pool connects, for a connection of one's own (`Catalog::lead`).
+    postgres: String,
     protocol: Protocol,
     versions: Versions,
     warehouse: Option<String>,
@@ -78,6 +80,7 @@ impl Catalog {
         Ok(Self {
             inner: Arc::new(Inner {
                 pool,
+                postgres: config.postgres,
                 protocol: Protocol::new(&config.schema),
                 versions,
                 warehouse,
@@ -221,6 +224,24 @@ impl Catalog {
 
     pub(crate) fn protocol(&self) -> &Protocol {
         &self.inner.protocol
+    }
+
+    pub(crate) fn postgres(&self) -> &str {
+        &self.inner.postgres
+    }
+
+    /// A point of the catalog to follow it from, once its sequence is stable (VIS-11): no commit at or below it is in
+    /// flight, and every one after it takes a later time.
+    pub(crate) async fn stable_point(&self) -> Result<(SystemTime, i64)> {
+        let session = self.session().await?;
+        let p = self.protocol();
+        let point = p.stream_point(&session).await?;
+        let mut pause = Duration::from_millis(1);
+        while !p.is_stable(&session, point.horizon).await? {
+            tokio::time::sleep(pause).await;
+            pause = (pause * 2).min(Duration::from_millis(50));
+        }
+        Ok((point.at, point.seq))
     }
 
     /// Where a table goes that names no location: under the warehouse, by namespace and name.
@@ -475,6 +496,30 @@ impl Ref {
             .await?
             .ok_or_else(|| Error::NotFound(format!("table {table_id} on {}", self.name)))?;
         Table::from_definition(self.id, seq, &definition)
+    }
+
+    /// The table `id` as this ref sees it now, which a follower of the feed knows by its id alone: its name here, and
+    /// then the table of that name, which is the one a read by name opens. Not found if this ref does not see it, or
+    /// if its name came to be another table's meanwhile.
+    pub async fn table_with_id(&self, id: Uuid) -> Result<Table> {
+        let missing = || Error::NotFound(format!("table {id} on {}", self.name));
+        let p = self.catalog.protocol();
+        let definition = p
+            .describe(&self.catalog.session().await?, self.id, id, None)
+            .await?
+            .ok_or_else(missing)?;
+        let namespace: Vec<&str> = definition["namespace"]
+            .as_array()
+            .ok_or_else(missing)?
+            .iter()
+            .filter_map(|level| level.as_str())
+            .collect();
+        let name = definition["name"].as_str().ok_or_else(missing)?;
+        let table = self.table(&namespace, name).await?;
+        if table.id() != id {
+            return Err(missing());
+        }
+        Ok(table)
     }
 
     /// `table` of this ref, read at `seq`.

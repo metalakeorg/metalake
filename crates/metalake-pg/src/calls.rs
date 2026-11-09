@@ -538,6 +538,46 @@ impl Protocol {
         Ok(row.map(|r| (r.get("table_id"), r.get("seq"))))
     }
 
+    /// Takes the lock named `name` of this catalog for the session, if no other session holds it: Postgres's advisory
+    /// lock, keyed by the schema and the name, so that catalogs in one database do not share it. It lasts as long as
+    /// the session or until released, so it is for a session no one else uses.
+    pub async fn try_lead(&self, s: &impl Session, name: &str) -> Result<bool> {
+        let row = s
+            .client()
+            .query_one(
+                "select pg_try_advisory_lock(hashtext($1), hashtext($2))",
+                &[&self.schema, &name],
+            )
+            .await?;
+        Ok(row.get(0))
+    }
+
+    /// Whether the session holds the lock named `name` of this catalog.
+    pub async fn holds_lead(&self, s: &impl Session, name: &str) -> Result<bool> {
+        let row = s
+            .client()
+            .query_one(
+                "select exists (select 1 from pg_locks
+                                 where locktype = 'advisory' and pid = pg_backend_pid() and granted and objsubid = 2
+                                   and classid::bigint = hashtext($1)::bigint & 4294967295
+                                   and objid::bigint = hashtext($2)::bigint & 4294967295)",
+                &[&self.schema, &name],
+            )
+            .await?;
+        Ok(row.get(0))
+    }
+
+    /// Releases the lock named `name` of this catalog, if the session holds it.
+    pub async fn release_lead(&self, s: &impl Session, name: &str) -> Result<()> {
+        s.client()
+            .query_one(
+                "select pg_advisory_unlock(hashtext($1), hashtext($2))",
+                &[&self.schema, &name],
+            )
+            .await?;
+        Ok(())
+    }
+
     /// The tables each commit of `seqs` made a snapshot of: its sequence, its ref and the table.
     pub async fn commit_tables(&self, s: &impl Session, seqs: &[i64]) -> Result<Vec<(i64, i32, Uuid)>> {
         let rows = self.all(s, "commit_tables(seqs => $1)", &[&seqs]).await?;
