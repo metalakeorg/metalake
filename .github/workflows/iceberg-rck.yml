@@ -13,6 +13,15 @@ on:
       - sql/**
       - ci/rck/**
       - .github/workflows/iceberg-rck.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/metalake-iceberg/**
+      - crates/metalake/**
+      - crates/metalake-pg/**
+      - sql/**
+      - ci/rck/**
+      - .github/workflows/iceberg-rck.yml
   workflow_dispatch:
 
 permissions:

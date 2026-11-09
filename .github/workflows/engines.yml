@@ -2,11 +2,23 @@
 # Apart from `protocol`, so that a change of the server is held to them without the suites of the protocol.
 name: engines
 
+# The server is built on the core, its SDK and the protocol's SQL: a change of any of them is held to the engines too.
 on:
   push:
     branches: [main]
     paths:
       - crates/metalake-iceberg/**
+      - crates/metalake/**
+      - crates/metalake-pg/**
+      - sql/**
+      - .github/workflows/engines.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/metalake-iceberg/**
+      - crates/metalake/**
+      - crates/metalake-pg/**
+      - sql/**
       - .github/workflows/engines.yml
   workflow_dispatch:
 

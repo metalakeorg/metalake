@@ -41,7 +41,6 @@ testConcurrentReplaceTransactionPartitionSpec2()          §19
 testConcurrentReplaceTransactionSchema2()                 §19
 testConcurrentReplaceTransactionSortOrder()               §19
 testConcurrentReplaceTransactionSortOrderConflict()       §19
-testReplaceTableKeepsSnapshotLog()                        §19
 
 # REST-7: what a client sends at creation is one shape, a single schema.
 testCompleteCreateTransactionMultipleSchemas()            REST-7
@@ -55,6 +54,11 @@ createTableTransaction(int)[1]                            ICE-1
 createTableTransaction(int)[3]                            ICE-1
 replaceTableTransaction(int)[1]                           ICE-1
 testCreateTableWithDefaultColumnValue()                   ICE-1
+
+# ICE-1, then §19: once a table is written to, the snapshot that created it is served, so the snapshot log of a first
+# append has two entries where Iceberg's has one; a read as of a time between them finds the table empty, as TT-3 does.
+# Past that, its replace is refused (§19).
+testReplaceTableKeepsSnapshotLog()                        ICE-1
 
 # ICE-1: sequence-number is snapshot-id, the catalog's commit sequence, which does not start at 1 per table.
 testCompleteCreateTransactionV2()                         ICE-1
