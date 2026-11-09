@@ -1,5 +1,5 @@
 //! Following the catalog (CHG-1): its feed of every commit from now, the lead among the processes that follow it, and a
-//! table opened by the id the feed knows it by.
+//! table opened by the id the feed knows it by, and by its name from more reads at once than the pool has connections.
 
 mod common;
 
@@ -146,5 +146,27 @@ async fn table_with_id_resolves_by_name() -> Result<(), Error> {
         main.table_with_id(Uuid::from_u128(7)).await,
         Err(Error::NotFound(_))
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn table_lookups_beyond_pool_resolves() -> Result<(), Error> {
+    let mut config = CatalogConfig::new(url(), fresh_schema()).warehouse("memory:///wh");
+    config.connections = 2;
+    let catalog = Catalog::init(config, None).await?;
+    let main = catalog.branch("main").await?;
+    main.transaction().create_namespace(&["db"]).commit().await?;
+    create(&main, "t").await?;
+    let then = main.as_of(std::time::SystemTime::now());
+    // A time is read once it is a second past (TT-3).
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    // Many more lookups at once than connections: each takes one at a time, so none waits on another for ever.
+    let lookups = (0..16).map(|i| {
+        let on = if i % 2 == 0 { main.clone() } else { then.clone() };
+        async move { on.table(&["db"], "t").await }
+    });
+    let found = tokio::time::timeout(Duration::from_secs(30), futures_util::future::join_all(lookups)).await;
+    let found = found.expect("no lookup waits on the pool for ever");
+    assert!(found.iter().all(Result::is_ok), "{found:?}");
     Ok(())
 }
