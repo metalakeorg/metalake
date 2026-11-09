@@ -262,6 +262,61 @@ async fn ice2_manifests_roll_up() -> Result<(), Failure> {
     Ok(())
 }
 
+/// The keys of `t` as MetaLake reads it, sorted.
+async fn keys_of(catalog: &Catalog, storage: &metalake::Storage, t: &metalake::Table) -> Result<Vec<i64>, Failure> {
+    let scan = Scan::new(catalog, t);
+    let read: Vec<RecordBatch> = scan.read(scan.plan().await?, storage).try_collect().await?;
+    let column = |b: &RecordBatch| {
+        b.column_by_name("k")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .clone()
+    };
+    let mut keys: Vec<i64> = read.iter().flat_map(|b| column(b).values().to_vec()).collect();
+    keys.sort_unstable();
+    Ok(keys)
+}
+
+#[tokio::test]
+async fn tt3_pyiceberg_as_of_time_matches_metalake() -> Result<(), Failure> {
+    let schema = fresh_schema();
+    let (catalog, storage, directory) = local_catalog(&schema).await?;
+    let main = catalog.branch("main").await?;
+    main.transaction().create_namespace(&["db"]).commit().await?;
+    create(&main, "plain", "0", vec![]).await?;
+    for keys in [0..5, 100..103] {
+        // Commits a millisecond apart or more, so that each has a time of its own in the log.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        append(&catalog, &main, &storage, "plain", keys).await?;
+    }
+
+    let (_server, uri) = server(&schema)?;
+    let said = client("as_of", &uri)?;
+    let said = said.as_array().unwrap();
+    assert_eq!(
+        said.len(),
+        6,
+        "the creation and two appends, each at its time and just before: {said:?}"
+    );
+    assert_eq!(said[0]["snapshot"], Value::Null, "before the table, no snapshot");
+    for at in said {
+        let time = std::time::UNIX_EPOCH + std::time::Duration::from_millis(at["at"].as_u64().unwrap());
+        let then = match main.as_of(time).table(&["db"], "plain").await {
+            Ok(t) => Some((t.snapshot_id(), keys_of(&catalog, &storage, &t).await?)),
+            Err(metalake::Error::NotFound(_)) => None,
+            Err(e) => return Err(e.into()),
+        };
+        let resolved = at["snapshot"]
+            .as_i64()
+            .map(|id| (Some(id), serde_json::from_value(at["rows"].clone()).unwrap()));
+        assert_eq!(resolved, then, "as of {}", at["at"]);
+    }
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
+
 #[tokio::test]
 async fn ice6_pyiceberg_append() -> Result<(), Failure> {
     let schema = fresh_schema();

@@ -283,7 +283,8 @@ pub struct TableSnapshot {
     pub ref_name: String,
     pub schema_seq: i64,
     pub summary: Value,
-    /// Its commit's time, in milliseconds since the epoch.
+    /// Its commit's time, in milliseconds since the epoch, rounded up: a read as of a whole millisecond then sees the
+    /// commit exactly when it sees it by the commit's time (TT-3), as rounding down or to nearest would not.
     pub timestamp_ms: Option<i64>,
 }
 

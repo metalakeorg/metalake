@@ -145,7 +145,7 @@ create function iceberg_metadata(t uuid) returns jsonb language sql stable as $$
     'table-uuid', t,
     'location', (select location from tbl where table_id = t),
     'last-sequence-number', coalesce((select max(snapshot_id) from snaps), 0),
-    'last-updated-ms', coalesce((select (extract(epoch from max(committed_time(snapshot_id))) * 1000)::bigint from snaps), 0),
+    'last-updated-ms', coalesce((select ceil(extract(epoch from max(committed_time(snapshot_id))) * 1000)::bigint from snaps), 0),
     'last-column-id', (select last_field_id from table_counter where table_id = t),
     'schemas', (select jsonb_agg(j || jsonb_build_object('schema-id', schema_seq) order by schema_seq) from schemas),
     'current-schema-id', (select schema_seq from snaps where snapshot_id = (select id from main_snap)),
@@ -168,7 +168,7 @@ create function iceberg_metadata(t uuid) returns jsonb language sql stable as $$
     'current-snapshot-id', (select id from main_snap),
     'snapshots', coalesce((select jsonb_agg(jsonb_strip_nulls(jsonb_build_object(
         'snapshot-id', x.snapshot_id, 'parent-snapshot-id', x.parent_snapshot_id, 'sequence-number', x.snapshot_id,
-        'timestamp-ms', (extract(epoch from committed_time(x.snapshot_id)) * 1000)::bigint,
+        'timestamp-ms', ceil(extract(epoch from committed_time(x.snapshot_id)) * 1000)::bigint,
         'schema-id', x.schema_seq,
         'summary', jsonb_build_object('operation', case
                      when x.summary ->> 'operation' = 'merge' and x.summary ->> 'deleted-data-files' = '0'
@@ -180,7 +180,7 @@ create function iceberg_metadata(t uuid) returns jsonb language sql stable as $$
         order by x.snapshot_id) from snaps x), '[]'),
     'refs', coalesce((select jsonb_object_agg(name, jsonb_build_object('snapshot-id', id, 'type', kind)) from refs where id is not null), '{}'),
     'snapshot-log', coalesce((select jsonb_agg(jsonb_build_object('snapshot-id', h.snapshot_id,
-                       'timestamp-ms', (extract(epoch from committed_time(h.snapshot_id)) * 1000)::bigint)
+                       'timestamp-ms', ceil(extract(epoch from committed_time(h.snapshot_id)) * 1000)::bigint)
                        order by h.snapshot_id) from history h), '[]'),
     'metadata-log', '[]'::jsonb);
 $$;

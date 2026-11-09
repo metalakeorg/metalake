@@ -72,6 +72,20 @@ def rows(uri):
     return {"rows": sorted(row["k"] for row in table.scan().to_arrow().to_pylist())}
 
 
+def as_of(uri):
+    """The table as of each time its snapshot-log names, and of the millisecond before: the snapshot an engine resolves
+    the time to, as Iceberg says to, and its rows."""
+    table = connect(uri).load_table("db.plain")
+    said = []
+    for entry in table.metadata.snapshot_log:
+        for at in (entry.timestamp_ms - 1, entry.timestamp_ms):
+            snapshot = table.snapshot_as_of_timestamp(at)
+            rows = None if snapshot is None else sorted(
+                row["k"] for row in table.scan(snapshot_id=snapshot.snapshot_id).to_arrow().to_pylist())
+            said.append({"at": at, "snapshot": None if snapshot is None else snapshot.snapshot_id, "rows": rows})
+    return said
+
+
 def append(uri):
     table = connect(uri).load_table("db.plain")
     before = table.current_snapshot().snapshot_id
@@ -280,4 +294,4 @@ def wide(uri):
 
 
 if __name__ == "__main__":
-    print(json.dumps({"namespaces": namespaces, "read": read, "rows": rows, "wide": wide, "append": append, "retry": retry, "lifecycle": lifecycle, "manifests": manifests, "rolled": rolled}[sys.argv[1]](sys.argv[2])))
+    print(json.dumps({"namespaces": namespaces, "read": read, "rows": rows, "wide": wide, "as_of": as_of, "append": append, "retry": retry, "lifecycle": lifecycle, "manifests": manifests, "rolled": rolled}[sys.argv[1]](sys.argv[2])))
