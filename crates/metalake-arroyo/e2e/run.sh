@@ -7,11 +7,14 @@
 #   bash crates/metalake-arroyo/e2e/run.sh
 #   ARROYO_REF=feat/metalake-connector bash crates/metalake-arroyo/e2e/run.sh
 #   KEEP=1 bash crates/metalake-arroyo/e2e/run.sh      leaves everything running, to look at
+#   ARROYO_IMAGE=arroyo:local bash crates/metalake-arroyo/e2e/run.sh   an image already built
 #
 # Building Arroyo's image takes long the first time; Docker caches it after.
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 root=$(cd "$here/../../.." && pwd)
+# Docker takes the host's paths: on Windows, Git Bash's /c/... as C:/...
+if command -v cygpath >/dev/null 2>&1; then here=$(cygpath -m "$here"); root=$(cygpath -m "$root"); fi
 ref=${ARROYO_REF:-master}
 postgres=${POSTGRES_IMAGE:-postgres:17@sha256:3b0cda93be7c8dba2ed484d19393d93845dc3dafb88973e248ba8e6d99d784e1}
 net=metalake-e2e; pg=metalake-e2e-pg; job=metalake-e2e-arroyo; lake=metalake-e2e-lake
@@ -27,8 +30,11 @@ clean
 [ -n "${KEEP:-}" ] || trap clean EXIT
 
 echo "== images"
-docker build -q -t metalake-e2e/arroyo:"${ref//\//-}" --target arroyo -f docker/Dockerfile \
-  "https://github.com/describeloai/arroyo.git#$ref" >/dev/null
+arroyo=${ARROYO_IMAGE:-metalake-e2e/arroyo:${ref//\//-}}
+if [ -z "${ARROYO_IMAGE:-}" ]; then
+  docker build -q -t "$arroyo" --target arroyo -f docker/Dockerfile \
+    "https://github.com/describeloai/arroyo.git#$ref" >/dev/null
+fi
 docker build -q -t metalake-e2e/metalake -f "$here/metalake.Dockerfile" "$root" >/dev/null
 
 echo "== catalog"
@@ -49,7 +55,7 @@ metalake sql "create schema main.shop;
 
 start() {
   docker run -d --name "$job" --network "$net" -v "$lake:/lake" -v "$here/pipeline.sql:/pipeline.sql:ro" \
-    metalake-e2e/arroyo:"${ref//\//-}" run --name totals --parallelism 2 --state-dir /lake/state /pipeline.sql >/dev/null
+    "$arroyo" run --name totals --parallelism 2 --state-dir /lake/state /pipeline.sql >/dev/null
 }
 
 # The totals the orders give, and those the pipeline keeps, until they agree.

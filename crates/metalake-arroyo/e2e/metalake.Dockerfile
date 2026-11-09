@@ -5,6 +5,8 @@ ARG RUST_VERSION=1.99.1
 
 FROM rust:${RUST_VERSION}-slim-trixie AS builder
 WORKDIR /src
+# few enough compilers for a Docker of a few GB
+ENV CARGO_BUILD_JOBS=6
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
