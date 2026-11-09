@@ -94,9 +94,9 @@ impl Change {
 /// Holds an asserted uuid to the table's id: another table under the name is a conflict, as the client's is gone.
 pub fn check_uuid(asserted: Option<&str>, table_id: &str) -> Result<(), Refused> {
     match asserted {
-        Some(uuid) if !uuid.eq_ignore_ascii_case(table_id) => {
-            Err(Refused::Conflict(format!("the table is {table_id}, not {uuid}")))
-        }
+        Some(uuid) if !uuid.eq_ignore_ascii_case(table_id) => Err(Refused::Conflict(format!(
+            "Requirement failed: UUID does not match: expected {uuid} != {table_id}"
+        ))),
         _ => Ok(()),
     }
 }
@@ -372,7 +372,7 @@ mod tests {
         assert_eq!(
             change.check_table("00000000-0000-0000-0000-00000000000A"),
             Err(Refused::Conflict(
-                "the table is 00000000-0000-0000-0000-00000000000A, not 00000000-0000-0000-0000-000000000001".into()
+                "Requirement failed: UUID does not match: expected 00000000-0000-0000-0000-000000000001 != 00000000-0000-0000-0000-00000000000A".into()
             ))
         );
     }

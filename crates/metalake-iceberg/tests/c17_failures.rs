@@ -100,6 +100,10 @@ async fn rest3_other_table_uuid_before_refusal_conflicts() -> Result<(), Failure
     let (status, answer) = request(&uri, "POST", "/v1/namespaces/db/tables/t", Some(body))?;
     assert_eq!(status, 409, "{answer}");
     assert_eq!(answer["error"]["type"], "CommitFailedException");
+    assert!(
+        message(&answer).starts_with("Requirement failed: UUID does not match"),
+        "{answer}"
+    );
 
     let body = json!({"requirements": [{"type": "assert-last-assigned-field-id", "last-assigned-field-id": 1}],
         "updates": []});
