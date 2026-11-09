@@ -48,17 +48,24 @@ fn delete_path(location: &str, file: &ListedFile, sequence: i64) -> String {
     )
 }
 
+/// The ref of `name` among those a load read once, in the catalog's order: a load names each of them, and finding one
+/// in the catalog reads them all.
+fn known<'a>(refs: &'a [Ref], name: &str) -> Result<&'a Ref> {
+    refs.iter()
+        .find(|r| r.name() == name)
+        .ok_or_else(|| Error::NotFound(format!("ref {name}")))
+}
+
 /// The rows of `table`, on `main`, and only the snapshots served (REST-5).
 async fn rows(state: &State, table: &Table) -> Result<Rows> {
     let main = state.main();
     let definition = main.definition(table, None).await?;
     let mut refs = Vec::new();
-    let live = state.catalog().describe_refs().await?;
-    for described in &live {
-        let on = state.named(&described.name).await?;
+    let live = state.catalog().refs().await?;
+    for on in &live {
         let seen = on.definition(table, None).await.ok();
         let current = seen.and_then(|d| d["snapshot_id"].as_i64());
-        refs.push((described.name.clone(), described.kind.clone(), current));
+        refs.push((on.name().to_string(), on.kind().to_string(), current));
     }
     let heads: Vec<i64> = refs.iter().filter_map(|(.., current)| *current).collect();
     let Expiry { keep, max_age_ms } = expiry(&definition);
@@ -66,7 +73,7 @@ async fn rows(state: &State, table: &Table) -> Result<Rows> {
     let mut schemas = BTreeMap::new();
     for snapshot in &snapshots {
         if let Entry::Vacant(schema) = schemas.entry(snapshot.schema_seq) {
-            let on = state.named(&snapshot.ref_name).await?;
+            let on = known(&live, &snapshot.ref_name)?;
             let at = on.definition(table, Some(snapshot.snapshot_id)).await?;
             schema.insert(at["fields"].clone());
         }
@@ -350,13 +357,14 @@ pub(crate) async fn load(state: &State, table: &Table) -> Result<LoadTableResult
     let (metadata_location, body) = rendered(location, &served)?;
     if !storage.exists(&metadata_location).await? {
         let heads: Vec<i64> = rows.refs.iter().filter_map(|(.., current)| *current).collect();
+        let live = state.catalog().refs().await?;
         let exists = |id| {
             let (storage, path) = (&storage, list_path(location, id));
             async move { storage.exists(&path).await }
         };
         for snapshot in unlisted(&rows.snapshots, &heads, exists).await? {
-            let on = state.named(&snapshot.ref_name).await?;
-            generate(&on, state, &storage, table, snapshot).await?;
+            let on = known(&live, &snapshot.ref_name)?;
+            generate(on, state, &storage, table, snapshot).await?;
         }
         storage.put(&metadata_location, body).await?;
         let found = storage.list(&metadata_files(location)).await?;
