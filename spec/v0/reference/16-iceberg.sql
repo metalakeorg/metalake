@@ -125,9 +125,14 @@ $$;
 
 -- ICE-1: the table metadata of t, without the manifest-list paths, which the harness adds per snapshot.
 create function iceberg_metadata(t uuid) returns jsonb language sql stable as $$
-  with latest (s) as (select 9223372036854775806::bigint),
+  with recursive latest (s) as (select 9223372036854775806::bigint),
   snaps as (select * from snapshot where table_id = t),
   main_snap as (select snapshot_at(1, t, (select s from latest)) as id),
+  -- The history of the current snapshot: main's, each snapshot following the one before, so its ancestry.
+  history as (
+    select x.snapshot_id, x.parent_snapshot_id from snaps x where x.snapshot_id = (select id from main_snap)
+    union all
+    select x.snapshot_id, x.parent_snapshot_id from snaps x join history h on x.snapshot_id = h.parent_snapshot_id),
   refs as (
     select r.name, r.kind, snapshot_at(r.ref_id, t, (select s from latest)) as id
       from ref r
@@ -174,7 +179,10 @@ create function iceberg_metadata(t uuid) returns jsonb language sql stable as $$
                    || (select coalesce(jsonb_object_agg(k, v #>> '{}'), '{}') from jsonb_each(x.summary - 'operation') e(k, v))))
         order by x.snapshot_id) from snaps x), '[]'),
     'refs', coalesce((select jsonb_object_agg(name, jsonb_build_object('snapshot-id', id, 'type', kind)) from refs where id is not null), '{}'),
-    'snapshot-log', '[]'::jsonb, 'metadata-log', '[]'::jsonb);
+    'snapshot-log', coalesce((select jsonb_agg(jsonb_build_object('snapshot-id', h.snapshot_id,
+                       'timestamp-ms', (extract(epoch from committed_time(h.snapshot_id)) * 1000)::bigint)
+                       order by h.snapshot_id) from history h), '[]'),
+    'metadata-log', '[]'::jsonb);
 $$;
 
 -- The keys of a file's statistics maps, in field id order.
