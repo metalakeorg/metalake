@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 /// Tables a commit creates at most.
 const PER_COMMIT: usize = 500;
-const KEY: &str = "metalake.iceberg.materialize";
+const KEY: &str = "metalake.iceberg.metadata";
 
 fn table(i: usize) -> TableChange {
     let value = if i < 2 { "on-commit" } else { "on-load" };

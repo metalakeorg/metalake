@@ -3,6 +3,7 @@
 
 mod error;
 mod history;
+mod iceberg;
 mod lake;
 mod maintain;
 mod merge;
@@ -13,6 +14,7 @@ mod write;
 
 pub use error::{Error, Kind, Result};
 pub use history::duration;
+pub use iceberg::{Iceberg, IcebergTable};
 pub use lake::Lake;
 pub use maintain::{Done, MaintainRequest, MaintainRun, Task};
 pub use merge::{MergeOutcome, MergeRequest};

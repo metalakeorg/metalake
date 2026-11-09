@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use super::update::{Creation, check_property};
 use super::{ApplyError, Refused};
-use crate::project::metadata::MATERIALIZE;
+use crate::project::metadata::ICEBERG_METADATA;
 use crate::state::State;
 use crate::wire::commit::CreateTableRequest;
 
@@ -300,7 +300,7 @@ pub fn requested(state: &State, namespace: &[&str], request: CreateTableRequest)
 /// Commits a `createTable` that is not staged.
 pub async fn create(state: &State, namespace: &[&str], name: &str, new: Requested) -> Result<Table, ApplyError> {
     let main = state.main();
-    let marks = new.definition["properties"].get(MATERIALIZE).is_some();
+    let marks = new.definition["properties"].get(ICEBERG_METADATA).is_some();
     let transaction = main
         .transaction()
         .define(new.table_id, new.definition)
@@ -457,7 +457,7 @@ mod tests {
             "write.merge.mode",
         );
         assert!(definition(&[], "t", &new, &given("write.merge.mode", "copy-on-write")).is_ok());
-        let materialize = crate::project::metadata::MATERIALIZE;
+        let materialize = crate::project::metadata::ICEBERG_METADATA;
         refused(definition(&[], "t", &new, &given(materialize, "eager")), materialize);
         assert!(definition(&[], "t", &new, &given(materialize, "on-commit")).is_ok());
     }

@@ -13,7 +13,7 @@ use common::{Failure, append, create, fresh_schema, local_catalog, server, serve
 use metalake::{Catalog, CatalogConfig, Ref, Storage};
 use serde_json::json;
 
-const KEY: &str = "metalake.iceberg.materialize";
+const KEY: &str = "metalake.iceberg.metadata";
 /// How long a commit takes to be materialized at most, here: the feed delivers it a second after it (CHG-1).
 const SOON: Duration = Duration::from_secs(10);
 /// How long a test waits to say that nothing was materialized.

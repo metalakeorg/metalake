@@ -218,7 +218,7 @@ pub fn manifest_target_size(definition: &Value) -> i64 {
 
 /// The property that says when a table's Iceberg metadata is materialized (REST-6, REST-9). A table property, so it is
 /// set on a ref, a branch inherits it, and it is served to a client as any other.
-pub const MATERIALIZE: &str = "metalake.iceberg.materialize";
+pub use metalake::ICEBERG_METADATA;
 
 /// When a table's Iceberg metadata is materialized.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -243,7 +243,7 @@ impl Materialize {
     /// The value of a table with `definition`: on load when it is absent, and when it names nothing, as another engine
     /// may have set it, which the protocol does not check.
     pub fn of(definition: &Value) -> Self {
-        let value = definition["properties"][MATERIALIZE].as_str();
+        let value = definition["properties"][ICEBERG_METADATA].as_str();
         value.and_then(Self::named).unwrap_or_default()
     }
 }
@@ -480,10 +480,10 @@ mod tests {
     fn rest9_materialize_default_on_load() {
         let of = |properties: Value| Materialize::of(&json!({ "properties": properties }));
         assert_eq!(of(json!({})), Materialize::OnLoad, "absent");
-        assert_eq!(of(json!({MATERIALIZE: "on-load"})), Materialize::OnLoad);
-        assert_eq!(of(json!({MATERIALIZE: "on-commit"})), Materialize::OnCommit);
+        assert_eq!(of(json!({ICEBERG_METADATA: "on-load"})), Materialize::OnLoad);
+        assert_eq!(of(json!({ICEBERG_METADATA: "on-commit"})), Materialize::OnCommit);
         assert_eq!(
-            of(json!({MATERIALIZE: "On-Commit"})),
+            of(json!({ICEBERG_METADATA: "On-Commit"})),
             Materialize::OnLoad,
             "a value it does not name"
         );
@@ -492,11 +492,14 @@ mod tests {
         // served as any other property, to a client that ignores what it does not know
         let rows = Rows {
             table_id: "t".into(),
-            definition: json!({"properties": {MATERIALIZE: "on-commit"}}),
+            definition: json!({"properties": {ICEBERG_METADATA: "on-commit"}}),
             schemas: BTreeMap::new(),
             snapshots: Vec::new(),
             refs: Vec::new(),
         };
-        assert_eq!(metadata(&rows, |_| String::new()).properties[MATERIALIZE], "on-commit");
+        assert_eq!(
+            metadata(&rows, |_| String::new()).properties[ICEBERG_METADATA],
+            "on-commit"
+        );
     }
 }

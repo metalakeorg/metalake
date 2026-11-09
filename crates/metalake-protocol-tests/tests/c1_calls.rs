@@ -275,7 +275,7 @@ async fn chg1_commit_tables_many_commits() -> Result<(), Error> {
 
 #[tokio::test]
 async fn tbl2_tables_with_property_by_ref() -> Result<(), Error> {
-    const KEY: &str = "metalake.iceberg.materialize";
+    const KEY: &str = "metalake.iceberg.metadata";
     let on = connect().await?;
     let schema = fresh_schema("c1");
     install_protocol(&on, &schema).await?;

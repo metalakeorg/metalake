@@ -2544,6 +2544,7 @@ dependencies = [
 name = "metalake-client"
 version = "0.1.0"
 dependencies = [
+ "arrow-schema",
  "datafusion",
  "futures-util",
  "metalake",
@@ -2552,6 +2553,7 @@ dependencies = [
  "metalake-pg",
  "serde",
  "serde_json",
+ "tokio",
  "toml",
  "url",
  "uuid",

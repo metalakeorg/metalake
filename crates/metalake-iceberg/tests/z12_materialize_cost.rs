@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 const SNAPSHOTS: i64 = 1_000;
 /// Commits whose lag is measured.
 const LAGS: usize = 20;
-const KEY: &str = "metalake.iceberg.materialize";
+const KEY: &str = "metalake.iceberg.metadata";
 const SCRIPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/load_cost.py");
 
 /// What a client takes to load `db.long` once, in milliseconds.

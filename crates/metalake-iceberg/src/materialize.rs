@@ -20,7 +20,7 @@ use tokio::sync::{Notify, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use uuid::Uuid;
 
-use crate::project::metadata::MATERIALIZE;
+use crate::project::metadata::ICEBERG_METADATA;
 use plan::Plan;
 
 /// The name of the lead among a catalog's processes.
@@ -229,7 +229,7 @@ async fn look(catalog: &Catalog, plan: &mut Plan, cursor: &mut Option<FeedCursor
         // The cursor is taken before the tables marked: a commit after it comes by the feed, and each table marked is
         // loaded once now, which takes what came before.
         let start = catalog.feed_start().await?;
-        let marked = catalog.tables_with_property(MATERIALIZE, "on-commit").await?;
+        let marked = catalog.tables_with_property(ICEBERG_METADATA, "on-commit").await?;
         *cursor = (!marked.is_empty()).then_some(start);
         plan.marked(marked, Instant::now());
         return Ok(());
@@ -241,7 +241,7 @@ async fn look(catalog: &Catalog, plan: &mut Plan, cursor: &mut Option<FeedCursor
             return Ok(());
         };
         plan.marked(
-            catalog.tables_with_property(MATERIALIZE, "on-commit").await?,
+            catalog.tables_with_property(ICEBERG_METADATA, "on-commit").await?,
             Instant::now(),
         );
         let seqs: Vec<i64> = commits.iter().map(|c| c.commit_seq).collect();

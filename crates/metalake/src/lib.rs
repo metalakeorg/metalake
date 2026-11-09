@@ -30,6 +30,10 @@ mod table;
 pub mod vectors;
 mod write;
 
+/// The table property that says when a table's Iceberg metadata is written (REST-9): `on-load`, when a client loads the
+/// table, or `on-commit`, after each commit, by the Iceberg service. A table property, so it is set on a ref.
+pub const ICEBERG_METADATA: &str = "metalake.iceberg.metadata";
+
 pub use catalog::{Catalog, CatalogConfig, LatestPoints, Ref};
 pub use error::{Error, Result};
 pub use evolve::Evolve;

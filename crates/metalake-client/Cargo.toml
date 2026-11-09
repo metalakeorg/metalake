@@ -28,3 +28,7 @@ serde_json.workspace = true
 uuid.workspace = true
 toml = "1"
 url.workspace = true
+
+[dev-dependencies]
+arrow-schema.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use super::Refused;
-use crate::project::metadata::{COPY_ON_WRITE, MATERIALIZE, Materialize};
+use crate::project::metadata::{COPY_ON_WRITE, ICEBERG_METADATA, Materialize};
 use crate::wire::commit::{CommitTableRequest, Entry, ProposedSnapshot, Requirement, Update};
 
 /// The format a table is served in (ICE-1).
@@ -58,7 +58,7 @@ impl Change {
     /// Whether the commit sets or removes when the table is materialized (REST-9), which the worker that materializes
     /// on commit is told of at once.
     pub fn changes_materialize(&self) -> bool {
-        self.properties.contains_key(MATERIALIZE)
+        self.properties.contains_key(ICEBERG_METADATA)
     }
 
     /// The key that makes a repeat of this commit apply nothing (REST-3). A change of properties has none, as repeating
@@ -174,7 +174,7 @@ pub(super) fn check_property(key: &str, value: &str) -> Result<(), Refused> {
     if is_reserved_property(key) && value != "copy-on-write" {
         return invalid(format!("{key} is copy-on-write: Iceberg clients write no deletes here"));
     }
-    if key == MATERIALIZE && Materialize::named(value).is_none() {
+    if key == ICEBERG_METADATA && Materialize::named(value).is_none() {
         return invalid(format!("{key} is on-load or on-commit, not {value}"));
     }
     Ok(())
@@ -516,13 +516,13 @@ mod tests {
         refused(with_updates(append(), remove), "write.update.mode");
 
         // when to materialize is one of two, and removing it is on load again
-        let set = |value: &str| json!([{"action": "set-properties", "updates": {MATERIALIZE: value}}]);
+        let set = |value: &str| json!([{"action": "set-properties", "updates": {ICEBERG_METADATA: value}}]);
         for named in ["on-load", "on-commit"] {
             let change = asked(with_updates(append(), set(named))).unwrap();
             assert!(change.changes_materialize(), "setting it, {named}, wakes the worker");
         }
-        refused(with_updates(append(), set("always")), MATERIALIZE);
-        let remove = json!([{"action": "remove-properties", "removals": [MATERIALIZE]}]);
+        refused(with_updates(append(), set("always")), ICEBERG_METADATA);
+        let remove = json!([{"action": "remove-properties", "removals": [ICEBERG_METADATA]}]);
         assert!(
             asked(with_updates(append(), remove)).unwrap().changes_materialize(),
             "and removing it"
