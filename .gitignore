@@ -16,3 +16,7 @@ __pycache__/
 
 # Resolved fresh by its CI job.
 /ci/arrow-58/Cargo.lock
+
+# Gathered and written by the REST Compatibility Kit's CI job.
+/ci/rck/deps/
+/ci/rck/reports/

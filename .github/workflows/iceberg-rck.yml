@@ -1,0 +1,95 @@
+# Apache Iceberg's REST Compatibility Kit against the Iceberg REST server: the catalog tests Iceberg's own clients hold a
+# catalog to. For now it reports, and holds nothing: what fails is read, and sorted into what the specification refuses
+# on purpose and what is to be fixed, before it becomes a gate. Views are not served, so their tests do not run.
+name: iceberg-rck
+
+on:
+  push:
+    branches: [main, "rck/**"]
+    paths:
+      - crates/metalake-iceberg/**
+      - crates/metalake/**
+      - crates/metalake-pg/**
+      - sql/**
+      - ci/rck/**
+      - .github/workflows/iceberg-rck.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: iceberg-rck-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  POSTGRES: postgres:17@sha256:3b0cda93be7c8dba2ed484d19393d93845dc3dafb88973e248ba8e6d99d784e1
+  PG_URL: host=localhost port=5432 user=postgres dbname=postgres
+  WAREHOUSE: /tmp/rck-warehouse
+
+jobs:
+  rck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+      - name: Postgres
+        run: |
+          docker run -d --name pg -p 5432:5432 -e POSTGRES_HOST_AUTH_METHOD=trust "$POSTGRES" -c fsync=off \
+            -c track_commit_timestamp=on
+          until docker exec pg pg_isready -q -U postgres; do sleep 1; done; sleep 2
+      - name: The server and the command line
+        run: cargo build --release --bin metalake-iceberg --bin metalake
+      - name: A catalog, and the server on it
+        run: |
+          mkdir -p "$RUNNER_TEMP/lake" "$WAREHOUSE"
+          (cd "$RUNNER_TEMP/lake" && "$GITHUB_WORKSPACE/target/release/metalake" init "$PG_URL" "$WAREHOUSE" --schema rck)
+          METALAKE_POSTGRES="$PG_URL" target/release/metalake-iceberg --schema rck --listen 127.0.0.1:8181 \
+            > "$RUNNER_TEMP/server.log" 2>&1 &
+          for _ in $(seq 60); do grep -q "listening on" "$RUNNER_TEMP/server.log" && break; sleep 1; done
+          cat "$RUNNER_TEMP/server.log"
+      - name: The kit's classpath
+        working-directory: ci/rck
+        run: mvn --batch-mode --quiet dependency:copy-dependencies -DoutputDirectory=deps
+      - name: The kit
+        working-directory: ci/rck
+        env:
+          CATALOG_URI: http://127.0.0.1:8181
+          CATALOG_WAREHOUSE: ${{ env.WAREHOUSE }}
+        run: |
+          console=$(ls deps/junit-platform-console-standalone-*.jar)
+          classpath=$(ls deps/*.jar | grep -v junit-platform-console-standalone | paste -sd:)
+          java -Drck.local=false -Drck.requires-namespace-create=true -Drck.supports-serverside-retry=true \
+            -jar "$console" execute --class-path "$classpath" \
+            --select-class org.apache.iceberg.rest.RESTCompatibilityKitCatalogTests \
+            --reports-dir reports --details summary --disable-banner || true
+      - name: What passed and failed
+        if: always()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import glob, xml.etree.ElementTree as ET
+          rows = []
+          for path in glob.glob("ci/rck/reports/*.xml"):
+              for case in ET.parse(path).getroot().iter("testcase"):
+                  outcome = "failed" if case.find("failure") is not None or case.find("error") is not None \
+                      else "skipped" if case.find("skipped") is not None else "passed"
+                  rows.append((outcome, case.get("name")))
+          counts = {o: sum(1 for r in rows if r[0] == o) for o in ("passed", "failed", "skipped")}
+          print(f"## REST Compatibility Kit\n\n{counts}\n")
+          for outcome, name in sorted(rows):
+              if outcome != "passed":
+                  print(f"- {outcome}: `{name}`")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rck
+          path: |
+            ci/rck/reports/
+            ${{ runner.temp }}/server.log
