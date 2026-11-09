@@ -21,7 +21,7 @@ async fn sdk_unsupported_version_refused() -> Result<(), Error> {
             found.writer_version.as_str(),
             found.protocol_version.as_deref()
         ),
-        ("0", "2", Some("0"))
+        ("0", "3", Some("0"))
     );
     assert!(found.writable());
 
@@ -44,7 +44,7 @@ async fn sdk_unsupported_version_refused() -> Result<(), Error> {
             .await?;
     }
 
-    on.batch_execute(&format!("update {p}.meta set value = '3' where key = 'writer_version'"))
+    on.batch_execute(&format!("update {p}.meta set value = '4' where key = 'writer_version'"))
         .await?;
     let newer = check_versions(&on, &schema).await?;
     assert!(!newer.writable());

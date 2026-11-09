@@ -12,12 +12,12 @@ begin
   return (select value::uuid from meta where key = 'catalog_uuid');
 end $$;
 
--- LAY-5: a writer of revision 0.2 refuses a catalog whose writer_version it does not know, and one of an earlier
+-- LAY-5: a writer of revision 0.3 refuses a catalog whose writer_version it does not know, and one of an earlier
 -- revision until it is migrated (migrate(), §18).
 create function writable() returns void language plpgsql stable as $$
 declare v text := coalesce((select value from meta where key = 'writer_version'), '0');
 begin
-  if v is distinct from '2' then
+  if v is distinct from '3' then
     raise exception 'metalake unsupported: writer_version %', v using errcode = '0A000';
   end if;
 end $$;

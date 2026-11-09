@@ -124,6 +124,58 @@ async fn commit_of_key_by_ref() -> Result<(), Error> {
 }
 
 #[tokio::test]
+async fn ftr1_add_footers_by_path() -> Result<(), Error> {
+    let on = connect().await?;
+    let schema = fresh_schema("c1");
+    install_protocol(&on, &schema).await?;
+    let p = Protocol::new(&schema);
+    let t = Uuid::from_u128(0xc1);
+    p.commit(&on, &create(t)).await?;
+    let mut unknown = append(1, t, "gs://lake/b.parquet", 0);
+    unknown.files[0].footer_size = 0;
+    p.commit(&on, &unknown).await?;
+
+    // b's footer is not known, so any footer is stored; a's is 10,000 bytes, and another length is not; c is no file
+    let paths = ["gs://lake/b.parquet", "gs://lake/a.parquet", "gs://lake/c.parquet"].map(String::from);
+    let footers = vec![vec![7u8; 77], vec![1u8; 5], vec![2u8; 5]];
+    assert_eq!(p.add_footers(&on, t, &paths, &footers).await?, 1);
+    assert_eq!(
+        p.add_footers(&on, t, &paths, &footers).await?,
+        0,
+        "a repeat changes nothing"
+    );
+    let other = vec![vec![9u8; 3], vec![1u8; 5], vec![2u8; 5]];
+    assert_eq!(
+        p.add_footers(&on, t, &paths, &other).await?,
+        0,
+        "a footer once there stays"
+    );
+    let stored: Vec<i32> = on
+        .query(
+            &format!("select length(footer) from {}.file_footer", quote_ident(&schema)),
+            &[],
+        )
+        .await?
+        .iter()
+        .map(|r| r.get(0))
+        .collect();
+    assert_eq!(stored, [77]);
+
+    // an inline file always knows its footer_size (STA-1)
+    let mut inline = append(1, t, "gs://lake/d.parquet", 0);
+    inline.files[0].path = None;
+    inline.files[0].content = Some(vec![0; 100]);
+    inline.files[0].file_size = 100;
+    inline.files[0].footer_size = 0;
+    let refused = p.commit(&on, &inline).await;
+    assert!(
+        refused.as_ref().is_err_and(|e| e.rule() == Some("STA-1")),
+        "{refused:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn calls_match_functions() -> Result<(), Error> {
     let mut on = connect().await?;
     let schema = fresh_schema("c1");

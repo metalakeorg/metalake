@@ -217,6 +217,25 @@ impl Protocol {
             .get(0))
     }
 
+    /// Stores the footers of a table's files, by path, read from the files after their commit (FTR-1). Answers how many
+    /// were stored: a file that is not live, has one, or whose footer_size is another length is left.
+    pub async fn add_footers(
+        &self,
+        s: &impl Session,
+        table_id: Uuid,
+        paths: &[String],
+        footers: &[Vec<u8>],
+    ) -> Result<i64> {
+        Ok(self
+            .one(
+                s,
+                "add_footers(table_id => $1, paths => $2, footers => $3)",
+                &[&table_id, &paths, &footers],
+            )
+            .await?
+            .get(0))
+    }
+
     /// Draws a file id ahead of the commit that adds the file (ID-4).
     pub async fn next_file_id(&self, s: &impl Session) -> Result<i64> {
         Ok(self.one(s, "next_file_id()", &[]).await?.get(0))
@@ -778,6 +797,7 @@ pub const INTERFACE: &[(&str, &[&str], bool)] = &[
     ("register_intents", &["ref_id", "table_id", "paths", "ttl"], true),
     ("next_id", &["t", "kind"], true),
     ("next_file_id", &[], true),
+    ("add_footers", &["table_id", "paths", "footers"], true),
     ("plan", &["ref_id", "table_id", "at", "field_id", "lo", "hi"], false),
     ("listed_files", &["ref_id", "table_id", "at"], false),
     ("files_at_paths", &["ref_id", "table_id", "paths", "file_ids"], false),

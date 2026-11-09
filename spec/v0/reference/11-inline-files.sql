@@ -20,9 +20,13 @@ language sql stable as $$
     from checked_files(r, t, s, added) f join inline_file i on i.table_id = t and i.file_id = f.file_id
    where f.file_size <> length(i.content) or length(i.content) > int_property(r, t, s, 'inline.max-bytes', 65536)
   union all
+  select format('STA-1: inline file %s has no footer_size', f.file_id)
+    from checked_files(r, t, s, added) f join inline_file i on i.table_id = t and i.file_id = f.file_id
+   where f.footer_size = 0
+  union all
   select format('FTR-1: the footer of file %s has %s bytes, not its footer_size %s', f.file_id, length(x.footer), f.footer_size)
     from checked_files(r, t, s, added) f join file_footer x on x.table_id = t and x.file_id = f.file_id
-   where length(x.footer) <> f.footer_size;
+   where f.footer_size > 0 and length(x.footer) <> f.footer_size;
 $$;
 
 -- INL-2: whether t must be flushed on r: its live inline files exceed inline.flush-bytes in total, or the oldest

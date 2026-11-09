@@ -5,6 +5,7 @@
 -- One transaction, each revision in turn. From version 0 to 0.1: a commit `migrate` on main; on main, every
 -- namespace, and every parent of one, in which a table exists on main; on each other live branch, those in which a
 -- table exists only there. From 0.1 to 0.2: the objects of 04.6-collection.sql and collect_grace, no row changed.
+-- From 0.2 to 0.3: writer_version alone.
 -- Returns the sequence of the commit of 0.1, or NULL if the catalog was already at 0.1 or later.
 
 create function migrate() returns bigint language plpgsql as $$
@@ -16,10 +17,10 @@ declare
 begin
   perform 1 from ref where ref_id = 1 for update;
   v := coalesce((select value from meta where key = 'writer_version'), '0');
-  if v not in ('0', '1', '2') then
+  if v not in ('0', '1', '2', '3') then
     raise exception 'metalake unsupported: writer_version %', v using errcode = '0A000';
   end if;
-  if v = '2' then
+  if v = '3' then
     return null;
   end if;
   if v = '0' then
@@ -57,6 +58,7 @@ begin
   create index if not exists data_file_path on data_file (path);
   create index if not exists deletion_vector_path on deletion_vector (path) where path is not null;
   insert into meta values ('collect_grace', '1 day') on conflict (key) do nothing;
-  insert into meta values ('writer_version', '2') on conflict (key) do update set value = '2';
+  -- 0.3: no row changes (§18).
+  insert into meta values ('writer_version', '3') on conflict (key) do update set value = '3';
   return m;
 end $$;

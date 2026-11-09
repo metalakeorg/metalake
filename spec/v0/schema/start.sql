@@ -2,7 +2,7 @@
 
 insert into meta values
   ('format_version', '0'),
-  ('writer_version', '2'),
+  ('writer_version', '3'),
   ('collect_grace', '1 day'),
   ('catalog_uuid', gen_random_uuid()::text),
   ('created_at', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'));

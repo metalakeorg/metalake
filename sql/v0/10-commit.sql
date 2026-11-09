@@ -218,11 +218,15 @@ begin
      where (a.f).content is not null
        and ((a.f).file_size <> length((a.f).content)
             or length((a.f).content) > int_property(r, (a.f).table_id, latest, 'inline.max-bytes', 65536))
-    -- FTR-1: a stored footer is the footer.
+    -- STA-1: an inline file knows its footer_size.
+    union all
+    select format('STA-1: inline file %s has no footer_size', a.fid) from a
+     where (a.f).content is not null and (a.f).footer_size = 0
+    -- FTR-1: a stored footer is the footer, of footer_size bytes unless that is not known.
     union all
     select format('FTR-1: the footer of file %s has %s bytes, not %s', a.fid, length((a.f).footer), (a.f).footer_size)
       from a
-     where (a.f).footer is not null and length((a.f).footer) <> (a.f).footer_size
+     where (a.f).footer is not null and (a.f).footer_size > 0 and length((a.f).footer) <> (a.f).footer_size
     -- RET-7: no file whose intent expired.
     union all
     select format('RET-7: the intent of %s expired at %s', i.path, i.expires_at) from a
@@ -305,8 +309,8 @@ declare
   t uuid;
   problem text;
 begin
-  -- LAY-5: a writer of revision 0.2 commits to writer_version 2 only.
-  if coalesce((select m.value from meta m where m.key = 'writer_version'), '0') <> '2' then
+  -- LAY-5: a writer of revision 0.3 commits to writer_version 3 only.
+  if coalesce((select m.value from meta m where m.key = 'writer_version'), '0') <> '3' then
     raise exception 'metalake unsupported: writer_version %',
       coalesce((select m.value from meta m where m.key = 'writer_version'), '0') using errcode = '0A000';
   end if;

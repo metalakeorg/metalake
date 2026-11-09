@@ -76,8 +76,17 @@ async fn migrate_idempotent_and_unknown_version_refused() -> Result<(), Error> {
         .query_one(&format!("select * from {p}.versions()"), &[])
         .await
         .map(|r| (r.get(0), r.get(1), r.get(2)))?;
-    if versions != ("0".into(), "2".into(), "0".into()) {
+    if versions != ("0".into(), "3".into(), "0".into()) {
         return Err(format!("versions {versions:?}").into());
+    }
+
+    // A catalog of revision 0.2 migrates to 0.3 by its writer_version alone (§18).
+    on.batch_execute(&format!("update {p}.meta set value = '2' where key = 'writer_version'"))
+        .await?;
+    migrate_protocol(&on, &schema).await?;
+    let rows = compare(&on, &schema, &twin).await?;
+    if !rows.is_empty() {
+        return Err(format!("migrating from 0.2 changed rows: {rows:?}").into());
     }
 
     for (key, value) in [("format_version", "99"), ("protocol_version", "99")] {

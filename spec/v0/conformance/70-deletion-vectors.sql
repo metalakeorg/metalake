@@ -172,3 +172,15 @@ select cm(format('[{"table_id": "%s", "add": [%s]}]', :'t', fj(1) || jsonb_build
 select expect((select length(footer) = 100 from file_footer where file_id = 1), 'stored');
 select expect_error(format($$select cm('[{"table_id": "%s", "add": [%s]}]')$$, :'t', fj(2) || jsonb_build_object('footer', repeat('cd', 99))),
   '22023', 'a footer that is not footer_size bytes long');
+
+-- case: a file whose writer does not know its footer_size has 0, and its footer may come after its commit
+-- rules: STA-1, FTR-1
+select mk('t') as t \gset
+select cm(format('[{"table_id": "%s", "add": [%s]}]', :'t', fj(3) || '{"footer_size": 0}')::jsonb);
+select expect((select footer_size = 0 from data_file where file_id = 3), 'a stored file of an unknown footer_size');
+insert into file_footer values (:'t', 3, decode(repeat('cd', 77), 'hex'));
+select expect((select count(*) = 0 from inline_errors(1, :'t', 9223372036854775806)), 'a footer of any length, added after');
+select cm(format('[{"table_id": "%s", "add": [%s]}]', :'t', fj(4) || '{"footer_size": 0}' || jsonb_build_object('footer', repeat('cd', 50)))::jsonb);
+select expect((select length(footer) = 50 from file_footer where file_id = 4), 'or with its commit');
+select expect_error(format($$select cm('[{"table_id": "%s", "add": [%s]}]')$$, :'t', ij(5) || '{"footer_size": 0}'),
+  '22023', 'an inline file always knows its footer_size');

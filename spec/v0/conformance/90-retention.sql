@@ -280,8 +280,8 @@ update meta set value = '1' where key = 'writer_version';
 create temp table rows_before as select (select count(*) from data_file) f, (select count(*) from snapshot) s,
   (select count(*) from commit) c;
 select expect(migrate() is null, 'no commit: nothing to migrate in rows');
-select expect((select value from meta where key = 'writer_version') = '2' and collect_grace() = interval '1 day',
-  'writer_version 2, and the grace by default');
+select expect((select value from meta where key = 'writer_version') = '3' and collect_grace() = interval '1 day',
+  'writer_version 3, and the grace by default');
 select expect(to_regclass('deletion_queue') is not null and to_regclass('data_file_closed') is not null,
   'the queue and the indexes');
 select expect((select (f, s, c) from rows_before) = ((select count(*) from data_file), (select count(*) from snapshot),

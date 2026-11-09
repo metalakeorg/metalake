@@ -21,6 +21,26 @@ set search_path = @schema@, pg_catalog, pg_temp as $$
   select nextval('file_id_gen');
 $$;
 
+-- FTR-1: footers a writer read from the files of a table, by path, after their commit. A file gets one if it is live
+-- on some ref, has none, and its footer_size is 0 or the footer's length; any other is left, so a repeat changes
+-- nothing. Answers how many it stored.
+create function @schema@.add_footers(table_id uuid, paths text[], footers bytea[])
+returns bigint language sql
+set search_path = @schema@, pg_catalog, pg_temp as $$
+  with given as (
+    select distinct on (d.file_id) d.file_id, g.footer
+      from unnest($2, $3) g (path, footer)
+      join data_file d on d.path = g.path and d.table_id = $1 and d.end_seq = 9223372036854775807
+     where d.footer_size in (0, length(g.footer))
+     order by d.file_id),
+  stored as (
+    insert into file_footer (table_id, file_id, footer)
+    select $1, file_id, footer from given
+    on conflict (table_id, file_id) do nothing
+    returning 1)
+  select count(*) from stored;
+$$;
+
 -- RET-7b: objects found in storage that nothing knows become expired intents, for orphans to take. An intent that is
 -- there stays as it is: its writer may be at work.
 create function @schema@.adopt_orphans(ref_id int, table_id uuid, paths text[])
@@ -43,7 +63,7 @@ create function @schema@.writing_functions() returns setof regprocedure language
    where p.pronamespace = '@schema@'::regnamespace
      and p.proname in ('commit', 'merge', 'merge_report', 'create_ref', 'delete_ref', 'set_retention',
                        'set_collect_grace',
-                       'expire', 'sweep_done', 'forget_intents', 'fill_committed_at', 'next_id', 'next_file_id',
+                       'expire', 'sweep_done', 'forget_intents', 'fill_committed_at', 'next_id', 'next_file_id', 'add_footers',
                        'register_intents', 'adopt_orphans');
 $$;
 

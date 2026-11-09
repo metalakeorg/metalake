@@ -29,7 +29,7 @@ and changes complete) follows it: its rules are marked *0.2*.
   - `format_version`, which is `0` for this specification;
   - `catalog_uuid`, a UUID assigned when the catalog is created;
   - `created_at`, the creation time in ISO 8601 with a time zone;
-  - *0.1:* `writer_version`, `1` for revision 0.1 and, *0.2*, `2` for revision 0.2 (LAY-5);
+  - *0.1:* `writer_version`, `1` for revision 0.1, *0.2*, `2` for revision 0.2 and, *0.3*, `3` for revision 0.3 (LAY-5);
   - *0.2:* `collect_grace`, an interval, `1 day` unless set (RET-9).
 
   It MAY hold, *0.2*, `warehouse`, a URL: where a writer puts the files of a table that names no location of its own.
@@ -40,7 +40,8 @@ and changes complete) follows it: its rules are marked *0.2*.
   `OPEN`. Every validity range satisfies `begin_seq < end_seq`.
 - **LAY-5.** *0.1.* A writer MUST refuse to commit to a catalog whose `writer_version` it does not know; a
   missing `writer_version` is `0`. A writer of revision 0.1 commits only to `writer_version` `1`, after migrating a
-  catalog of version 0 (§18). The reference raises SQLSTATE `0A000`. Readers do not read `writer_version`.
+  catalog of version 0 (§18). The reference raises SQLSTATE `0A000`. Readers do not read `writer_version`. *0.3.* A
+  writer commits only to the `writer_version` of its revision, after migrating a catalog of an earlier one.
 
 ## 3. Identity
 
@@ -281,6 +282,9 @@ Counts, NaN handling, truncation and geospatial bounds follow the Iceberg table 
 
 - **STA-1.** Every `data_file` row has `record_count`, `file_size` and `footer_size`, exact and non-negative.
   `footer_size` is the length of the Parquet footer (`FileMetaData`), so a reader can fetch it in one request.
+  *0.3.* `footer_size` MAY be `0` when the file's writer does not know it, as for a file another engine wrote: a
+  Parquet footer is never empty, as its four required fields and a struct's stop byte are always there, so `0` is never
+  a length. An inline file's `footer_size` is its length.
 - **STA-2.** Column statistics are parallel arrays: `lower`, `upper`, `null_count`, `nan_count` and, when
   present, `value_count` have one element per field of `stat_field_ids`, in the same order. The field ids are
   distinct. A `NULL` element means unknown. `nan_count` is `NULL` for fields that are not `float` or `double`;
@@ -471,9 +475,13 @@ blob type `deletion-vector-v1`.
   `inline.flush-age-seconds` ago (3600 when absent). The reference function `inline_flush_due(r, t)` says
   whether that is the case.
 - **FTR-1.** A `file_footer` row is OPTIONAL. When present, `footer` is the file's Parquet footer
-  (`FileMetaData`) byte for byte, so its length is the file's `footer_size`. A file ends with its footer, the
-  footer's length as 4 bytes little-endian and the magic `PAR1`: a reader with `footer_size` fetches the last
-  `footer_size + 8` bytes in one request, and a reader with the `file_footer` row fetches none.
+  (`FileMetaData`) byte for byte, so its length is the file's `footer_size`, *0.3* unless that is `0`. A file ends
+  with its footer, the footer's length as 4 bytes little-endian and the magic `PAR1`: a reader with `footer_size`
+  fetches the last `footer_size + 8` bytes in one request, and a reader with the `file_footer` row fetches none.
+  *0.3.* `footer_size` is a hint: a reader takes the length before `PAR1`, and fetches the rest when the footer is
+  longer; with `0`, it fetches a tail of its own choosing. A writer MAY add a file's `file_footer` row after the file's
+  commit, while it is visible on a ref, having read it from the file; a row once there does not change. Adding one is
+  no commit: no row of the table changes, so nothing is read differently.
 
 ## 12. Branches and merges
 
@@ -864,6 +872,10 @@ shows conformance by running them with its own operations in place of the refere
   of retention and of paths (RET-4, RET-5, RET-8) bind writers. **Migrating from 0.1** creates `deletion_queue` and
   the indexes of `v0/schema/`, and sets `writer_version` to `2`; it changes no row, since RET-1 keeps at least what
   0.1 kept. A writer of 0.2 migrates a catalog of version 0 to 0.1 first.
+- *0.3.* Revision 0.3 is `format_version` 0, `writer_version` 3: readers of 0.2 read its catalogs, as the reference's
+  reader takes `footer_size` as the hint FTR-1 now says it is, but its writers write a `footer_size` of `0` (STA-1) and
+  add footers after a commit (FTR-1). **Migrating from 0.2** sets `writer_version` to `3`; it changes no row. A writer
+  of 0.3 migrates a catalog of an earlier revision through each one before it.
 
 ## 19. Not in v0
 

@@ -7,8 +7,8 @@ use crate::{Error, ErrorKind, Result, Session, quote_ident};
 
 /// The format this SDK reads and writes.
 pub const FORMAT_VERSION: &str = "0";
-/// The newest writer version this SDK writes (revision 0.2). A catalog with a newer one is read, never written.
-pub const WRITER_VERSION: u32 = 2;
+/// The newest writer version this SDK writes (revision 0.3). A catalog with a newer one is read, never written.
+pub const WRITER_VERSION: u32 = 3;
 /// The protocol these sources install.
 pub const PROTOCOL_VERSION: &str = "0";
 

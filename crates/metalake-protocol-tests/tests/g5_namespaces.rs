@@ -238,7 +238,7 @@ async fn lay5_unknown_writer_version_refused() -> Result<(), Error> {
         namespaces: Some(json!([{"namespace": ["w"], "create": true}])),
     };
     for change in [
-        "update meta set value = '3' where key = 'writer_version'",
+        "update meta set value = '4' where key = 'writer_version'",
         "delete from meta where key = 'writer_version'",
     ] {
         pair.both(change).await?;
