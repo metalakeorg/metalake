@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use super::Refused;
-use crate::project::metadata::COPY_ON_WRITE;
+use crate::project::metadata::{COPY_ON_WRITE, MATERIALIZE, Materialize};
 use crate::wire::commit::{CommitTableRequest, Entry, ProposedSnapshot, Requirement, Update};
 
 /// The format a table is served in (ICE-1).
@@ -163,10 +163,13 @@ fn is_reserved_property(key: &str) -> bool {
     COPY_ON_WRITE.contains(&key)
 }
 
-/// REST-4 and REST-9: a property may be anything but another write mode.
+/// REST-4 and REST-9: a property may be anything but another write mode, or a time to materialize that is none.
 pub(super) fn check_property(key: &str, value: &str) -> Result<(), Refused> {
     if is_reserved_property(key) && value != "copy-on-write" {
         return invalid(format!("{key} is copy-on-write: Iceberg clients write no deletes here"));
+    }
+    if key == MATERIALIZE && Materialize::named(value).is_none() {
+        return invalid(format!("{key} is on-load or on-commit, not {value}"));
     }
     Ok(())
 }
@@ -505,6 +508,15 @@ mod tests {
         refused(with_updates(append(), set("merge-on-read")), "write.merge.mode");
         let remove = json!([{"action": "remove-properties", "removals": ["write.update.mode"]}]);
         refused(with_updates(append(), remove), "write.update.mode");
+
+        // when to materialize is one of two, and removing it is on load again
+        let set = |value: &str| json!([{"action": "set-properties", "updates": {MATERIALIZE: value}}]);
+        for named in ["on-load", "on-commit"] {
+            assert!(asked(with_updates(append(), set(named))).is_ok(), "{named}");
+        }
+        refused(with_updates(append(), set("always")), MATERIALIZE);
+        let remove = json!([{"action": "remove-properties", "removals": [MATERIALIZE]}]);
+        assert!(asked(with_updates(append(), remove)).is_ok());
     }
 
     #[test]

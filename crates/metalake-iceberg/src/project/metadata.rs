@@ -216,6 +216,38 @@ pub fn manifest_target_size(definition: &Value) -> i64 {
     positive(definition, "commit.manifest.target-size-bytes").unwrap_or(8 * 1024 * 1024)
 }
 
+/// The property that says when a table's Iceberg metadata is materialized (REST-6, REST-9). A table property, so it is
+/// set on a ref, a branch inherits it, and it is served to a client as any other.
+pub const MATERIALIZE: &str = "metalake.iceberg.materialize";
+
+/// When a table's Iceberg metadata is materialized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Materialize {
+    /// When a client loads the table, what is new since the last load (REST-6). Every table, unless marked.
+    #[default]
+    OnLoad,
+    /// After each commit, by the service, so that a load finds it there.
+    OnCommit,
+}
+
+impl Materialize {
+    /// The value the property names, if it names one.
+    pub fn named(value: &str) -> Option<Self> {
+        match value {
+            "on-load" => Some(Self::OnLoad),
+            "on-commit" => Some(Self::OnCommit),
+            _ => None,
+        }
+    }
+
+    /// The value of a table with `definition`: on load when it is absent, and when it names nothing, as another engine
+    /// may have set it, which the protocol does not check.
+    pub fn of(definition: &Value) -> Self {
+        let value = definition["properties"][MATERIALIZE].as_str();
+        value.and_then(Self::named).unwrap_or_default()
+    }
+}
+
 /// The write modes every table is served with: a client that wrote position deletes would be refused (REST-4).
 pub const COPY_ON_WRITE: [&str; 3] = ["write.delete.mode", "write.update.mode", "write.merge.mode"];
 
@@ -442,5 +474,29 @@ mod tests {
         assert_eq!(served.properties["write.delete.mode"], "copy-on-write");
         assert_eq!(served.properties["write.merge.mode"], "copy-on-write");
         assert_eq!(served.properties["a"], "b");
+    }
+
+    #[test]
+    fn rest9_materialize_on_load_unless_on_commit() {
+        let of = |properties: Value| Materialize::of(&json!({ "properties": properties }));
+        assert_eq!(of(json!({})), Materialize::OnLoad, "absent");
+        assert_eq!(of(json!({MATERIALIZE: "on-load"})), Materialize::OnLoad);
+        assert_eq!(of(json!({MATERIALIZE: "on-commit"})), Materialize::OnCommit);
+        assert_eq!(
+            of(json!({MATERIALIZE: "On-Commit"})),
+            Materialize::OnLoad,
+            "a value it does not name"
+        );
+        assert_eq!(Materialize::of(&json!({})), Materialize::OnLoad, "no properties");
+
+        // served as any other property, to a client that ignores what it does not know
+        let rows = Rows {
+            table_id: "t".into(),
+            definition: json!({"properties": {MATERIALIZE: "on-commit"}}),
+            schemas: BTreeMap::new(),
+            snapshots: Vec::new(),
+            refs: Vec::new(),
+        };
+        assert_eq!(metadata(&rows, |_| String::new()).properties[MATERIALIZE], "on-commit");
     }
 }

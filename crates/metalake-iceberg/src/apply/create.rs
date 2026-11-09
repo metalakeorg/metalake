@@ -452,5 +452,8 @@ mod tests {
             "write.merge.mode",
         );
         assert!(definition(&[], "t", &new, &given("write.merge.mode", "copy-on-write")).is_ok());
+        let materialize = crate::project::metadata::MATERIALIZE;
+        refused(definition(&[], "t", &new, &given(materialize, "eager")), materialize);
+        assert!(definition(&[], "t", &new, &given(materialize, "on-commit")).is_ok());
     }
 }

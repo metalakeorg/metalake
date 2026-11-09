@@ -836,7 +836,10 @@ Iceberg REST server of the projection, and are checked by its tests.
 - **REST-8.** `dropTable` and `renameTable` are commits. Objects follow retention (§13), as another ref may read
   them, so `purgeRequested` changes nothing.
 - **REST-9.** `set-properties` and `remove-properties` are honoured, but for the keys of REST-4. `transactions/commit`
-  is one commit of several tables, and is refused across refs.
+  is one commit of several tables, and is refused across refs. `metalake.iceberg.materialize` says when a table's
+  Iceberg metadata is materialized on a ref: `on-load`, when a client loads it (REST-6), or `on-commit`, after each
+  commit. A request that sets it to anything else is refused; absent, or set otherwise by another writer, it is
+  `on-load`. It is a table property (TBL-2), served as any other.
 - **REST-10.** A request carries `Authorization: Bearer`. A token names the protocol's `reader` or `writer` role
   (§2), and the catalog's rights decide. The service keeps tokens as hashes.
 
