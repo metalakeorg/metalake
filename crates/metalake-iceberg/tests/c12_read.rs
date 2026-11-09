@@ -177,7 +177,10 @@ async fn rest6_manifests_carry_their_snapshot_schema() -> Result<(), Failure> {
     };
     protocol.commit(&session, &change).await?;
     let t = main.table(&["db"], "grown").await?;
-    let fields = vec![Field::new("k", DataType::Int64, false), Field::new("v", DataType::Int64, true)];
+    let fields = vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("v", DataType::Int64, true),
+    ];
     let columns: Vec<ArrayRef> = vec![
         Arc::new(Int64Array::from(vec![10, 11])),
         Arc::new(Int64Array::from(vec![Some(1), None])),
@@ -193,12 +196,15 @@ async fn rest6_manifests_carry_their_snapshot_schema() -> Result<(), Failure> {
     let python = std::env::var("METALAKE_TEST_PYTHON").expect("METALAKE_TEST_PYTHON");
     let load = format!("import urllib.request; urllib.request.urlopen('{uri}/v1/namespaces/db/tables/grown').read()");
     assert!(Command::new(python).args(["-c", &load]).status()?.success());
-    let generated = directory.join("db").read_dir()?.flatten().find(|e| {
-        e.file_name()
-            .to_string_lossy()
-            .starts_with("grown")
-    });
-    let generated = generated.expect("the table's directory").path().join("metalake-manifests");
+    let generated = directory
+        .join("db")
+        .read_dir()?
+        .flatten()
+        .find(|e| e.file_name().to_string_lossy().starts_with("grown"));
+    let generated = generated
+        .expect("the table's directory")
+        .path()
+        .join("metalake-manifests");
     let (first, first_id) = manifest_schema(&generated.join(format!("a-{before}-0.avro")))?;
     let (last, last_id) = manifest_schema(&generated.join(format!("a-{after}-0.avro")))?;
     let _ = std::fs::remove_dir_all(&directory);
@@ -502,24 +508,42 @@ fn load_table(uri: &str, name: &str) -> Result<(), Failure> {
     use std::io::{Read, Write};
     let address = uri.trim_start_matches("http://");
     let mut stream = std::net::TcpStream::connect(address)?;
-    let request = format!("GET /v1/namespaces/db/tables/{name} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n");
+    let request =
+        format!("GET /v1/namespaces/db/tables/{name} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n");
     stream.write_all(request.as_bytes())?;
     let mut answer = String::new();
     stream.read_to_string(&mut answer)?;
-    assert!(answer.starts_with("HTTP/1.1 200"), "{}", &answer[..answer.len().min(300)]);
+    assert!(
+        answer.starts_with("HTTP/1.1 200"),
+        "{}",
+        &answer[..answer.len().min(300)]
+    );
     Ok(())
 }
 
 /// What a table's manifests and lists hold, by name: their key-value metadata and their records. An Avro file's sync
 /// marker is drawn anew each time it is written, so their bytes are not what they hold.
 fn manifests_of(directory: &std::path::Path) -> Result<std::collections::BTreeMap<String, String>, Failure> {
-    let table = directory.join("db").read_dir()?.flatten().find(|e| e.file_name().to_string_lossy().starts_with("plain"));
+    let table = directory
+        .join("db")
+        .read_dir()?
+        .flatten()
+        .find(|e| e.file_name().to_string_lossy().starts_with("plain"));
     let mut found = std::collections::BTreeMap::new();
-    for entry in table.expect("the table's directory").path().join("metalake-manifests").read_dir()?.flatten() {
+    for entry in table
+        .expect("the table's directory")
+        .path()
+        .join("metalake-manifests")
+        .read_dir()?
+        .flatten()
+    {
         let reader = apache_avro::Reader::new(std::fs::File::open(entry.path())?)?;
         let meta: std::collections::BTreeMap<_, _> = reader.user_metadata().clone().into_iter().collect();
         let records = reader.collect::<Result<Vec<_>, _>>()?;
-        found.insert(entry.file_name().to_string_lossy().into_owned(), format!("{meta:?} {records:?}"));
+        found.insert(
+            entry.file_name().to_string_lossy().into_owned(),
+            format!("{meta:?} {records:?}"),
+        );
     }
     Ok(found)
 }
@@ -552,7 +576,11 @@ async fn rest6_a_chain_at_once_writes_what_one_at_a_time_writes() -> Result<(), 
     }
     let one_at_a_time = manifests_of(&directory)?;
 
-    let table = directory.join("db").read_dir()?.flatten().find(|e| e.file_name().to_string_lossy().starts_with("plain"));
+    let table = directory
+        .join("db")
+        .read_dir()?
+        .flatten()
+        .find(|e| e.file_name().to_string_lossy().starts_with("plain"));
     let table = table.expect("the table's directory").path();
     std::fs::remove_dir_all(table.join("metalake-manifests"))?;
     std::fs::remove_dir_all(table.join("metalake-metadata"))?;
@@ -565,7 +593,11 @@ async fn rest6_a_chain_at_once_writes_what_one_at_a_time_writes() -> Result<(), 
         one_at_a_time.keys().collect::<Vec<_>>(),
         at_once.keys().collect::<Vec<_>>()
     );
-    let differ: Vec<_> = at_once.iter().filter(|(name, bytes)| one_at_a_time[*name] != **bytes).map(|(n, _)| n).collect();
+    let differ: Vec<_> = at_once
+        .iter()
+        .filter(|(name, bytes)| one_at_a_time[*name] != **bytes)
+        .map(|(n, _)| n)
+        .collect();
     assert!(differ.is_empty(), "written otherwise: {differ:?}");
     Ok(())
 }

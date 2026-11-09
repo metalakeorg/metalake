@@ -217,7 +217,9 @@ async fn base(storage: &Storage, table: &Table, snapshot: &TableSnapshot, held: 
     let carried = match (adds_only(snapshot), list) {
         (false, _) => None,
         (true, Some(list)) => Some(listed_manifests(&list)?),
-        (true, None) => Some(listed_manifests(&storage.get(&list_path(table.location(), parent)).await?)?),
+        (true, None) => Some(listed_manifests(
+            &storage.get(&list_path(table.location(), parent)).await?,
+        )?),
     };
     Ok(Base {
         since: Some(parent),
@@ -262,6 +264,7 @@ async fn roll_up<'c>(
 /// costs what it added, or else all it sees. It reads no definition: its fields are those of its schema, which the load
 /// read once a schema, and its specs and manifest size those of the definition served, which holds every spec the table
 /// has had (REST-6).
+#[allow(clippy::too_many_arguments)]
 async fn generate(
     on: &Ref,
     state: &State,
@@ -423,17 +426,21 @@ where
 
 /// The snapshots served whose lists are not there, the earliest first. A list is written after its parent's and stays, so
 /// the walk from each head ends at the first list it finds. The chain's oldest is asked too: a window that widened reaches
-/// past every list there is, and then each one is asked.
-async fn unlisted<'a, Found>(
+/// past every list there is, and then `listed` answers for all of them at once, as a first load would otherwise ask once a
+/// snapshot.
+async fn unlisted<'a, Found, Listed>(
     snapshots: &'a [TableSnapshot],
     heads: &[i64],
     exists: impl Fn(i64) -> Found,
+    listed: impl FnOnce() -> Listed,
 ) -> Result<Vec<&'a TableSnapshot>>
 where
     Found: Future<Output = Result<bool>>,
+    Listed: Future<Output = Result<HashSet<i64>>>,
 {
     let by_id: HashMap<i64, &TableSnapshot> = snapshots.iter().map(|s| (s.snapshot_id, s)).collect();
     let mut asked = HashMap::new();
+    let mut listed = Some(listed);
     let mut missing = BTreeMap::new();
     for head in heads {
         let mut chain = Vec::new();
@@ -446,6 +453,12 @@ where
             continue;
         };
         let every_one = !listed_once(oldest.snapshot_id, &mut asked, &exists).await?;
+        if let Some(listed) = listed.take_if(|_| every_one) {
+            let there = listed().await?;
+            for id in by_id.keys() {
+                asked.insert(*id, there.contains(id));
+            }
+        }
         for snapshot in chain {
             let there = listed_once(snapshot.snapshot_id, &mut asked, &exists).await?;
             if there && !every_one {
@@ -474,7 +487,15 @@ pub(crate) async fn load(state: &State, table: &Table) -> Result<LoadTableResult
             let (storage, path) = (&storage, list_path(location, id));
             async move { storage.exists(&path).await }
         };
-        let missing = unlisted(&rows.snapshots, &heads, exists).await?;
+        let listed = || async {
+            let found = storage.list(&generated(location)).await?;
+            let ids = found.into_iter().filter_map(|(path, _)| {
+                let name = path.rsplit('/').next()?;
+                name.strip_prefix("snap-")?.strip_suffix(".avro")?.parse().ok()
+            });
+            Ok(ids.collect())
+        };
+        let missing = unlisted(&rows.snapshots, &heads, exists, listed).await?;
         let mut pending = Pending::default();
         for asked in missing.chunks(ASKED) {
             let mut added = added_at_once(&live, table, asked).await?;
@@ -541,7 +562,14 @@ mod tests {
             let found = there.borrow().contains(&id);
             async move { Ok(found) }
         };
-        let missing = unlisted(snapshots, heads, exists).await.expect("no storage to fail");
+        let listed = || {
+            requests.set(requests.get() + 1);
+            let found = there.borrow().clone();
+            async move { Ok(found) }
+        };
+        let missing = unlisted(snapshots, heads, exists, listed)
+            .await
+            .expect("no storage to fail");
         (missing.iter().map(|s| s.snapshot_id).collect(), requests.get())
     }
 
@@ -635,8 +663,21 @@ mod tests {
     #[tokio::test]
     async fn rest6_widened_window_finds_older_lists() {
         let lists: Vec<i64> = (91..=100).collect();
-        let (missing, _) = found(&chain(1..=100), &[100], &lists).await;
+        let (missing, requests) = found(&chain(1..=100), &[100], &lists).await;
         assert_eq!(missing, (1..=90).collect::<Vec<_>>());
+        assert_eq!(requests, 2, "the oldest, and then one listing for all");
+    }
+
+    #[tokio::test]
+    async fn rest6_first_load_lists_once() {
+        let mut snapshots = chain(1..=1000);
+        snapshots.push(snapshot(1001, Some(500)));
+        let (missing, requests) = found(&snapshots, &[1000, 1001], &[]).await;
+        assert_eq!(missing, (1..=1001).collect::<Vec<_>>());
+        assert_eq!(
+            requests, 2,
+            "the oldest, and one listing, whatever the window and its heads"
+        );
     }
 
     #[tokio::test]

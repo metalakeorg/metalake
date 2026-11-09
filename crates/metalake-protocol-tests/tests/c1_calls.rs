@@ -184,10 +184,17 @@ async fn rest6_added_files_of_many_commits() -> Result<(), Error> {
     let t = Uuid::from_u128(0xc1);
     let first = p.commit(&on, &create(t)).await?.commit_seq;
     let dev = p.create_ref(&on, &CreateRef::branch("dev", 1)).await?;
-    let on_dev = p.commit(&on, &append(dev, t, "gs://lake/dev.parquet", 100)).await?.commit_seq;
-    let second = p.commit(&on, &append(1, t, "gs://lake/b.parquet", 200)).await?.commit_seq;
+    let on_dev = p
+        .commit(&on, &append(dev, t, "gs://lake/dev.parquet", 100))
+        .await?
+        .commit_seq;
+    let second = p
+        .commit(&on, &append(1, t, "gs://lake/b.parquet", 200))
+        .await?
+        .commit_seq;
     let mut two = append(1, t, "gs://lake/c.parquet", 300);
-    two.files.push(stored_file(t, "gs://lake/d.parquet".into(), 10, 1, 400, 409));
+    two.files
+        .push(stored_file(t, "gs://lake/d.parquet".into(), 10, 1, 400, 409));
     let third = p.commit(&on, &two).await?.commit_seq;
 
     let shown = |files: Vec<metalake_pg::records::ListedFile>| -> Vec<(i64, i64, Option<String>)> {
@@ -213,7 +220,12 @@ async fn rest6_added_files_of_many_commits() -> Result<(), Error> {
     let paths: Vec<_> = found.iter().filter_map(|(.., path)| path.as_deref()).collect();
     assert_eq!(
         paths,
-        ["gs://lake/a.parquet", "gs://lake/b.parquet", "gs://lake/c.parquet", "gs://lake/d.parquet"]
+        [
+            "gs://lake/a.parquet",
+            "gs://lake/b.parquet",
+            "gs://lake/c.parquet",
+            "gs://lake/d.parquet"
+        ]
     );
     // a commit of another ref adds nothing here, and nothing asked finds nothing
     assert!(at_once(1, &[on_dev]).await?.is_empty());
