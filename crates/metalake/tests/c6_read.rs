@@ -273,3 +273,63 @@ async fn delete_cost_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn sta1_unknown_footer_size_one_tail_request() -> Result<(), Box<dyn std::error::Error>> {
+    let schema = fresh_schema();
+    let catalog = Catalog::init(CatalogConfig::new(url(), &schema).warehouse("memory:///wh"), None).await?;
+    let main = catalog.branch("main").await?;
+    let (tx, _) = main.transaction().create_namespace(&["db"]).create_table(NewTable {
+        namespace: &["db"],
+        name: "t",
+        schema: &batch(0..1).schema(),
+        location: None,
+        cluster_key: vec!["k"],
+        partitioning: vec![],
+        properties: vec![],
+    })?;
+    tx.commit().await?;
+    let store = Arc::new(Counting::default());
+    let storage = Storage::from_store("memory:///", store.clone())?;
+
+    // Two stored files with no footer in the catalog: one of a known footer_size, one of a size its writer did not
+    // know, as a file another engine wrote (STA-1).
+    let t = main.table(&["db"], "t").await?;
+    let stored = WriteOptions {
+        stored: true,
+        ..Default::default()
+    };
+    let mut files = Vec::new();
+    for (keys, known) in [(0..100, true), (100..200, false)] {
+        let mut writer = TableWriter::new(&catalog, &t, storage.clone(), stored.clone())?;
+        writer.write(&batch(keys)).await?;
+        let mut file = writer.finish().await?.remove(0);
+        file.footer = None;
+        if !known {
+            file.footer_size = 0;
+        }
+        files.push(file);
+    }
+    main.transaction().append(files).commit().await?;
+
+    let t = main.table(&["db"], "t").await?;
+    let scan = Scan::new(&catalog, &t);
+    let mut tasks: Vec<ScanTask> = scan.plan().await?.try_collect().await?;
+    tasks.sort_by_key(|task| task.footer_size == 0);
+    let mut cost = Vec::new();
+    for task in tasks {
+        store.take();
+        let read: Vec<RecordBatch> = scan.open(task, &storage).try_collect().await?;
+        let keys: Vec<i64> = read
+            .iter()
+            .flat_map(|b| b.column(0).as_primitive::<Int64Type>().values().to_vec())
+            .collect();
+        cost.push((keys.len(), store.take()));
+    }
+    assert_eq!(cost[0].0, 100);
+    assert_eq!(
+        cost[1], cost[0],
+        "the same rows, and the footer in one request: {cost:?}"
+    );
+    Ok(())
+}

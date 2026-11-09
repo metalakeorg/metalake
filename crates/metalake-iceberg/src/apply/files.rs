@@ -7,7 +7,7 @@ use apache_avro::Reader;
 use apache_avro::types::Value;
 use bytes::Bytes;
 use futures_util::{StreamExt, TryStreamExt, stream};
-use metalake::{FileAdd, Storage, stats};
+use metalake::{FileAdd, Storage};
 use serde_json::Value as Json;
 use uuid::Uuid;
 
@@ -22,8 +22,6 @@ const DELETED: i32 = 2;
 const DATA: i32 = 0;
 /// Requests in flight per commit.
 const CONCURRENCY: usize = 16;
-/// Parquet's tail: the footer's length in 4 bytes, and the magic.
-const PARQUET_TAIL: u64 = 8;
 
 /// One column's statistics, as a manifest carries them.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -237,26 +235,6 @@ pub async fn proposed(storage: &Storage, snapshots: &[ProposedSnapshot]) -> Resu
     Ok(folded(all))
 }
 
-/// The footer's size of each file. The manifest does not carry it, so this costs one request per file.
-pub async fn footer_sizes(storage: &Storage, files: &[ManifestFile]) -> Result<Vec<i32>, ApplyError> {
-    let sized: Vec<(String, u64)> = files
-        .iter()
-        .map(|file| (file.path.clone(), u64::try_from(file.file_size).unwrap_or(0)))
-        .collect();
-    let read = sized.into_iter().map(|(path, size)| {
-        let storage = storage.clone();
-        async move {
-            if size < PARQUET_TAIL {
-                return Err(ApplyError::from(invalid(format!("{path} is too small to be Parquet"))));
-            }
-            let tail = storage.tail(&path, size, PARQUET_TAIL).await?;
-            let found = stats::footer_size(&tail);
-            found.ok_or_else(|| ApplyError::from(invalid(format!("{path} is not Parquet of {size} bytes"))))
-        }
-    });
-    stream::iter(read).buffered(CONCURRENCY).try_collect().await
-}
-
 /// The partition of a file as the catalog holds it, one value per field of its spec.
 fn partition(file: &ManifestFile, spec: &[Json], types: &HashMap<i32, String>) -> Result<Json, Refused> {
     let Value::Record(values) = unwrapped(&file.partition) else {
@@ -275,11 +253,11 @@ fn partition(file: &ManifestFile, spec: &[Json], types: &HashMap<i32, String>) -
     Ok(Json::Array(held))
 }
 
-/// A proposed file as the protocol adds it. Statistics of a field the table does not have are dropped.
+/// A proposed file as the protocol adds it. Statistics of a field the table does not have are dropped. A manifest does
+/// not carry the footer's size, so it is not known (STA-1): the commit reads no file, and the footer is kept after it.
 pub fn file_add(
     table_id: Uuid,
     file: &ManifestFile,
-    footer_size: i32,
     spec: &[Json],
     types: &HashMap<i32, String>,
 ) -> Result<FileAdd, Refused> {
@@ -304,7 +282,7 @@ pub fn file_add(
         sort_order_id: file.sort_order_id,
         record_count: file.record_count,
         file_size: file.file_size,
-        footer_size,
+        footer_size: 0,
         first_row_id: None,
         stat_field_ids: columns.iter().map(|(id, _)| *id).collect(),
         lower: bound(|c| &c.lower),
@@ -544,32 +522,6 @@ mod tests {
         assert_eq!(files.removed, Vec::<String>::new());
     }
 
-    #[tokio::test]
-    async fn ice6_footer_size_from_tail() {
-        let storage = Storage::in_memory();
-        let parquet = [&[0_u8; 20][..], &5_i32.to_le_bytes(), b"PAR1"].concat();
-        storage.put("memory:///t/a", Bytes::from(parquet)).await.unwrap();
-        let (_, mut file) = entries(
-            &manifest(vec![entry(ADDED, data_file("memory:///t/a", 0, "PARQUET"))]),
-            0,
-        )
-        .unwrap()
-        .remove(0);
-        file.file_size = 28;
-        assert_eq!(footer_sizes(&storage, &[file.clone()]).await.unwrap(), [5]);
-
-        file.file_size = 20;
-        assert!(matches!(
-            footer_sizes(&storage, &[file.clone()]).await,
-            Err(ApplyError::Refused(Refused::Invalid(_)))
-        ));
-        file.file_size = 4;
-        assert!(matches!(
-            footer_sizes(&storage, &[file]).await,
-            Err(ApplyError::Refused(Refused::Invalid(_)))
-        ));
-    }
-
     #[test]
     fn ice6_file_add_converts_statistics() {
         let table_id = Uuid::nil();
@@ -580,14 +532,18 @@ mod tests {
         .unwrap()
         .remove(0);
         let types = HashMap::from([(1, "long".to_string())]);
-        let add = file_add(table_id, &file, 5, &[], &types).unwrap();
+        let add = file_add(table_id, &file, &[], &types).unwrap();
         assert_eq!(add.stat_field_ids, [1], "field 9 is not the table's");
         assert_eq!(add.lower, [Some(metalake::bounds::long(7))]);
         assert_eq!(add.upper, [Some(metalake::bounds::long(9))]);
         assert_eq!(add.null_count, [Some(0)]);
         assert_eq!(add.value_count, Some(vec![Some(3)]));
         assert_eq!(add.nan_count, [None]);
-        assert_eq!((add.footer_size, add.partition.clone()), (5, json!([])));
+        assert_eq!(
+            (add.footer_size, add.partition.clone()),
+            (0, json!([])),
+            "a size not known"
+        );
         assert_eq!(add.path.as_deref(), Some("memory:///t/a"));
     }
 

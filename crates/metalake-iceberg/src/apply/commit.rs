@@ -23,19 +23,14 @@ fn field_types(definition: &Json) -> HashMap<i32, String> {
     fields.iter().filter_map(typed).collect()
 }
 
-fn file_adds(
-    table_id: Uuid,
-    definition: &Json,
-    files: &[ManifestFile],
-    footers: &[i32],
-) -> Result<Vec<FileAdd>, Refused> {
+fn file_adds(table_id: Uuid, definition: &Json, files: &[ManifestFile]) -> Result<Vec<FileAdd>, Refused> {
     let types = field_types(definition);
-    let add = |(file, footer): (&ManifestFile, &i32)| {
+    let add = |file: &ManifestFile| {
         let spec = definition["specs"][file.spec_id.to_string()].as_array();
         let spec = spec.ok_or_else(|| Refused::Invalid(format!("no partition spec {}", file.spec_id)))?;
-        files::file_add(table_id, file, *footer, spec, &types)
+        files::file_add(table_id, file, spec, &types)
     };
-    files.iter().zip(footers).map(add).collect()
+    files.iter().map(add).collect()
 }
 
 /// The id in a path the projection serves for an inline file (ICE-5).
@@ -161,8 +156,7 @@ async fn prepare(
         } else if !proposed.removed.is_empty() {
             return Err(Refused::Invalid("a commit that creates a table removes no files".into()).into());
         }
-        let footers = files::footer_sizes(&storage, &proposed.added).await?;
-        adds = file_adds(table_id, &described, &proposed.added, &footers)?;
+        adds = file_adds(table_id, &described, &proposed.added)?;
     }
     let expected = match (&table, change.expected) {
         (None, _) => None,

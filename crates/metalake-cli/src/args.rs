@@ -107,6 +107,8 @@ pub enum Task {
     Flush,
     /// Rewrites small files and those with deleted rows.
     Compact,
+    /// Keeps in the catalog the footers of files other engines wrote, for reads to plan with.
+    Footers,
     /// Takes away the history no ref keeps, and queues its objects.
     Expire,
     /// Deletes queued objects past the grace.

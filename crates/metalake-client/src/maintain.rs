@@ -1,6 +1,7 @@
 //! Runs the core's tasks once, for whatever schedules it. Every task is safe to repeat, and to run beside commits. In
 //! order, what rewrites comes before what takes away: a compaction's old files are collectable only once expiring queues
-//! them, and only then can a sweep delete them.
+//! them, and only then can a sweep delete them. Footers are filled after the rewrites, which replace small files with
+//! files that have theirs.
 
 use std::time::Duration;
 
@@ -14,6 +15,8 @@ pub enum Task {
     Times,
     Flush,
     Compact,
+    /// The footers of files that came without one, kept in the catalog (FTR-1).
+    Footers,
     Expire,
     Sweep,
     Orphans,
@@ -24,10 +27,11 @@ pub enum Task {
 /// How old an object must be for `strays` to take it: more than any write in progress.
 const STRAY_AGE: Duration = Duration::from_secs(3 * 24 * 3600);
 
-const ORDER: [Task; 6] = [
+const ORDER: [Task; 7] = [
     Task::Times,
     Task::Flush,
     Task::Compact,
+    Task::Footers,
     Task::Expire,
     Task::Sweep,
     Task::Orphans,
@@ -48,6 +52,7 @@ impl Task {
             Task::Times => "times",
             Task::Flush => "flush",
             Task::Compact => "compact",
+            Task::Footers => "footers",
             Task::Expire => "expire",
             Task::Sweep => "sweep",
             Task::Orphans => "orphans",
@@ -55,8 +60,9 @@ impl Task {
         }
     }
 
-    fn rewrites(self) -> bool {
-        matches!(self, Task::Flush | Task::Compact)
+    /// Whether it runs table by table, on one ref or one table if asked.
+    fn by_table(self) -> bool {
+        matches!(self, Task::Flush | Task::Compact | Task::Footers)
     }
 }
 
@@ -90,8 +96,10 @@ impl Lake {
     pub async fn maintain(&self, request: &MaintainRequest) -> Result<MaintainRun> {
         let scoped = request.on.is_some() || request.table.is_some();
         let strays = matches!(request.task, Some(Task::Strays));
-        if scoped && !strays && !request.task.is_some_and(Task::rewrites) {
-            return Err(Error::usage("a ref or a table is for flush, compact and strays"));
+        if scoped && !strays && !request.task.is_some_and(Task::by_table) {
+            return Err(Error::usage(
+                "a ref or a table is for flush, compact, footers and strays",
+            ));
         }
         if strays && request.table.is_none() {
             return Err(Error::usage("strays lists a table's location: name the table"));
@@ -139,18 +147,18 @@ impl Lake {
                 let name = request.table.as_deref().unwrap_or_default();
                 return Err(Error::failed(format!("no branch has the table {name}")));
             }
-            Task::Flush | Task::Compact => {
+            Task::Flush | Task::Compact | Task::Footers => {
                 let storage = self.storage()?;
                 let mut found = false;
                 for on in self.branches(request).await? {
                     for table in tables(request, &on).await? {
                         found = true;
-                        let commit = self.rewrite(task, &table, &storage).await?;
+                        let result = self.by_table(task, &table, &storage).await?;
                         done.push(Done {
                             task: task.name(),
                             on: Some(on.name().to_string()),
                             table: Some(format!("{}.{}", table.namespace().join("."), table.name())),
-                            result: commit.map(|seq| seq as u64),
+                            result,
                         });
                     }
                 }
@@ -162,12 +170,15 @@ impl Lake {
         Ok(())
     }
 
-    async fn rewrite(&self, task: Task, table: &Table, storage: &Storage) -> Result<Option<i64>> {
+    /// A task of one table: a rewrite's commit, if it wrote one, or how many footers were kept.
+    async fn by_table(&self, task: Task, table: &Table, storage: &Storage) -> Result<Option<u64>> {
         let maintenance = self.catalog.maintenance();
-        Ok(match task {
+        let commit = match task {
+            Task::Footers => return Ok(Some(maintenance.footers(table, storage).await?)),
             Task::Flush => maintenance.flush(table, storage).await?,
             _ => maintenance.compact(table, storage).await?,
-        })
+        };
+        Ok(commit.map(|seq| seq as u64))
     }
 
     /// The branches a rewrite goes over: a tag takes no commits (BR-2).

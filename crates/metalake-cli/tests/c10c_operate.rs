@@ -142,7 +142,11 @@ fn maintain_without_retention() {
     let dir = split();
     let done = maintain(&dir, &[]);
     let tasks: Vec<&str> = done.iter().map(|d| d["task"].as_str().unwrap()).collect();
-    assert_eq!(tasks, ["times", "flush", "compact", "expire", "sweep", "orphans"]);
+    assert_eq!(
+        tasks,
+        ["times", "flush", "compact", "footers", "expire", "sweep", "orphans"]
+    );
+    assert_eq!(done[3]["result"], 0, "every file was written here, with its footer");
     assert!(done[2]["result"].is_i64(), "a compaction's commit: {:?}", done[2]);
 
     // The rewrite added a file, and every read of the past still needs the old ones.

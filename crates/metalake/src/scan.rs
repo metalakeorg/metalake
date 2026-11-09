@@ -3,7 +3,8 @@
 //! its own reader, or another process, may open it instead.
 //!
 //! A file opens with the footer the catalog serves (FTR-1): no request but those for its data. Without one, its
-//! size is the hint that fetches the footer in one request; an inline file is read from its bytes, with none.
+//! size is the hint that fetches the footer in one request, and a size not known (STA-1) a tail that holds most
+//! footers; an inline file is read from its bytes, with none.
 //! Columns are found by field id, under the table's fields at the read (`evolve`), and a range on a field also
 //! skips the row groups its statistics rule out. What
 //! comes back may hold rows outside the range (the engine filters them exactly), never fewer than those inside.
@@ -45,6 +46,18 @@ use crate::vectors::{self, DeletionVector};
 const BATCH_SIZE: usize = 8192;
 /// Files read at once.
 const CONCURRENCY: usize = 16;
+/// The tail fetched for a footer whose size is not known (STA-1): one request for most footers, which the catalog
+/// keeps up to this size, and a second for a longer one.
+const UNKNOWN_FOOTER_TAIL: usize = 64 * 1024 + 8;
+
+/// The bytes to fetch from a file's end for its footer, its length and `PAR1` (FTR-1): a hint, as a reader fetches more
+/// when the footer is longer.
+fn footer_tail(footer_size: i32) -> usize {
+    match footer_size {
+        0 => UNKNOWN_FOOTER_TAIL,
+        size => size as usize + 8,
+    }
+}
 
 /// A read of one table at its read point: which columns, and a range on a field that prunes.
 #[derive(Debug, Clone)]
@@ -338,7 +351,7 @@ async fn batches(task: ScanTask, storage: &Storage, r: Reading) -> Result<BoxStr
         match &task.footer {
             Some(footer) => ParquetMetaDataReader::decode_metadata(footer).map_err(read_error),
             None => ParquetMetaDataReader::new()
-                .with_prefetch_hint(Some(task.footer_size as usize + 8))
+                .with_prefetch_hint(Some(footer_tail(task.footer_size)))
                 .load_and_finish(&mut source, task.file_size as u64)
                 .await
                 .map_err(read_error),
@@ -537,7 +550,7 @@ impl AsyncFileReader for TaskReader {
                 Some(footer) => ParquetMetaDataReader::decode_metadata(footer)?,
                 None => {
                     ParquetMetaDataReader::new()
-                        .with_prefetch_hint(Some(self.footer_size as usize + 8))
+                        .with_prefetch_hint(Some(footer_tail(self.footer_size)))
                         .load_and_finish(&mut self.source, self.file_size as u64)
                         .await?
                 }

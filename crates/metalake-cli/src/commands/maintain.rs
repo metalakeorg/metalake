@@ -13,6 +13,7 @@ impl From<Task> for metalake_client::Task {
             Task::Times => Self::Times,
             Task::Flush => Self::Flush,
             Task::Compact => Self::Compact,
+            Task::Footers => Self::Footers,
             Task::Expire => Self::Expire,
             Task::Sweep => Self::Sweep,
             Task::Orphans => Self::Orphans,

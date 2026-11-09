@@ -429,3 +429,42 @@ async fn ret3_iceberg_keys_expire_at_floor() -> Result<(), Box<dyn std::error::E
     assert_eq!(left, ["a-native-writer", "iceberg:t:7432"]);
     Ok(())
 }
+
+#[tokio::test]
+async fn ftr1_footers_filled_once() -> Result<(), Box<dyn std::error::Error>> {
+    let store = Arc::new(Counting::default());
+    let (catalog, t, storage, _) = lake(store.clone()).await?;
+
+    // Three stored files with no footer in the catalog: a of a size its writer did not know (STA-1), b of a known one,
+    // and c of an unknown one whose object is not Parquet.
+    let mut added = Vec::new();
+    for (keys, unknown) in [(0..100, true), (100..200, false), (200..300, true)] {
+        let mut file = files(&catalog, &t, &storage, keys, WriteOptions::default())
+            .await?
+            .remove(0);
+        file.footer = None;
+        if unknown {
+            file.footer_size = 0;
+        }
+        added.push(file);
+    }
+    let junk = added[2].path.clone().unwrap();
+    storage
+        .put(&junk, bytes::Bytes::from(vec![7u8; added[2].file_size as usize]))
+        .await?;
+    let main = catalog.branch("main").await?;
+    main.transaction().append(added).commit().await?;
+
+    let t = main.table(&["db"], "t").await?;
+    let maintenance = catalog.maintenance();
+    assert_eq!(maintenance.footers(&t, &storage).await?, 1, "a alone");
+    assert_eq!(maintenance.footers(&t, &storage).await?, 0, "a repeat stores nothing");
+    let tasks: Vec<_> = Scan::new(&catalog, &t).plan().await?.try_collect().await?;
+    let with_footer: Vec<bool> = tasks.iter().map(|task| task.footer.is_some()).collect();
+    assert_eq!(with_footer.iter().filter(|f| **f).count(), 1);
+    assert!(
+        tasks.iter().any(|task| task.footer.is_some() && task.footer_size == 0),
+        "the file of an unknown size has its footer"
+    );
+    Ok(())
+}

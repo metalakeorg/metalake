@@ -33,7 +33,7 @@ def test_task_order(lake):
     done = lake.maintain()
     assert all(isinstance(d, metalake.Done) for d in done)
     tasks = [d.task for d in done]
-    assert list(dict.fromkeys(tasks)) == ["times", "flush", "compact", "expire", "sweep", "orphans"]
+    assert list(dict.fromkeys(tasks)) == ["times", "flush", "compact", "footers", "expire", "sweep", "orphans"]
     flush = next(d for d in done if d.task == "flush")
     assert flush.on == "main" and flush.table == "default.small"
     assert "flush" in repr(flush)
@@ -75,9 +75,9 @@ def test_compact_table_on_some_branches(lake):
 
 
 def test_filter_limited_to_rewrites(lake):
-    with pytest.raises(metalake.UsageError, match="flush, compact and strays"):
+    with pytest.raises(metalake.UsageError, match="flush, compact, footers and strays"):
         lake.maintain("expire", table="default.small")
-    with pytest.raises(metalake.UsageError, match="flush, compact and strays"):
+    with pytest.raises(metalake.UsageError, match="flush, compact, footers and strays"):
         lake.maintain(on="main")
 
 

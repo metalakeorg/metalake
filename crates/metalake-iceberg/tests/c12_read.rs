@@ -199,6 +199,19 @@ async fn ice6_pyiceberg_append() -> Result<(), Failure> {
     let said = client("append", &uri)?;
     let t = main.table(&["db"], "plain").await?;
     let planned: Vec<_> = Scan::new(&catalog, &t).plan().await?.try_collect().await?;
+    // The commit read no file of the client's, so its footer's size is not known (STA-1); MetaLake reads it all the
+    // same, and maintenance keeps its footer (FTR-1).
+    let unknown: Vec<_> = planned.iter().filter(|f| f.footer_size == 0).collect();
+    assert_eq!(unknown.len(), 1, "the client's file");
+    let scan = Scan::new(&catalog, &t);
+    let read: Vec<_> = scan.read(scan.plan().await?, &storage).try_collect().await?;
+    assert_eq!(read.iter().map(|b| b.num_rows()).sum::<usize>(), 5);
+    assert_eq!(catalog.maintenance().footers(&t, &storage).await?, 1);
+    let kept: Vec<_> = Scan::new(&catalog, &t).plan().await?.try_collect().await?;
+    assert!(
+        kept.iter().all(|f| f.footer.is_some() || f.content.is_some()),
+        "every file reads with no footer request"
+    );
     let _ = std::fs::remove_dir_all(&directory);
     assert_eq!(said["rows"], json!([0, 1, 2, 7, 8]));
     assert_eq!(

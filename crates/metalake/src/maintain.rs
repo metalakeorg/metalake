@@ -2,20 +2,28 @@
 //! decides what goes; Postgres cannot touch storage, so the core deletes the objects, and forgets them only after.
 //! Each task is a loop of the protocol's batches, safe to repeat and to run beside commits; when to run it is the
 //! caller's. Flushing and compacting rewrite files instead: a `replace` commit (CMT-11) of the same live rows, which
-//! the protocol refuses if a delete got in first, since it counts them.
+//! the protocol refuses if a delete got in first, since it counts them. Filling footers changes no row: it keeps in
+//! the catalog the footers of files that came without one (FTR-1).
 
 use std::collections::BTreeSet;
 use std::time::Duration;
 
 use futures_util::{StreamExt, TryStreamExt, stream};
 use metalake_pg::BATCH;
+use parquet::file::metadata::ParquetMetaDataReader;
 
 use crate::catalog::Catalog;
 use crate::error::{Error, Result};
 use crate::scan::{Scan, ScanTask};
+use crate::stats;
 use crate::storage::Storage;
 use crate::table::Table;
 use crate::write::{TableWriter, WriteOptions, target_size};
+
+/// The bytes read from a file's end for its footer: the longest footer the catalog keeps, its length and `PAR1`.
+const FOOTER_TAIL: u64 = 64 * 1024 + 8;
+/// Files whose tails are read at once.
+const TAILS: usize = 16;
 
 /// The maintenance of a catalog.
 #[derive(Debug, Clone)]
@@ -141,6 +149,43 @@ impl Maintenance {
         self.rewrite(table, storage, tasks).await.map(Some)
     }
 
+    /// Keeps in the catalog the footers of a table's files that came with no footer and no `footer_size`, as a file
+    /// another engine wrote does (STA-1, FTR-1), so that a read finds it there and plans its row groups: one request
+    /// per file, for its tail. A footer longer than the catalog keeps is left, and its readers fetch it as before.
+    /// Answers how many it stored. Safe to repeat and to run beside commits: a file gone meanwhile, or given its footer,
+    /// is left.
+    pub async fn footers(&self, table: &Table, storage: &Storage) -> Result<u64> {
+        let mut tasks = self.files(table).await?;
+        tasks.retain(|t| t.footer_size == 0 && t.footer.is_none() && t.path.is_some());
+        let read = tasks.into_iter().filter_map(|t| {
+            let storage = storage.clone();
+            let size = u64::try_from(t.file_size).ok()?;
+            let path = t.path?;
+            Some(async move {
+                match storage.tail(&path, size, FOOTER_TAIL.min(size)).await {
+                    Ok(tail) => Ok(footer_of(&tail).map(|footer| (path, footer))),
+                    Err(e) if e.is_missing_object() => Ok(None),
+                    Err(e) => Err(e),
+                }
+            })
+        });
+        let found: Vec<(String, Vec<u8>)> = stream::iter(read)
+            .buffer_unordered(TAILS)
+            .try_filter_map(|found| async move { Ok(found) })
+            .try_collect()
+            .await?;
+
+        let p = self.catalog.protocol();
+        let mut stored = 0;
+        for chunk in found.chunks(self.batch.max(1) as usize) {
+            let (paths, footers): (Vec<String>, Vec<Vec<u8>>) = chunk.iter().cloned().unzip();
+            stored += p
+                .add_footers(&self.catalog.session().await?, table.id(), &paths, &footers)
+                .await? as u64;
+        }
+        Ok(stored)
+    }
+
     async fn files(&self, table: &Table) -> Result<Vec<ScanTask>> {
         Scan::new(&self.catalog, table).plan().await?.try_collect().await
     }
@@ -190,5 +235,37 @@ impl Maintenance {
             }
             filled += n as u64;
         }
+    }
+}
+
+/// The footer at the end of `tail`, a file's last bytes, if they hold it all and it reads as Parquet's.
+fn footer_of(tail: &[u8]) -> Option<Vec<u8>> {
+    let size = usize::try_from(stats::footer_size(tail)?).ok()?;
+    let n = tail.len();
+    if size == 0 || size + 8 > n {
+        return None;
+    }
+    let footer = &tail[n - 8 - size..n - 8];
+    ParquetMetaDataReader::decode_metadata(footer).ok()?;
+    Some(footer.to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn footer_of_partial_or_other_tail_skips() {
+        // a length that the tail does not hold, a footer of no bytes, no PAR1, and bytes that are not a footer
+        let tail = |footer: &[u8], length: u32, magic: &[u8; 4]| {
+            let mut t = footer.to_vec();
+            t.extend_from_slice(&length.to_le_bytes());
+            t.extend_from_slice(magic);
+            t
+        };
+        assert_eq!(footer_of(&tail(&[1, 2], 9, b"PAR1")), None);
+        assert_eq!(footer_of(&tail(&[], 0, b"PAR1")), None);
+        assert_eq!(footer_of(&tail(&[1, 2], 2, b"NOPE")), None);
+        assert_eq!(footer_of(&tail(&[1, 2], 2, b"PAR1")), None);
     }
 }
