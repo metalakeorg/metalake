@@ -1,6 +1,6 @@
 # Apache Iceberg's REST Compatibility Kit against the Iceberg REST server: the catalog tests Iceberg's own clients hold a
-# catalog to. For now it reports, and holds nothing: what fails is read, and sorted into what the specification refuses
-# on purpose and what is to be fixed, before it becomes a gate. Views are not served, so their tests do not run.
+# catalog to. The run is held to ci/rck/expected.txt, the failures the specification declares, each with its rule: a
+# failure not declared fails it, and so does a declared one that passes. Views are not served, so their tests do not run.
 name: iceberg-rck
 
 on:
@@ -69,9 +69,11 @@ jobs:
             -jar "$console" execute --class-path "$classpath" \
             --select-class org.apache.iceberg.rest.RESTCompatibilityKitCatalogTests \
             --reports-dir reports --details summary --disable-banner || true
-      - name: What passed and failed
+      - name: Held to the failures declared
         if: always()
-        run: python3 ci/rck/summary.py ci/rck/reports >> "$GITHUB_STEP_SUMMARY"
+        # Named, the shell runs with pipefail: the gate's exit code is not lost to tee.
+        shell: bash
+        run: python3 ci/rck/summary.py ci/rck/reports ci/rck/expected.txt | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
