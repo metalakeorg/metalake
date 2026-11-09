@@ -195,25 +195,39 @@ async fn roll_up<'c>(
 }
 
 /// A snapshot's manifests and manifest list: what it added, and its parent's manifests when it only added to them, which
-/// costs what it added, or else all it sees.
-async fn generate(on: &Ref, state: &State, storage: &Storage, table: &Table, snapshot: &TableSnapshot) -> Result<()> {
+/// costs what it added, or else all it sees. It reads no definition: its fields are those of its schema, which the load
+/// read once a schema, and its specs and manifest size those of the definition served, which holds every spec the table
+/// has had (REST-6).
+async fn generate(
+    on: &Ref,
+    state: &State,
+    storage: &Storage,
+    table: &Table,
+    rows: &Rows,
+    snapshot: &TableSnapshot,
+) -> Result<()> {
     let (location, at) = (table.location(), snapshot.snapshot_id);
-    let namespace: Vec<&str> = table.namespace().iter().map(String::as_str).collect();
-    let read = on.at(at).table(&namespace, table.name()).await?;
     let base = base(storage, table, snapshot).await?;
     let files: Vec<ListedFile> = match base.carried {
         Some(_) => on.added_files(table, at).await?,
-        None => Scan::new(state.catalog(), &read).list().await?.try_collect().await?,
+        None => {
+            let namespace: Vec<&str> = table.namespace().iter().map(String::as_str).collect();
+            let read = on.at(at).table(&namespace, table.name()).await?;
+            Scan::new(state.catalog(), &read).list().await?.try_collect().await?
+        }
     };
     let deletes = materialize(&files, location, storage, base.since).await?;
 
-    let definition = on.definition(table, Some(at)).await?;
-    let fields = definition["fields"].as_array().cloned().unwrap_or_default();
+    let definition = &rows.definition;
+    let unread = || Error::Corrupt(format!("schema {} of snapshot {at} not read", snapshot.schema_seq));
+    let fields = rows.schemas.get(&snapshot.schema_seq).ok_or_else(unread)?;
     let types: HashMap<i32, String> = fields
+        .as_array()
+        .map_or(&[][..], Vec::as_slice)
         .iter()
         .filter_map(|f| Some((f["field_id"].as_i64()? as i32, f["type"].as_str()?.to_string())))
         .collect();
-    let rendered = schema(snapshot.schema_seq, &definition["fields"]);
+    let rendered = schema(snapshot.schema_seq, fields);
     let mut spec_ids: Vec<i32> = files.iter().map(|f| f.spec_id).collect();
     spec_ids.sort_unstable();
     spec_ids.dedup();
@@ -266,7 +280,7 @@ async fn generate(on: &Ref, state: &State, storage: &Storage, table: &Table, sna
         }
     }
     let mut carried = base.carried.unwrap_or_default();
-    let target = manifest_target_size(&definition);
+    let target = manifest_target_size(definition);
     roll_up(storage, location, at, &mut carried, target, context_of).await?;
     let list = manifest_list(at, snapshot.parent_snapshot_id, &manifests, carried)?;
     storage.put(&list_path(location, at), list.into()).await
@@ -364,7 +378,7 @@ pub(crate) async fn load(state: &State, table: &Table) -> Result<LoadTableResult
         };
         for snapshot in unlisted(&rows.snapshots, &heads, exists).await? {
             let on = known(&live, &snapshot.ref_name)?;
-            generate(on, state, &storage, table, snapshot).await?;
+            generate(on, state, &storage, table, &rows, snapshot).await?;
         }
         storage.put(&metadata_location, body).await?;
         let found = storage.list(&metadata_files(location)).await?;

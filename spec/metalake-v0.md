@@ -826,7 +826,8 @@ Iceberg REST server of the projection, and are checked by its tests.
   under retention (§13), read through MetaLake.
 - **REST-6.** A table has no manifests until a client asks. An answer names only files that exist. A commit of a
   table that has them changes only the blocks it touches. What is generated lies under `<location>/metalake-*`, and
-  can always be generated again.
+  can always be generated again. A snapshot's manifests are grouped by `commit.manifest.target-size-bytes` as the
+  load that generates them serves it, not as it was at that snapshot: any grouping states the same files.
   A table keeps its latest metadata file and the `write.metadata.previous-versions-max` before it (100 when absent).
 - **REST-7.** `createTable` is a commit that creates the table, and assigns its ids from 1, as what a client sends
   is a shape. With `stage-create` it writes nothing and answers

@@ -4,11 +4,15 @@
 mod common;
 
 use std::process::Command;
+use std::sync::Arc;
+
+use arrow_array::{ArrayRef, Int64Array, RecordBatch};
+use arrow_schema::{DataType, Field, Schema};
 
 use common::{Failure, append, create, fresh_schema, local_catalog, server, streamed, url};
 use futures_util::TryStreamExt;
 use metalake::vectors::Deletes;
-use metalake::{Catalog, CatalogConfig, Scan};
+use metalake::{Catalog, CatalogConfig, Scan, TableWriter, WriteOptions};
 use metalake_iceberg::project::bounds::{from_iceberg, to_iceberg};
 use metalake_pg::{Commit, Pool, Protocol};
 use serde_json::{Value, json};
@@ -135,6 +139,72 @@ async fn pyiceberg_read_partitions_vectors_branch_schemas() -> Result<(), Failur
         .await?
         .get(0);
     assert_eq!(as_the_reference_has_it(said["metadata"].clone()), expected);
+    Ok(())
+}
+
+/// The fields a manifest states as its schema, and its schema's id: what its key-value metadata holds.
+fn manifest_schema(path: &std::path::Path) -> Result<(Vec<String>, String), Failure> {
+    let reader = apache_avro::Reader::new(std::fs::File::open(path)?)?;
+    let meta = reader.user_metadata();
+    let schema: Value = serde_json::from_slice(&meta["schema"])?;
+    let names = schema["fields"].as_array().unwrap().iter();
+    let names = names.map(|f| f["name"].as_str().unwrap().to_string()).collect();
+    Ok((names, String::from_utf8(meta["schema-id"].clone())?))
+}
+
+#[tokio::test]
+async fn rest6_manifests_carry_their_snapshot_schema() -> Result<(), Failure> {
+    let schema = fresh_schema();
+    let (catalog, storage, directory) = local_catalog(&schema).await?;
+    let main = catalog.branch("main").await?;
+    main.transaction().create_namespace(&["db"]).commit().await?;
+    create(&main, "grown", "0", vec![]).await?;
+    append(&catalog, &main, &storage, "grown", 0..2).await?;
+    let before = main.table(&["db"], "grown").await?.snapshot_id().unwrap();
+
+    let t = main.table(&["db"], "grown").await?;
+    let pool = Pool::new(&url(), 1)?;
+    let session = pool.get().await?;
+    let protocol = Protocol::new(&schema);
+    let id = protocol.next_id(&session, t.id(), "field").await?;
+    let added = json!({"fields": [{"field_id": id, "new": true, "parent_field_id": null, "position": 2, "name": "v",
+                                   "type": "long", "required": false}]});
+    let change = Commit {
+        ref_id: main.id(),
+        operation: "evolve".into(),
+        changes: Some(json!({t.id().to_string(): added})),
+        ..Default::default()
+    };
+    protocol.commit(&session, &change).await?;
+    let t = main.table(&["db"], "grown").await?;
+    let fields = vec![Field::new("k", DataType::Int64, false), Field::new("v", DataType::Int64, true)];
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(Int64Array::from(vec![10, 11])),
+        Arc::new(Int64Array::from(vec![Some(1), None])),
+    ];
+    let grown = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)?;
+    let mut writer = TableWriter::new(&catalog, &t, storage.clone(), WriteOptions::default())?;
+    writer.write(&grown).await?;
+    main.transaction().append(writer.finish().await?).commit().await?;
+    let after = main.table(&["db"], "grown").await?.snapshot_id().unwrap();
+
+    // one load generates both, the first on the schema it was written with
+    let (_server, uri) = server(&schema)?;
+    let python = std::env::var("METALAKE_TEST_PYTHON").expect("METALAKE_TEST_PYTHON");
+    let load = format!("import urllib.request; urllib.request.urlopen('{uri}/v1/namespaces/db/tables/grown').read()");
+    assert!(Command::new(python).args(["-c", &load]).status()?.success());
+    let generated = directory.join("db").read_dir()?.flatten().find(|e| {
+        e.file_name()
+            .to_string_lossy()
+            .starts_with("grown")
+    });
+    let generated = generated.expect("the table's directory").path().join("metalake-manifests");
+    let (first, first_id) = manifest_schema(&generated.join(format!("a-{before}-0.avro")))?;
+    let (last, last_id) = manifest_schema(&generated.join(format!("a-{after}-0.avro")))?;
+    let _ = std::fs::remove_dir_all(&directory);
+    assert_eq!(first, ["k"]);
+    assert_eq!(last, ["k", "v"]);
+    assert_ne!(first_id, last_id);
     Ok(())
 }
 
