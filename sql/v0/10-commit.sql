@@ -18,13 +18,13 @@ begin
     if exists (select 1 from tbl where table_id = t) then
       perform refuse_invalid('ID-3', format('table id %s exists', t));
     end if;
-    if table_by_name(r, array(select jsonb_array_elements_text(e -> 'create' -> 'namespace')), e -> 'create' ->> 'name',
+    if table_id_named(r, array(select jsonb_array_elements_text(e -> 'create' -> 'namespace')), e -> 'create' ->> 'name',
                      latest) is not null then
       perform refuse_conflict('TBL-1', format('the name %s is taken', e -> 'create'));
     end if;
     return;
   end if;
-  if e ? 'rename' and coalesce(table_by_name(r, array(select jsonb_array_elements_text(e -> 'rename' -> 'namespace')),
+  if e ? 'rename' and coalesce(table_id_named(r, array(select jsonb_array_elements_text(e -> 'rename' -> 'namespace')),
                                              e -> 'rename' ->> 'name', latest), t) <> t then
     perform refuse_conflict('TBL-1', format('the name %s is taken', e -> 'rename'));
   end if;

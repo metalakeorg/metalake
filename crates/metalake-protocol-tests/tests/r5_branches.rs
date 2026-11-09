@@ -179,6 +179,43 @@ impl Run {
         Ok(())
     }
 
+    /// TBL-1, VIS-9: on every ref, each name a table may have finds what the list of all the ref's tables holds of it.
+    async fn tables_named_match(&self) -> Result<(), Error> {
+        let p = quote_ident(&self.pair.protocol);
+        let on = &self.pair.on_protocol;
+        for r in self.refs().await? {
+            let all = on
+                .query(
+                    &format!(
+                        "select table_id, name, seq from {p}.tables_latest(array[$1::int]) where namespace = '{{db}}'"
+                    ),
+                    &[&r],
+                )
+                .await?;
+            for name in (0..4).chain([9]).map(|n| format!("t{n}")) {
+                let listed: Option<(Uuid, i64)> = all
+                    .iter()
+                    .find(|row| row.get::<_, String>(1) == name)
+                    .map(|row| (row.get(0), row.get(2)));
+                let found: Option<(Uuid, i64)> = on
+                    .query_opt(
+                        &format!("select * from {p}.table_named($1, '{{db}}', $2)"),
+                        &[&r, &name],
+                    )
+                    .await?
+                    .map(|row| (row.get(0), row.get(1)));
+                if found != listed {
+                    return Err(format!("ref {r}, {name}: table_named {found:?}, tables_latest {listed:?}").into());
+                }
+                count(format!(
+                    "table_named: {}",
+                    if found.is_some() { "found" } else { "none" }
+                ));
+            }
+        }
+        Ok(())
+    }
+
     async fn refs(&self) -> Result<Vec<i32>, Error> {
         let rows = self
             .pair
@@ -625,6 +662,7 @@ fn branches_and_merges_match_reference() {
                         run.apply(s).await?;
                     }
                     run.pair.same_commit_changes().await?;
+                    run.tables_named_match().await?;
                     run.pair.drop().await
                 })
                 .map_err(|e: Error| TestCaseError::fail(format!("{e:?}")))
@@ -639,6 +677,8 @@ fn branches_and_merges_match_reference() {
         return;
     }
     for what in [
+        "table_named: found",
+        "table_named: none",
         "create_ref: ok",
         "create_ref: 22023",
         "merge: ok",

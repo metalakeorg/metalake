@@ -499,6 +499,29 @@ impl Protocol {
     /// The tables a ref saw as of a time, each with the sequence to read it at and its name then (TT-3).
     /// The tables of `ref_ids` now, each with the sequence to read it at, seen in one statement: a commit of several
     /// tables is in the sequence of each or of none.
+    /// The table `ref_id` sees as `namespace.name` at `at`, or at its latest, with the sequence to read it at: one table
+    /// found by its name, at a cost the ref's other tables do not change (TBL-1, VIS-9).
+    pub async fn table_named(
+        &self,
+        s: &impl Session,
+        ref_id: i32,
+        namespace: &[String],
+        name: &str,
+        at: Option<i64>,
+    ) -> Result<Option<(Uuid, i64)>> {
+        let at = at.unwrap_or(LATEST);
+        let row = self
+            .all(
+                s,
+                "table_named(ref_id => $1, namespace => $2, name => $3, at => $4)",
+                &[&ref_id, &namespace, &name, &at],
+            )
+            .await?
+            .into_iter()
+            .next();
+        Ok(row.map(|r| (r.get("table_id"), r.get("seq"))))
+    }
+
     pub async fn tables_latest(&self, s: &impl Session, ref_ids: &[i32]) -> Result<Vec<TableLatest>> {
         let rows = self.all(s, "tables_latest(ref_ids => $1)", &[&ref_ids]).await?;
         Ok(rows
@@ -809,6 +832,7 @@ pub const INTERFACE: &[(&str, &[&str], bool)] = &[
     ("as_of_time", &["r", "t", "at"], false),
     ("tables_as_of", &["ref_id", "at"], false),
     ("tables_latest", &["ref_ids"], false),
+    ("table_named", &["ref_id", "namespace", "name", "at"], false),
     ("stable_point", &[], false),
     ("stream_point", &[], false),
     ("retention_floor", &["r"], false),

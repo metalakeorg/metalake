@@ -176,6 +176,67 @@ async fn ftr1_add_footers_by_path() -> Result<(), Error> {
 }
 
 #[tokio::test]
+async fn tbl1_table_named_by_ref() -> Result<(), Error> {
+    let on = connect().await?;
+    let schema = fresh_schema("c1");
+    install_protocol(&on, &schema).await?;
+    let p = Protocol::new(&schema);
+    let t = Uuid::from_u128(0xc1);
+    p.commit(&on, &create(t)).await?;
+    let db = ["db".to_string()];
+    let named = |r: i32, name: &'static str| {
+        let (p, on, db) = (&p, &on, &db);
+        async move { p.table_named(on, r, db, name, None).await.map(|f| f.map(|(id, _)| id)) }
+    };
+    let definition = |change: serde_json::Value| Commit {
+        ref_id: 1,
+        operation: "update".into(),
+        changes: Some(json!({ t.to_string(): change })),
+        ..Default::default()
+    };
+
+    // a tag sees what main saw; a branch renames the table, which main still has by its old name
+    let tag = CreateRef {
+        kind: "tag".into(),
+        ..CreateRef::branch("q3", 1)
+    };
+    let tag = p.create_ref(&on, &tag).await?;
+    let dev = p.create_ref(&on, &CreateRef::branch("dev", 1)).await?;
+    let mut renamed = definition(json!({"rename": {"namespace": ["db"], "name": "u"}}));
+    renamed.ref_id = dev;
+    p.commit(&on, &renamed).await?;
+    assert_eq!(named(dev, "t").await?, None, "renamed on the branch");
+    assert_eq!(named(dev, "u").await?, Some(t));
+    assert_eq!(named(1, "t").await?, Some(t), "main keeps its name");
+    assert_eq!(named(1, "u").await?, None);
+
+    // main drops it, and a new table takes the name; the tag still sees the first
+    p.commit(&on, &definition(json!({"drop": true}))).await?;
+    assert_eq!(named(1, "t").await?, None, "dropped");
+    let other = Uuid::from_u128(0xc2);
+    let mut again = create(other);
+    again.app_id = None;
+    again.changes = Some(json!({ other.to_string(): {
+        "create": {"namespace": ["db"], "name": "t", "location": "gs://lake"},
+        "fields": [{"field_id": 1, "new": true, "position": 1, "name": "k", "type": "long", "required": true}],
+    }}));
+    again.files = vec![];
+    p.commit(&on, &again).await?;
+    assert_eq!(named(1, "t").await?, Some(other), "the name's new table");
+    assert_eq!(named(tag, "t").await?, Some(t), "the tag's table");
+
+    // at a sequence, the sequence given; at the latest, the read point tables_latest gives
+    let latest = p.tables_latest(&on, &[1]).await?;
+    let seq = latest.iter().find(|l| l.name == "t").unwrap().seq;
+    assert_eq!(p.table_named(&on, 1, &db, "t", None).await?, Some((other, seq)));
+    assert_eq!(
+        p.table_named(&on, tag, &db, "t", Some(seq)).await?.map(|(_, s)| s),
+        Some(seq)
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn calls_match_functions() -> Result<(), Error> {
     let mut on = connect().await?;
     let schema = fresh_schema("c1");

@@ -423,19 +423,36 @@ impl Ref {
         Ok(self.tables_seen().await?.into_iter().map(|(t, _)| t).collect())
     }
 
-    /// A table by its name, as this ref sees it at its read point.
+    /// A table by its name, as this ref sees it at its read point. At the latest or at a sequence, it is found by its
+    /// name alone, so that its cost does not grow with the ref's other tables; as of a time, among those the ref saw.
     pub async fn table(&self, namespace: &[&str], name: &str) -> Result<Table> {
-        let (found, seq) = self
-            .tables_seen()
-            .await?
-            .into_iter()
-            .find(|(t, _)| t.namespace == namespace && t.name == name)
-            .ok_or_else(|| Error::NotFound(format!("table {}.{name} on {}", namespace.join("."), self.name)))?;
+        let missing = || Error::NotFound(format!("table {}.{name} on {}", namespace.join("."), self.name));
         let p = self.catalog.protocol();
+        let session = self.catalog.session().await?;
+        let (table_id, seq) = match self.at {
+            Point::Time(_) => {
+                drop(session);
+                let seen = self.tables_seen().await?;
+                let found = seen
+                    .into_iter()
+                    .find(|(t, _)| t.namespace == namespace && t.name == name);
+                found.map(|(t, seq)| (t.table_id, seq)).ok_or_else(missing)?
+            }
+            Point::Latest | Point::Seq(_) => {
+                let at = match self.at {
+                    Point::Seq(seq) => Some(seq),
+                    _ => None,
+                };
+                let levels: Vec<String> = namespace.iter().map(|level| level.to_string()).collect();
+                p.table_named(&session, self.id, &levels, name, at)
+                    .await?
+                    .ok_or_else(missing)?
+            }
+        };
         let definition = p
-            .describe(&self.catalog.session().await?, self.id, found.table_id, Some(seq))
+            .describe(&self.catalog.session().await?, self.id, table_id, Some(seq))
             .await?
-            .ok_or_else(|| Error::NotFound(format!("table {} on {}", found.table_id, self.name)))?;
+            .ok_or_else(|| Error::NotFound(format!("table {table_id} on {}", self.name)))?;
         Table::from_definition(self.id, seq, &definition)
     }
 

@@ -168,6 +168,36 @@ set search_path = @schema@, pg_catalog, pg_temp as $$
    order by r.id, x.namespace, x.name;
 $$;
 
+-- TBL-1, VIS-9: the table that ref_id sees as `namespace.name` at `at`, or NULL: what visible_table_names holds of that
+-- name. It reads the names, version by version, of the tables that ever had that one, through its index, so that
+-- finding a table costs the same whatever the ref holds.
+create function @schema@.table_id_named(ref_id int, namespace text[], name text, at bigint) returns uuid
+language sql stable
+set search_path = @schema@, pg_catalog, pg_temp as $$
+  select s.table_id from (
+    select distinct on (x.table_id) x.table_id, x.namespace, x.name, x.dropped
+      from (select distinct n.table_id from table_name n where n.namespace = $2 and n.name = $3) k
+      join table_name x on x.table_id = k.table_id
+      join chain($1, $4) c on x.ref_id = c.ref_id and x.begin_seq <= c.seq and c.seq < x.end_seq
+     order by x.table_id, c.level) s
+   where not s.dropped and s.namespace = $2 and s.name = $3;
+$$;
+
+-- The table that ref_id sees as `namespace.name` at `at`, or at its latest, with the sequence to read it at: what
+-- tables_latest, or tables_at at a sequence, answers of that name, at the cost of that table alone.
+create function @schema@.table_named(ref_id int, namespace text[], name text, at bigint default 9223372036854775806)
+returns table (table_id uuid, seq bigint) language sql stable
+set search_path = @schema@, pg_catalog, pg_temp as $$
+  select t,
+         case when $4 = 9223372036854775806
+              then greatest(snapshot_at($1, t, $4),
+                            (select b.begin_seq from ref_base b
+                              where b.ref_id = $1 and b.end_seq = 9223372036854775807))
+              else $4 end
+    from table_id_named($1, $2, $3, $4) t
+   where t is not null;
+$$;
+
 -- TT-3, TBL-1: the tables ref_id saw as of time `at`, each with the sequence to read it at (as_of_time) and its name
 -- then: none that was dropped by then or created after. A commit that wrote several tables has one time, so it is in
 -- each one's sequence or in none, and the reads agree as one point would. Every table that has been on the ref's
