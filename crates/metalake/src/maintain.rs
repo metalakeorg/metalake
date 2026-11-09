@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use futures_util::{StreamExt, TryStreamExt, stream};
 use metalake_pg::BATCH;
+use uuid::Uuid;
 use parquet::file::metadata::ParquetMetaDataReader;
 
 use crate::catalog::Catalog;
@@ -156,18 +157,27 @@ impl Maintenance {
     /// is left.
     pub async fn footers(&self, table: &Table, storage: &Storage) -> Result<u64> {
         let mut tasks = self.files(table).await?;
-        tasks.retain(|t| t.footer_size == 0 && t.footer.is_none() && t.path.is_some());
-        let read = tasks.into_iter().filter_map(|t| {
+        tasks.retain(|t| t.footer_size == 0 && t.footer.is_none());
+        let files = tasks
+            .into_iter()
+            .filter_map(|t| Some((t.path?, u64::try_from(t.file_size).ok()?)))
+            .collect();
+        self.keep_footers(table.id(), files, storage).await
+    }
+
+    /// Keeps the footers of `files` of table `table_id`, each a path and its size, read from their tails: what
+    /// [`Maintenance::footers`] does for files it found, for a writer that knows which files came without one, as
+    /// the Iceberg service does after a commit. Answers how many it stored.
+    pub async fn keep_footers(&self, table_id: Uuid, files: Vec<(String, u64)>, storage: &Storage) -> Result<u64> {
+        let read = files.into_iter().map(|(path, size)| {
             let storage = storage.clone();
-            let size = u64::try_from(t.file_size).ok()?;
-            let path = t.path?;
-            Some(async move {
+            async move {
                 match storage.tail(&path, size, FOOTER_TAIL.min(size)).await {
                     Ok(tail) => Ok(footer_of(&tail).map(|footer| (path, footer))),
                     Err(e) if e.is_missing_object() => Ok(None),
                     Err(e) => Err(e),
                 }
-            })
+            }
         });
         let found: Vec<(String, Vec<u8>)> = stream::iter(read)
             .buffer_unordered(TAILS)
@@ -180,7 +190,7 @@ impl Maintenance {
         for chunk in found.chunks(self.batch.max(1) as usize) {
             let (paths, footers): (Vec<String>, Vec<Vec<u8>>) = chunk.iter().cloned().unzip();
             stored += p
-                .add_footers(&self.catalog.session().await?, table.id(), &paths, &footers)
+                .add_footers(&self.catalog.session().await?, table_id, &paths, &footers)
                 .await? as u64;
         }
         Ok(stored)

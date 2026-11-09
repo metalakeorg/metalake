@@ -10,6 +10,7 @@ use uuid::Uuid;
 use super::files::{self, ManifestFile};
 use super::update::{Change, one_ref};
 use super::{ApplyError, Refused, create};
+use crate::footers::Job;
 use crate::project::metadata::is_empty_creation;
 use crate::state::State;
 
@@ -211,7 +212,9 @@ pub async fn apply(state: &State, targets: &[Target]) -> Result<Vec<Table>, Appl
                 Err(failure) => return Err(failure),
             }
         }
-        commit(&on, prepared, key).await?;
+        for job in commit(&on, prepared, key).await? {
+            state.footers().queue(job);
+        }
     }
     tables(&on, targets).await
 }
@@ -231,11 +234,24 @@ async fn tables(on: &Ref, targets: &[Target]) -> Result<Vec<Table>, ApplyError> 
     Ok(found)
 }
 
-async fn commit(on: &Ref, prepared: Vec<Prepared>, key: Option<String>) -> Result<(), ApplyError> {
+/// Commits, and answers the files it added with no footer, for the worker to keep theirs (FTR-1).
+async fn commit(on: &Ref, prepared: Vec<Prepared>, key: Option<String>) -> Result<Vec<Job>, ApplyError> {
     let idle = |p: &Prepared| p.adds.is_empty() && p.removed.is_empty() && p.definition.is_none();
     if key.is_none() && prepared.iter().all(idle) {
-        return Ok(());
+        return Ok(Vec::new());
     }
+    let jobs: Vec<Job> = prepared
+        .iter()
+        .map(|p| Job {
+            table_id: p.table_id,
+            files: p
+                .adds
+                .iter()
+                .filter(|f| f.footer_size == 0 && f.footer.is_none())
+                .filter_map(|f| Some((f.path.clone()?, u64::try_from(f.file_size).ok()?)))
+                .collect(),
+        })
+        .collect();
     let replaces = prepared.iter().all(|p| p.replace);
     let mut transaction = on.transaction().author("iceberg");
     for one in prepared {
@@ -260,7 +276,7 @@ async fn commit(on: &Ref, prepared: Vec<Prepared>, key: Option<String>) -> Resul
         transaction = transaction.idempotent(key, APP_VERSION);
     }
     transaction.commit().await?;
-    Ok(())
+    Ok(jobs)
 }
 
 #[cfg(test)]
