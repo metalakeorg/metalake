@@ -472,6 +472,54 @@ where
     Ok(missing.into_values().collect())
 }
 
+/// Writes what a load of `table` serves that is not there: the lists of the snapshots it misses, then its metadata file,
+/// last, and prunes what no snapshot kept reaches, later.
+async fn write(
+    state: &State,
+    table: &Table,
+    rows: &Rows,
+    storage: &Storage,
+    metadata_location: &str,
+    body: Bytes,
+) -> Result<()> {
+    let location = table.location();
+    let heads: Vec<i64> = rows.refs.iter().filter_map(|(.., current)| *current).collect();
+    let live = state.catalog().refs().await?;
+    let exists = |id| {
+        let path = list_path(location, id);
+        async move { storage.exists(&path).await }
+    };
+    let listed = || async {
+        let found = storage.list(&generated(location)).await?;
+        let ids = found.into_iter().filter_map(|(path, _)| {
+            let name = path.rsplit('/').next()?;
+            name.strip_prefix("snap-")?.strip_suffix(".avro")?.parse().ok()
+        });
+        Ok(ids.collect())
+    };
+    let missing = unlisted(&rows.snapshots, &heads, exists, listed).await?;
+    let mut pending = Pending::default();
+    for asked in missing.chunks(ASKED) {
+        let mut added = added_at_once(&live, table, asked).await?;
+        for few in asked.chunks(PUTS) {
+            for snapshot in few {
+                let on = known(&live, &snapshot.ref_name)?;
+                generate(on, state, storage, table, rows, snapshot, &mut added, &mut pending).await?;
+            }
+            let put = |path: String, bytes: Bytes| async move { storage.put(&path, bytes).await };
+            pending.write(location, put).await?;
+        }
+    }
+    storage.put(metadata_location, body).await?;
+    let found = storage.list(&metadata_files(location)).await?;
+    for stale in stale_versions(found, previous_versions(&rows.definition) + 1) {
+        storage.delete(&stale).await?;
+    }
+    let kept: Vec<i64> = rows.snapshots.iter().map(|s| s.snapshot_id).collect();
+    state.prune_later(table, kept);
+    Ok(())
+}
+
 /// `loadTable`. Its metadata file is written last, so finding it says that every file it names is there, and a load of
 /// what has not changed asks nothing else (REST-6). An engine reads that file itself for its metadata tables, as Trino does.
 pub(crate) async fn load(state: &State, table: &Table) -> Result<LoadTableResult> {
@@ -481,43 +529,12 @@ pub(crate) async fn load(state: &State, table: &Table) -> Result<LoadTableResult
     let served = metadata(&rows, |at| list_path(location, at));
     let (metadata_location, body) = rendered(location, &served)?;
     if !storage.exists(&metadata_location).await? {
-        let heads: Vec<i64> = rows.refs.iter().filter_map(|(.., current)| *current).collect();
-        let live = state.catalog().refs().await?;
-        let exists = |id| {
-            let (storage, path) = (&storage, list_path(location, id));
-            async move { storage.exists(&path).await }
-        };
-        let listed = || async {
-            let found = storage.list(&generated(location)).await?;
-            let ids = found.into_iter().filter_map(|(path, _)| {
-                let name = path.rsplit('/').next()?;
-                name.strip_prefix("snap-")?.strip_suffix(".avro")?.parse().ok()
-            });
-            Ok(ids.collect())
-        };
-        let missing = unlisted(&rows.snapshots, &heads, exists, listed).await?;
-        let mut pending = Pending::default();
-        for asked in missing.chunks(ASKED) {
-            let mut added = added_at_once(&live, table, asked).await?;
-            for few in asked.chunks(PUTS) {
-                for snapshot in few {
-                    let on = known(&live, &snapshot.ref_name)?;
-                    generate(on, state, &storage, table, &rows, snapshot, &mut added, &mut pending).await?;
-                }
-                let put = |path: String, bytes: Bytes| {
-                    let storage = &storage;
-                    async move { storage.put(&path, bytes).await }
-                };
-                pending.write(location, put).await?;
-            }
+        // Loads that come together generate once: each waits its turn, and finds there what the one before wrote, so
+        // that it generates only what is still missing, and holds no connection while it waits.
+        let _turn = state.generations().turn(table.id()).await;
+        if !storage.exists(&metadata_location).await? {
+            write(state, table, &rows, &storage, &metadata_location, body).await?;
         }
-        storage.put(&metadata_location, body).await?;
-        let found = storage.list(&metadata_files(location)).await?;
-        for stale in stale_versions(found, previous_versions(&rows.definition) + 1) {
-            storage.delete(&stale).await?;
-        }
-        let kept: Vec<i64> = rows.snapshots.iter().map(|s| s.snapshot_id).collect();
-        state.prune_later(table, kept);
     }
     Ok(LoadTableResult {
         metadata_location: Some(metadata_location),

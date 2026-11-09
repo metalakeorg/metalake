@@ -9,6 +9,7 @@ use metalake::{Catalog, CatalogConfig, Error, Ref, Result, Storage, Table};
 use uuid::Uuid;
 
 use crate::footers::{Footers, Job, QUEUE};
+use crate::generations::Generations;
 use crate::load::load;
 use crate::materialize::Materializer;
 use crate::prune::{PRUNE_EVERY, prune};
@@ -25,6 +26,8 @@ pub struct State {
     materializer: Option<Materializer>,
     /// When each table's projection was last pruned, or began to be, by this process.
     pruned: Arc<Mutex<HashMap<Uuid, Instant>>>,
+    /// The tables a load of this process is generating, one load at a time each (REST-6).
+    generations: Generations,
 }
 
 impl State {
@@ -48,6 +51,7 @@ impl State {
             footers,
             materializer: None,
             pruned: Arc::default(),
+            generations: Generations::default(),
         })
     }
 
@@ -65,6 +69,11 @@ impl State {
         };
         self.materializer = Some(Materializer::start(self.catalog.clone(), load));
         self
+    }
+
+    /// The tables a load of this process is generating.
+    pub(crate) fn generations(&self) -> &Generations {
+        &self.generations
     }
 
     /// Prunes, off the request's path, what the projection of `table` holds that the snapshots `kept` do not reach, unless
