@@ -476,15 +476,16 @@ impl Ref {
     pub async fn table(&self, namespace: &[&str], name: &str) -> Result<Table> {
         let missing = || Error::NotFound(format!("table {}.{name} on {}", namespace.join("."), self.name));
         let p = self.catalog.protocol();
-        let session = self.catalog.session().await?;
-        let (table_id, seq) = match self.at {
+        // One session at a time: a read that held one while it asked for another would wait on the pool, and as many
+        // reads at once as the pool has connections would each hold one and wait for ever.
+        let (session, table_id, seq) = match self.at {
             Point::Time(_) => {
-                drop(session);
                 let seen = self.tables_seen().await?;
                 let found = seen
                     .into_iter()
                     .find(|(t, _)| t.namespace == namespace && t.name == name);
-                found.map(|(t, seq)| (t.table_id, seq)).ok_or_else(missing)?
+                let (table_id, seq) = found.map(|(t, seq)| (t.table_id, seq)).ok_or_else(missing)?;
+                (self.catalog.session().await?, table_id, seq)
             }
             Point::Latest | Point::Seq(_) => {
                 let at = match self.at {
@@ -492,13 +493,16 @@ impl Ref {
                     _ => None,
                 };
                 let levels: Vec<String> = namespace.iter().map(|level| level.to_string()).collect();
-                p.table_named(&session, self.id, &levels, name, at)
+                let session = self.catalog.session().await?;
+                let (table_id, seq) = p
+                    .table_named(&session, self.id, &levels, name, at)
                     .await?
-                    .ok_or_else(missing)?
+                    .ok_or_else(missing)?;
+                (session, table_id, seq)
             }
         };
         let definition = p
-            .describe(&self.catalog.session().await?, self.id, table_id, Some(seq))
+            .describe(&session, self.id, table_id, Some(seq))
             .await?
             .ok_or_else(|| Error::NotFound(format!("table {table_id} on {}", self.name)))?;
         Table::from_definition(self.id, seq, &definition)
