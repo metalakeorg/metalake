@@ -31,6 +31,11 @@ const STANDBY: Duration = Duration::from_secs(30);
 const FEED_BATCH: usize = 1000;
 /// How long stopping waits for the loads running.
 pub(crate) const DRAIN: Duration = Duration::from_secs(10);
+/// A lag past which a table is reported behind: one that keeps up is materialized a second or two after its commit.
+const BEHIND: Duration = Duration::from_secs(10);
+
+/// How a load ended: the table, its error if it failed, and how long it took.
+type Loaded = (Uuid, std::result::Result<(), String>, Duration);
 
 /// The worker that materializes on commit: a clone stops or wakes the same one.
 #[derive(Debug, Clone)]
@@ -140,7 +145,7 @@ where
 {
     let mut plan = Plan::default();
     let mut cursor = None;
-    let mut loads: JoinSet<(Uuid, bool)> = JoinSet::new();
+    let mut loads: JoinSet<Loaded> = JoinSet::new();
     let mut look_at = Instant::now();
     loop {
         let now = Instant::now();
@@ -157,16 +162,14 @@ where
         for table in plan.start(Instant::now()) {
             let load = load.clone();
             loads.spawn(async move {
+                let started = Instant::now();
                 // A load that panics is a load that failed, and the table is tried again, not left loading.
-                let loaded = AssertUnwindSafe(load(table)).catch_unwind().await;
-                match &loaded {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => {
-                        eprintln!("metalake-iceberg: materializing table {table} failed, and is tried again: {e}")
-                    }
-                    Err(_) => eprintln!("metalake-iceberg: materializing table {table} panicked, and is tried again"),
-                }
-                (table, matches!(loaded, Ok(Ok(()))))
+                let loaded = match AssertUnwindSafe(load(table)).catch_unwind().await {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(e)) => Err(e.to_string()),
+                    Err(_) => Err("it panicked".to_string()),
+                };
+                (table, loaded, started.elapsed())
             });
         }
         let wake = plan.wake_at().map_or(look_at, |at| at.min(look_at));
@@ -179,8 +182,8 @@ where
             }
             Some(done) = loads.join_next() => {
                 // A task is only cancelled when leading ends, and then the plan goes with it.
-                if let Ok((table, loaded)) = done {
-                    plan.done(table, loaded, Instant::now());
+                if let Ok(loaded) = done {
+                    report(&mut plan, loaded, Instant::now());
                 }
             }
             () = bell.notified() => {
@@ -192,9 +195,27 @@ where
     }
 }
 
+/// Tells the plan how a load ended, and reports a table that failed or is behind: one materialized more than [`BEHIND`]
+/// after the first commit it had not taken, which a reader meanwhile waited for. A table that keeps up says nothing.
+fn report(plan: &mut Plan, (table, loaded, took): Loaded, now: Instant) {
+    let lag = plan.lag(table, now).unwrap_or_default();
+    let ms = took.as_millis();
+    match (plan.done(table, loaded.is_ok(), now), loaded) {
+        (_, Err(e)) => eprintln!(
+            "metalake-iceberg: materializing table {table} failed after {ms} ms, {:.1} s behind, and is tried again: {e}",
+            lag.as_secs_f64()
+        ),
+        (Some(lag), Ok(())) if lag >= BEHIND => eprintln!(
+            "metalake-iceberg: table {table} materialized {:.1} s after its commit, in {ms} ms: behind",
+            lag.as_secs_f64()
+        ),
+        _ => {}
+    }
+}
+
 /// Lets the loads running finish within [`DRAIN`], and abandons the rest: what they would have generated, a load
 /// generates (REST-6).
-async fn drain(loads: &mut JoinSet<(Uuid, bool)>) {
+async fn drain(loads: &mut JoinSet<Loaded>) {
     let finished = tokio::time::timeout(DRAIN, async { while loads.join_next().await.is_some() {} }).await;
     if finished.is_err() {
         loads.abort_all();
@@ -210,16 +231,19 @@ async fn look(catalog: &Catalog, plan: &mut Plan, cursor: &mut Option<FeedCursor
         let start = catalog.feed_start().await?;
         let marked = catalog.tables_with_property(MATERIALIZE, "on-commit").await?;
         *cursor = (!marked.is_empty()).then_some(start);
-        plan.marked(marked);
+        plan.marked(marked, Instant::now());
         return Ok(());
     };
     loop {
         let commits = catalog.feed(at, FEED_BATCH).await?;
         let Some(last) = commits.last() else {
-            plan.committed(&[]);
+            plan.committed(&[], Instant::now());
             return Ok(());
         };
-        plan.marked(catalog.tables_with_property(MATERIALIZE, "on-commit").await?);
+        plan.marked(
+            catalog.tables_with_property(MATERIALIZE, "on-commit").await?,
+            Instant::now(),
+        );
         let seqs: Vec<i64> = commits.iter().map(|c| c.commit_seq).collect();
         let touched: Vec<(i32, Uuid)> = catalog
             .commit_tables(&seqs)
@@ -227,7 +251,7 @@ async fn look(catalog: &Catalog, plan: &mut Plan, cursor: &mut Option<FeedCursor
             .into_iter()
             .map(|(_, ref_id, table)| (ref_id, table))
             .collect();
-        plan.committed(&touched);
+        plan.committed(&touched, Instant::now());
         *at = at.after(last);
         if commits.len() < FEED_BATCH {
             return Ok(());
