@@ -235,6 +235,106 @@ async fn rest6_added_files_of_many_commits() -> Result<(), Error> {
 }
 
 #[tokio::test]
+async fn chg1_commit_tables_of_many_commits() -> Result<(), Error> {
+    let on = connect().await?;
+    let schema = fresh_schema("c1");
+    install_protocol(&on, &schema).await?;
+    let p = Protocol::new(&schema);
+    let (t, u) = (Uuid::from_u128(0xc1), Uuid::from_u128(0xc2));
+    let first = p.commit(&on, &create(t)).await?.commit_seq;
+    let mut other = create(u);
+    other.app_id = None;
+    other.files = vec![stored_file(u, "gs://lake/u.parquet".into(), 10, 1, 0, 9)];
+    other.changes = Some(json!({ u.to_string(): {
+        "create": {"namespace": ["db"], "name": "u", "location": "gs://lake"},
+        "fields": [{"field_id": 1, "new": true, "position": 1, "name": "k", "type": "long", "required": true}],
+    }}));
+    p.commit(&on, &other).await?;
+    let dev = p.create_ref(&on, &CreateRef::branch("dev", 1)).await?;
+    let mut both = append(dev, t, "gs://lake/t2.parquet", 100);
+    both.files
+        .push(stored_file(u, "gs://lake/u2.parquet".into(), 10, 1, 100, 109));
+    let on_dev = p.commit(&on, &both).await?.commit_seq;
+    // a property set alone makes a snapshot too, so that a follower sees a table marked by its commit
+    let property = Commit {
+        ref_id: 1,
+        operation: "update".into(),
+        changes: Some(json!({ t.to_string(): {"properties": {"a": "1"}} })),
+        ..Default::default()
+    };
+    let defined = p.commit(&on, &property).await?.commit_seq;
+
+    let found = p.commit_tables(&on, &[on_dev, defined, first, 999_999]).await?;
+    assert_eq!(
+        found,
+        [(first, 1, t), (on_dev, dev, t), (on_dev, dev, u), (defined, 1, t)]
+    );
+    assert!(p.commit_tables(&on, &[]).await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn tbl2_tables_with_property_by_ref() -> Result<(), Error> {
+    const KEY: &str = "metalake.iceberg.materialize";
+    let on = connect().await?;
+    let schema = fresh_schema("c1");
+    install_protocol(&on, &schema).await?;
+    let p = Protocol::new(&schema);
+    let (t, u) = (Uuid::from_u128(0xc1), Uuid::from_u128(0xc2));
+    p.commit(&on, &create(t)).await?;
+    let mut other = create(u);
+    other.app_id = None;
+    other.files = vec![];
+    other.changes = Some(json!({ u.to_string(): {
+        "create": {"namespace": ["db"], "name": "u", "location": "gs://lake"},
+        "fields": [{"field_id": 1, "new": true, "position": 1, "name": "k", "type": "long", "required": true}],
+    }}));
+    p.commit(&on, &other).await?;
+    let set = |r: i32, table: Uuid, value: serde_json::Value| Commit {
+        ref_id: r,
+        operation: "update".into(),
+        changes: Some(json!({ table.to_string(): {"properties": {KEY: value}} })),
+        ..Default::default()
+    };
+    let marked =
+        async || -> Result<Vec<(i32, Uuid)>, Error> { Ok(p.tables_with_property(&on, KEY, "on-commit").await?) };
+    assert!(marked().await?.is_empty(), "nothing marked");
+
+    // main marks t; a branch made after sees it marked, and one made before
+    let before = p.create_ref(&on, &CreateRef::branch("before", 1)).await?;
+    p.commit(&on, &set(1, t, json!("on-commit"))).await?;
+    let dev = p.create_ref(&on, &CreateRef::branch("dev", 1)).await?;
+    assert_eq!(
+        marked().await?,
+        [(1, t), (dev, t)],
+        "a branch inherits, one forked before does not"
+    );
+    let _ = before;
+
+    // the branch unmarks it for itself; main still has it; u is marked on the branch alone
+    p.commit(&on, &set(dev, t, json!("on-load"))).await?;
+    p.commit(&on, &set(dev, u, json!("on-commit"))).await?;
+    assert_eq!(marked().await?, [(1, t), (dev, u)]);
+
+    // removed on main, it is no longer marked there
+    p.commit(&on, &set(1, t, json!(null))).await?;
+    assert_eq!(marked().await?, [(dev, u)]);
+
+    // a table dropped, and a ref deleted, are marked nowhere
+    p.commit(&on, &set(1, t, json!("on-commit"))).await?;
+    let drop = Commit {
+        ref_id: 1,
+        operation: "update".into(),
+        changes: Some(json!({ t.to_string(): {"drop": true} })),
+        ..Default::default()
+    };
+    p.commit(&on, &drop).await?;
+    p.delete_ref(&on, dev).await?;
+    assert!(marked().await?.is_empty(), "dropped on main, and dev deleted");
+    Ok(())
+}
+
+#[tokio::test]
 async fn tbl1_table_named_by_ref() -> Result<(), Error> {
     let on = connect().await?;
     let schema = fresh_schema("c1");

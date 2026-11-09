@@ -175,6 +175,18 @@ impl Catalog {
         Ok(rows.into_iter().map(|row| self.handle(row)).collect())
     }
 
+    /// The tables each commit of `seqs` made a snapshot of, in one call: its sequence, its ref's id and the table's.
+    pub async fn commit_tables(&self, seqs: &[i64]) -> Result<Vec<(i64, i32, uuid::Uuid)>> {
+        let session = self.session().await?;
+        Ok(self.inner.protocol.commit_tables(&session, seqs).await?)
+    }
+
+    /// Each ref and table it sees whose property `key` is `value` at its latest (TBL-2): a ref's id and a table's.
+    pub async fn tables_with_property(&self, key: &str, value: &str) -> Result<Vec<(i32, uuid::Uuid)>> {
+        let session = self.session().await?;
+        Ok(self.inner.protocol.tables_with_property(&session, key, value).await?)
+    }
+
     /// Every ref of the catalog that is not deleted, as the protocol describes it: its parent and where it began.
     pub async fn describe_refs(&self) -> Result<Vec<RefRow>> {
         Ok(self.inner.protocol.refs(&self.session().await?).await?)

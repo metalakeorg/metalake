@@ -538,6 +538,23 @@ impl Protocol {
         Ok(row.map(|r| (r.get("table_id"), r.get("seq"))))
     }
 
+    /// The tables each commit of `seqs` made a snapshot of: its sequence, its ref and the table.
+    pub async fn commit_tables(&self, s: &impl Session, seqs: &[i64]) -> Result<Vec<(i64, i32, Uuid)>> {
+        let rows = self.all(s, "commit_tables(seqs => $1)", &[&seqs]).await?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get("commit_seq"), r.get("ref_id"), r.get("table_id")))
+            .collect())
+    }
+
+    /// Each live ref and table it sees whose property `key` is `value` at its latest (TBL-2).
+    pub async fn tables_with_property(&self, s: &impl Session, key: &str, value: &str) -> Result<Vec<(i32, Uuid)>> {
+        let rows = self
+            .all(s, "tables_with_property(key => $1, value => $2)", &[&key, &value])
+            .await?;
+        Ok(rows.iter().map(|r| (r.get("ref_id"), r.get("table_id"))).collect())
+    }
+
     pub async fn tables_latest(&self, s: &impl Session, ref_ids: &[i32]) -> Result<Vec<TableLatest>> {
         let rows = self.all(s, "tables_latest(ref_ids => $1)", &[&ref_ids]).await?;
         Ok(rows
@@ -849,6 +866,8 @@ pub const INTERFACE: &[(&str, &[&str], bool)] = &[
     ("tables_as_of", &["ref_id", "at"], false),
     ("tables_latest", &["ref_ids"], false),
     ("table_named", &["ref_id", "namespace", "name", "at"], false),
+    ("commit_tables", &["seqs"], false),
+    ("tables_with_property", &["key", "value"], false),
     ("stable_point", &[], false),
     ("stream_point", &[], false),
     ("retention_floor", &["r"], false),

@@ -198,6 +198,45 @@ set search_path = @schema@, pg_catalog, pg_temp as $$
    where t is not null;
 $$;
 
+-- The tables each of the commits `seqs` made a snapshot of, and on which ref: what a follower of the feed (CHG-1)
+-- needs to know of a step of it, in one statement, through the index of snapshots by id.
+create function @schema@.commit_tables(seqs bigint[])
+returns table (commit_seq bigint, ref_id int, table_id uuid) language sql stable
+set search_path = @schema@, pg_catalog, pg_temp as $$
+  select s.snapshot_id, s.ref_id, s.table_id from snapshot s where s.snapshot_id = any ($1)
+   order by s.snapshot_id, s.table_id;
+$$;
+
+-- The protocol's index for the tables that ever had a property's value, which tables_with_property starts from.
+create index if not exists table_property_by_value on @schema@.table_property (key, value);
+
+-- TBL-2, VIS-9: each live ref and table it sees whose property `key` is `value` at its latest: the visible version of
+-- that property and of the table's name, of the tables that ever had that value, so that finding the tables marked
+-- costs what they are, whatever the catalog holds. A branch sees what its base sees until it sets its own.
+create function @schema@.tables_with_property(key text, value text)
+returns table (ref_id int, table_id uuid) language sql stable
+set search_path = @schema@, pg_catalog, pg_temp as $$
+  select r.ref_id, k.table_id
+    from (select distinct p.table_id from table_property p where p.key = $1 and p.value = $2) k
+   cross join ref r
+   where not r.deleted
+     and exists (select 1 from (
+                   select distinct on (x.table_id) x.value, x.dropped
+                     from chain(r.ref_id, 9223372036854775806) c
+                     join table_property x on x.table_id = k.table_id and x.key = $1 and x.ref_id = c.ref_id
+                      and x.begin_seq <= c.seq and c.seq < x.end_seq
+                    order by x.table_id, c.level) v
+                  where not v.dropped and v.value = $2)
+     and exists (select 1 from (
+                   select distinct on (x.table_id) x.dropped
+                     from chain(r.ref_id, 9223372036854775806) c
+                     join table_name x on x.table_id = k.table_id and x.ref_id = c.ref_id
+                      and x.begin_seq <= c.seq and c.seq < x.end_seq
+                    order by x.table_id, c.level) n
+                  where not n.dropped)
+   order by r.ref_id, k.table_id;
+$$;
+
 -- TT-3, TBL-1: the tables ref_id saw as of time `at`, each with the sequence to read it at (as_of_time) and its name
 -- then: none that was dropped by then or created after. A commit that wrote several tables has one time, so it is in
 -- each one's sequence or in none, and the reads agree as one point would. Every table that has been on the ref's
