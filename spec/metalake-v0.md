@@ -760,13 +760,18 @@ Iceberg REST server of the projection, and are checked by its tests.
     TYP-6 at a snapshot that has it; `current-schema-id` is that of `main`'s current snapshot;
   - every partition spec of the table (`source-id` for the single source), every sort order plus the unsorted
     order 0, and `main`'s defaults; `main`'s visible properties;
-  - the snapshots served (ICE-2), with `sequence-number` equal to `snapshot-id`, `timestamp-ms` from the commit
-    time (TT-1), `parent-snapshot-id`, `schema-id` and the summary, whose `operation` is mapped to Iceberg's:
-    a `merge` that deleted no file and changed no vector becomes `append`, as a reader takes its added files
-    for all it did; any other `merge` and, *0.1*, `rebase` become `overwrite`;
+  - the snapshots served (ICE-2), with `sequence-number` equal to `snapshot-id`, `timestamp-ms` the commit time
+    (TT-1) in milliseconds rounded up, so that a read as of a millisecond sees what TT-3 reads then,
+    `parent-snapshot-id`, `schema-id` and the summary, whose `operation` is mapped to Iceberg's: a `merge` that
+    deleted no file and changed no vector becomes `append`, as a reader takes its added files for all it did; any
+    other `merge` and, *0.1*, `rebase` become `overwrite`;
   - a `refs` entry for every live ref that sees the table, of its kind, pointing at its current snapshot (CMT-2);
     `current-snapshot-id` is `main`'s. A table whose current snapshot is the one that created it, with no files, is
     served with no snapshot and no ref, as Iceberg has it: a client takes a snapshot for data already written.
+  - a `snapshot-log` of the served snapshots that lead to `main`'s current one, oldest first, each with its
+    `timestamp-ms`: `main`'s snapshots each follow the one before, so this is the history of its current snapshot.
+    An engine reads a table as of a time at the last entry not after it, which is the snapshot TT-3 reads then. The
+    `metadata-log` is empty: a metadata file names no other, so that it can always be generated again (REST-6).
 
   Schema ids are `schema_seq` values: a catalog projects while its `commit_seq` stays below 2³¹.
 - **ICE-2.** Every remaining snapshot of the table is served, so that a client can rebase on any of them after a
