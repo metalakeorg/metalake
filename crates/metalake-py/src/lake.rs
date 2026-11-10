@@ -103,7 +103,6 @@ impl PyLake {
         ))
     }
 
-    /// A table by the name a statement would use: `t`, `namespace.t` or `ref.namespace.t`.
     /// The lake's Iceberg face: when Iceberg clients find each table's metadata written.
     #[getter]
     fn iceberg(&self, py: Python<'_>) -> PyResult<PyIceberg> {
@@ -111,6 +110,7 @@ impl PyLake {
         Ok(PyIceberg::new(self.owner.clone(), self.lake.clone()))
     }
 
+    /// A table by the name a statement would use: `t`, `namespace.t` or `ref.namespace.t`.
     fn table(&self, py: Python<'_>, name: &str) -> PyResult<PyTable> {
         self.owner.check(py, "Lake")?;
         PyTable::open(py, self.owner.clone(), self.lake.clone(), self.session.clone(), name)
@@ -195,6 +195,14 @@ impl PyLake {
         let age = age.duration().map_err(|e| to_python(py, e))?;
         let lake = self.lake.clone();
         wait(py, async move { lake.set_grace(age).await })?.map_err(|e| to_python(py, e))
+    }
+
+    /// The version a writer's idempotency key reached on a ref, or None: where that writer goes on from.
+    #[pyo3(signature = (app_id, on="main"))]
+    fn key_version(&self, py: Python<'_>, app_id: String, on: &str) -> PyResult<Option<i64>> {
+        self.owner.check(py, "Lake")?;
+        let (lake, on) = (self.lake.clone(), on.to_string());
+        wait(py, async move { lake.key_version(&on, &app_id).await })?.map_err(|e| to_python(py, e))
     }
 
     /// Runs the core's tasks once, for whatever schedules it, and answers what was done. Every task is safe to repeat and

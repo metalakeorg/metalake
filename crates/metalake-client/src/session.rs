@@ -9,12 +9,17 @@ use datafusion::arrow::datatypes::{SchemaRef, UInt64Type};
 use datafusion::dataframe::DataFrame;
 use datafusion::datasource::MemTable;
 use datafusion::datasource::memory::MemorySourceConfig;
+use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::{LogicalPlan, WriteOp};
+use datafusion::physical_expr::LexOrdering;
 use datafusion::physical_plan::execution_plan::reset_plan_states;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion::physical_plan::streaming::{PartitionStream, StreamingTableExec};
 use datafusion::physical_plan::{ExecutionPlan, collect, execute_stream};
 use datafusion::prelude::SessionContext;
 use datafusion::sql::parser::{DFParser, Statement};
+use futures_util::{StreamExt, TryStreamExt};
 use metalake_datafusion::{CommitDetails, MetaLake, Source};
 
 use crate::write::{Details, TablePath, Written};
@@ -68,6 +73,28 @@ pub struct Prepared {
 }
 
 impl Prepared {
+    /// Rows read once, as they come, without holding them: a step a follower gave. A second read is refused.
+    pub fn from_stream(schema: SchemaRef, rows: crate::Changes) -> Result<Self> {
+        let once = Arc::new(Once {
+            schema: schema.clone(),
+            rows: std::sync::Mutex::new(Some(rows)),
+        });
+        let plan = StreamingTableExec::try_new(schema, vec![once], None, Vec::<LexOrdering>::new(), false, None)?;
+        Ok(Self {
+            plan: Arc::new(plan),
+            task: Arc::new(TaskContext::default()),
+        })
+    }
+
+    /// Rows already read, as what a statement that already ran answers: a step a follower took, read as a result is.
+    pub fn from_batches(schema: SchemaRef, batches: Vec<RecordBatch>) -> Result<Self> {
+        let plan = MemorySourceConfig::try_new_exec(&[batches], schema, None)?;
+        Ok(Self {
+            plan,
+            task: Arc::new(TaskContext::default()),
+        })
+    }
+
     pub fn schema(&self) -> SchemaRef {
         self.plan.schema()
     }
@@ -174,5 +201,35 @@ impl Session {
     /// statement is found without it.
     pub async fn refresh(&self) -> Result<()> {
         Ok(self.engine.refresh().await?)
+    }
+}
+
+/// Rows that can be read once, as they come: a step a follower gave, which counts once it is read to its end.
+struct Once {
+    schema: SchemaRef,
+    rows: std::sync::Mutex<Option<crate::Changes>>,
+}
+
+impl std::fmt::Debug for Once {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Once").field("schema", &self.schema).finish()
+    }
+}
+
+impl PartitionStream for Once {
+    fn schema(&self) -> &SchemaRef {
+        &self.schema
+    }
+
+    fn execute(&self, _: Arc<TaskContext>) -> SendableRecordBatchStream {
+        let rows = self.rows.lock().expect("rows are only taken").take();
+        let rows: futures_util::stream::BoxStream<'static, datafusion::error::Result<RecordBatch>> = match rows {
+            Some(rows) => rows.map_err(|e| DataFusionError::External(Box::new(e))).boxed(),
+            None => futures_util::stream::once(async {
+                Err(DataFusionError::Execution("the rows of a step are read once".into()))
+            })
+            .boxed(),
+        };
+        Box::pin(RecordBatchStreamAdapter::new(self.schema.clone(), rows))
     }
 }

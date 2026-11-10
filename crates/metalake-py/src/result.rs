@@ -27,11 +27,24 @@ const AHEAD: usize = 2;
 
 type Batch = Result<RecordBatch, Error>;
 
+/// How far a read goes ahead of its reader.
+#[derive(Clone, Copy)]
+pub enum Ahead {
+    /// A few batches, so that a reader rarely waits.
+    Some,
+    /// None: a batch is asked for only when the reader asks, and the end is reached only when the reader asks past the
+    /// last batch. A follower's step counts as read at its end, so it must not end before its reader got there.
+    None,
+}
+
 /// One read at work. Dropping it ends it.
 struct Pump {
     batches: Receiver<Batch>,
     room: Arc<Semaphore>,
     task: AbortHandle,
+    ahead: Ahead,
+    /// Whether the reader asked for a batch it has not had yet: a wait that runs out and is tried again asks once.
+    asked: bool,
 }
 
 impl Drop for Pump {
@@ -41,11 +54,19 @@ impl Drop for Pump {
 }
 
 impl Pump {
-    fn start(prepared: Arc<Prepared>) -> Self {
+    fn start(prepared: Arc<Prepared>, ahead: Ahead) -> Self {
         let (sender, batches) = channel();
-        let room = Arc::new(Semaphore::new(AHEAD));
+        let room = Arc::new(Semaphore::new(match ahead {
+            Ahead::Some => AHEAD,
+            Ahead::None => 0,
+        }));
         let held = room.clone();
         let task = runtime::spawn(async move {
+            // Room is taken before a batch is asked for, so that nothing is asked for past what the reader allows.
+            let Ok(permit) = held.acquire().await else {
+                return;
+            };
+            permit.forget();
             let mut stream = match prepared.read() {
                 Ok(stream) => stream,
                 Err(error) => {
@@ -54,23 +75,39 @@ impl Pump {
                 }
             };
             while let Some(batch) = stream.next().await {
+                if sender.send(batch.map_err(Error::from)).is_err() {
+                    break;
+                }
                 let Ok(permit) = held.acquire().await else {
                     break;
                 };
                 permit.forget();
-                if sender.send(batch.map_err(Error::from)).is_err() {
-                    break;
-                }
             }
         });
-        Self { batches, room, task }
+        Self {
+            batches,
+            room,
+            task,
+            ahead,
+            asked: false,
+        }
     }
 
     /// The next batch, none at the end, or an error if this wait ran out.
     fn wait(&mut self) -> Result<Option<Batch>, RecvTimeoutError> {
+        if let Ahead::None = self.ahead
+            && !self.asked
+        {
+            // The reader asks for one: a batch, or the end.
+            self.room.add_permits(1);
+            self.asked = true;
+        }
         match self.batches.recv_timeout(PATIENCE) {
             Ok(batch) => {
-                self.room.add_permits(1);
+                self.asked = false;
+                if let Ahead::Some = self.ahead {
+                    self.room.add_permits(1);
+                }
                 Ok(Some(batch))
             }
             Err(RecvTimeoutError::Disconnected) => Ok(None),
@@ -153,6 +190,7 @@ impl RecordBatchReader for Reader {
 pub struct QueryResult {
     owner: Owner,
     prepared: Arc<Prepared>,
+    ahead: Ahead,
 }
 
 impl QueryResult {
@@ -160,6 +198,15 @@ impl QueryResult {
         Self {
             owner,
             prepared: Arc::new(prepared),
+            ahead: Ahead::Some,
+        }
+    }
+
+    /// A result read only as far as its reader asks: a follower's step, which counts once its reader reaches its end.
+    pub fn step(prepared: Prepared, owner: Owner) -> Self {
+        Self {
+            ahead: Ahead::None,
+            ..Self::new(prepared, owner)
         }
     }
 
@@ -167,7 +214,7 @@ impl QueryResult {
     fn reader<'py>(&self, py: Python<'py>, stopped: &Slot) -> PyResult<Bound<'py, PyRecordBatchReader>> {
         self.owner.check(py, "Result")?;
         let reader = Reader {
-            pump: Pump::start(self.prepared.clone()),
+            pump: Pump::start(self.prepared.clone(), self.ahead),
             schema: self.prepared.schema(),
             stopped: stopped.clone(),
         };
@@ -271,7 +318,7 @@ impl QueryResult {
         self.owner.check(py, "Result")?;
         Ok(Batches {
             owner: self.owner.clone(),
-            pump: Mutex::new(Some(Pump::start(self.prepared.clone()))),
+            pump: Mutex::new(Some(Pump::start(self.prepared.clone(), self.ahead))),
         })
     }
 }

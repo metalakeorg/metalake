@@ -2,6 +2,7 @@
 //! both load, since a wheel with a binary beside it would carry the engine twice.
 
 mod errors;
+mod follow;
 mod iceberg;
 mod info;
 mod lake;
@@ -9,6 +10,7 @@ mod owner;
 mod result;
 mod runtime;
 mod table;
+mod writer;
 
 use std::ffi::OsString;
 
@@ -34,6 +36,9 @@ fn _metalake(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<info::PyStatus>()?;
     module.add_class::<table::PyTable>()?;
     module.add_class::<table::PyWritten>()?;
+    module.add_class::<follow::PyFollower>()?;
+    module.add_class::<follow::PyStep>()?;
+    module.add_class::<writer::PyWriter>()?;
     module.add_class::<result::QueryResult>()?;
     module.add_class::<result::PyBatch>()?;
     module.add_class::<result::Batches>()?;
