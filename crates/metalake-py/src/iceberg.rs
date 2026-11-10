@@ -27,10 +27,11 @@ impl PyIceberg {
 impl PyIceberg {
     /// Has the Iceberg service write the metadata of `tables`, each `namespace.table`, after each of their commits on
     /// `on`, in one commit, and answers it; `None` if every one was so already. A table `on` does not see refuses all.
-    #[pyo3(signature = (tables, *, on = "main".to_string()))]
-    fn on_commit(&self, py: Python<'_>, tables: Vec<String>, on: String) -> PyResult<Option<i64>> {
+    #[pyo3(signature = (tables, *, on = "main"))]
+    fn on_commit(&self, py: Python<'_>, tables: Vec<String>, on: &str) -> PyResult<Option<i64>> {
         self.owner.check(py, "Lake")?;
         let lake = self.lake.clone();
+        let on = on.to_string();
         let set = wait(py, async move {
             let names: Vec<&str> = tables.iter().map(String::as_str).collect();
             lake.iceberg().on_commit(&on, &names).await
@@ -39,10 +40,11 @@ impl PyIceberg {
     }
 
     /// Has it written when a client loads them, as every table has unless set, and answers the commit, if any.
-    #[pyo3(signature = (tables, *, on = "main".to_string()))]
-    fn on_load(&self, py: Python<'_>, tables: Vec<String>, on: String) -> PyResult<Option<i64>> {
+    #[pyo3(signature = (tables, *, on = "main"))]
+    fn on_load(&self, py: Python<'_>, tables: Vec<String>, on: &str) -> PyResult<Option<i64>> {
         self.owner.check(py, "Lake")?;
         let lake = self.lake.clone();
+        let on = on.to_string();
         let set = wait(py, async move {
             let names: Vec<&str> = tables.iter().map(String::as_str).collect();
             lake.iceberg().on_load(&on, &names).await
@@ -51,10 +53,11 @@ impl PyIceberg {
     }
 
     /// The tables set on-commit on `on`, and how far their Iceberg metadata is behind.
-    #[pyo3(signature = (*, on = "main".to_string()))]
-    fn status(&self, py: Python<'_>, on: String) -> PyResult<Vec<PyIcebergTable>> {
+    #[pyo3(signature = (*, on = "main"))]
+    fn status(&self, py: Python<'_>, on: &str) -> PyResult<Vec<PyIcebergTable>> {
         self.owner.check(py, "Lake")?;
         let lake = self.lake.clone();
+        let on = on.to_string();
         let found = wait(py, async move { lake.iceberg().status(&on).await })?;
         let found = found.map_err(|e| to_python(py, e))?;
         Ok(found.into_iter().map(PyIcebergTable::from).collect())
