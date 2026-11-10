@@ -12,36 +12,8 @@ use serde::Serialize;
 use crate::merge::person;
 use crate::{Error, Lake, Result, Session};
 
-const MAIN: &str = "main";
-const DEFAULT_NAMESPACE: &str = "default";
-
-/// Where a table is, as SQL says it: `t` is `main.default.t`, `n.t` is `main.n.t`, and `r.n.t` is on the ref `r`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TablePath {
-    pub on: String,
-    pub namespace: Vec<String>,
-    pub name: String,
-}
-
-impl TablePath {
-    pub fn parse(text: &str) -> Result<Self> {
-        let parts: Vec<&str> = text.split('.').collect();
-        if parts.iter().any(|part| part.is_empty()) {
-            return Err(Error::usage(format!("{text}: a table is [ref.][namespace.]table")));
-        }
-        let (on, namespace, name) = match parts.as_slice() {
-            [name] => (MAIN, vec![DEFAULT_NAMESPACE], *name),
-            [namespace, name] => (MAIN, vec![*namespace], *name),
-            [on, namespace @ .., name] => (*on, namespace.to_vec(), *name),
-            [] => unreachable!("a split has a part"),
-        };
-        Ok(Self {
-            on: on.to_string(),
-            namespace: namespace.into_iter().map(str::to_string).collect(),
-            name: name.to_string(),
-        })
-    }
-}
+/// Where a table is, as SQL says it: the core's rule, which every face reads names by.
+pub use metalake::TablePath;
 
 /// A name as a statement says it, whatever it holds.
 fn quoted(name: &str) -> String {
@@ -69,20 +41,6 @@ fn merge_text(table: &str, source: &str, schema: &Schema, on: &[String]) -> Stri
         columns.join(", "),
         values.join(", ")
     )
-}
-
-impl TablePath {
-    /// As a statement names it, whatever its names hold. A namespace of several parts is one identifier in a statement.
-    pub(crate) fn quoted(&self) -> String {
-        let namespace = self.namespace.join(".");
-        format!("{}.{}.{}", quoted(&self.on), quoted(&namespace), quoted(&self.name))
-    }
-}
-
-impl std::fmt::Display for TablePath {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}.{}.{}", self.on, self.namespace.join("."), self.name)
-    }
 }
 
 /// What goes with a commit.
@@ -397,14 +355,6 @@ impl Lake {
 mod tests {
     use super::*;
 
-    fn path(on: &str, namespace: &[&str], name: &str) -> TablePath {
-        TablePath {
-            on: on.into(),
-            namespace: namespace.iter().map(|n| n.to_string()).collect(),
-            name: name.into(),
-        }
-    }
-
     #[test]
     fn allowed_casts() {
         use DataType::*;
@@ -426,15 +376,5 @@ mod tests {
             &Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
             &Timestamp(TimeUnit::Microsecond, None)
         ));
-    }
-
-    #[test]
-    fn table_path_parse() {
-        assert_eq!(TablePath::parse("t").unwrap(), path("main", &["default"], "t"));
-        assert_eq!(TablePath::parse("n.t").unwrap(), path("main", &["n"], "t"));
-        assert_eq!(TablePath::parse("r.n.t").unwrap(), path("r", &["n"], "t"));
-        assert_eq!(TablePath::parse("r.a.b.t").unwrap(), path("r", &["a", "b"], "t"));
-        assert_eq!(TablePath::parse("r.n.t").unwrap().to_string(), "r.n.t");
-        assert!(TablePath::parse("").is_err() && TablePath::parse("a..b").is_err());
     }
 }

@@ -94,6 +94,13 @@ impl From<&metalake::Error> for Error {
     }
 }
 
+/// A table named wrongly is a wrong use, as any other argument.
+impl From<metalake::InvalidPath> for Error {
+    fn from(e: metalake::InvalidPath) -> Self {
+        Error::usage(e.to_string())
+    }
+}
+
 impl From<metalake::Error> for Error {
     fn from(e: metalake::Error) -> Self {
         Self::from(&e)

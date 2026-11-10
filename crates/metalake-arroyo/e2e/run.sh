@@ -3,11 +3,15 @@
 # a Postgres for the catalog and a volume for the lake. A pipeline follows a table of orders and keeps totals by
 # customer in another; after each change to the orders, the totals must come to what the orders give, read by
 # DataFusion through MetaLake. Inserts, deletes, a customer gone, and a restart from the pipeline's checkpoint.
+# The pipeline is standard SQL over the lake's names, with no table declared: Arroyo finds them in the catalog its
+# environment names. Until the fork's master has that, run it with ARROYO_REF=feat/metalake-resolve.
 #
 #   bash crates/metalake-arroyo/e2e/run.sh
 #   ARROYO_REF=feat/metalake-connector bash crates/metalake-arroyo/e2e/run.sh
 #   KEEP=1 bash crates/metalake-arroyo/e2e/run.sh      leaves everything running, to look at
 #   ARROYO_IMAGE=arroyo:local bash crates/metalake-arroyo/e2e/run.sh   an image already built
+#   ARROYO_IMAGE=ghcr.io/describeloai/arroyo-metalake:feat-metalake-resolve ...   the one the fork publishes
+#   METALAKE_BIN=target/release/metalake bash ...   a command line already built for Linux, not built in Docker
 #
 # Building Arroyo's image takes long the first time; Docker caches it after.
 set -euo pipefail
@@ -35,7 +39,22 @@ if [ -z "${ARROYO_IMAGE:-}" ]; then
   docker build -q -t "$arroyo" --target arroyo -f docker/Dockerfile \
     "https://github.com/describeloai/arroyo.git#$ref" >/dev/null
 fi
-docker build -q -t metalake-e2e/metalake -f "$here/metalake.Dockerfile" "$root" >/dev/null
+if [ -n "${METALAKE_BIN:-}" ]; then
+  # A command line already built for Linux: only put in an image of the system it was built on, for its C library.
+  # Its own context, the file under the name the image expects, whatever its own; a path Docker takes on Windows.
+  bin=$(mktemp -d)
+  cp "$METALAKE_BIN" "$bin/metalake"
+  if command -v cygpath >/dev/null 2>&1; then bin=$(cygpath -m "$bin"); fi
+  base=${METALAKE_BASE:-$(. /etc/os-release && echo "$ID:$VERSION_ID")}
+  docker build -q -t metalake-e2e/metalake -f - "$bin" >/dev/null <<EOF
+FROM $base
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY metalake /usr/local/bin/metalake
+ENTRYPOINT ["metalake"]
+EOF
+else
+  docker build -q -t metalake-e2e/metalake -f "$here/metalake.Dockerfile" "$root" >/dev/null
+fi
 
 echo "== catalog"
 docker network create "$net" >/dev/null
@@ -53,8 +72,10 @@ metalake sql "create schema main.shop;
               create table main.shop.totals (customer varchar, orders bigint, amount double);
               insert into main.shop.orders values (1, 'ana', 10), (2, 'ana', 20), (3, 'bo', 5), (4, 'cy', 7)"
 
+# Arroyo reaches the lake as a client does, from its environment: the pipeline names no catalog of its own.
 start() {
   docker run -d --name "$job" --network "$net" -v "$lake:/lake" -v "$here/pipeline.sql:/pipeline.sql:ro" \
+    -e METALAKE_POSTGRES="host=$pg user=postgres dbname=postgres" -e METALAKE_SCHEMA=lake \
     "$arroyo" run --name totals --parallelism 2 --state-dir /lake/state /pipeline.sql >/dev/null
 }
 

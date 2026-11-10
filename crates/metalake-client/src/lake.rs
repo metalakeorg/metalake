@@ -6,6 +6,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
+use metalake::environment::{self, has_password, storage_options, without_password};
 use metalake::{Catalog, CatalogConfig, Storage};
 use metalake_local::{Binaries, Cluster};
 use serde::{Deserialize, Serialize};
@@ -16,11 +17,9 @@ use crate::{Error, Result};
 /// The file `init` writes, which a command finds in its directory or the nearest above it.
 const FILE: &str = "metalake.toml";
 /// The catalog's schema, unless one Postgres database holds more than one lake.
-const SCHEMA: &str = "metalake";
+const SCHEMA: &str = environment::DEFAULT_SCHEMA;
 /// The cluster's directory in a lake's own directory, which is how one is known without its file.
 const CLUSTER: &str = "postgres";
-/// The services whose variables `object_store` reads, by the same names in lower case.
-const STORAGE_ENV: [&str; 3] = ["AWS_", "GOOGLE_", "AZURE_"];
 
 /// Where a catalog is: all that a client has to know. A lake's own Postgres is a directory, relative to the file, which
 /// holds the cluster, and a lake reaching one is its own concern: nothing past this file can tell it from any other.
@@ -76,8 +75,8 @@ impl Location {
         if let Some(dir) = dir {
             return Self::read(&dir.join(FILE));
         }
-        if let Ok(postgres) = env::var("METALAKE_POSTGRES") {
-            let schema = env::var("METALAKE_SCHEMA").ok();
+        if let Ok(postgres) = env::var(environment::POSTGRES) {
+            let schema = env::var(environment::SCHEMA).ok();
             return Ok(Self {
                 postgres: Some(postgres),
                 local: None,
@@ -309,14 +308,6 @@ fn within(directory: &Path, local: &Path) -> PathBuf {
     directory.join(local).components().collect()
 }
 
-/// The options of `object_store` among these variables, which it names in lower case.
-fn storage_options(vars: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>) -> Vec<(String, String)> {
-    vars.filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
-        .filter(|(key, _)| STORAGE_ENV.iter().any(|prefix| key.starts_with(prefix)))
-        .map(|(key, value)| (key.to_ascii_lowercase(), value))
-        .collect()
-}
-
 /// A URL of a warehouse: as given if it is one, and a local directory, made if need be, as a `file:` URL.
 fn warehouse_url(warehouse: &str) -> Result<String> {
     // A scheme of one letter is a Windows drive.
@@ -334,66 +325,12 @@ fn warehouse_url(warehouse: &str) -> Result<String> {
 
 /// Whether what `init` was given is a connection string, as opposed to a directory for a lake's own Postgres.
 fn is_postgres(catalog: &str) -> bool {
-    as_url(catalog).is_some() || catalog.contains('=')
-}
-
-/// Whether a connection string is a URL, as opposed to libpq's `key=value` pairs.
-fn as_url(postgres: &str) -> Option<Url> {
-    Url::parse(postgres)
-        .ok()
-        .filter(|u| matches!(u.scheme(), "postgres" | "postgresql"))
-}
-
-fn has_password(postgres: &str) -> bool {
-    match as_url(postgres) {
-        Some(url) => url.password().is_some() || url.query_pairs().any(|(k, _)| k == "password"),
-        None => postgres.split_whitespace().any(|pair| pair.starts_with("password=")),
-    }
-}
-
-fn without_password(postgres: &str) -> String {
-    match as_url(postgres) {
-        Some(mut url) => {
-            let kept: Vec<(String, String)> = url
-                .query_pairs()
-                .into_owned()
-                .filter(|(k, _)| k != "password")
-                .collect();
-            let _ = url.set_password(None);
-            url.set_query(None);
-            if !kept.is_empty() {
-                url.query_pairs_mut().extend_pairs(kept);
-            }
-            url.to_string()
-        }
-        None => {
-            let kept = postgres
-                .split_whitespace()
-                .filter(|pair| !pair.starts_with("password="));
-            kept.collect::<Vec<_>>().join(" ")
-        }
-    }
+    environment::is_url(catalog) || catalog.contains('=')
 }
 
 /// The connection string with `PGPASSWORD`, which the driver does not read, unless it already has one.
 fn with_password(postgres: &str) -> String {
-    match env::var("PGPASSWORD") {
-        Ok(password) if !has_password(postgres) => joined(postgres, &password),
-        _ => postgres.to_string(),
-    }
-}
-
-fn joined(postgres: &str, password: &str) -> String {
-    match as_url(postgres) {
-        Some(mut url) => {
-            let _ = url.set_password(Some(password));
-            url.to_string()
-        }
-        None => {
-            let quoted = password.replace('\\', "\\\\").replace('\'', "\\'");
-            format!("{postgres} password='{quoted}'")
-        }
-    }
+    environment::with_password(postgres, env::var(environment::PASSWORD).ok().as_deref())
 }
 
 #[cfg(test)]
@@ -430,48 +367,6 @@ mod tests {
         );
         assert_eq!(plain.schema(), SCHEMA);
         assert!(toml::from_str::<Location>("postgres = 'h'\nwarehouse = 's3://b'\n").is_err());
-    }
-
-    #[test]
-    fn detect_password() {
-        for with in [
-            "postgresql://u:secret@h/db",
-            "postgres://u@h/db?password=secret",
-            "host=h password=secret user=u",
-        ] {
-            assert!(has_password(with), "{with}");
-            assert!(!without_password(with).contains("secret"), "{with}");
-        }
-        for without in [
-            "postgresql://u@h/db",
-            "host=h user=u",
-            "host=h application_name=password",
-        ] {
-            assert!(!has_password(without), "{without}");
-        }
-        assert_eq!(without_password("postgres://u:s@h/db?a=1"), "postgres://u@h/db?a=1");
-    }
-
-    #[test]
-    fn inject_password() {
-        assert_eq!(joined("postgresql://u@h/db", "a b/c"), "postgresql://u:a%20b%2Fc@h/db");
-        assert_eq!(joined("host=h", r"it's\"), r"host=h password='it\'s\\'");
-    }
-
-    #[test]
-    fn storage_env_options_lower_case() {
-        let vars = [
-            ("AWS_REGION", "eu"),
-            ("GOOGLE_SERVICE_ACCOUNT", "k"),
-            ("AZURE_X", "y"),
-            ("PATH", "p"),
-        ];
-        let options = storage_options(vars.into_iter().map(|(k, v)| (k.into(), v.into())));
-        assert_eq!(
-            options,
-            [("aws_region", "eu"), ("google_service_account", "k"), ("azure_x", "y")]
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-        );
     }
 
     #[test]

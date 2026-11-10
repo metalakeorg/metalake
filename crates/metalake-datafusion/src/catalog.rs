@@ -15,18 +15,13 @@ use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::{DdlStatement, LogicalPlan, LogicalPlanBuilder};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion::sql::parser::Statement;
-use metalake::{Catalog, Error, Ref, Result, Storage};
+use metalake::path::{DEFAULT_NAMESPACE, MAIN, NAMESPACE_SEPARATOR};
+use metalake::{Catalog, Error, Ref, Result, Storage, TablePath};
 
 use crate::ddl;
 use crate::point::{self, OnePoint};
 use crate::table::MetaTable;
 
-/// The ref a session reads unqualified tables from.
-const DEFAULT_CATALOG: &str = "main";
-/// The namespace a session reads unqualified tables from.
-const DEFAULT_SCHEMA: &str = "default";
-/// What separates the levels of a nested namespace in a schema's name.
-const SEPARATOR: char = '.';
 /// The catalog of what a statement brings with it, which cannot be a ref's name, since those have no leading dot.
 const SOURCES: &str = ".source";
 /// The name of the next source.
@@ -102,7 +97,7 @@ impl MetaLake {
     pub fn context(&self) -> Result<SessionContext, DataFusionError> {
         let mut config = SessionConfig::new()
             .with_information_schema(true)
-            .with_default_catalog_and_schema(DEFAULT_CATALOG, DEFAULT_SCHEMA);
+            .with_default_catalog_and_schema(MAIN, DEFAULT_NAMESPACE);
         // `varchar` is a table's string, which has no view.
         config.options_mut().sql_parser.map_string_types_to_utf8view = false;
         let context = SessionContext::new_with_config(config);
@@ -119,18 +114,19 @@ impl MetaLake {
         let plan = context.state().statement_to_plan(statement).await?;
         match plan {
             LogicalPlan::Ddl(DdlStatement::CreateCatalogSchema(create)) => {
-                let (on, namespace) = match create.schema_name.split_once(SEPARATOR) {
+                let (on, namespace) = match create.schema_name.split_once(NAMESPACE_SEPARATOR) {
                     Some((on, namespace)) => (on, namespace),
-                    None => (DEFAULT_CATALOG, create.schema_name.as_str()),
+                    None => (MAIN, create.schema_name.as_str()),
                 };
                 let on = self.shared.named(on).await?;
                 ddl::create_schema(&on, &[namespace], create.if_not_exists).await?;
             }
             LogicalPlan::Ddl(DdlStatement::CreateMemoryTable(create)) => {
-                let name = create.name.clone().resolve(DEFAULT_CATALOG, DEFAULT_SCHEMA);
-                let on = self.shared.named(&name.catalog).await?;
-                let namespace: Vec<&str> = name.schema.split(SEPARATOR).collect();
-                ddl::create_table(&on, &namespace, &name.table, &create).await?;
+                let name = create.name.clone().resolve(MAIN, DEFAULT_NAMESPACE);
+                let path = TablePath::from_parts(Some(&name.catalog), Some(&name.schema), &name.table);
+                let on = self.shared.named(&path.on).await?;
+                let namespace: Vec<&str> = path.namespace.iter().map(String::as_str).collect();
+                ddl::create_table(&on, &namespace, &path.name, &create).await?;
             }
             plan => return context.execute_logical_plan(plan).await,
         }
@@ -174,7 +170,7 @@ pub struct Source {
 impl Source {
     /// How a statement names it.
     pub fn name(&self) -> String {
-        format!("\"{SOURCES}\".\"{DEFAULT_SCHEMA}\".\"{}\"", self.name)
+        format!("\"{SOURCES}\".\"{DEFAULT_NAMESPACE}\".\"{}\"", self.name)
     }
 }
 
@@ -262,8 +258,9 @@ impl SchemaProvider for Namespace {
         let Some(on) = shared.find(&self.on).await.map_err(external)? else {
             return Ok(None);
         };
-        let namespace: Vec<&str> = self.name.split(SEPARATOR).collect();
-        match on.table(&namespace, name).await {
+        let path = TablePath::from_parts(Some(&self.on), Some(&self.name), name);
+        let namespace: Vec<&str> = path.namespace.iter().map(String::as_str).collect();
+        match on.table(&namespace, &path.name).await {
             Ok(table) => Ok(Some(Arc::new(MetaTable {
                 on,
                 catalog: shared.catalog.clone(),

@@ -16,11 +16,13 @@
 
 pub mod bounds;
 mod catalog;
+pub mod environment;
 mod error;
 mod evolve;
 mod follow;
 mod maintain;
 pub mod partition;
+pub mod path;
 mod scan;
 pub mod schema;
 pub mod stats;
@@ -43,6 +45,7 @@ pub use metalake_pg::Retention;
 pub use metalake_pg::records::{
     CommitEntry, FeedCommit, FileAdd, ListedFile, NamespaceRow, RefRow, SnapshotEntry, TableName, TableSnapshot,
 };
+pub use path::{InvalidPath, TablePath};
 pub use scan::{Scan, ScanTask, TaskReader, TaskVector, listed_vector};
 pub use storage::Storage;
 pub use stream::{
