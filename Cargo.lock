@@ -2551,6 +2551,7 @@ dependencies = [
  "metalake-datafusion",
  "metalake-local",
  "metalake-pg",
+ "object_store",
  "serde",
  "serde_json",
  "tokio",

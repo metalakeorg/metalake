@@ -8,6 +8,8 @@ on:
   pull_request:
     paths:
       - crates/metalake-arroyo/e2e/**
+      - crates/metalake-client/src/pipeline/**
+      - crates/metalake-client/tests/c14_pipeline.rs
       - .github/workflows/e2e.yml
   workflow_dispatch:
     inputs:
@@ -44,3 +46,9 @@ jobs:
         run: |
           docker pull "$ARROYO_IMAGE"
           bash crates/metalake-arroyo/e2e/run.sh
+      # The same pipeline, as the client creates, suspends, resumes and drops it, Arroyo in a container of its image.
+      - name: A pipeline through the client
+        env:
+          METALAKE_ARROYO_IMAGE: ${{ inputs.arroyo_image || 'ghcr.io/describeloai/arroyo-metalake:feat-metalake-resolve' }}
+          METALAKE_PIPELINE_TEST: '1'
+        run: CRATE=metalake-client bash sql/test.sh --test c14_pipeline -- --nocapture

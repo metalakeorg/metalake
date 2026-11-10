@@ -278,6 +278,11 @@ impl Lake {
         self.location.schema()
     }
 
+    /// How to reach the catalog's Postgres, with its password: what a pipeline's process is given, never printed.
+    pub(crate) fn catalog_postgres(&self) -> Result<String> {
+        Ok(self.location.config(None)?.postgres)
+    }
+
     /// The Postgres of the catalog, fit to print, unless it is the lake's own.
     pub fn postgres(&self) -> Option<String> {
         self.location.postgres.as_deref().map(without_password)
