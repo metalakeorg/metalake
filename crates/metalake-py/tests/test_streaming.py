@@ -49,6 +49,17 @@ def changes(result):
     return sorted(zip(frame["_change_type"], frame["k"], frame["_commit_seq"]))
 
 
+def arrived(follower):
+    """The next step with rows, and its rows: a commit comes once it is a second old (CHG-1)."""
+    for _ in range(40):
+        step = next(follower)
+        rows = changes(step.rows)
+        if rows:
+            return step, rows
+        time.sleep(0.1)
+    raise AssertionError("no commit came")
+
+
 def test_changes_range_chains(table):
     one = append(table, [1, 2])
     two = append(table, [3])
@@ -73,13 +84,13 @@ def test_follow_goes_on_after_position(table):
     assert read.position is not None and follower.position == read.position
 
     later = append(table, [3])
-    step = next(follower)
-    assert changes(step.rows) == [("insert", 3, later)]
+    step, rows = arrived(follower)
+    assert rows == [("insert", 3, later)]
 
     # A reader that kept a position goes on after it, with nothing before it.
     again = append(table, [4])
     resumed = table.follow(after=step.position)
-    assert changes(next(resumed).rows) == [("insert", 4, again)]
+    assert arrived(resumed)[1] == [("insert", 4, again)]
 
     latest = table.follow("latest")
     first = next(latest)
@@ -210,12 +221,17 @@ def test_follow_step_read_once_counts_when_read(table):
     assert follower.position is None, "a step counts once its rows are read"
     assert sorted(pl.DataFrame(first.rows)["k"]) == [1]
     assert follower.position == first.position
-    with pytest.raises(metalake.MetaLakeError):
+    # Polars says it in its own error, with ours inside.
+    with pytest.raises(Exception, match="read once"):
         pl.DataFrame(first.rows)
 
     # A step left unread is given again.
     later = append(table, [2])
-    unread = next(follower)
+    for _ in range(40):
+        unread = next(follower)
+        if unread.position == later:
+            break
+        time.sleep(0.1)
     assert unread.position == later
     again = next(follower)
     assert changes(again.rows) == [("insert", 2, later)]
