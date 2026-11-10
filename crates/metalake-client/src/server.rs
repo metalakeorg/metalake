@@ -186,9 +186,11 @@ fn start(files: &Files, postgres: &str, schema: &str) -> Result<Runtime> {
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         std::os::windows::process::CommandExt::creation_flags(&mut serve, DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
     }
-    let mut child = serve
-        .spawn()
-        .map_err(|e| Error::failed(format!("the lake's server could not start: {e}")))?;
+    let spawned = {
+        let _held = StdHandlesKept::now();
+        serve.spawn()
+    };
+    let mut child = spawned.map_err(|e| Error::failed(format!("the lake's server could not start: {e}")))?;
     let pid = child.id();
     let since = Instant::now();
     loop {
@@ -217,6 +219,52 @@ fn start(files: &Files, postgres: &str, schema: &str) -> Result<Runtime> {
             )));
         }
         thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// While it lives, this process's standard handles are not inherited by a process it starts. On Windows a child
+/// inherits every inheritable handle of its parent, whatever its own standard handles are: a server started detached
+/// would hold its starter's output open, and whoever reads that output to its end, a pipe of `metalake … | grep` or a
+/// test runner, would wait as long as the server lives. Elsewhere a child inherits only what it is given.
+struct StdHandlesKept {
+    #[cfg(windows)]
+    handles: Vec<windows_sys::Win32::Foundation::HANDLE>,
+}
+
+impl StdHandlesKept {
+    fn now() -> Self {
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation};
+            use windows_sys::Win32::System::Console::{
+                GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+            };
+            let mut handles = Vec::new();
+            for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+                // SAFETY: the standard handles of this process, which it does not close; only their flag changes.
+                let handle = unsafe { GetStdHandle(which) };
+                if !handle.is_null()
+                    && handle != INVALID_HANDLE_VALUE
+                    && unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } != 0
+                {
+                    handles.push(handle);
+                }
+            }
+            Self { handles }
+        }
+        #[cfg(not(windows))]
+        Self {}
+    }
+}
+
+impl Drop for StdHandlesKept {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        for &handle in &self.handles {
+            use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+            // SAFETY: as in `now`, the flag put back on a handle this process still holds.
+            unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
+        }
     }
 }
 
