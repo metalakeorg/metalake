@@ -444,3 +444,26 @@ async fn follow_step_not_read_given_again() {
     lake.close();
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test]
+async fn follow_dropped_read_given_again_at_its_point() {
+    let (lake, dir) = lake(&["t"]).await;
+    let t = path("db.t");
+    append(&lake, &t, 0..2, Details::default()).await;
+    let mut follower = lake.follow(&t, StartAt::Snapshot).await.unwrap();
+    let read = follower.next().await.unwrap().expect("the read");
+    drop(read);
+    let read_at = follower.position();
+    assert_eq!(read_at, None, "the read does not count");
+
+    // A commit lands before the read is given again: the read is the one it was, and the commit comes after it.
+    let later = append(&lake, &t, 2..3, Details::default()).await;
+    settle().await;
+    let again = rows(follower.next().await.unwrap().expect("the read again")).await;
+    let at = follower.position().expect("the read's sequence");
+    assert!(at < later, "the read is at its first point, before {later}: {at}");
+    assert_eq!(again, [row("insert", 0, at), row("insert", 1, at)]);
+    assert_eq!(drain(&mut follower).await, [row("insert", 2, later)]);
+    lake.close();
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -146,8 +146,17 @@ impl Writer {
         {
             return Err(Error::usage("the rows of one writer have one schema"));
         }
-        // No rows give no version: an empty write must not lend its version to rows it holds of an earlier one.
+        // No rows give no version: an empty write must not lend its version to rows it holds of an earlier one. It still
+        // lets the cadence commit what is held, as a heartbeat of a quiet producer: without a key, or with a version
+        // past what is held, which is then whole.
         if batch.num_rows() == 0 {
+            let whole = version.is_none() || version != self.pending;
+            if whole
+                && self.due()
+                && let Some(written) = self.flush().await?
+            {
+                return Ok(Wrote::Committed(written));
+            }
             return Ok(Wrote::Buffered);
         }
         let mut committed = None;

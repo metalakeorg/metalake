@@ -119,6 +119,8 @@ pub struct TableStream {
     cursor: Option<StreamCursor>,
     /// The last commit of the table it took, or the read it started from.
     position: Option<i64>,
+    /// The time and sequence its first step was read at.
+    point: Option<(SystemTime, i64)>,
 }
 
 impl Ref {
@@ -181,6 +183,7 @@ impl Ref {
             from,
             cursor,
             position,
+            point: None,
         })
     }
 }
@@ -215,6 +218,19 @@ impl TableStream {
     /// What its rows look like.
     pub fn schema(&self) -> &SchemaRef {
         &self.schema
+    }
+
+    /// This stream as it was before its first step, at the point that step was read at: its first step again, the same
+    /// read and the same rows, then what came after it. None before its first step, or for one that went on from a
+    /// cursor or a commit, which has no first read.
+    pub fn restart(&self) -> Option<TableStream> {
+        let point = self.point?;
+        Some(TableStream {
+            from: Some(point),
+            cursor: None,
+            position: None,
+            ..self.clone()
+        })
     }
 
     /// The table as it reads it: its definition is what its rows look like.
@@ -288,7 +304,7 @@ impl TableStream {
             }
             _ => Vec::new(),
         };
-        (self.cursor, self.position) = (Some(cursor.clone()), Some(seq));
+        (self.cursor, self.position, self.point) = (Some(cursor.clone()), Some(seq), Some((at, seq)));
         Ok(StreamStep { tasks, cursor })
     }
 

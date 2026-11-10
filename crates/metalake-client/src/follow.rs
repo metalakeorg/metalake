@@ -108,12 +108,14 @@ impl Follower {
         Ok(Some(rows.chain(end).boxed()))
     }
 
-    /// A stream that gives the last step again: after the position before it, or from the start when it was the first.
+    /// A stream that gives the last step again: after the position before it, or, when it was the first, its read again
+    /// at the same point, so that what came since comes after it as before.
     async fn again(&self) -> Result<TableStream> {
         let table = self.stream.table();
-        Ok(match self.before {
-            Some(position) => self.on.stream(table, Start::After(position)).await?,
-            None => open(&self.on, table, self.start).await?,
+        Ok(match (self.before, self.stream.restart()) {
+            (Some(position), _) => self.on.stream(table, Start::After(position)).await?,
+            (None, Some(first)) => first,
+            (None, None) => open(&self.on, table, self.start).await?,
         })
     }
 

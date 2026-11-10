@@ -318,3 +318,41 @@ async fn writer_stale_producer_ahead_conflicts() {
     assert_eq!(lake.key_version("main", "shared").await.unwrap(), Some(5));
     done(lake, dir).await;
 }
+
+#[tokio::test]
+async fn writer_empty_write_is_heartbeat() {
+    let (lake, dir) = lake().await;
+    let every = Duration::from_millis(200);
+    let plain = WriterOptions {
+        commit_every: every,
+        ..Default::default()
+    };
+    let mut writer = lake.writer(&t(), plain).await.unwrap();
+    writer.write(rows(&[(1, "a")]), None).await.unwrap();
+    tokio::time::sleep(every + Duration::from_millis(50)).await;
+    assert!(matches!(
+        writer.write(rows(&[]), None).await.unwrap(),
+        Wrote::Committed(_)
+    ));
+    assert_eq!(table(&lake).await, pairs(&[(1, "a")]));
+
+    // With a key, a later version says what is held is whole; the same version does not.
+    let options = WriterOptions {
+        commit_every: every,
+        ..keyed("beat")
+    };
+    let mut keyed = lake.writer(&t(), options).await.unwrap();
+    keyed.write(rows(&[(2, "b")]), Some(1)).await.unwrap();
+    tokio::time::sleep(every + Duration::from_millis(50)).await;
+    assert!(matches!(
+        keyed.write(rows(&[]), Some(1)).await.unwrap(),
+        Wrote::Buffered
+    ));
+    assert!(matches!(
+        keyed.write(rows(&[]), Some(2)).await.unwrap(),
+        Wrote::Committed(_)
+    ));
+    assert_eq!(lake.key_version("main", "beat").await.unwrap(), Some(1));
+    assert_eq!(table(&lake).await, pairs(&[(1, "a"), (2, "b")]));
+    done(lake, dir).await;
+}
