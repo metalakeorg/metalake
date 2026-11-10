@@ -795,3 +795,43 @@ async fn follow_after_refusals() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(after.position(), Some(later));
     Ok(())
 }
+
+#[tokio::test]
+async fn next_cancelled_keeps_place() -> Result<(), Box<dyn std::error::Error>> {
+    let (catalog, main, storage) = lake(vec![]).await?;
+    append(&catalog, &main, &storage, 0..2).await?;
+    let t = main.table(&["db"], "t").await?;
+    let mut stream = main.stream(&t, Start::Snapshot).await?;
+    let first = stream.next().await?.expect("the first read");
+    let mut rows = rows_of(&stream, &first, &storage).await?;
+    for n in 1..8i64 {
+        append(&catalog, &main, &storage, n * 2..(n + 1) * 2).await?;
+    }
+    settle().await;
+
+    // A step dropped at any point while it is found leaves the reader where it was, and is found again whole.
+    let (mut patience, mut cancelled) = (Duration::from_micros(1), 0);
+    loop {
+        let before = (stream.position(), stream.cursor().cloned());
+        match tokio::time::timeout(patience, stream.next()).await {
+            Err(_) => {
+                cancelled += 1;
+                assert_eq!(
+                    (stream.position(), stream.cursor().cloned()),
+                    before,
+                    "after {patience:?}"
+                );
+                patience *= 2;
+            }
+            Ok(step) => match step? {
+                Some(step) => rows.extend(rows_of(&stream, &step, &storage).await?),
+                None => break,
+            },
+        }
+    }
+    assert!(cancelled > 0, "no step was dropped");
+    let now = main.table(&["db"], "t").await?;
+    assert_eq!(rebuilt(&rows), keys_of(&catalog, &now, &storage).await?);
+    assert_eq!(stream.position(), now.snapshot_id());
+    Ok(())
+}

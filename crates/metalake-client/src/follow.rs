@@ -1,9 +1,9 @@
 //! A table's changes (CHG-2 to CHG-5): the rows each commit inserted and deleted, with `_change_type`, `_commit_seq`
 //! and `_commit_timestamp`. A reader is somewhere between two commits, and where is the `_commit_seq` of the last rows
 //! it dealt with: a number it keeps with what it did with them, and gives back to go on from there. Commits come once
-//! they are a second old (CHG-1), and nothing here waits for one: a caller asks again when it wants to.
+//! they are a second old (CHG-1): [`Follower::next`] says what came, and [`Follower::wait`] asks until something does.
 
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -60,6 +60,18 @@ impl Follower {
             .map(|task| self.stream.open(task, &self.storage))
             .collect();
         Ok(Some(stream::iter(opened).flatten().map_err(Error::from).boxed()))
+    }
+
+    /// The next step, asking again every `interval` until a commit comes. Its rows may be none: a commit that changed
+    /// no row, as a compaction, still moves the position. Dropping it while it waits leaves the follower where it was,
+    /// so a caller cancels it by dropping it.
+    pub async fn wait(&mut self, interval: Duration) -> Result<Changes> {
+        loop {
+            if let Some(step) = self.next().await? {
+                return Ok(step);
+            }
+            tokio::time::sleep(interval).await;
+        }
     }
 }
 

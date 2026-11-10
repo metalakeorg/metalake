@@ -279,3 +279,34 @@ async fn copy_with_key_takes_each_commit_once() {
     lake.close();
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test]
+async fn wait_takes_commit_when_it_comes() {
+    let (lake, dir) = lake(&["t"]).await;
+    let t = path("db.t");
+    append(&lake, &t, 0..1, Details::default()).await;
+    let mut follower = lake.follow(&t, StartAt::Latest).await.unwrap();
+    let interval = Duration::from_millis(50);
+
+    // The start comes at once, and has no rows.
+    assert_eq!(rows(follower.wait(interval).await.unwrap()).await, []);
+    let start = follower.position();
+
+    // A wait dropped before anything came leaves the follower where it was.
+    let dropped = tokio::time::timeout(Duration::from_millis(300), follower.wait(interval)).await;
+    assert!(dropped.is_err(), "nothing came");
+    assert_eq!(follower.position(), start);
+
+    // A commit that lands while it waits is what it answers, once it is a second old.
+    let later = append(&lake, &t, 1..3, Details::default()).await;
+    let came = tokio::time::timeout(Duration::from_secs(10), follower.wait(interval))
+        .await
+        .expect("the commit came");
+    assert_eq!(
+        rows(came.unwrap()).await,
+        [row("insert", 1, later), row("insert", 2, later)]
+    );
+    assert_eq!(follower.position(), Some(later));
+    lake.close();
+    let _ = std::fs::remove_dir_all(dir);
+}

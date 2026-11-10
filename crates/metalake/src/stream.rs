@@ -268,7 +268,6 @@ impl TableStream {
             None => self.point().await?,
         };
         let cursor = StreamCursor { at, seq: 0, floor: seq };
-        self.position = Some(seq);
         let tasks = match self.start {
             Start::Snapshot => {
                 let read = self.branch.table_at(&self.table, seq).await?;
@@ -284,7 +283,7 @@ impl TableStream {
             }
             _ => Vec::new(),
         };
-        self.cursor = Some(cursor.clone());
+        (self.cursor, self.position) = (Some(cursor.clone()), Some(seq));
         Ok(StreamStep { tasks, cursor })
     }
 
@@ -335,7 +334,7 @@ impl TableStream {
             )));
         }
 
-        let mut tasks = Vec::new();
+        let (mut tasks, mut position) = (Vec::new(), self.position);
         for commit in feed {
             cursor.at = commit.committed_at;
             cursor.seq = commit.commit_seq;
@@ -343,7 +342,7 @@ impl TableStream {
                 continue;
             }
             // The feed of one table gives only its commits (CHG-1), so this one is taken, rows or not.
-            self.position = Some(commit.commit_seq);
+            position = Some(commit.commit_seq);
             // CMT-11: a replace changes no row.
             if commit.operation == "replace" {
                 continue;
@@ -353,7 +352,8 @@ impl TableStream {
                 tasks.push(task_of(commit.commit_seq, commit.committed_at, change)?);
             }
         }
-        self.cursor = Some(cursor.clone());
+        // Together and last: a step dropped while it was found leaves the reader where it was.
+        (self.cursor, self.position) = (Some(cursor.clone()), position);
         Ok(Some(StreamStep { tasks, cursor }))
     }
 }
