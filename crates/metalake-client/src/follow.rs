@@ -67,6 +67,11 @@ impl Follower {
         }
     }
 
+    /// The commit a reader goes on after once it reads the last step's rows to their end: what `position` says then.
+    pub fn reaches(&self) -> Option<i64> {
+        self.stream.position()
+    }
+
     /// The rows of the commits that came since the last step, which may be none, or nothing when no commit came; or
     /// the last step again, when its rows were not read to the end.
     pub async fn next(&mut self) -> Result<Option<Changes>> {
