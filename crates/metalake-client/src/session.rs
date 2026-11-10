@@ -68,6 +68,15 @@ pub struct Prepared {
 }
 
 impl Prepared {
+    /// Rows already read, as what a statement that already ran answers: a step a follower took, read as a result is.
+    pub fn from_batches(schema: SchemaRef, batches: Vec<RecordBatch>) -> Result<Self> {
+        let plan = MemorySourceConfig::try_new_exec(&[batches], schema, None)?;
+        Ok(Self {
+            plan,
+            task: Arc::new(TaskContext::default()),
+        })
+    }
+
     pub fn schema(&self) -> SchemaRef {
         self.plan.schema()
     }

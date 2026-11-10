@@ -197,6 +197,14 @@ impl PyLake {
         wait(py, async move { lake.set_grace(age).await })?.map_err(|e| to_python(py, e))
     }
 
+    /// The version a writer's idempotency key reached on a ref, or None: where that writer goes on from.
+    #[pyo3(signature = (app_id, on="main"))]
+    fn key_version(&self, py: Python<'_>, app_id: String, on: &str) -> PyResult<Option<i64>> {
+        self.owner.check(py, "Lake")?;
+        let (lake, on) = (self.lake.clone(), on.to_string());
+        wait(py, async move { lake.key_version(&on, &app_id).await })?.map_err(|e| to_python(py, e))
+    }
+
     /// Runs the core's tasks once, for whatever schedules it, and answers what was done. Every task is safe to repeat and
     /// to run beside commits. In order, they are `times`, `flush`, `compact`, `expire`, `sweep` and `orphans`; `task` runs
     /// one, and `on`, a branch, and `table`, `namespace.table`, narrow a `flush` or a `compact`. `strays`, asked for by

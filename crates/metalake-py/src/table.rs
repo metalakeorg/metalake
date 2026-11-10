@@ -2,11 +2,12 @@
 
 use std::sync::Arc;
 use std::thread;
+use std::time::{Duration, SystemTime};
 
 use datafusion::arrow::array::{RecordBatch, RecordBatchReader};
 use datafusion::arrow::datatypes::SchemaRef;
 use futures_util::{Stream, stream};
-use metalake_client::{Details, Error, Lake, Session, TablePath, Written};
+use metalake_client::{Details, Error, Lake, Mode, Session, StartAt, TablePath, WriterOptions, Written};
 use pyo3::prelude::*;
 use pyo3::types::PyCapsule;
 use pyo3_arrow::ffi::to_schema_pycapsule;
@@ -14,8 +15,11 @@ use pyo3_arrow::input::AnyRecordBatch;
 use tokio::sync::mpsc;
 
 use crate::errors::to_python;
+use crate::follow::PyFollower;
 use crate::owner::Owner;
+use crate::result::QueryResult;
 use crate::runtime::wait;
+use crate::writer::PyWriter;
 
 /// Batches read ahead of the writer.
 const AHEAD: usize = 2;
@@ -204,6 +208,90 @@ impl PyTable {
         let (session, path) = (self.session.clone(), self.path.clone());
         let written = wait(py, async move { session.delete(&path, &filter, details).await })?;
         written.map(PyWritten::from).map_err(|e| to_python(py, e))
+    }
+
+    /// The rows the commits after `after`, and up to `until` or to the last one a second old, inserted and deleted, with
+    /// `_change_type`, `_commit_seq` and `_commit_timestamp`, as `sql` answers them: `table_changes` of this table.
+    /// Ranges chain: after `a` up to `b`, then after `b`, take each commit once.
+    #[pyo3(signature = (after, until=None))]
+    fn changes(&self, py: Python<'_>, after: i64, until: Option<i64>) -> PyResult<QueryResult> {
+        self.owner.check(py, "Table")?;
+        let name = self.path.to_string().replace('\'', "''");
+        let until = until.map(|until| format!(", {until}")).unwrap_or_default();
+        let text = format!("select * from table_changes('{name}', {after}{until})");
+        let session = self.session.clone();
+        let prepared = wait(py, async move { session.run(&text).await })?;
+        Ok(QueryResult::new(
+            prepared.map_err(|e| to_python(py, e))?,
+            self.owner.clone(),
+        ))
+    }
+
+    /// A reader of the table's changes, a step at a time: from what it holds now (`"snapshot"`), from now
+    /// (`"latest"`), after a commit (`after`, a step's `position`), or after a time (`since`). Each step waits for the
+    /// next commit, asking every `interval` seconds, and Ctrl-C ends a wait with the reader where it was.
+    #[pyo3(signature = (start="snapshot", *, after=None, since=None, interval=1.0))]
+    fn follow(
+        &self,
+        py: Python<'_>,
+        start: &str,
+        after: Option<i64>,
+        since: Option<SystemTime>,
+        interval: f64,
+    ) -> PyResult<PyFollower> {
+        self.owner.check(py, "Table")?;
+        let start = match (start, after, since) {
+            (_, Some(after), None) => StartAt::After(after),
+            (_, None, Some(since)) => StartAt::Time(since),
+            (_, Some(_), Some(_)) => return Err(to_python(py, Error::usage("follow takes after or since, not both"))),
+            ("snapshot", None, None) => StartAt::Snapshot,
+            ("latest", None, None) => StartAt::Latest,
+            (other, None, None) => {
+                let message = format!("follow starts at \"snapshot\" or \"latest\", not {other:?}");
+                return Err(to_python(py, Error::usage(message)));
+            }
+        };
+        let interval = Duration::try_from_secs_f64(interval)
+            .ok()
+            .filter(|i| !i.is_zero())
+            .ok_or_else(|| to_python(py, Error::usage("the interval is a number of seconds above 0")))?;
+        let (lake, path) = (self.lake.clone(), self.path.clone());
+        let follower = wait(py, async move { lake.follow(&path, start).await })?;
+        let follower = follower.map_err(|e| to_python(py, e))?;
+        Ok(PyFollower::new(self.owner.clone(), follower, interval))
+    }
+
+    /// A writer of a stream into the table, which commits on its own cadence: each `commit_every` seconds, or once what
+    /// it holds reaches `max_bytes`. With `app_id`, each commit is idempotent with the highest `version` given, and
+    /// `version` says where a producer that comes back goes on from. With `upsert_on`, rows replace those with their key.
+    /// Used with `with`, it commits what it holds at the end.
+    #[pyo3(signature = (*, app_id=None, upsert_on=None, commit_every=1.0, max_bytes=64 << 20, author=None, message=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn writer(
+        &self,
+        py: Python<'_>,
+        app_id: Option<String>,
+        upsert_on: Option<Vec<String>>,
+        commit_every: f64,
+        max_bytes: usize,
+        author: Option<String>,
+        message: Option<String>,
+    ) -> PyResult<PyWriter> {
+        self.owner.check(py, "Table")?;
+        let commit_every = Duration::try_from_secs_f64(commit_every)
+            .map_err(|_| to_python(py, Error::usage("commit_every is a number of seconds")))?;
+        let options = WriterOptions {
+            app_id,
+            mode: upsert_on.map_or(Mode::Append, Mode::Upsert),
+            commit_every,
+            max_bytes,
+            author,
+            message,
+        };
+        let (lake, path) = (self.lake.clone(), self.path.clone());
+        let writer = wait(py, async move { lake.writer(&path, options).await })?;
+        let writer = writer.map_err(|e| to_python(py, e))?;
+        Ok(PyWriter::new(self.owner.clone(), writer))
     }
 
     fn __arrow_c_schema__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyCapsule>> {
