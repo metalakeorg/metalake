@@ -41,7 +41,10 @@ if [ -z "${ARROYO_IMAGE:-}" ]; then
 fi
 if [ -n "${METALAKE_BIN:-}" ]; then
   # A command line already built for Linux: only put in an image of the system it was built on, for its C library.
-  bin=$(cd "$(dirname "$METALAKE_BIN")" && pwd)
+  # Its own context, the file under the name the image expects, whatever its own; a path Docker takes on Windows.
+  bin=$(mktemp -d)
+  cp "$METALAKE_BIN" "$bin/metalake"
+  if command -v cygpath >/dev/null 2>&1; then bin=$(cygpath -m "$bin"); fi
   base=${METALAKE_BASE:-$(. /etc/os-release && echo "$ID:$VERSION_ID")}
   docker build -q -t metalake-e2e/metalake -f - "$bin" >/dev/null <<EOF
 FROM $base
