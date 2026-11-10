@@ -52,3 +52,9 @@ jobs:
           METALAKE_ARROYO_IMAGE: ${{ inputs.arroyo_image || 'ghcr.io/describeloai/arroyo-metalake:feat-metalake-resolve' }}
           METALAKE_PIPELINE_TEST: '1'
         run: CRATE=metalake-client bash sql/test.sh --test c14_pipeline -- --nocapture
+      # And from the command line, in its verbs and in SQL's.
+      - name: A pipeline from the command line
+        env:
+          METALAKE_ARROYO_IMAGE: ${{ inputs.arroyo_image || 'ghcr.io/describeloai/arroyo-metalake:feat-metalake-resolve' }}
+          METALAKE: target/release/metalake
+        run: bash crates/metalake-arroyo/e2e/cli.sh

@@ -5,10 +5,11 @@
 //!
 //! A pipeline is kept in the lake (its record and its checkpoints), and runs on the machine that started it. Suspended,
 //! it stops with a checkpoint; resumed, it goes on from it. A new pipeline starts from what its sources hold, so a table
-//! it writes must have no commits yet, or be emptied first with `replace`: what it holds is then what the query gives.
+//! it writes must have no commits yet, or be emptied first with `empty_target`: what it holds is then what the query gives.
 
 mod record;
 mod runner;
+pub(crate) mod sql;
 mod statement;
 
 use std::env;
@@ -18,6 +19,7 @@ use metalake::environment;
 use url::Url;
 
 pub use runner::{ARROYO, ARROYO_IMAGE};
+pub use sql::{Verb, rows, state_name, verb_of};
 pub use statement::{Names, names_of};
 
 use crate::pipeline::record::{Desired, Handle, Record, Records, check_name};
@@ -31,15 +33,15 @@ const SETTLING: Duration = Duration::from_secs(6);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PipelineOptions {
     pub parallelism: u32,
-    /// Empties the tables it writes first, when they have commits.
-    pub replace: bool,
+    /// Empties the tables it writes first, when they have commits: what they hold is then what the query gives.
+    pub empty_target: bool,
 }
 
 impl Default for PipelineOptions {
     fn default() -> Self {
         Self {
             parallelism: 1,
-            replace: false,
+            empty_target: false,
         }
     }
 }
@@ -89,13 +91,13 @@ impl Lake {
         for path in names.reads.iter().chain(&names.writes) {
             self.table(path).await?;
         }
-        if !options.replace {
+        if !options.empty_target {
             for path in &names.writes {
                 let (_, table) = self.table(path).await?;
                 if let Some(commit) = table.snapshot_id() {
                     return Err(Error::usage(format!(
                         "{path} has commits (the last {commit}): a new pipeline starts from what its sources hold, \
-                         so what it writes into starts empty; `replace` empties it first"
+                         so what it writes into starts empty; `empty_target` empties it first"
                     )));
                 }
             }
@@ -111,7 +113,7 @@ impl Lake {
         );
         records.create(&record).await?;
         let started = async {
-            if options.replace {
+            if options.empty_target {
                 let session = Session::new(self).await?;
                 for path in &names.writes {
                     let details = Details {

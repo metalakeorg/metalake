@@ -23,7 +23,7 @@ const CLUSTER: &str = "postgres";
 
 /// Where a catalog is: all that a client has to know. A lake's own Postgres is a directory, relative to the file, which
 /// holds the cluster, and a lake reaching one is its own concern: nothing past this file can tell it from any other.
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Location {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -135,7 +135,7 @@ impl Location {
 }
 
 /// A lake, reached.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Lake {
     pub catalog: Catalog,
     location: Location,

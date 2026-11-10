@@ -7,6 +7,7 @@ mod iceberg;
 mod info;
 mod lake;
 mod owner;
+mod pipeline;
 mod result;
 mod runtime;
 mod table;
@@ -39,6 +40,7 @@ fn _metalake(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<follow::PyFollower>()?;
     module.add_class::<follow::PyStep>()?;
     module.add_class::<writer::PyWriter>()?;
+    module.add_class::<pipeline::PyPipeline>()?;
     module.add_class::<result::QueryResult>()?;
     module.add_class::<result::PyBatch>()?;
     module.add_class::<result::Batches>()?;

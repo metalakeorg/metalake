@@ -29,6 +29,8 @@ use crate::{Error, Lake, Result};
 pub struct Session {
     engine: MetaLake,
     context: SessionContext,
+    /// For what is the client's own and not the engine's: a pipeline's verbs.
+    lake: Lake,
 }
 
 /// Whether a plan only reads, and so can wait to be read. What is not known to be a read runs at once: running one early
@@ -111,7 +113,11 @@ impl Session {
     pub async fn new(lake: &Lake) -> Result<Self> {
         let engine = MetaLake::new(lake.catalog.clone(), lake.storage()?).await?;
         let context = engine.context()?;
-        Ok(Self { engine, context })
+        Ok(Self {
+            engine,
+            context,
+            lake: lake.clone(),
+        })
     }
 
     /// The statements of a text, in order. A text with none is a wrong use.
@@ -188,8 +194,20 @@ impl Session {
         Ok(Written::of_statement(details.outcome(), rows).merged(inserted, updated))
     }
 
+    /// A text that is a pipeline's verb (`CREATE PIPELINE …`, `SHOW PIPELINES`, …), run and answered; none for any other
+    /// text, which is the engine's.
+    pub async fn pipeline(&self, text: &str) -> Result<Option<Prepared>> {
+        match crate::pipeline::sql::verb_of(text)? {
+            Some(verb) => Ok(Some(crate::pipeline::sql::run(&self.lake, verb).await?)),
+            None => Ok(None),
+        }
+    }
+
     /// Prepares the statements of a text, each committed before the next, and answers the last.
     pub async fn run(&self, text: &str) -> Result<Prepared> {
+        if let Some(answered) = self.pipeline(text).await? {
+            return Ok(answered);
+        }
         let mut last = None;
         for statement in Self::parse(text)? {
             last = Some(self.prepare(statement).await?);

@@ -9,6 +9,7 @@ pub mod log;
 pub mod maintain;
 pub mod merge;
 pub mod migrate;
+pub mod pipeline;
 pub mod refs;
 pub mod retain;
 pub mod sql;

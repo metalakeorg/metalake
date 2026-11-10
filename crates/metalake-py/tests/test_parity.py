@@ -38,6 +38,12 @@ FACES = {
     ("changes",): (metalake.Table.changes, {}),
     ("follow",): (metalake.Table.follow, {"latest": "start"}),
     ("ingest",): (metalake.Table.writer, {}),
+    ("pipeline", "create"): (Lake.create_pipeline, {}),
+    ("pipeline", "list"): (Lake.pipelines, {}),
+    ("pipeline", "describe"): (Lake.pipeline, {}),
+    ("pipeline", "suspend"): (metalake.Pipeline.suspend, {}),
+    ("pipeline", "resume"): (metalake.Pipeline.resume, {}),
+    ("pipeline", "drop"): (metalake.Pipeline.drop, {}),
 }
 
 # What belongs to a terminal, or to the process of a command, and has no meaning in a program.
@@ -52,6 +58,8 @@ ELSEWHERE = {
     ("ingest", "input"): metalake.Writer.write,
     ("ingest", "version-column"): metalake.Writer.write,
     ("ingest", "batch-lines"): metalake.Writer.write,
+    # A program has its query in hand: from a file, it reads it itself.
+    ("pipeline", "file"): Lake.create_pipeline,
 }
 
 
