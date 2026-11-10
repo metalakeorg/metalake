@@ -467,3 +467,28 @@ async fn follow_dropped_read_given_again_at_its_point() {
     lake.close();
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test]
+async fn sql_table_changes_as_changes() {
+    let (lake, dir) = lake(&["t"]).await;
+    let t = path("db.t");
+    let one = append(&lake, &t, 0..2, Details::default()).await;
+    let two = append(&lake, &t, 2..4, Details::default()).await;
+    settle().await;
+
+    // A statement over the range reads what the library's call does, and a prepared read gives it again.
+    let session = Session::new(&lake).await.unwrap();
+    let prepared = session
+        .run(&format!("select * from table_changes('db.t', {one}, {two})"))
+        .await
+        .unwrap();
+    let from_sql = |batches: Vec<RecordBatch>| -> Changes { Box::pin(stream::iter(batches.into_iter().map(Ok))) };
+    let first = rows(from_sql(prepared.read().unwrap().try_collect().await.unwrap())).await;
+    let again = rows(from_sql(prepared.read().unwrap().try_collect().await.unwrap())).await;
+    let library = rows(lake.changes(&t, one, Some(two)).await.unwrap().1).await;
+    assert_eq!(first, [row("insert", 2, two), row("insert", 3, two)]);
+    assert_eq!(again, first);
+    assert_eq!(library, first);
+    lake.close();
+    let _ = std::fs::remove_dir_all(dir);
+}

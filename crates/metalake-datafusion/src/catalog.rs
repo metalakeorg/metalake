@@ -18,9 +18,9 @@ use datafusion::sql::parser::Statement;
 use metalake::path::{DEFAULT_NAMESPACE, MAIN, NAMESPACE_SEPARATOR};
 use metalake::{Catalog, Error, Ref, Result, Storage, TablePath};
 
-use crate::ddl;
 use crate::point::{self, OnePoint};
 use crate::table::MetaTable;
+use crate::{changes, ddl};
 
 /// The catalog of what a statement brings with it, which cannot be a ref's name, since those have no leading dot.
 const SOURCES: &str = ".source";
@@ -108,9 +108,11 @@ impl MetaLake {
         Ok(context)
     }
 
-    /// Runs one statement in a session of this catalog, as `context.sql` would, and what creates a namespace or a
-    /// table as a commit, which `context.sql` cannot do.
-    pub async fn execute(&self, context: &SessionContext, statement: Statement) -> DataFusionResult<DataFrame> {
+    /// Runs one statement in a session of this catalog, as `context.sql` would; what creates a namespace or a table as
+    /// a commit, which `context.sql` cannot do; and what reads `table_changes(…)`, which it does not know.
+    pub async fn execute(&self, context: &SessionContext, mut statement: Statement) -> DataFusionResult<DataFrame> {
+        // The ranges it reads live as sources until its plan holds them.
+        let _ranges = self.table_changes(&mut statement).await?;
         let plan = context.state().statement_to_plan(statement).await?;
         match plan {
             LogicalPlan::Ddl(DdlStatement::CreateCatalogSchema(create)) => {
@@ -133,6 +135,28 @@ impl MetaLake {
         self.refresh().await.map_err(external)?;
         let done = LogicalPlanBuilder::empty(false).build()?;
         context.execute_logical_plan(done).await
+    }
+
+    /// Each `table_changes(…)` the statement reads, found in the catalog and put in its place as a source. A table
+    /// function of DataFusion would have to know its columns without asking Postgres, which only answers when awaited.
+    async fn table_changes(&self, statement: &mut Statement) -> DataFusionResult<Vec<Source>> {
+        let Statement::Statement(inner) = statement else {
+            return Ok(Vec::new());
+        };
+        let calls = changes::calls(inner)?;
+        let mut sources = Vec::with_capacity(calls.len());
+        for call in calls {
+            let on = self.shared.named(&call.path.on).await?;
+            let namespace: Vec<&str> = call.path.namespace.iter().map(String::as_str).collect();
+            let table = on.table(&namespace, &call.path.name).await.map_err(external)?;
+            let range = on.changes(&table, call.after, call.until).await.map_err(external)?;
+            sources.push(self.source(changes::provider(range, self.shared.storage.clone())?));
+        }
+        if !sources.is_empty() {
+            let names: Vec<String> = sources.iter().map(Source::name).collect();
+            changes::replace(inner, &names)?;
+        }
+        Ok(sources)
     }
 }
 

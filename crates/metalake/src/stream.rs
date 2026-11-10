@@ -188,6 +188,58 @@ impl Ref {
     }
 }
 
+/// The rows of a range of a table's commits (CHG-2, CHG-3): which files to open is found once, and they are read each
+/// time they are asked for, from the same files.
+#[derive(Debug, Clone)]
+pub struct TableChanges {
+    stream: TableStream,
+    tasks: Vec<StreamTask>,
+}
+
+impl TableChanges {
+    /// The table's columns, then `_change_type`, `_commit_seq` and `_commit_timestamp`.
+    pub fn schema(&self) -> &SchemaRef {
+        self.stream.schema()
+    }
+
+    /// Its rows, commit after commit.
+    pub fn read(&self, storage: &Storage) -> BoxStream<'static, Result<RecordBatch>> {
+        let opened: Vec<_> = self
+            .tasks
+            .iter()
+            .map(|task| self.stream.open(task.clone(), storage))
+            .collect();
+        stream::iter(opened).flatten().boxed()
+    }
+}
+
+impl Ref {
+    /// The commits of `table` after `after` and up to `until`, both commit sequences, or up to the last one a second
+    /// old (CHG-1): chained, `(a, b]` then `(b, c]` take each commit once.
+    pub async fn changes(&self, table: &Table, after: i64, until: Option<i64>) -> Result<TableChanges> {
+        if let Some(until) = until.filter(|until| *until < after) {
+            return Err(Error::Invalid(format!(
+                "changes of {} after {after} up to {until}: the end comes before the start",
+                table.name()
+            )));
+        }
+        let mut stream = self.stream(table, Start::After(after)).await?;
+        let mut tasks = Vec::new();
+        'steps: while let Some(step) = stream.next().await? {
+            for task in step.tasks {
+                if until.is_some_and(|until| task.seq > until) {
+                    break 'steps;
+                }
+                tasks.push(task);
+            }
+            if until.is_some_and(|until| stream.position() >= Some(until)) {
+                break;
+            }
+        }
+        Ok(TableChanges { stream, tasks })
+    }
+}
+
 /// A cursor past commit `seq` of `table`: the feed from the time of the snapshot a read at `seq` sees, leaving out every
 /// commit of the table at or below `seq`. The commits of a `(ref, table)` land in sequence order (TT-2), so each one
 /// after `seq` comes after that time in the feed (CHG-1).
