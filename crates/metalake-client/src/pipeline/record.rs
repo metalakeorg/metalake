@@ -202,7 +202,12 @@ impl Records {
             }
         };
         let busy = |held: &str| {
-            let host = held.split(' ').nth(1).unwrap_or("another caller");
+            // `token host time`, or `host time` as a lock was first written.
+            let parts: Vec<&str> = held.split(' ').collect();
+            let host = match parts.as_slice() {
+                [_, host, _] | [host, _] if !host.is_empty() => host,
+                _ => "another caller",
+            };
             Error::conflict(
                 None,
                 format!("the pipeline {name} is being changed by {host}: try again once it is done"),
@@ -380,6 +385,11 @@ mod tests {
             .locked("t", async {
                 let other = records.locked("t", async { Ok(()) }).await.unwrap_err();
                 assert!(other.message.contains("being changed"), "{}", other.message);
+                assert!(
+                    other.message.contains(&super::super::runner::host()),
+                    "says who: {}",
+                    other.message
+                );
                 Ok(1)
             })
             .await
