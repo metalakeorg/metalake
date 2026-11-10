@@ -13,8 +13,8 @@ use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::streaming::PartitionStream;
 use datafusion::sql::sqlparser::ast::{
-    Expr, FunctionArg, FunctionArgExpr, ObjectName, Statement, TableAlias, TableFactor, Value, Visit, VisitMut,
-    Visitor, VisitorMut,
+    Expr, FunctionArg, FunctionArgExpr, ObjectName, Query, SetExpr, Statement, TableAlias, TableFactor, TableWithJoins,
+    Value, Visit, VisitMut, Visitor, VisitorMut,
 };
 use datafusion::sql::sqlparser::dialect::GenericDialect;
 use datafusion::sql::sqlparser::parser::Parser;
@@ -92,53 +92,77 @@ pub(crate) fn replace(statement: &mut Statement, names: &[String]) -> Result<(),
                 .map_err(|e| DataFusionError::Internal(format!("{name}: {e}")))
         })
         .collect::<Result<Vec<ObjectName>, _>>()?;
-    // Calls with no alias: one alone is qualified by the function's name; two would share it, and clash.
-    struct Unaliased(usize);
-    impl VisitorMut for Unaliased {
+    // A call with no alias is qualified by the function's name, `table_changes.k`, when it is the only one in its
+    // query's FROM; two in one FROM would share it, and clash, so they keep their sources' names. A UNION's branches
+    // and subqueries are scopes of their own.
+    struct Scopes;
+    impl VisitorMut for Scopes {
         type Break = ();
-        fn pre_visit_table_factor(&mut self, factor: &mut TableFactor) -> ControlFlow<Self::Break> {
-            if let TableFactor::Table { name, args, alias, .. } = factor
-                && is_call(name)
-                && args.is_some()
-                && alias.is_none()
-            {
-                self.0 += 1;
-            }
+        fn pre_visit_query(&mut self, query: &mut Query) -> ControlFlow<Self::Break> {
+            alias_lone_calls(&mut query.body);
             ControlFlow::Continue(())
         }
     }
-    let mut unaliased = Unaliased(0);
-    let _ = statement.visit(&mut unaliased);
-    struct Replace(std::vec::IntoIter<ObjectName>, bool);
+    let _ = statement.visit(&mut Scopes);
+    struct Replace(std::vec::IntoIter<ObjectName>);
     impl VisitorMut for Replace {
         type Break = ();
         fn pre_visit_table_factor(&mut self, factor: &mut TableFactor) -> ControlFlow<Self::Break> {
-            if let TableFactor::Table { name, args, alias, .. } = factor
+            if let TableFactor::Table { name, args, .. } = factor
                 && is_call(name)
                 && args.is_some()
                 && let Some(replaced) = self.0.next()
             {
-                // A call with no alias is qualified by its name, `table_changes.k`: the source keeps it, when it is the
-                // only one; several keep the names of their sources, each its own.
-                if self.1
-                    && alias.is_none()
-                    && let Some(called) = name.0.first().and_then(|part| part.as_ident())
-                {
-                    *alias = Some(TableAlias {
-                        explicit: true,
-                        name: called.clone(),
-                        columns: Vec::new(),
-                        at: None,
-                    });
-                }
                 *name = replaced;
                 *args = None;
             }
             ControlFlow::Continue(())
         }
     }
-    let _ = statement.visit(&mut Replace(names.into_iter(), unaliased.0 == 1));
+    let _ = statement.visit(&mut Replace(names.into_iter()));
     Ok(())
+}
+
+/// In each SELECT of a query's body (each branch of a UNION), the function's name as the alias of its call with none,
+/// when it is the only one in that FROM.
+fn alias_lone_calls(body: &mut SetExpr) {
+    match body {
+        SetExpr::Select(select) => {
+            let mut calls = Vec::new();
+            for from in select.from.iter_mut() {
+                unaliased_calls(from, &mut calls);
+            }
+            if let [call] = calls.as_mut_slice()
+                && let TableFactor::Table { name, alias, .. } = &mut **call
+                && let Some(called) = name.0.first().and_then(|part| part.as_ident()).cloned()
+            {
+                *alias = Some(TableAlias {
+                    explicit: true,
+                    name: called,
+                    columns: Vec::new(),
+                    at: None,
+                });
+            }
+        }
+        SetExpr::SetOperation { left, right, .. } => {
+            alias_lone_calls(left);
+            alias_lone_calls(right);
+        }
+        _ => {}
+    }
+}
+
+/// The calls with no alias of one FROM item, its joins and nested joins included; a subquery is a scope of its own.
+fn unaliased_calls<'a>(from: &'a mut TableWithJoins, calls: &mut Vec<&'a mut TableFactor>) {
+    let TableWithJoins { relation, joins } = from;
+    for factor in std::iter::once(relation).chain(joins.iter_mut().map(|join| &mut join.relation)) {
+        let lone = matches!(&*factor, TableFactor::Table { name, args: Some(_), alias: None, .. } if is_call(name));
+        if lone {
+            calls.push(factor);
+        } else if let TableFactor::NestedJoin { table_with_joins, .. } = factor {
+            unaliased_calls(table_with_joins, calls);
+        }
+    }
 }
 
 /// Whether a name is the function's, by SQL's rule: unquoted in any case, quoted exactly.
