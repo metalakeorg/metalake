@@ -10,6 +10,8 @@
 #   ARROYO_REF=feat/metalake-connector bash crates/metalake-arroyo/e2e/run.sh
 #   KEEP=1 bash crates/metalake-arroyo/e2e/run.sh      leaves everything running, to look at
 #   ARROYO_IMAGE=arroyo:local bash crates/metalake-arroyo/e2e/run.sh   an image already built
+#   ARROYO_IMAGE=ghcr.io/describeloai/arroyo-metalake:feat-metalake-resolve ...   the one the fork publishes
+#   METALAKE_BIN=target/release/metalake bash ...   a command line already built for Linux, not built in Docker
 #
 # Building Arroyo's image takes long the first time; Docker caches it after.
 set -euo pipefail
@@ -37,7 +39,18 @@ if [ -z "${ARROYO_IMAGE:-}" ]; then
   docker build -q -t "$arroyo" --target arroyo -f docker/Dockerfile \
     "https://github.com/describeloai/arroyo.git#$ref" >/dev/null
 fi
-docker build -q -t metalake-e2e/metalake -f "$here/metalake.Dockerfile" "$root" >/dev/null
+if [ -n "${METALAKE_BIN:-}" ]; then
+  # A command line already built for Linux: only put in an image.
+  bin=$(cd "$(dirname "$METALAKE_BIN")" && pwd)
+  docker build -q -t metalake-e2e/metalake -f - "$bin" >/dev/null <<'EOF'
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY metalake /usr/local/bin/metalake
+ENTRYPOINT ["metalake"]
+EOF
+else
+  docker build -q -t metalake-e2e/metalake -f "$here/metalake.Dockerfile" "$root" >/dev/null
+fi
 
 echo "== catalog"
 docker network create "$net" >/dev/null
