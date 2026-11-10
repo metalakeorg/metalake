@@ -10,6 +10,7 @@ use serde::Serialize;
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::server::{self, Runtime};
 use crate::{Error, Lake, Result};
 
 /// The value of [`ICEBERG_METADATA`] that has it written after each commit.
@@ -48,6 +49,29 @@ impl Lake {
 }
 
 impl Iceberg<'_> {
+    /// The lake's Iceberg REST server on this machine: the one that runs, or one started now, detached, which outlives
+    /// this process until stopped. Engines connect to its URL.
+    pub async fn ensure(&self) -> Result<Runtime> {
+        let (postgres, schema) = self.reached()?;
+        blocking(move || server::ensure(&postgres, &schema)).await
+    }
+
+    /// The URL engines connect to, the server started if it is not.
+    pub async fn uri(&self) -> Result<String> {
+        Ok(self.ensure().await?.url)
+    }
+
+    /// Stops the lake's server, if one runs on this machine, and says whether one did.
+    pub async fn stop(&self) -> Result<bool> {
+        let (postgres, schema) = self.reached()?;
+        blocking(move || server::stop(&postgres, &schema)).await
+    }
+
+    /// Where the catalog is, as the server reaches it, and its schema.
+    fn reached(&self) -> Result<(String, String)> {
+        Ok((self.lake.catalog_postgres()?, self.lake.schema().to_string()))
+    }
+
     /// Has the Iceberg metadata of `tables`, each `namespace.table`, written after each of their commits on `on`, in one
     /// commit, and answers its sequence; none if every one was so already. A table `on` does not see refuses all.
     pub async fn on_commit(&self, on: &str, tables: &[&str]) -> Result<Option<i64>> {
@@ -155,4 +179,11 @@ async fn latest_metadata(storage: &metalake::Storage, location: &str) -> Result<
         })
         .max_by_key(|(seq, _)| *seq);
     Ok(latest.map_or((None, None), |(seq, path)| (Some(seq), Some(path))))
+}
+
+/// Runs what waits on files, locks and processes off the runtime's threads.
+async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|e| Error::failed(e.to_string()))?
 }

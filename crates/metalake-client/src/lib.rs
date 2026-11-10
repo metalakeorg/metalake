@@ -3,6 +3,7 @@
 
 mod error;
 mod follow;
+mod hash;
 mod history;
 mod iceberg;
 mod ingest;

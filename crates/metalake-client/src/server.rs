@@ -2,13 +2,239 @@
 //! by its user alone, which says where it is, which process it is, which version of MetaLake runs it, and the token that
 //! stops it. One per lake on a machine, as Jupyter keeps one file per server.
 
+use std::ffi::OsString;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::OnceLock;
+use std::thread;
+use std::time::{Duration, Instant};
 
+use metalake::environment;
 use serde::{Deserialize, Serialize};
 
+use crate::hash::fnv;
 use crate::{Error, Result};
+
+/// How long a new server has to say where it listens.
+const STARTING: Duration = Duration::from_secs(20);
+/// How long a server has to finish what it is doing once asked to stop.
+const STOPPING: Duration = Duration::from_secs(30);
+/// How long a probe waits for an answer.
+const PROBE: Duration = Duration::from_secs(2);
+/// The lines of its log a server that failed to start says.
+const TAIL: usize = 20;
+
+/// How this program runs itself, as `metalake …`: its own executable unless a face says otherwise, as Python does with
+/// `python -m metalake`, whose CLI lives in the interpreter's extension.
+static LAUNCHER: OnceLock<Vec<OsString>> = OnceLock::new();
+
+/// Says how to run MetaLake's command line from this process, once; later calls change nothing.
+pub fn set_launcher(command: Vec<OsString>) {
+    let _ = LAUNCHER.set(command);
+}
+
+fn launcher() -> Result<Vec<OsString>> {
+    if let Some(command) = LAUNCHER.get() {
+        return Ok(command.clone());
+    }
+    Ok(vec![std::env::current_exe()?.into_os_string()])
+}
+
+/// A lake, as its server's files name it: by where its catalog is, without a password, and its schema.
+pub(crate) fn key(postgres: &str, schema: &str) -> String {
+    format!(
+        "{:016x}",
+        fnv(&format!("{}\0{schema}", environment::without_password(postgres)))
+    )
+}
+
+/// The files of a lake's server in this user's directory: where it says it runs, the lock callers take turns by, and its
+/// log.
+struct Files {
+    runtime: PathBuf,
+    lock: PathBuf,
+    log: PathBuf,
+}
+
+impl Files {
+    fn of(key: &str) -> Result<Self> {
+        let dir = directory()?;
+        fs::create_dir_all(&dir)?;
+        Ok(Self {
+            runtime: dir.join(format!("{key}.json")),
+            lock: dir.join(format!("{key}.lock")),
+            log: dir.join(format!("{key}.log")),
+        })
+    }
+
+    /// The lock, held until it is dropped; the system lets go of it if this process dies.
+    fn locked(&self) -> Result<fs::File> {
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&self.lock)?;
+        file.lock()?;
+        Ok(file)
+    }
+
+    fn tail(&self) -> String {
+        let text = fs::read_to_string(&self.log).unwrap_or_default();
+        let lines: Vec<&str> = text.lines().collect();
+        lines[lines.len().saturating_sub(TAIL)..].join("\n")
+    }
+}
+
+/// The status code of one request to a server on the loopback, or none if it does not answer in time.
+fn request(port: u16, method: &str, path: &str, bearer: Option<&str>) -> Option<u16> {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&address, PROBE).ok()?;
+    stream.set_read_timeout(Some(PROBE)).ok()?;
+    stream.set_write_timeout(Some(PROBE)).ok()?;
+    let authorization = bearer
+        .map(|token| format!("Authorization: Bearer {token}\r\n"))
+        .unwrap_or_default();
+    let message = format!(
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{authorization}Content-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(message.as_bytes()).ok()?;
+    // The status line, read until it ends: a server may send its answer in pieces.
+    let mut head = Vec::with_capacity(64);
+    let mut piece = [0u8; 64];
+    while !head.windows(2).any(|w| {
+        w == b"
+"
+    }) && head.len() < 256
+    {
+        let read = stream.read(&mut piece).ok()?;
+        if read == 0 {
+            break;
+        }
+        head.extend_from_slice(&piece[..read]);
+    }
+    let line = String::from_utf8_lossy(&head);
+    line.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// Whether a server answers Iceberg's first route there.
+fn answers(port: u16) -> bool {
+    request(port, "GET", "/v1/config", None) == Some(200)
+}
+
+/// Asks a server to stop, and waits until it no longer answers.
+fn shut(runtime: &Runtime) -> Result<()> {
+    request(runtime.port, "POST", "/metalake/shutdown", Some(&runtime.token));
+    let since = Instant::now();
+    while answers(runtime.port) {
+        if since.elapsed() > STOPPING {
+            return Err(Error::failed(format!(
+                "the lake's server at {} did not stop within {STOPPING:?}",
+                runtime.url
+            )));
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+/// The lake's server: the one that runs, if it answers and runs this version; otherwise a new one, started detached so
+/// that it outlives this process, as the lake's own Postgres does. Callers take turns, so they start one between them.
+/// `postgres` is the catalog's connection with its password, which the server takes from its environment alone.
+pub(crate) fn ensure(postgres: &str, schema: &str) -> Result<Runtime> {
+    let files = Files::of(&key(postgres, schema))?;
+    let _turn = files.locked()?;
+    if let Some(running) = Runtime::read(&files.runtime) {
+        if answers(running.port) {
+            if running.version == VERSION {
+                return Ok(running);
+            }
+            shut(&running)?;
+        }
+        let _ = fs::remove_file(&files.runtime);
+    }
+    start(&files, postgres, schema)
+}
+
+/// Starts a server, and waits until its runtime file names it and it answers.
+fn start(files: &Files, postgres: &str, schema: &str) -> Result<Runtime> {
+    let token = uuid::Uuid::new_v4().simple().to_string();
+    let command = launcher()?;
+    let (program, prefix) = command
+        .split_first()
+        .ok_or_else(|| Error::failed("no command to run MetaLake with"))?;
+    let log = fs::File::create(&files.log)?;
+    let mut serve = Command::new(program);
+    serve
+        .args(prefix)
+        .args(["iceberg", "serve", "--listen", "127.0.0.1:0", "--runtime-file"])
+        .arg(&files.runtime)
+        .env(environment::POSTGRES, postgres)
+        .env(environment::SCHEMA, schema)
+        .env(SHUTDOWN_TOKEN, &token)
+        .current_dir(directory()?)
+        .stdin(Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log);
+    // Its own group, so that a terminal's Ctrl-C, or its window closing, does not stop it with this process.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut serve, 0);
+    #[cfg(windows)]
+    {
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        std::os::windows::process::CommandExt::creation_flags(&mut serve, DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
+    let mut child = serve
+        .spawn()
+        .map_err(|e| Error::failed(format!("the lake's server could not start: {e}")))?;
+    let pid = child.id();
+    let since = Instant::now();
+    loop {
+        if let Some(runtime) = Runtime::read(&files.runtime)
+            && runtime.pid == pid
+            && runtime.token == token
+            && answers(runtime.port)
+        {
+            // Reaped when it ends, by a thread of this process if it is still here then.
+            thread::spawn(move || {
+                let _ = child.wait();
+            });
+            return Ok(runtime);
+        }
+        if let Some(exit) = child.try_wait()? {
+            return Err(Error::failed(format!(
+                "the lake's server stopped as it started ({exit}):\n{}",
+                files.tail()
+            )));
+        }
+        if since.elapsed() > STARTING {
+            let _ = child.kill();
+            return Err(Error::failed(format!(
+                "the lake's server did not start within {STARTING:?}:\n{}",
+                files.tail()
+            )));
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Stops the lake's server, if one runs, and says whether one did.
+pub(crate) fn stop(postgres: &str, schema: &str) -> Result<bool> {
+    let files = Files::of(&key(postgres, schema))?;
+    let _turn = files.locked()?;
+    let Some(running) = Runtime::read(&files.runtime) else {
+        return Ok(false);
+    };
+    let ran = answers(running.port);
+    if ran {
+        shut(&running)?;
+    }
+    remove_if_mine(&files.runtime, running.pid);
+    Ok(ran)
+}
 
 /// The version of MetaLake a server runs, which a client compares with its own: a server of another version may serve
 /// another rule.
@@ -98,5 +324,41 @@ mod tests {
         fs::write(&path, "not json").unwrap();
         assert_eq!(Runtime::read(&path), None, "a file that does not read is no server");
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn key_without_password() {
+        let one = key("host=db user=u password=secret dbname=x", "lake");
+        assert_eq!(one, key("host=db user=u password=other dbname=x", "lake"));
+        assert_ne!(one, key("host=db user=u dbname=x", "other"), "a schema is a lake");
+        assert_ne!(one, key("host=db2 user=u dbname=x", "lake"));
+        assert_eq!(one.len(), 16);
+    }
+
+    #[test]
+    fn probe_closed_port() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        assert!(!answers(port), "nothing listens there now");
+    }
+
+    #[test]
+    fn probe_status() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let served = thread::spawn(move || {
+            for status in ["200 OK", "404 Not Found"] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0u8; 256];
+                let _ = stream.read(&mut request).unwrap();
+                write!(stream, "HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").unwrap();
+            }
+        });
+        assert!(answers(port), "a status line sent in pieces");
+        assert!(!answers(port), "another status is not Iceberg's config");
+        served.join().unwrap();
     }
 }
