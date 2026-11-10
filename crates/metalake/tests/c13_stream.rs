@@ -6,7 +6,7 @@
 mod common;
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Int64Type, TimestampMicrosecondType};
@@ -693,49 +693,9 @@ async fn chg3_follow_row_deleted_by_adding_commit_skips() -> Result<(), Box<dyn 
     Ok(())
 }
 
-/// The rows of a step with their commit's time: each `(what, key, commit, microseconds)`.
-async fn timed_rows(
-    stream: &TableStream,
-    step: &StreamStep,
-    storage: &Storage,
-) -> Result<Vec<(String, i64, i64, i64)>, Error> {
-    let mut rows = Vec::new();
-    for task in &step.tasks {
-        let batches: Vec<RecordBatch> = stream.open(task.clone(), storage).try_collect().await?;
-        for b in &batches {
-            let keys = b.column(0).as_primitive::<Int64Type>();
-            let what = b.column_by_name(CHANGE_TYPE).unwrap().as_string::<i32>();
-            let seqs = b.column_by_name(COMMIT_SEQ).unwrap().as_primitive::<Int64Type>();
-            let times = b
-                .column_by_name(COMMIT_TIMESTAMP)
-                .unwrap()
-                .as_primitive::<TimestampMicrosecondType>();
-            for i in 0..b.num_rows() {
-                rows.push((what.value(i).to_string(), keys.value(i), seqs.value(i), times.value(i)));
-            }
-        }
-    }
-    Ok(rows)
-}
-
-/// A cursor at `at` that leaves out every commit of the table at or below `floor`.
-fn cursor_at(at: SystemTime, floor: i64) -> Result<StreamCursor, serde_json::Error> {
-    let since = at.duration_since(UNIX_EPOCH).expect("after the epoch");
-    serde_json::from_value(json!({
-        "at": {"secs_since_epoch": since.as_secs(), "nanos_since_epoch": since.subsec_nanos()},
-        "seq": 0,
-        "floor": floor,
-    }))
-}
-
-/// Every row a reader from `cursor` takes, sorted.
-async fn drain_from(
-    on: &Ref,
-    t: &Table,
-    cursor: StreamCursor,
-    storage: &Storage,
-) -> Result<Vec<(String, i64, i64)>, Error> {
-    let mut stream = on.stream(t, Start::Cursor(cursor)).await?;
+/// Every row a reader after commit `seq` takes, sorted.
+async fn drain_after(on: &Ref, t: &Table, seq: i64, storage: &Storage) -> Result<Vec<(String, i64, i64)>, Error> {
+    let mut stream = on.stream(t, Start::After(seq)).await?;
     let mut rows = Vec::new();
     while let Some(step) = stream.next().await? {
         rows.extend(rows_of(&stream, &step, storage).await?);
@@ -745,9 +705,8 @@ async fn drain_from(
 }
 
 #[tokio::test]
-async fn resume_from_commit_seq() -> Result<(), Box<dyn std::error::Error>> {
-    let schema = fresh_schema();
-    let (catalog, main, storage) = lake_in(&schema, vec![]).await?;
+async fn resume_after_commit_seq() -> Result<(), Box<dyn std::error::Error>> {
+    let (catalog, main, storage) = lake(vec![]).await?;
     add_table(&main, "u").await?;
     append(&catalog, &main, &storage, 0..5).await?;
     let t = main.table(&["db"], "t").await?;
@@ -764,54 +723,75 @@ async fn resume_from_commit_seq() -> Result<(), Box<dyn std::error::Error>> {
     };
     let (ours, theirs) = (writing("t", 100), writing("u", 1000));
     let mut stream = main.stream(&t, Start::Snapshot).await?;
+    assert_eq!(stream.position(), None, "no read yet");
     let first = stream.next().await?.expect("the first read");
-    let mut timed = timed_rows(&stream, &first, &storage).await?;
+    let mut rows = rows_of(&stream, &first, &storage).await?;
+    let read = stream.position().expect("the read's sequence");
+    assert!(rows.iter().all(|r| r.2 == read));
     ours.await??;
     theirs.await??;
     delete(&catalog, &main, &storage, |k| k % 7 == 0).await?;
     settle().await;
     while let Some(step) = stream.next().await? {
-        timed.extend(timed_rows(&stream, &step, &storage).await?);
+        let taken = rows_of(&stream, &step, &storage).await?;
+        if let Some(last) = taken.iter().map(|r| r.2).max() {
+            assert_eq!(stream.position(), Some(last), "the last commit it took");
+        }
+        rows.extend(taken);
     }
-    let untimed = |rows: &[(String, i64, i64, i64)]| -> Vec<(String, i64, i64)> {
-        let mut out: Vec<_> = rows.iter().map(|r| (r.0.clone(), r.1, r.2)).collect();
-        out.sort();
-        out
-    };
+    rows.sort();
     let now = main.table(&["db"], "t").await?;
-    assert_eq!(rebuilt(&untimed(&timed)), keys_of(&catalog, &now, &storage).await?);
+    assert_eq!(rebuilt(&rows), keys_of(&catalog, &now, &storage).await?);
 
-    // At each commit a reader took, a cursor rebuilt from it goes on with exactly the rows after it.
-    let mut taken: Vec<(i64, i64)> = timed.iter().map(|r| (r.2, r.3)).collect();
-    taken.sort_unstable();
+    // After each commit a reader took, the read included, it goes on with exactly the rows after it.
+    let mut taken: Vec<i64> = rows.iter().map(|r| r.2).collect();
     taken.dedup();
     assert!(taken.len() > 20, "{taken:?}");
-    let pool = Pool::new(&url(), 1)?;
-    let session = pool.get().await?;
-    let p = Protocol::new(&schema);
-    for (seq, micros) in taken {
-        let after: Vec<_> = timed.iter().filter(|r| r.2 > seq).cloned().collect();
-        let expected = untimed(&after);
-
-        // From the row: its commit's time and sequence.
-        let at = UNIX_EPOCH + Duration::from_micros(micros as u64);
+    for seq in taken {
+        let expected: Vec<_> = rows.iter().filter(|r| r.2 > seq).cloned().collect();
+        let mut after = main.stream(&t, Start::After(seq)).await?;
+        assert_eq!(after.position(), Some(seq));
+        let mut got = Vec::new();
+        while let Some(step) = after.next().await? {
+            got.extend(rows_of(&after, &step, &storage).await?);
+        }
+        got.sort();
+        assert_eq!(got, expected, "after {seq}");
         assert_eq!(
-            drain_from(&main, &t, cursor_at(at, seq)?, &storage).await?,
-            expected,
-            "row of {seq}"
-        );
-
-        // From the sequence alone: the time of the table's snapshot a read at it sees.
-        let snapshot = p
-            .snapshot_at(&session, main.id(), t.id(), Some(seq))
-            .await?
-            .expect("a snapshot");
-        let at = p.commit_time(&session, snapshot).await?;
-        assert_eq!(
-            drain_from(&main, &t, cursor_at(at, seq)?, &storage).await?,
-            expected,
-            "sequence {seq}"
+            after.position(),
+            stream.position(),
+            "after {seq}, where the first reader is"
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn follow_after_refusals() -> Result<(), Box<dyn std::error::Error>> {
+    let (catalog, main, storage) = lake(vec![]).await?;
+    let made = append(&catalog, &main, &storage, 0..2).await?;
+    let t = main.table(&["db"], "t").await?;
+
+    // A sequence the catalog has not drawn would leave out commits still to come.
+    let ahead = main.stream(&t, Start::After(made + 1000)).await.unwrap_err();
+    assert!(matches!(ahead, Error::Invalid(_)), "{ahead}");
+
+    // Before the table existed there is no read to follow from.
+    let before = main.stream(&t, Start::After(0)).await.unwrap_err();
+    assert!(matches!(before, Error::Invalid(_)), "{before}");
+
+    // A commit is a place in the feed, not a time.
+    let then = main.as_of(std::time::SystemTime::now());
+    let timed = then.stream(&t, Start::After(made)).await.unwrap_err();
+    assert!(matches!(timed, Error::Invalid(_)), "{timed}");
+
+    // After its last commit, nothing until the next one.
+    let mut after = main.stream(&t, Start::After(made)).await?;
+    assert_eq!(drain_after(&main, &t, made, &storage).await?, []);
+    let later = append(&catalog, &main, &storage, 2..3).await?;
+    settle().await;
+    let step = after.next().await?.expect("the commit after");
+    assert_eq!(rows_of(&after, &step, &storage).await?, [row("insert", 2, later)]);
+    assert_eq!(after.position(), Some(later));
     Ok(())
 }

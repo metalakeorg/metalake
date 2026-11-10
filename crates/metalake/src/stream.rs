@@ -48,6 +48,9 @@ pub enum Start {
     Latest,
     /// Where a reader was.
     Cursor(StreamCursor),
+    /// What comes after commit `seq` of the table: the `_commit_seq` of the last rows a reader dealt with, or the
+    /// version an idempotency key reached when that is what its writer keeps.
+    After(i64),
 }
 
 /// All a reader's state: its place in the feed, and the read it started from.
@@ -114,6 +117,8 @@ pub struct TableStream {
     /// The time it follows from and the sequence of the read as of it, when it was given one.
     from: Option<(SystemTime, i64)>,
     cursor: Option<StreamCursor>,
+    /// The last commit of the table it took, or the read it started from.
+    position: Option<i64>,
 }
 
 impl Ref {
@@ -122,9 +127,9 @@ impl Ref {
     /// merge changes what it inherits with no snapshot of it, so the feed would not say (CHG-3).
     pub async fn stream(&self, table: &Table, start: Start) -> Result<TableStream> {
         let from = self.time();
-        if from.is_some() && matches!(start, Start::Cursor(_)) {
+        if from.is_some() && matches!(start, Start::Cursor(_) | Start::After(_)) {
             return Err(Error::Invalid(format!(
-                "following {}: a reader from a cursor goes on from it, not from a time",
+                "following {}: a reader from a cursor or a commit goes on from it, not from a time",
                 table.name()
             )));
         }
@@ -160,9 +165,10 @@ impl Ref {
             DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
             false,
         )));
-        let cursor = match &start {
-            Start::Cursor(cursor) => Some(cursor.clone()),
-            _ => None,
+        let (cursor, position) = match &start {
+            Start::Cursor(cursor) => (Some(cursor.clone()), None),
+            Start::After(seq) => (Some(cursor_after(&branch, table, *seq).await?), Some(*seq)),
+            _ => (None, None),
         };
         Ok(TableStream {
             catalog: catalog.clone(),
@@ -174,8 +180,35 @@ impl Ref {
             start,
             from,
             cursor,
+            position,
         })
     }
+}
+
+/// A cursor past commit `seq` of `table`: the feed from the time of the snapshot a read at `seq` sees, leaving out every
+/// commit of the table at or below `seq`. The commits of a `(ref, table)` land in sequence order (TT-2), so each one
+/// after `seq` comes after that time in the feed (CHG-1).
+async fn cursor_after(branch: &Ref, table: &Table, seq: i64) -> Result<StreamCursor> {
+    let catalog = branch.catalog();
+    let (_, stable) = catalog.stable_point().await?;
+    if seq > stable {
+        return Err(Error::Invalid(format!(
+            "following {} after {seq}: the catalog has drawn no sequence past {stable}",
+            table.name()
+        )));
+    }
+    let session = catalog.session().await?;
+    let p = catalog.protocol();
+    let snapshot = p.snapshot_at(&session, branch.id(), table.id(), Some(seq)).await?;
+    let snapshot = snapshot.ok_or_else(|| {
+        Error::Invalid(format!(
+            "following {} after {seq}: it had no snapshot on {} then",
+            table.name(),
+            branch.name()
+        ))
+    })?;
+    let at = p.commit_time(&session, snapshot).await?;
+    Ok(StreamCursor { at, seq: 0, floor: seq })
 }
 
 impl TableStream {
@@ -187,6 +220,12 @@ impl TableStream {
     /// Where the reader is, once it took a step.
     pub fn cursor(&self) -> Option<&StreamCursor> {
         self.cursor.as_ref()
+    }
+
+    /// The commit of the table a reader that dealt with every step so far goes on after, with [`Start::After`]: the
+    /// last one it took, or the read it started from. Unknown from a cursor until it takes a commit of the table.
+    pub fn position(&self) -> Option<i64> {
+        self.position
     }
 
     /// What is new, or nothing yet. It does not wait: a caller asks again when it wants to.
@@ -229,6 +268,7 @@ impl TableStream {
             None => self.point().await?,
         };
         let cursor = StreamCursor { at, seq: 0, floor: seq };
+        self.position = Some(seq);
         let tasks = match self.start {
             Start::Snapshot => {
                 let read = self.branch.table_at(&self.table, seq).await?;
@@ -299,8 +339,13 @@ impl TableStream {
         for commit in feed {
             cursor.at = commit.committed_at;
             cursor.seq = commit.commit_seq;
+            if commit.ref_id != id || commit.commit_seq <= cursor.floor {
+                continue;
+            }
+            // The feed of one table gives only its commits (CHG-1), so this one is taken, rows or not.
+            self.position = Some(commit.commit_seq);
             // CMT-11: a replace changes no row.
-            if commit.ref_id != id || commit.commit_seq <= cursor.floor || commit.operation == "replace" {
+            if commit.operation == "replace" {
                 continue;
             }
             let changes = p.commit_changes(&session, id, table_id, commit.commit_seq).await?;
