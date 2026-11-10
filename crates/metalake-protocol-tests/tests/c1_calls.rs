@@ -765,3 +765,59 @@ fn driver_dependency_limited_to_sdk() {
     users.sort();
     assert_eq!(users, ["metalake-pg", "metalake-protocol-tests"]);
 }
+
+#[tokio::test]
+async fn cmt5_expected_key_version() -> Result<(), Error> {
+    let on = connect().await?;
+    let schema = fresh_schema("c1");
+    install_protocol(&on, &schema).await?;
+    let p = Protocol::new(&schema);
+    let t = Uuid::from_u128(0xc1);
+    p.commit(&on, &create(t)).await?;
+    let keyed = |path: &str, version: i64, seen: Option<i64>| Commit {
+        app_id: Some("writer".into()),
+        app_version: Some(version),
+        expected_app_version: seen,
+        ..append(1, t, path, 0)
+    };
+
+    // From where it left the key, a writer commits; another one moves the key past it.
+    let first = p.commit(&on, &keyed("gs://lake/1.parquet", 1, Some(0))).await?;
+    assert!(first.applied);
+    let other = p.commit(&on, &keyed("gs://lake/5.parquet", 5, None)).await?;
+
+    // The first writer, still at 1, is refused, and leaves the key where the other one put it.
+    let refused = p
+        .commit(&on, &keyed("gs://lake/6.parquet", 6, Some(1)))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (refused.kind(), refused.code()),
+        (ErrorKind::Conflict, Some("40001")),
+        "{refused}"
+    );
+    assert_eq!(refused.rule(), Some("CMT-5"), "{refused}");
+    assert_eq!(p.key_version(&on, 1, "writer").await?, Some(5));
+
+    // A version the key passed answers the commit stored, whatever its writer saw.
+    let again = p.commit(&on, &keyed("gs://lake/1.parquet", 1, Some(0))).await?;
+    assert_eq!((again.commit_seq, again.applied), (other.commit_seq, false));
+    assert!(p.commit(&on, &keyed("gs://lake/6.parquet", 6, Some(5))).await?.applied);
+
+    // Without a key, or below 0, an expected version means nothing.
+    for wrong in [
+        Commit {
+            expected_app_version: Some(0),
+            ..append(1, t, "gs://lake/x.parquet", 0)
+        },
+        keyed("gs://lake/x.parquet", 7, Some(-1)),
+    ] {
+        let invalid = p.commit(&on, &wrong).await.unwrap_err();
+        assert_eq!(
+            (invalid.kind(), invalid.code()),
+            (ErrorKind::Invalid, Some("22023")),
+            "{invalid}"
+        );
+    }
+    Ok(())
+}

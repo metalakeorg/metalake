@@ -179,6 +179,29 @@ select x from generate_series(1, 40) g, public.dblink_get_result('r' || g) as r(
 select expect((select count(*) = 320 and count(distinct seq) = 2 from attempt), (select format('320 attempts, two commits: %s attempts, %s commits', count(*), count(distinct seq)) from attempt));
 select expect((select count(*) from commit where app_id = 'job-8') = 2 and files(1, :'t') = '{1,4,100,200}', 'each version applied once');
 
+-- case: a key that another writer moved since its writer last saw it is a conflict
+-- rules: CMT-5
+select mk('t') as t \gset
+select cm(format('[{"table_id": "%s", "add": [%s]}]', :'t', fj(1))::jsonb,
+          '{"app_id": "job-9", "app_version": 1, "expected_app_version": 0}') as k1 \gset
+-- Another writer takes the key to 5.
+select cm(format('[{"table_id": "%s", "add": [%s]}]', :'t', fj(2))::jsonb, '{"app_id": "job-9", "app_version": 5}') as k5 \gset
+select expect_error(format($$select cm('[{"table_id": "%s", "add": [%s]}]',
+                                        '{"app_id": "job-9", "app_version": 6, "expected_app_version": 1}')$$, :'t', fj(3)),
+  '40001', 'a version past the key, from where its writer left it, is refused');
+select expect(files(1, :'t') = '{1,2}', 'nothing of the refused commit');
+select expect(cm(format('[{"table_id": "%s", "add": [%s]}]', :'t', fj(4))::jsonb,
+                 '{"app_id": "job-9", "app_version": 1, "expected_app_version": 0}') = :k5,
+  'a version at or below the key returns the stored commit, whatever it expected');
+select cm(format('[{"table_id": "%s", "add": [%s]}]', :'t', fj(5))::jsonb,
+          '{"app_id": "job-9", "app_version": 6, "expected_app_version": 5}') \gset
+select expect(files(1, :'t') = '{1,2,5}', 'from where the key is, it applies');
+select expect_error(format($$select cm('[{"table_id": "%s", "add": [%s]}]', '{"expected_app_version": 0}')$$, :'t', fj(6)),
+  '22023', 'an expected version without a key');
+select expect_error(format($$select cm('[{"table_id": "%s", "add": [%s]}]',
+                                        '{"app_id": "job-9", "app_version": 7, "expected_app_version": -1}')$$, :'t', fj(7)),
+  '22023', 'an expected version below 0');
+
 -- case: an expected snapshot that is no longer current is a conflict
 -- rules: CMT-6
 select mk('t') as t \gset

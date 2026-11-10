@@ -66,6 +66,8 @@ pub struct Transaction {
     summaries: Map<String, Value>,
     replace: bool,
     app: Option<(String, i64)>,
+    /// The version its writer last saw for its key, `0` for none (CMT-5, 0.3).
+    key_seen: Option<i64>,
     author: Option<String>,
     message: Option<String>,
 }
@@ -83,6 +85,7 @@ impl Transaction {
             summaries: Map::new(),
             replace: false,
             app: None,
+            key_seen: None,
             author: None,
             message: None,
         }
@@ -242,6 +245,14 @@ impl Transaction {
         self
     }
 
+    /// Where its writer last saw its key: the version the key reached, or `None` when it applied nothing yet (CMT-5,
+    /// 0.3). If another writer moved the key since, the commit is a conflict and applies nothing, so that a key is one
+    /// writer's; a version the key already passed still answers the commit it applied.
+    pub fn key_seen(mut self, version: Option<i64>) -> Self {
+        self.key_seen = Some(version.unwrap_or(0));
+        self
+    }
+
     pub fn author(mut self, author: impl Into<String>) -> Self {
         self.author = Some(author.into());
         self
@@ -287,6 +298,7 @@ impl Transaction {
             definition: None,
             namespaces: (!self.namespaces.is_empty()).then_some(Value::Array(self.namespaces)),
             summaries: (!self.summaries.is_empty()).then_some(Value::Object(self.summaries)),
+            expected_app_version: self.key_seen,
         };
         let catalog = self.on.catalog();
         let (mut attempt, mut rebase) = (0, false);

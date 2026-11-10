@@ -48,6 +48,9 @@ pub struct Commit {
     pub namespaces: Option<Value>,
     /// What the commit adds to each table's snapshot summary, by table (CMT-12).
     pub summaries: Option<Value>,
+    /// The version its writer last saw for `app_id`, `0` for none: another writer's move of the key since is a
+    /// conflict (CMT-5, 0.3).
+    pub expected_app_version: Option<i64>,
 }
 
 /// A merge of a branch, or of a selection of it, into its parent (MRG-1 to MRG-8).
@@ -165,7 +168,7 @@ impl Protocol {
                 s,
                 "commit(ref_id => $1, operation => $2, files => $3, removed => $4, vectors => $5, expected => $6, \
                  changes => $7, author => $8, actor => $9, app_id => $10, app_version => $11, message => $12, \
-                 definition => $13, namespaces => $14, summaries => $15)",
+                 definition => $13, namespaces => $14, summaries => $15, expected_app_version => $16)",
                 &[
                     &c.ref_id,
                     &c.operation,
@@ -182,6 +185,7 @@ impl Protocol {
                     &c.definition,
                     &c.namespaces,
                     &c.summaries,
+                    &c.expected_app_version,
                 ],
             )
             .await?;
@@ -893,6 +897,7 @@ pub const INTERFACE: &[(&str, &[&str], bool)] = &[
             "definition",
             "namespaces",
             "summaries",
+            "expected_app_version",
         ],
         true,
     ),

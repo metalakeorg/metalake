@@ -150,6 +150,29 @@ async fn transaction_create_write_and_refusals() -> Result<(), Box<dyn std::erro
     assert!(matches!(first, Outcome::Committed(_)));
     assert_eq!(once().commit().await?, Outcome::AlreadyApplied(first.seq()));
 
+    // A writer that says where it saw its key commits from there; one that saw it before another writer moved it is
+    // refused, and a key that applied nothing yet is seen as None.
+    let keyed = |name: &str, lo: i64, version: i64, seen: Option<i64>| {
+        main.transaction()
+            .append([file(&events_table, name, lo, lo + 9)])
+            .idempotent("ingest", version)
+            .key_seen(seen)
+    };
+    assert!(matches!(
+        keyed("d", 20, 8, Some(7)).commit().await?,
+        Outcome::Committed(_)
+    ));
+    match keyed("e", 30, 9, Some(7)).commit().await.unwrap_err() {
+        Error::Protocol(e) => assert_eq!((e.kind(), e.rule()), (ErrorKind::Conflict, Some("CMT-5")), "{e}"),
+        other => panic!("{other}"),
+    }
+    let fresh = main
+        .transaction()
+        .append([file(&events_table, "f", 40, 49)])
+        .idempotent("fresh", 1)
+        .key_seen(None);
+    assert!(matches!(fresh.commit().await?, Outcome::Committed(_)));
+
     // A write that expected the table as it read it is refused once another commit changed it.
     let stale = main
         .transaction()
