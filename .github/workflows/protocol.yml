@@ -42,6 +42,8 @@ jobs:
         run: bash sql/test.sh
       - name: The core
         run: CRATE=metalake bash sql/test.sh
+      - name: The client
+        run: CRATE=metalake-client bash sql/test.sh
       - name: The Iceberg REST server
         run: CRATE=metalake-iceberg bash sql/test.sh
       - name: Lints of the Iceberg REST server

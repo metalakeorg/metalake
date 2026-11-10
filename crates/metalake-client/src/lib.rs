@@ -2,8 +2,10 @@
 //! form, and decides nothing: which lake is meant and what each verb does live here, once.
 
 mod error;
+mod follow;
 mod history;
 mod iceberg;
+mod ingest;
 mod lake;
 mod maintain;
 mod merge;
@@ -13,8 +15,10 @@ mod status;
 mod write;
 
 pub use error::{Error, Kind, Result};
+pub use follow::{Changes, Follower, StartAt};
 pub use history::duration;
 pub use iceberg::{Iceberg, IcebergTable};
+pub use ingest::{Mode, Writer, WriterOptions, Wrote};
 pub use lake::Lake;
 pub use maintain::{Done, MaintainRequest, MaintainRun, Task};
 pub use merge::{MergeOutcome, MergeRequest};

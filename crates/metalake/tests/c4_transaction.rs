@@ -146,9 +146,16 @@ async fn transaction_create_write_and_refusals() -> Result<(), Box<dyn std::erro
             .append([file(&events_table, "b", 10, 19)])
             .idempotent("ingest", 7)
     };
+    assert_eq!(main.key_version("ingest").await?, None);
     let first = once().commit().await?;
     assert!(matches!(first, Outcome::Committed(_)));
     assert_eq!(once().commit().await?, Outcome::AlreadyApplied(first.seq()));
+
+    // The key says where its writer goes on from, on this ref only.
+    assert_eq!(main.key_version("ingest").await?, Some(7));
+    assert_eq!(main.commit_of_key("ingest").await?, Some(first.seq()));
+    let other = main.create_branch("other").await?;
+    assert_eq!(other.key_version("ingest").await?, None);
 
     // A write that expected the table as it read it is refused once another commit changed it.
     let stale = main
