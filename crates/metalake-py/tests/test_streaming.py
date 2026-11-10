@@ -221,8 +221,8 @@ def test_follow_step_read_once_counts_when_read(table):
     assert follower.position is None, "a step counts once its rows are read"
     assert sorted(pl.DataFrame(first.rows)["k"]) == [1]
     assert follower.position == first.position
-    # Polars says it in its own error, with ours inside.
-    with pytest.raises(Exception, match="read once"):
+    # Polars says it in its own error, with ours inside; an older one, as a panic.
+    with pytest.raises(BaseException, match="read once"):
         pl.DataFrame(first.rows)
 
     # A step left unread is given again.
