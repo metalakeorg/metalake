@@ -86,7 +86,7 @@ async fn c14_pipeline_lifecycle() {
         .create_pipeline("other", query, PipelineOptions::default())
         .await
         .unwrap_err();
-    assert!(other.message.contains("has commits"), "{}", other.message);
+    assert!(other.message.contains("has rows"), "{}", other.message);
 
     sql(
         &session,

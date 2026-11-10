@@ -5,7 +5,7 @@
 //!
 //! A pipeline is kept in the lake (its record and its checkpoints), and runs on the machine that started it. Suspended,
 //! it stops with a checkpoint; resumed, it goes on from it. A new pipeline starts from what its sources hold, so a table
-//! it writes must have no commits yet, or be emptied first with `empty_target`: what it holds is then what the query gives.
+//! it writes must have no rows yet, or be emptied first with `empty_target`: what it holds is then what the query gives.
 
 mod record;
 mod runner;
@@ -33,7 +33,7 @@ const SETTLING: Duration = Duration::from_secs(6);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PipelineOptions {
     pub parallelism: u32,
-    /// Empties the tables it writes first, when they have commits: what they hold is then what the query gives.
+    /// Empties the tables it writes first, when they have rows: what they hold is then what the query gives.
     pub empty_target: bool,
 }
 
@@ -92,12 +92,13 @@ impl Lake {
             self.table(path).await?;
         }
         if !options.empty_target {
+            // By its rows: creating a table is already a commit.
+            let session = Session::new(self).await?;
             for path in &names.writes {
-                let (_, table) = self.table(path).await?;
-                if let Some(commit) = table.snapshot_id() {
+                if session.has_rows(&format!("select 1 from {}", path.quoted())).await? {
                     return Err(Error::usage(format!(
-                        "{path} has commits (the last {commit}): a new pipeline starts from what its sources hold, \
-                         so what it writes into starts empty; `empty_target` empties it first"
+                        "{path} has rows: a new pipeline starts from what its sources hold, so what it writes into \
+                         starts empty; `empty_target` empties it first"
                     )));
                 }
             }

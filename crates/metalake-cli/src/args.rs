@@ -112,7 +112,7 @@ pub struct PipelineCreate {
     /// The subtasks it runs in.
     #[arg(long, value_name = "N", default_value_t = 1)]
     pub parallelism: u32,
-    /// Empties the tables it writes first, when they have commits: they then hold what the query gives.
+    /// Empties the tables it writes first, when they have rows: they then hold what the query gives.
     #[arg(long)]
     pub empty_target: bool,
 }
