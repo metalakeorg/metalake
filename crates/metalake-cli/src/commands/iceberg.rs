@@ -1,6 +1,8 @@
 //! `metalake iceberg`: when Iceberg clients find each table's metadata written (REST-9). Every table is served to them
 //! and written when one loads it; a table set `on-commit` on a ref is written by the Iceberg service after each commit.
 
+use std::path::Path;
+
 use serde_json::json;
 
 use crate::args::{IcebergServe, IcebergTables, IcebergVerb, Switch};
@@ -14,6 +16,7 @@ pub async fn run(verb: &IcebergVerb, lake: &Lake, out: &Out) -> Result<(), Error
     let iceberg = lake.iceberg();
     let (args, when, commit) = match verb {
         IcebergVerb::Serve(args) => return serve(args, lake).await,
+        IcebergVerb::Stop => unreachable!("stopping reaches no catalog: see `stop`"),
         IcebergVerb::Status { on } => {
             let columns = ["table", "head", "written", "behind", "since", "metadata"];
             return out.records(&columns, &iceberg.status(on).await?).await;
@@ -57,6 +60,12 @@ async fn serve(args: &IcebergServe, lake: &Lake) -> Result<(), Error> {
         server::remove_if_mine(path, pid);
     }
     Ok(served?)
+}
+
+/// Stops the lake's server on this machine, if one runs.
+pub async fn stop(dir: Option<&Path>, out: &Out) -> Result<(), Error> {
+    let stopped = Lake::stop_server(dir)?;
+    out.records(&["stopped"], &[json!({"stopped": stopped})]).await
 }
 
 /// Ctrl-C, or, where there is one, the signal a service manager stops a process with.

@@ -1,5 +1,7 @@
 """When Iceberg clients find each table's metadata written: on load, as every table has, or on commit."""
 
+import urllib.request
+
 import pytest
 
 import metalake
@@ -41,3 +43,15 @@ def test_on_load_on_a_branch(lake):
     assert isinstance(lake.iceberg.on_load(["default.a"], on="dev"), int)
     assert [t.table for t in lake.iceberg.status(on="dev")] == ["default.b"]
     assert "default.a" in [t.table for t in lake.iceberg.status()], "main keeps it"
+
+
+def test_server_uri_reused_and_stopped(lake):
+    uri = lake.iceberg.uri
+    try:
+        assert uri.startswith("http://127.0.0.1:")
+        assert lake.iceberg.uri == uri, "one server for the lake"
+        with urllib.request.urlopen(f"{uri}/v1/config", timeout=5) as answer:
+            assert answer.status == 200
+    finally:
+        assert lake.iceberg.stop() is True
+    assert lake.iceberg.stop() is False, "none runs now"

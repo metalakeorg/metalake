@@ -39,6 +39,21 @@ impl Location {
         self.schema.as_deref().unwrap_or(SCHEMA)
     }
 
+    /// What names the lake whatever reaching it takes: its own directory, or its catalog without a password. A lake's
+    /// own Postgres may listen elsewhere each time it starts, and a password may change.
+    fn identity(&self) -> String {
+        match (&self.local, &self.postgres) {
+            (Some(local), _) => format!("local:{}", local.display()),
+            (None, Some(postgres)) => format!("catalog:{}", without_password(postgres)),
+            (None, None) => String::new(),
+        }
+    }
+
+    /// Stops the lake's Iceberg server on this machine, if one runs, and says whether one did.
+    fn stop_server(&self) -> Result<bool> {
+        crate::server::stop(&self.identity(), self.schema())
+    }
+
     /// How to connect: a lake's own Postgres is brought up if it is not.
     fn config(&self, connections: Option<usize>) -> Result<CatalogConfig> {
         let connection = match (&self.postgres, &self.local) {
@@ -165,12 +180,21 @@ impl Lake {
         Self::stop_at(Location::find(dir)?)
     }
 
+    /// Stops the Iceberg server of the lake a command means, if one runs on this machine, with no connection to its
+    /// catalog, and says whether one did.
+    pub fn stop_server(dir: Option<&Path>) -> Result<bool> {
+        Location::find(dir)?.stop_server()
+    }
+
     /// Stops the Postgres of the lake a program names, as `connect` names one.
     pub fn stop_named(target: Option<&str>) -> Result<PathBuf> {
         Self::stop_at(Location::named(target, None)?)
     }
 
+    /// The lake's Iceberg server first, which reaches its Postgres, then the Postgres: one command leaves the lake with
+    /// nothing running.
     fn stop_at(location: Location) -> Result<PathBuf> {
+        location.stop_server()?;
         location.cluster()?.stop()?;
         Ok(location.local.expect("a cluster has a directory"))
     }
@@ -276,6 +300,11 @@ impl Lake {
 
     pub fn schema(&self) -> &str {
         self.location.schema()
+    }
+
+    /// What names the lake to its Iceberg server's files, whatever reaching it takes.
+    pub(crate) fn identity(&self) -> String {
+        self.location.identity()
     }
 
     /// The warehouse's URL, where the lake's files are.

@@ -87,3 +87,11 @@ fn runtime_file_requires_token() {
     let said = String::from_utf8_lossy(&output.stderr);
     assert!(said.contains(SHUTDOWN_TOKEN), "{said}");
 }
+
+#[test]
+fn stop_without_server() {
+    let (dir, _) = lake();
+    let said = common::ok(&dir, &["iceberg", "stop", "--format", "json"]);
+    let row: serde_json::Value = serde_json::from_str(said.trim()).unwrap();
+    assert_eq!(row["stopped"], false, "{said}");
+}

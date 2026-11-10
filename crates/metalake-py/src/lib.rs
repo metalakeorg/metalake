@@ -26,6 +26,9 @@ fn cli(py: Python<'_>, args: Vec<OsString>) -> i32 {
 #[pymodule]
 fn _metalake(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    // MetaLake's command line lives in this extension, so a server this process starts runs as `python -m metalake`.
+    let python: OsString = module.py().import("sys")?.getattr("executable")?.extract()?;
+    metalake_client::server::set_launcher(vec![python, "-m".into(), "metalake".into()]);
     module.add_class::<lake::PyLake>()?;
     module.add_class::<iceberg::PyIceberg>()?;
     module.add_class::<iceberg::PyIcebergTable>()?;

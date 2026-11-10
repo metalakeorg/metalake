@@ -44,10 +44,14 @@ FACES = {
     ("pipeline", "suspend"): (metalake.Pipeline.suspend, {}),
     ("pipeline", "resume"): (metalake.Pipeline.resume, {}),
     ("pipeline", "drop"): (metalake.Pipeline.drop, {}),
+    ("iceberg", "stop"): (metalake.Iceberg.stop, {}),
 }
 
 # What belongs to a terminal, or to the process of a command, and has no meaning in a program.
 TERMINAL = {"help", "version", "lake", "format", "yes"}
+# A command that is a process in the foreground, which a program asks for otherwise: `lake.iceberg.uri` starts the
+# lake's server.
+FOREGROUND = {("iceberg", "serve")}
 # A flag of a command that Python says some other way, by what says it there.
 ELSEWHERE = {
     ("retain", "grace"): Lake.grace,
@@ -89,7 +93,7 @@ def commands(capfd):
 
 
 def test_cli_verbs_in_python(capfd):
-    assert set(commands(capfd)) == set(FACES)
+    assert set(commands(capfd)) - FOREGROUND == set(FACES)
 
 
 def test_cli_verb_discovery(capfd):

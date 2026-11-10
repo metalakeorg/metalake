@@ -43,12 +43,10 @@ fn launcher() -> Result<Vec<OsString>> {
     Ok(vec![std::env::current_exe()?.into_os_string()])
 }
 
-/// A lake, as its server's files name it: by where its catalog is, without a password, and its schema.
-pub(crate) fn key(postgres: &str, schema: &str) -> String {
-    format!(
-        "{:016x}",
-        fnv(&format!("{}\0{schema}", environment::without_password(postgres)))
-    )
+/// A lake, as its server's files name it: by what names the lake, its own directory or its catalog without a password
+/// (`identity`, which reaching it does not change), and its schema.
+pub(crate) fn key(identity: &str, schema: &str) -> String {
+    format!("{:016x}", fnv(&format!("{identity}\0{schema}")))
 }
 
 /// The files of a lake's server in this user's directory: where it says it runs, the lock callers take turns by, and its
@@ -142,9 +140,10 @@ fn shut(runtime: &Runtime) -> Result<()> {
 
 /// The lake's server: the one that runs, if it answers and runs this version; otherwise a new one, started detached so
 /// that it outlives this process, as the lake's own Postgres does. Callers take turns, so they start one between them.
-/// `postgres` is the catalog's connection with its password, which the server takes from its environment alone.
-pub(crate) fn ensure(postgres: &str, schema: &str) -> Result<Runtime> {
-    let files = Files::of(&key(postgres, schema))?;
+/// `postgres` is the catalog's connection with its password, which the server takes from its environment alone;
+/// `identity` names the lake ([`key`]).
+pub(crate) fn ensure(identity: &str, postgres: &str, schema: &str) -> Result<Runtime> {
+    let files = Files::of(&key(identity, schema))?;
     let _turn = files.locked()?;
     if let Some(running) = Runtime::read(&files.runtime) {
         if answers(running.port) {
@@ -222,8 +221,8 @@ fn start(files: &Files, postgres: &str, schema: &str) -> Result<Runtime> {
 }
 
 /// Stops the lake's server, if one runs, and says whether one did.
-pub(crate) fn stop(postgres: &str, schema: &str) -> Result<bool> {
-    let files = Files::of(&key(postgres, schema))?;
+pub fn stop(identity: &str, schema: &str) -> Result<bool> {
+    let files = Files::of(&key(identity, schema))?;
     let _turn = files.locked()?;
     let Some(running) = Runtime::read(&files.runtime) else {
         return Ok(false);
@@ -327,11 +326,15 @@ mod tests {
     }
 
     #[test]
-    fn key_without_password() {
-        let one = key("host=db user=u password=secret dbname=x", "lake");
-        assert_eq!(one, key("host=db user=u password=other dbname=x", "lake"));
-        assert_ne!(one, key("host=db user=u dbname=x", "other"), "a schema is a lake");
-        assert_ne!(one, key("host=db2 user=u dbname=x", "lake"));
+    fn key_by_identity_and_schema() {
+        let one = key("catalog:host=db user=u dbname=x", "lake");
+        assert_eq!(one, key("catalog:host=db user=u dbname=x", "lake"));
+        assert_ne!(
+            one,
+            key("catalog:host=db user=u dbname=x", "other"),
+            "a schema is a lake"
+        );
+        assert_ne!(one, key("catalog:host=db2 user=u dbname=x", "lake"));
         assert_eq!(one.len(), 16);
     }
 

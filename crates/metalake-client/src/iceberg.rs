@@ -52,8 +52,9 @@ impl Iceberg<'_> {
     /// The lake's Iceberg REST server on this machine: the one that runs, or one started now, detached, which outlives
     /// this process until stopped. Engines connect to its URL.
     pub async fn ensure(&self) -> Result<Runtime> {
-        let (postgres, schema) = self.reached()?;
-        blocking(move || server::ensure(&postgres, &schema)).await
+        let (identity, schema) = (self.lake.identity(), self.lake.schema().to_string());
+        let postgres = self.lake.catalog_postgres()?;
+        blocking(move || server::ensure(&identity, &postgres, &schema)).await
     }
 
     /// The URL engines connect to, the server started if it is not.
@@ -63,13 +64,8 @@ impl Iceberg<'_> {
 
     /// Stops the lake's server, if one runs on this machine, and says whether one did.
     pub async fn stop(&self) -> Result<bool> {
-        let (postgres, schema) = self.reached()?;
-        blocking(move || server::stop(&postgres, &schema)).await
-    }
-
-    /// Where the catalog is, as the server reaches it, and its schema.
-    fn reached(&self) -> Result<(String, String)> {
-        Ok((self.lake.catalog_postgres()?, self.lake.schema().to_string()))
+        let (identity, schema) = (self.lake.identity(), self.lake.schema().to_string());
+        blocking(move || server::stop(&identity, &schema)).await
     }
 
     /// Has the Iceberg metadata of `tables`, each `namespace.table`, written after each of their commits on `on`, in one

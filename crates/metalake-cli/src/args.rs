@@ -226,6 +226,8 @@ pub enum IcebergVerb {
     /// Runs the lake's Iceberg REST server in the foreground until Ctrl-C, for engines elsewhere: Spark, Trino, Flink,
     /// DuckDB, PyIceberg. A client starts one of its own when it connects an engine.
     Serve(IcebergServe),
+    /// Stops the lake's server on this machine, the one a client started; `metalake stop` stops it too.
+    Stop,
 }
 
 #[derive(Debug, Args)]

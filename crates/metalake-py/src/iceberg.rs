@@ -63,6 +63,24 @@ impl PyIceberg {
         Ok(found.into_iter().map(PyIcebergTable::from).collect())
     }
 
+    /// The URL engines connect to: the lake's Iceberg REST server on this machine, started if it is not, which runs on
+    /// after this process until stopped.
+    #[getter]
+    fn uri(&self, py: Python<'_>) -> PyResult<String> {
+        self.owner.check(py, "Lake")?;
+        let lake = self.lake.clone();
+        let uri = wait(py, async move { lake.iceberg().uri().await })?;
+        uri.map_err(|e| to_python(py, e))
+    }
+
+    /// Stops the lake's server on this machine, if one runs, and says whether one did. `metalake.stop` stops it too.
+    fn stop(&self, py: Python<'_>) -> PyResult<bool> {
+        self.owner.check(py, "Lake")?;
+        let lake = self.lake.clone();
+        let stopped = wait(py, async move { lake.iceberg().stop().await })?;
+        stopped.map_err(|e| to_python(py, e))
+    }
+
     fn __repr__(&self) -> &'static str {
         "Iceberg()"
     }
