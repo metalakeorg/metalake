@@ -186,3 +186,21 @@ async fn table_changes_refusals() {
         assert!(refused.to_string().contains(says), "{sql}: {refused}");
     }
 }
+
+#[tokio::test]
+async fn table_changes_qualified_and_quoted() {
+    let lake = lake().await;
+    let one = committed(&lake, "insert into db.t values (1, 'a')").await;
+    let two = committed(&lake, "insert into db.t values (2, 'b')").await;
+    let qualified = lake
+        .run(&format!(
+            "select table_changes.k from table_changes('db.t', {one}, {two})"
+        ))
+        .await
+        .unwrap();
+    assert_eq!(qualified.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    let quoted = lake
+        .rows(&format!(r#"select * from "table_changes"('db.t', {one}, {two})"#))
+        .await;
+    assert_eq!(quoted, [row("insert", 2, two)]);
+}
