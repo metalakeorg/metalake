@@ -36,6 +36,14 @@ impl PyWriter {
         Error::usage("this writer is closed")
     }
 
+    /// Closes it without committing what it holds.
+    fn abandon(&self, py: Python<'_>) -> PyResult<()> {
+        let writer = self.writer.clone();
+        wait(py, async move {
+            writer.lock().await.take();
+        })
+    }
+
     /// Gives the writer one batch, with Python free meanwhile, for the commit it made, if any.
     fn take(&self, py: Python<'_>, batch: RecordBatch, version: Option<i64>) -> PyResult<Option<PyWritten>> {
         let writer = self.writer.clone();
@@ -75,7 +83,23 @@ impl PyWriter {
         let mut committed = Vec::new();
         let mut given = false;
         for batch in reader {
-            let batch = batch.map_err(|e| to_python(py, e.into()))?;
+            let batch = match batch {
+                Ok(batch) => batch,
+                // The input broke within what it gives: what the writer holds of it is dropped, as after an exception
+                // under `with`, so that no part of it is committed as if whole. What it committed before stands.
+                Err(e) => {
+                    self.abandon(py)?;
+                    return Err(to_python(
+                        py,
+                        Error::failed(format!(
+                            "the rows could not be read: {e}. The writer dropped what it held and is closed; \
+                             {} commit(s) of this write stand, and with a key a new writer's `version` says where to \
+                             go on",
+                            committed.len()
+                        )),
+                    ));
+                }
+            };
             given = true;
             committed.extend(self.take(py, batch, version)?);
         }
@@ -124,10 +148,7 @@ impl PyWriter {
     fn __exit__(&self, py: Python<'_>, failure: &Bound<'_, PyTuple>) -> PyResult<()> {
         let failed = failure.iter().next().is_some_and(|kind| !kind.is_none());
         if failed {
-            let writer = self.writer.clone();
-            return wait(py, async move {
-                writer.lock().await.take();
-            });
+            return self.abandon(py);
         }
         self.close(py).map(|_| ())
     }

@@ -74,7 +74,7 @@ impl PyFollower {
             Ok::<_, Error>((prepared, follower.reaches()))
         })?;
         let (prepared, position) = taken.map_err(|e| to_python(py, e))?;
-        let rows = Py::new(py, QueryResult::new(prepared, self.owner.clone()))?;
+        let rows = Py::new(py, QueryResult::step(prepared, self.owner.clone()))?;
         Ok(PyStep { rows, position })
     }
 
