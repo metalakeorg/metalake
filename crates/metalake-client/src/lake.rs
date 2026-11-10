@@ -287,7 +287,7 @@ impl Lake {
     }
 
     /// How to reach the catalog's Postgres, with its password: what a pipeline's process is given, never printed.
-    pub(crate) fn catalog_postgres(&self) -> Result<String> {
+    pub fn catalog_postgres(&self) -> Result<String> {
         Ok(self.location.config(None)?.postgres)
     }
 

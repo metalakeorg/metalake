@@ -18,9 +18,10 @@ path = "src/main.rs"
 
 [dependencies]
 metalake-client = { path = "../metalake-client" }
+metalake-iceberg = { path = "../metalake-iceberg" }
 clap = { version = "4", features = ["derive"] }
 datafusion = { version = "55.2", default-features = false }
 futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["signal", "time"] }
+tokio = { workspace = true, features = ["net", "signal", "time"] }
