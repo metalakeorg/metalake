@@ -13,7 +13,8 @@ use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::streaming::PartitionStream;
 use datafusion::sql::sqlparser::ast::{
-    Expr, FunctionArg, FunctionArgExpr, ObjectName, Statement, TableFactor, Value, Visit, VisitMut, Visitor, VisitorMut,
+    Expr, FunctionArg, FunctionArgExpr, ObjectName, Statement, TableAlias, TableFactor, Value, Visit, VisitMut,
+    Visitor, VisitorMut,
 };
 use datafusion::sql::sqlparser::dialect::GenericDialect;
 use datafusion::sql::sqlparser::parser::Parser;
@@ -95,11 +96,22 @@ pub(crate) fn replace(statement: &mut Statement, names: &[String]) -> Result<(),
     impl VisitorMut for Replace {
         type Break = ();
         fn pre_visit_table_factor(&mut self, factor: &mut TableFactor) -> ControlFlow<Self::Break> {
-            if let TableFactor::Table { name, args, .. } = factor
+            if let TableFactor::Table { name, args, alias, .. } = factor
                 && is_call(name)
                 && args.is_some()
                 && let Some(replaced) = self.0.next()
             {
+                // A call with no alias is qualified by its name, `table_changes.k`: the source keeps it.
+                if alias.is_none()
+                    && let Some(called) = name.0.first().and_then(|part| part.as_ident())
+                {
+                    *alias = Some(TableAlias {
+                        explicit: true,
+                        name: called.clone(),
+                        columns: Vec::new(),
+                        at: None,
+                    });
+                }
                 *name = replaced;
                 *args = None;
             }
@@ -110,8 +122,15 @@ pub(crate) fn replace(statement: &mut Statement, names: &[String]) -> Result<(),
     Ok(())
 }
 
+/// Whether a name is the function's, by SQL's rule: unquoted in any case, quoted exactly.
 fn is_call(name: &ObjectName) -> bool {
-    name.to_string().eq_ignore_ascii_case(FUNCTION)
+    match name.0.as_slice() {
+        [part] => part.as_ident().is_some_and(|ident| match ident.quote_style {
+            None => ident.value.eq_ignore_ascii_case(FUNCTION),
+            Some(_) => ident.value == FUNCTION,
+        }),
+        _ => false,
+    }
 }
 
 /// A table factor's call of `table_changes`, if it is one: `('t', after)` or `('t', after, until)`, all literals.
@@ -155,4 +174,53 @@ fn call_of(factor: &TableFactor) -> Result<Option<Call>, DataFusionError> {
         return Err(usage("the end comes before the start"));
     }
     Ok(Some(Call { path, after, until }))
+}
+
+#[cfg(test)]
+mod tests {
+    use datafusion::sql::parser::{DFParser, Statement as DFStatement};
+
+    use super::*;
+
+    fn statement(sql: &str) -> Statement {
+        match DFParser::parse_sql(sql).unwrap().pop_front().unwrap() {
+            DFStatement::Statement(statement) => *statement,
+            other => panic!("{other}"),
+        }
+    }
+
+    #[test]
+    fn calls_by_sql_rule() {
+        for sql in [
+            "select * from table_changes('db.t', 1)",
+            "select * from TABLE_CHANGES('db.t', 1)",
+            r#"select * from "table_changes"('db.t', 1)"#,
+        ] {
+            assert_eq!(calls(&statement(sql)).unwrap().len(), 1, "{sql}");
+        }
+        for sql in [
+            r#"select * from "TABLE_CHANGES"('db.t', 1)"#,
+            "select * from main.table_changes",
+            "select * from db.table_changes('db.t', 1)",
+        ] {
+            assert!(calls(&statement(sql)).unwrap().is_empty(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn replaced_call_keeps_qualifier() {
+        let mut unaliased = statement("select table_changes.k from table_changes('db.t', 1)");
+        replace(&mut unaliased, &[r#"".source"."default"."7""#.to_string()]).unwrap();
+        assert_eq!(
+            unaliased.to_string(),
+            r#"SELECT table_changes.k FROM ".source"."default"."7" AS table_changes"#
+        );
+        let mut aliased = statement("select c.k from table_changes('db.t', 1) c");
+        replace(&mut aliased, &[r#"".source"."default"."7""#.to_string()]).unwrap();
+        assert_eq!(
+            aliased.to_string(),
+            r#"SELECT c.k FROM ".source"."default"."7" c"#,
+            "an alias given stays as given"
+        );
+    }
 }
