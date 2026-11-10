@@ -216,6 +216,15 @@ impl PyTable {
     #[pyo3(signature = (after, until=None))]
     fn changes(&self, py: Python<'_>, after: i64, until: Option<i64>) -> PyResult<QueryResult> {
         self.owner.check(py, "Table")?;
+        if let Some(until) = until.filter(|until| *until < after) {
+            return Err(to_python(
+                py,
+                Error::usage(format!(
+                    "changes of {} after {after} up to {until}: the end comes before the start",
+                    self.path
+                )),
+            ));
+        }
         let name = self.path.to_string().replace('\'', "''");
         let until = until.map(|until| format!(", {until}")).unwrap_or_default();
         let text = format!("select * from table_changes('{name}', {after}{until})");

@@ -103,7 +103,6 @@ impl PyLake {
         ))
     }
 
-    /// A table by the name a statement would use: `t`, `namespace.t` or `ref.namespace.t`.
     /// The lake's Iceberg face: when Iceberg clients find each table's metadata written.
     #[getter]
     fn iceberg(&self, py: Python<'_>) -> PyResult<PyIceberg> {
@@ -111,6 +110,7 @@ impl PyLake {
         Ok(PyIceberg::new(self.owner.clone(), self.lake.clone()))
     }
 
+    /// A table by the name a statement would use: `t`, `namespace.t` or `ref.namespace.t`.
     fn table(&self, py: Python<'_>, name: &str) -> PyResult<PyTable> {
         self.owner.check(py, "Lake")?;
         PyTable::open(py, self.owner.clone(), self.lake.clone(), self.session.clone(), name)

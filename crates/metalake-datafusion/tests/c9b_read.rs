@@ -325,7 +325,8 @@ async fn filter_pushdown_and_dynamic_join_filter() -> Result<(), Box<dyn std::er
     let filtered = plan(&context, "select s from main.db.big where k >= 210 and k < 220").await?;
     assert!(filtered.contains("file_groups={1 group"), "{filtered}");
     let on_s = plan(&context, "select k from main.db.big where s = 's210'").await?;
-    assert!(on_s.contains("file_groups={6 groups"), "only the cluster key: {on_s}");
+    // Every file, in as many groups as the machine has cores.
+    assert_eq!(on_s.matches(".parquet").count(), 6, "only the cluster key: {on_s}");
     assert!(
         plan(&context, "select s from main.db.big where 210 = k")
             .await?
