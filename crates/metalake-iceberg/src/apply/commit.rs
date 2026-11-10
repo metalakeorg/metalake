@@ -3,8 +3,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use metalake::ErrorKind;
 use metalake::{Error, FileAdd, Ref, Table};
-use metalake_pg::ErrorKind;
 use serde_json::{Value as Json, json};
 use uuid::Uuid;
 
