@@ -110,7 +110,7 @@ def test_follow_refusals(table):
 def test_follow_interrupted_keeps_position(table):
     append(table, [1])
     follower = table.follow(interval=0.05)
-    next(follower)
+    changes(next(follower).rows)
     kept = follower.position
 
     # Ctrl-C while it waits for a commit that does not come ends the wait, and the reader is where it was.
@@ -138,7 +138,7 @@ def test_writer_with_key_goes_on(lake, table):
     # A producer that comes back asks where it was; what it gives again of before is skipped.
     with table.writer(app_id="producer", commit_every=3600) as writer:
         assert writer.version == 3
-        assert writer.write(batch([3]), version=3) is None
+        assert writer.write(batch([3]), version=3) == []
         writer.write(batch([4]), version=4)
     assert sorted(pl.DataFrame(lake.sql(f"select k from {table.name}"))["k"]) == [1, 2, 3, 4]
 
@@ -161,7 +161,35 @@ def test_writer_upsert_and_cadence(lake, table):
     assert rows == [(1, "one"), (2, "2")]
 
     writer = table.writer(max_bytes=1)
-    writer.write(batch([3]))
-    assert writer.write(batch([4])) is not None, "what it held reached its bytes"
-    writer.close()
-    writer.close()
+    assert len(writer.write(batch([3]))) == 1, "what it held reached its bytes"
+    assert writer.close() is None, "nothing was left"
+    assert writer.close() is None
+
+
+def test_writer_reader_batch_by_batch(table):
+    pa = pytest.importorskip("pyarrow")
+    schema = pa.schema([("k", pa.int64()), ("s", pa.string())])
+    batches = [pa.record_batch([[k], [str(k)]], schema=schema) for k in (1, 2, 3)]
+    reader = pa.RecordBatchReader.from_batches(schema, batches)
+    # Each batch reaches the writer as it is read, and each commit it made is said.
+    committed = table.writer(max_bytes=1).write(reader)
+    assert [w.rows for w in committed] == [1, 1, 1]
+
+
+def test_follow_step_read_once_counts_when_read(table):
+    append(table, [1])
+    follower = table.follow()
+    first = next(follower)
+    assert follower.position is None, "a step counts once its rows are read"
+    assert sorted(pl.DataFrame(first.rows)["k"]) == [1]
+    assert follower.position == first.position
+    with pytest.raises(metalake.MetaLakeError):
+        pl.DataFrame(first.rows)
+
+    # A step left unread is given again.
+    later = append(table, [2])
+    unread = next(follower)
+    assert unread.position == later
+    again = next(follower)
+    assert changes(again.rows) == [("insert", 2, later)]
+    assert follower.position == later
