@@ -60,6 +60,109 @@ pub enum Verb {
         #[command(subcommand)]
         verb: IcebergVerb,
     },
+    /// Prints the rows the commits of a table in a range inserted and deleted, with `_change_type`, `_commit_seq` and
+    /// `_commit_timestamp`. Ranges chain: after `a` up to `b`, then after `b`, take each commit once.
+    Changes(Changes),
+    /// Prints a table's changes as they come, commit after commit, until stopped: Ctrl-C, which says the position to go
+    /// on after. With a position file, it goes on where it was.
+    Follow(Follow),
+    /// Writes rows from stdin into a table as they come, committing on a cadence. With a key, a run given the same input
+    /// again goes on where the last one left it, and no row is written twice.
+    Ingest(Ingest),
+}
+
+#[derive(Debug, Args)]
+pub struct Changes {
+    /// The table: `t`, `namespace.t` or `ref.namespace.t`.
+    #[arg(value_name = "TABLE")]
+    pub table: String,
+
+    /// The commit the range starts after: a `_commit_seq`, or a position `follow` printed.
+    #[arg(long, value_name = "SEQ")]
+    pub after: i64,
+
+    /// The last commit of the range; by default the last one a second old.
+    #[arg(long, value_name = "SEQ")]
+    pub until: Option<i64>,
+}
+
+#[derive(Debug, Args)]
+pub struct Follow {
+    /// The table: `t`, `namespace.t` or `ref.namespace.t`.
+    #[arg(value_name = "TABLE")]
+    pub table: String,
+
+    /// Starts after this commit: a position it printed. By default, with what the table holds, then what comes.
+    #[arg(long, value_name = "SEQ", conflicts_with_all = ["latest", "since"])]
+    pub after: Option<i64>,
+
+    /// Starts with what comes from now.
+    #[arg(long, conflicts_with = "since")]
+    pub latest: bool,
+
+    /// Starts with what comes after this time, in RFC 3339.
+    #[arg(long, value_name = "TIME")]
+    pub since: Option<String>,
+
+    /// Where its position is kept: read at the start when the file is there, and written after each step is printed.
+    #[arg(long, value_name = "FILE")]
+    pub position_file: Option<PathBuf>,
+
+    /// How often it asks for new commits.
+    #[arg(long, value_name = "DURATION", value_parser = interval, default_value = "1s")]
+    pub interval: Duration,
+}
+
+#[derive(Debug, Args)]
+pub struct Ingest {
+    /// The table: `t`, `namespace.t` or `ref.namespace.t`.
+    #[arg(value_name = "TABLE")]
+    pub table: String,
+
+    /// How the rows come: one JSON object per line, or CSV with a header. Columns go by name.
+    #[arg(long, value_enum, default_value = "json")]
+    pub input: Input,
+
+    /// The producer's idempotency key: each commit applies once, and the key says where a run goes on from.
+    #[arg(long, value_name = "ID")]
+    pub app_id: Option<String>,
+
+    /// The column whose value is a row's version, growing from row to row; by default its line's number.
+    #[arg(long, value_name = "COLUMN", requires = "app_id")]
+    pub version_column: Option<String>,
+
+    /// Replaces the rows with these columns' values, and adds the others.
+    #[arg(long, value_name = "COLUMNS", value_delimiter = ',')]
+    pub upsert_on: Vec<String>,
+
+    /// The longest rows wait for their commit.
+    #[arg(long, value_name = "DURATION", value_parser = interval, default_value = "1s")]
+    pub commit_every: Duration,
+
+    /// What it holds before it commits, in bytes.
+    #[arg(long, value_name = "BYTES", default_value_t = 64 << 20)]
+    pub max_bytes: usize,
+
+    /// How many lines make one batch.
+    #[arg(long, value_name = "LINES", default_value_t = 1024)]
+    pub batch_lines: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Input {
+    Json,
+    Csv,
+}
+
+/// A duration of whole units (`1s`, `5m`), or of milliseconds (`500ms`).
+fn interval(text: &str) -> Result<Duration, String> {
+    match text.strip_suffix("ms") {
+        Some(millis) => millis
+            .parse()
+            .map(Duration::from_millis)
+            .map_err(|_| format!("{text}: a number of milliseconds, as 500ms")),
+        None => duration(text),
+    }
 }
 
 #[derive(Debug, Subcommand)]
