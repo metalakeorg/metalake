@@ -217,6 +217,11 @@ impl TableStream {
         &self.schema
     }
 
+    /// The table as it reads it: its definition is what its rows look like.
+    pub fn table(&self) -> &Table {
+        &self.table
+    }
+
     /// Where the reader is, once it took a step.
     pub fn cursor(&self) -> Option<&StreamCursor> {
         self.cursor.as_ref()

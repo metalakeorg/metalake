@@ -9,7 +9,8 @@ use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
 use futures_util::stream::{self, BoxStream};
 use futures_util::{StreamExt, TryStreamExt};
-use metalake::{Start, Storage, TableStream};
+use metalake::{Field, Ref, Start, Storage, TableStream};
+use metalake_pg::records::LATEST;
 
 use crate::write::TablePath;
 use crate::{Error, Lake, Result};
@@ -30,10 +31,14 @@ pub enum StartAt {
     Time(SystemTime),
 }
 
-/// A reader of one table's changes, a step at a time.
+/// A reader of one table's changes, a step at a time. When a commit changes the table's definition only by adding
+/// columns that may be null, it goes on under the new one: [`schema`](Follower::schema) then has them, and rows of earlier
+/// files have them null. Any other change of the columns stops it, with the commit to follow again after.
 pub struct Follower {
     stream: TableStream,
     storage: Storage,
+    /// The ref as it is now, not as of a time, to open the stream again on.
+    on: Ref,
 }
 
 impl Follower {
@@ -51,7 +56,14 @@ impl Follower {
     /// The rows of the commits that came since the last step, which may be none, or nothing when no commit came. Its
     /// [`position`](Self::position) counts once all of them are dealt with.
     pub async fn next(&mut self) -> Result<Option<Changes>> {
-        let Some(step) = self.stream.next().await? else {
+        let step = match self.stream.next().await {
+            Err(metalake::Error::Unsupported(why)) => {
+                self.stream = self.reopen(why).await?;
+                self.stream.next().await?
+            }
+            taken => taken?,
+        };
+        let Some(step) = step else {
             return Ok(None);
         };
         let opened: Vec<_> = step
@@ -73,6 +85,59 @@ impl Follower {
             tokio::time::sleep(interval).await;
         }
     }
+
+    /// The stream after its position, under the table's definition now, if that only added columns that may be null to
+    /// the one it read under, or left them as they were (a property or a partition spec changed). Without a position
+    /// there is nothing to go on after, and what the stream said is the answer.
+    async fn reopen(&self, why: String) -> Result<TableStream> {
+        let read = self.stream.table();
+        let now = self.on.table_at(read, LATEST).await?;
+        let Some(position) = self.stream.position() else {
+            return Err(metalake::Error::Unsupported(why).into());
+        };
+        let refused = not_additive(read.fields(), now.fields());
+        if !refused.is_empty() {
+            return Err(Error::failed(format!(
+                "{} changed its columns after commit {position}: {}; follow it again after {position}",
+                read.name(),
+                refused.join(", ")
+            )));
+        }
+        Ok(self.on.stream(&now, Start::After(position)).await?)
+    }
+}
+
+/// How `now` changes the columns of `before` other than by adding ones that may be null: each field is known by its id.
+fn not_additive(before: &[Field], now: &[Field]) -> Vec<String> {
+    let mut refused = Vec::new();
+    for old in before {
+        match now.iter().find(|f| f.field_id == old.field_id) {
+            None => refused.push(format!("{} dropped", old.name)),
+            Some(new) => {
+                if new.name != old.name {
+                    refused.push(format!("{} renamed to {}", old.name, new.name));
+                }
+                if new.ty != old.ty {
+                    refused.push(format!("{} became {}", old.name, new.ty));
+                }
+                if new.parent_field_id != old.parent_field_id {
+                    refused.push(format!("{} moved", old.name));
+                }
+                if new.required && !old.required {
+                    refused.push(format!("{} became required", old.name));
+                }
+            }
+        }
+    }
+    let added = now
+        .iter()
+        .filter(|f| before.iter().all(|old| old.field_id != f.field_id));
+    refused.extend(
+        added
+            .filter(|f| f.required)
+            .map(|f| format!("{} added as required", f.name)),
+    );
+    refused
 }
 
 impl Lake {
@@ -86,7 +151,7 @@ impl Lake {
             StartAt::After(seq) => on.stream(&table, Start::After(seq)).await?,
             StartAt::Time(time) => on.as_of(time).stream(&table, Start::Latest).await?,
         };
-        Ok(Follower { stream, storage })
+        Ok(Follower { stream, storage, on })
     }
 
     /// The rows of the commits of a table after `after` and up to `until`, both `_commit_seq`, or up to the last commit
@@ -115,5 +180,57 @@ impl Lake {
         }
         let schema = stream.schema().clone();
         Ok((schema, stream::iter(opened).flatten().map_err(Error::from).boxed()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn field(field_id: i32, name: &str, ty: &str, required: bool) -> Field {
+        Field {
+            field_id,
+            parent_field_id: None,
+            position: field_id,
+            name: name.into(),
+            ty: ty.into(),
+            required,
+            doc: None,
+            initial_default: None,
+            write_default: None,
+        }
+    }
+
+    #[test]
+    fn additive_change_accepted() {
+        let before = [field(1, "k", "long", true)];
+        assert!(not_additive(&before, &before).is_empty(), "nothing changed");
+        let wider = [field(1, "k", "long", true), field(2, "v", "string", false)];
+        assert!(not_additive(&before, &wider).is_empty());
+        let mut relaxed = wider.clone();
+        relaxed[0].required = false;
+        assert!(
+            not_additive(&before, &relaxed).is_empty(),
+            "a column may become nullable"
+        );
+    }
+
+    #[test]
+    fn other_changes_refused() {
+        let before = [field(1, "k", "long", false), field(2, "v", "string", false)];
+        let mut now = [field(1, "key", "int", true), field(3, "w", "string", true)];
+        assert_eq!(
+            not_additive(&before, &now),
+            [
+                "k renamed to key",
+                "k became int",
+                "k became required",
+                "v dropped",
+                "w added as required"
+            ]
+        );
+        now[0] = field(1, "k", "long", false);
+        now[0].parent_field_id = Some(9);
+        assert!(not_additive(&before, &now).contains(&"k moved".to_string()));
     }
 }

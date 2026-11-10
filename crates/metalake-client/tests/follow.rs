@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use arrow_schema::{DataType, Field, Schema};
-use datafusion::arrow::array::{AsArray, Int64Array, RecordBatch};
+use datafusion::arrow::array::{Array, AsArray, Int64Array, RecordBatch};
 use datafusion::arrow::datatypes::Int64Type;
 use futures_util::{TryStreamExt, stream};
 use metalake::NewTable;
@@ -307,6 +307,128 @@ async fn wait_takes_commit_when_it_comes() {
         [row("insert", 1, later), row("insert", 2, later)]
     );
     assert_eq!(follower.position(), Some(later));
+    lake.close();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Changes the columns of `db.t` on `main` in one commit, as the specification's `fields` says (§6).
+async fn define(lake: &Lake, fields: Vec<serde_json::Value>) {
+    let main = lake.catalog.branch("main").await.unwrap();
+    let t = main.table(&["db"], "t").await.unwrap();
+    main.transaction()
+        .define(t.id(), serde_json::json!({ "fields": fields }))
+        .commit()
+        .await
+        .unwrap();
+}
+
+/// A new id for a field of `db.t`.
+async fn field_id(lake: &Lake) -> i32 {
+    let main = lake.catalog.branch("main").await.unwrap();
+    let t = main.table(&["db"], "t").await.unwrap();
+    let pool = metalake_pg::Pool::new(&url(), 1).unwrap();
+    let session = pool.get().await.unwrap();
+    metalake_pg::Protocol::new(lake.schema())
+        .next_id(&session, t.id(), "field")
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn follow_goes_on_after_added_column() {
+    let (lake, dir) = lake(&["t"]).await;
+    let t = path("db.t");
+    append(&lake, &t, 0..2, Details::default()).await;
+    let mut follower = lake.follow(&t, StartAt::Snapshot).await.unwrap();
+    rows(follower.next().await.unwrap().expect("the read")).await;
+
+    // A commit under the old columns, then one that adds a column, then a row that has it.
+    let before = append(&lake, &t, 10..12, Details::default()).await;
+    let id = field_id(&lake).await;
+    define(
+        &lake,
+        vec![serde_json::json!({"field_id": id, "new": true, "position": 2, "name": "v", "type": "string"})],
+    )
+    .await;
+    let wider = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int64, false),
+        Field::new("v", DataType::Utf8, true),
+    ]));
+    let values: Vec<datafusion::arrow::array::ArrayRef> = vec![
+        Arc::new(Int64Array::from(vec![2])),
+        Arc::new(datafusion::arrow::array::StringArray::from(vec![Some("two")])),
+    ];
+    let row_of_it = RecordBatch::try_new(wider.clone(), values).unwrap();
+    let after = lake
+        .append(&t, &wider, stream::iter([Ok(row_of_it)]), Details::default())
+        .await
+        .unwrap()
+        .commit
+        .unwrap();
+    settle().await;
+
+    // It goes on under the new columns: the rows of the earlier commit have the new one null.
+    let mut seen = Vec::new();
+    while let Some(step) = follower.next().await.unwrap() {
+        let batches: Vec<RecordBatch> = step.try_collect().await.unwrap();
+        for b in &batches {
+            let keys = b.column_by_name("k").unwrap().as_primitive::<Int64Type>();
+            let v = b.column_by_name("v").expect("the new column").as_string::<i32>();
+            let seqs = b.column_by_name("_commit_seq").unwrap().as_primitive::<Int64Type>();
+            for i in 0..b.num_rows() {
+                seen.push((
+                    keys.value(i),
+                    v.is_valid(i).then(|| v.value(i).to_string()),
+                    seqs.value(i),
+                ));
+            }
+        }
+    }
+    seen.sort();
+    assert_eq!(
+        seen,
+        [
+            (2, Some("two".to_string()), after),
+            (10, None, before),
+            (11, None, before)
+        ]
+    );
+    assert!(follower.schema().column_with_name("v").is_some());
+    assert_eq!(follower.position(), Some(after));
+    lake.close();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn follow_stops_at_renamed_column() {
+    let (lake, dir) = lake(&["t"]).await;
+    let t = path("db.t");
+    append(&lake, &t, 0..2, Details::default()).await;
+    let mut follower = lake.follow(&t, StartAt::Latest).await.unwrap();
+    rows(follower.next().await.unwrap().expect("its start")).await;
+    let at = follower.position().unwrap();
+
+    let main = lake.catalog.branch("main").await.unwrap();
+    let k = main.table(&["db"], "t").await.unwrap().fields()[0].clone();
+    define(
+        &lake,
+        vec![
+            serde_json::json!({"field_id": k.field_id, "position": k.position, "name": "key", "type": k.ty,
+                                "required": k.required}),
+        ],
+    )
+    .await;
+    let renamed = Arc::new(Schema::new(vec![Field::new("key", DataType::Int64, false)]));
+    let batch = RecordBatch::try_new(renamed.clone(), vec![Arc::new(Int64Array::from(vec![5]))]).unwrap();
+    lake.append(&t, &renamed, stream::iter([Ok(batch)]), Details::default())
+        .await
+        .unwrap();
+    settle().await;
+
+    let stopped = follower.next().await.err().expect("refused");
+    assert!(stopped.message.contains("k renamed to key"), "{}", stopped.message);
+    assert!(stopped.message.contains(&format!("after {at}")), "{}", stopped.message);
+    assert_eq!(follower.position(), Some(at), "where to follow again from");
     lake.close();
     let _ = std::fs::remove_dir_all(dir);
 }
