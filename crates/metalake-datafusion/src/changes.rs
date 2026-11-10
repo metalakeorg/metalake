@@ -92,7 +92,24 @@ pub(crate) fn replace(statement: &mut Statement, names: &[String]) -> Result<(),
                 .map_err(|e| DataFusionError::Internal(format!("{name}: {e}")))
         })
         .collect::<Result<Vec<ObjectName>, _>>()?;
-    struct Replace(std::vec::IntoIter<ObjectName>);
+    // Calls with no alias: one alone is qualified by the function's name; two would share it, and clash.
+    struct Unaliased(usize);
+    impl VisitorMut for Unaliased {
+        type Break = ();
+        fn pre_visit_table_factor(&mut self, factor: &mut TableFactor) -> ControlFlow<Self::Break> {
+            if let TableFactor::Table { name, args, alias, .. } = factor
+                && is_call(name)
+                && args.is_some()
+                && alias.is_none()
+            {
+                self.0 += 1;
+            }
+            ControlFlow::Continue(())
+        }
+    }
+    let mut unaliased = Unaliased(0);
+    let _ = statement.visit(&mut unaliased);
+    struct Replace(std::vec::IntoIter<ObjectName>, bool);
     impl VisitorMut for Replace {
         type Break = ();
         fn pre_visit_table_factor(&mut self, factor: &mut TableFactor) -> ControlFlow<Self::Break> {
@@ -101,8 +118,10 @@ pub(crate) fn replace(statement: &mut Statement, names: &[String]) -> Result<(),
                 && args.is_some()
                 && let Some(replaced) = self.0.next()
             {
-                // A call with no alias is qualified by its name, `table_changes.k`: the source keeps it.
-                if alias.is_none()
+                // A call with no alias is qualified by its name, `table_changes.k`: the source keeps it, when it is the
+                // only one; several keep the names of their sources, each its own.
+                if self.1
+                    && alias.is_none()
                     && let Some(called) = name.0.first().and_then(|part| part.as_ident())
                 {
                     *alias = Some(TableAlias {
@@ -118,7 +137,7 @@ pub(crate) fn replace(statement: &mut Statement, names: &[String]) -> Result<(),
             ControlFlow::Continue(())
         }
     }
-    let _ = statement.visit(&mut Replace(names.into_iter()));
+    let _ = statement.visit(&mut Replace(names.into_iter(), unaliased.0 == 1));
     Ok(())
 }
 
