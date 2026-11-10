@@ -2,7 +2,7 @@
 //! connector's configuration: what an `INSERT` writes is a sink, and every other table it reads is a source. Names are
 //! read by the core's rule ([`TablePath`]), as every other face of MetaLake reads them.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 use anyhow::{anyhow, bail};
 use arroyo_operator::connector::{Connection, Connector};
@@ -52,9 +52,12 @@ pub fn names_of(query: &str) -> anyhow::Result<Vec<Named>> {
     let mut read = BTreeSet::new();
     for statement in &statements {
         match statement {
-            // A table the query declares, with its connector, is the query's own.
+            // A table the query declares, with its connector, is the query's own; what its `AS SELECT` reads is not.
             Statement::CreateTable(create) => {
                 created.insert(object_name_to_table_reference(create.name.clone(), NORMALIZE)?);
+                if let Some(query) = &create.query {
+                    read.extend(relations(&Statement::Query(query.clone()))?);
+                }
             }
             // What an insert writes is not what it reads: only its query is read.
             Statement::Insert(insert) => {
@@ -68,8 +71,15 @@ pub fn names_of(query: &str) -> anyhow::Result<Vec<Named>> {
             other => read.extend(relations(other)?),
         }
     }
-    if let Some(both) = written.intersection(&read).find(|r| !created.contains(*r)) {
-        bail!("{both} is both read and written by this pipeline: it would feed itself");
+    // One table by two spellings (`shop.t`, `main.shop.t`) is one table: compared by MetaLake's name. A declared table is
+    // compared as the planner looks it up, by its spelling, since another spelling is not found under it.
+    let written_paths: HashSet<TablePath> = written.iter().filter(|r| !created.contains(*r)).map(path_of).collect();
+    let mut sources = read.iter().filter(|r| !created.contains(*r));
+    if let Some(both) = sources.find(|r| written_paths.contains(&path_of(r))) {
+        bail!(
+            "{} is both read and written by this pipeline: it would feed itself",
+            path_of(both)
+        );
     }
 
     let named = |reference: &TableReference, role| Named {
@@ -317,5 +327,31 @@ mod tests {
     #[test]
     fn unparsable_names_nothing() {
         assert_eq!(names_of("INSERT INTO WHERE").unwrap(), []);
+    }
+
+    #[test]
+    fn read_and_written_by_two_spellings_refused() {
+        for query in [
+            "INSERT INTO shop.t SELECT * FROM main.shop.t",
+            "INSERT INTO t SELECT * FROM main.default.t",
+        ] {
+            let refused = names_of(query).unwrap_err();
+            assert!(
+                refused.to_string().contains("both read and written"),
+                "{query}: {refused}"
+            );
+        }
+    }
+
+    #[test]
+    fn create_table_as_select_reads_its_query() {
+        let query = "CREATE TABLE result AS SELECT * FROM shop.orders; INSERT INTO shop.totals SELECT * FROM result";
+        assert_eq!(
+            roles(query),
+            [
+                ("main.shop.orders".into(), Role::Source),
+                ("main.shop.totals".into(), Role::Sink),
+            ]
+        );
     }
 }
