@@ -192,7 +192,7 @@ fn declared_schema(schema: &ConnectionSchema) -> Schema {
 
 /// Finds the table on its branch, and checks the declared columns against its own.
 async fn test_table(profile: &MetaLakeProfile, table: &MetaLakeTable, declared: Option<Schema>) -> anyhow::Result<()> {
-    let mut config = CatalogConfig::new(profile.postgres.sub_env_vars()?, &profile.schema);
+    let mut config = CatalogConfig::new(crate::lake::postgres_of(profile)?, &profile.schema);
     config.connections = 1;
     let catalog = Catalog::connect(config).await?;
     let namespace: Vec<&str> = table.namespace.iter().map(String::as_str).collect();

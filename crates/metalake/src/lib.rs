@@ -16,6 +16,7 @@
 
 pub mod bounds;
 mod catalog;
+pub mod environment;
 mod error;
 mod evolve;
 mod follow;

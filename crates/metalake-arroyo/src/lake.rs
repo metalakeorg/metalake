@@ -3,6 +3,7 @@
 
 use arroyo_rpc::connector_err;
 use arroyo_rpc::errors::{DataflowError, ErrorDomain, RetryHint};
+use metalake::environment;
 use metalake::{Catalog, CatalogConfig, Ref, Storage, Table};
 use metalake_pg::ErrorKind;
 
@@ -22,7 +23,7 @@ pub struct Lake {
 impl Lake {
     pub async fn open(profile: &MetaLakeProfile, at: &MetaLakeTable) -> Result<Self, DataflowError> {
         let name = at.qualified_name();
-        let postgres = profile.postgres.sub_env_vars().map_err(|e| user(&name, e))?;
+        let postgres = postgres_of(profile).map_err(|e| user(&name, e))?;
         let mut config = CatalogConfig::new(postgres, &profile.schema);
         config.connections = CONNECTIONS;
         let catalog = Catalog::connect(config).await.map_err(|e| core(&name, e))?;
@@ -49,6 +50,14 @@ impl Lake {
         let namespace: Vec<&str> = self.table.namespace().iter().map(String::as_str).collect();
         self.branch.table(&namespace, self.table.name()).await
     }
+}
+
+/// The catalog's connection string, its `{{ VAR }}` read from the environment, with `PGPASSWORD` as a client adds it:
+/// the driver does not read the password from the environment by itself.
+pub fn postgres_of(profile: &MetaLakeProfile) -> anyhow::Result<String> {
+    let postgres = profile.postgres.sub_env_vars()?;
+    let password = std::env::var(environment::PASSWORD).ok();
+    Ok(environment::with_password(&postgres, password.as_deref()))
 }
 
 /// A core error by what to do about it: try again for what may pass, stop for what the user has to change.
