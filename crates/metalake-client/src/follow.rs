@@ -236,21 +236,9 @@ impl Lake {
         }
         let (on, table) = self.table(path).await?;
         let storage = self.storage()?;
-        let mut stream = on.stream(&table, Start::After(after)).await?;
-        let mut opened = Vec::new();
-        'steps: while let Some(step) = stream.next().await? {
-            for task in step.tasks {
-                if until.is_some_and(|until| task.seq > until) {
-                    break 'steps;
-                }
-                opened.push(stream.open(task, &storage));
-            }
-            if until.is_some_and(|until| stream.position() >= Some(until)) {
-                break;
-            }
-        }
-        let schema = stream.schema().clone();
-        Ok((schema, stream::iter(opened).flatten().map_err(Error::from).boxed()))
+        let changes = on.changes(&table, after, until).await?;
+        let schema = changes.schema().clone();
+        Ok((schema, changes.read(&storage).map_err(Error::from).boxed()))
     }
 }
 
