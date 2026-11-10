@@ -35,6 +35,9 @@ FACES = {
     ("iceberg", "on-commit"): (metalake.Iceberg.on_commit, {"ref": "on"}),
     ("iceberg", "on-load"): (metalake.Iceberg.on_load, {"ref": "on"}),
     ("iceberg", "status"): (metalake.Iceberg.status, {"ref": "on"}),
+    ("changes",): (metalake.Table.changes, {}),
+    ("follow",): (metalake.Table.follow, {"latest": "start"}),
+    ("ingest",): (metalake.Table.writer, {}),
 }
 
 # What belongs to a terminal, or to the process of a command, and has no meaning in a program.
@@ -43,6 +46,12 @@ TERMINAL = {"help", "version", "lake", "format", "yes"}
 ELSEWHERE = {
     ("retain", "grace"): Lake.grace,
     ("sql", "file"): Lake.sql,
+    # A program keeps the position it reached itself, and gives it back to `follow(after=)`.
+    ("follow", "position-file"): metalake.Table.follow,
+    # Text lines are the terminal's: a program gives Arrow, each write with its version.
+    ("ingest", "input"): metalake.Writer.write,
+    ("ingest", "version-column"): metalake.Writer.write,
+    ("ingest", "batch-lines"): metalake.Writer.write,
 }
 
 

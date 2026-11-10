@@ -10,6 +10,7 @@ mod failure;
 mod out;
 
 use std::ffi::OsString;
+use std::sync::Arc;
 
 use clap::Parser;
 use metalake_client::{Error, Lake, RefKind};
@@ -64,5 +65,8 @@ async fn run(cli: Cli) -> Result<(), Error> {
         Verb::Stop => commands::stop::run(dir, &out).await,
         Verb::Log(log) => commands::log::run(log, &Lake::open(dir).await?, &out).await,
         Verb::Iceberg { verb } => commands::iceberg::run(verb, &Lake::open(dir).await?, &out).await,
+        Verb::Changes(changes) => commands::changes::run(changes, &Lake::open(dir).await?, &out).await,
+        Verb::Follow(follow) => commands::follow::run(follow, &Lake::open(dir).await?, cli.format).await,
+        Verb::Ingest(ingest) => commands::ingest::run(ingest, Arc::new(Lake::open(dir).await?)).await,
     }
 }
