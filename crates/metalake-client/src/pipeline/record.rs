@@ -88,8 +88,9 @@ pub struct Records {
 const RECORD: &str = "pipeline.json";
 
 impl Records {
-    pub fn new(storage: Storage) -> Self {
-        let base = format!("{}/_pipelines", storage.base().trim_end_matches('/'));
+    /// The pipelines of the lake whose warehouse is `warehouse`, a URL.
+    pub fn new(storage: Storage, warehouse: &str) -> Self {
+        let base = format!("{}/_pipelines", warehouse.trim_end_matches('/'));
         Self { storage, base }
     }
 
@@ -191,7 +192,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_name_is_taken_once() {
-        let records = Records::new(Storage::in_memory());
+        let records = Records::new(Storage::in_memory(), "memory:///wh");
         records.create(&record("totals")).await.unwrap();
         let again = records.create(&record("totals")).await.unwrap_err();
         assert!(again.message.contains("exists"), "{}", again.message);
@@ -204,7 +205,7 @@ mod tests {
 
     #[tokio::test]
     async fn listed_and_dropped() {
-        let records = Records::new(Storage::in_memory());
+        let records = Records::new(Storage::in_memory(), "memory:///wh");
         for name in ["b", "a"] {
             records.create(&record(name)).await.unwrap();
         }

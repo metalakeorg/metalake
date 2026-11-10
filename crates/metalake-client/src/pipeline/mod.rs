@@ -78,7 +78,7 @@ pub struct Pipeline {
 
 impl Lake {
     fn records(&self) -> Result<Records> {
-        Ok(Records::new(self.storage()?))
+        Ok(Records::new(self.storage()?, &self.warehouse()?))
     }
 
     /// Starts a pipeline: its tables are checked, its name taken, and it runs until suspended or dropped.
@@ -204,7 +204,7 @@ impl Lake {
     fn launch(&self, records: &Records, record: &Record) -> Result<Handle> {
         let state = records.state(&record.name);
         let home = runner::home(&state)?;
-        let warehouse = self.storage()?.base().to_string();
+        let warehouse = self.warehouse()?;
         let launch = Launch {
             name: &record.name,
             query: &record.query,
