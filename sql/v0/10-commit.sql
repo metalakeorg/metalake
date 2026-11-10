@@ -274,7 +274,8 @@ create function @schema@.commit(
   message text default null,
   definition text default null,
   namespaces jsonb default null,
-  summaries jsonb default null)
+  summaries jsonb default null,
+  expected_app_version bigint default null)
 returns @schema@.commit_result language plpgsql
 set search_path = @schema@, pg_catalog, pg_temp as $$
 #variable_conflict use_column
@@ -293,6 +294,7 @@ declare
   via text := coalesce($9, coalesce($8, session_user));
   app text := $10;
   ver bigint := $11;
+  seen bigint := $16;
   spaces jsonb := coalesce($14, '[]');
   notes jsonb := coalesce($15, '{}');
   sp jsonb;
@@ -316,6 +318,9 @@ begin
   end if;
 
   -- CMT-5: idempotency.
+  if seen is not null and (app is null or seen < 0) then
+    perform refuse_invalid('CMT-5', 'expected_app_version needs an app_id, and is at least 0');
+  end if;
   if app is not null then
     if ver is null or ver < 1 then
       perform refuse_invalid('CMT-5', 'app_version must be positive');
@@ -324,6 +329,10 @@ begin
     select * into stored from idempotency x where x.ref_id = r and x.app_id = app for update;
     if ver <= stored.version then
       return row(stored.commit_seq, false)::commit_result;
+    end if;
+    -- 0.3: the key is where its writer left it.
+    if seen is not null and stored.version <> seen then
+      perform refuse_conflict('CMT-5', format('the key %s is at version %s, not %s', app, stored.version, seen));
     end if;
   end if;
 

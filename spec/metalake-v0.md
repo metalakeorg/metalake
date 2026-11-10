@@ -387,6 +387,12 @@ order and the cluster key.
   and returns the stored `commit_seq`. Otherwise it stores its own `app_version` and `commit_seq`.
   `app_version` is positive. The prefix `iceberg:` is reserved for the keys of Iceberg commits (ICE-6), which
   collection removes (RET-3).
+  *0.3.* A commit with an `app_id` MAY carry `expected_app_version`, the `version` its writer last saw for the key:
+  `0` when the key has applied no commit on the ref. With the row locked, after the check above, if the stored
+  `version` differs from it the commit fails with a conflict and changes nothing. A writer that keeps one key then
+  commits only where it left the key: one that another writer moved it past, as a writer still running after
+  another took its place, applies nothing. `expected_app_version` is at least `0`, and a commit without an `app_id`
+  that carries it is refused with SQLSTATE `22023`.
 - **CMT-6.** A table entry MAY carry `expected_snapshot`. If the current snapshot differs, the commit fails
   with a conflict. This is how an Iceberg `assert-ref-snapshot-id` requirement is honoured.
 - **CMT-7.** Checked under the locks, against the current state, a commit fails with a conflict when it:

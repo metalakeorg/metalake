@@ -55,7 +55,7 @@ $$;
 -- implementation exposes whatever interface it chooses. `c` is one JSON object:
 --
 --   {"ref": 1, "author": "...", "actor": "...", "operation": "append", "app_id": null, "app_version": null,
---    "definition": null, "message": null,
+--    "expected_app_version": null, "definition": null, "message": null,
 --    "tables": [{"table_id": "<uuid>", "expected_snapshot": null,
 --                "create": {"namespace": ["db"], "name": "t", "location": "gs://..."},
 --                "rename": {"namespace": ["db"], "name": "u"}, "drop": true,
@@ -85,6 +85,7 @@ declare
   r int := (c ->> 'ref')::int;
   app text := c ->> 'app_id';
   ver bigint := (c ->> 'app_version')::bigint;
+  expected bigint := (c ->> 'expected_app_version')::bigint;
   entries jsonb := coalesce(c -> 'tables', '[]');
   e jsonb;
   x jsonb;
@@ -105,6 +106,9 @@ declare
 begin
   perform writable();
   -- CMT-5: idempotency.
+  if expected is not null and (app is null or expected < 0) then
+    perform invalid('expected_app_version needs an app_id, and is at least 0');
+  end if;
   if app is not null then
     if ver is null or ver < 1 then
       perform invalid('app_version must be positive');
@@ -113,6 +117,10 @@ begin
     select * into stored from idempotency where ref_id = r and app_id = app for update;
     if ver <= stored.version then
       return stored.commit_seq;
+    end if;
+    -- 0.3: the key is where its writer left it.
+    if expected is not null and stored.version <> expected then
+      perform conflict(format('the key %s is at version %s, not %s', app, stored.version, expected));
     end if;
   end if;
 
