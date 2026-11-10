@@ -68,5 +68,6 @@ async fn run(cli: Cli) -> Result<(), Error> {
         Verb::Changes(changes) => commands::changes::run(changes, &Lake::open(dir).await?, &out).await,
         Verb::Follow(follow) => commands::follow::run(follow, &Lake::open(dir).await?, cli.format).await,
         Verb::Ingest(ingest) => commands::ingest::run(ingest, Arc::new(Lake::open(dir).await?)).await,
+        Verb::Pipeline { verb } => commands::pipeline::run(verb, &Lake::open(dir).await?, &out).await,
     }
 }

@@ -69,6 +69,52 @@ pub enum Verb {
     /// Writes rows from stdin into a table as they come, committing on a cadence. With a key, a run given the same input
     /// again goes on where the last one left it, and no row is written twice.
     Ingest(Ingest),
+    /// A continuous pipeline: a query, `INSERT INTO t SELECT … FROM s`, that Arroyo keeps running over each commit of
+    /// what it reads. As in SQL: `CREATE PIPELINE`, `SHOW PIPELINES`, `ALTER PIPELINE … SUSPEND`.
+    Pipeline {
+        #[command(subcommand)]
+        verb: PipelineVerb,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PipelineVerb {
+    /// Starts one: its tables are checked, its name taken, and it runs until suspended or dropped.
+    Create(PipelineCreate),
+    /// Lists every pipeline, and where each is.
+    List,
+    /// One pipeline: its query, where it is, and, if it failed, its log's last lines.
+    Describe(PipelineName),
+    /// Stops it with a checkpoint, to resume from it.
+    Suspend(PipelineName),
+    /// Runs it again from its last checkpoint: what its sources committed meanwhile comes then.
+    Resume(PipelineName),
+    /// Stops it and forgets it. What it wrote stays in its tables.
+    Drop(PipelineName),
+}
+
+#[derive(Debug, Args)]
+pub struct PipelineName {
+    #[arg(value_name = "NAME")]
+    pub name: String,
+}
+
+#[derive(Debug, Args)]
+pub struct PipelineCreate {
+    #[arg(value_name = "NAME")]
+    pub name: String,
+    /// Its query: `INSERT INTO t SELECT … FROM s`.
+    #[arg(long, value_name = "SQL", conflicts_with = "file", required_unless_present = "file")]
+    pub query: Option<String>,
+    /// Its query, from a file.
+    #[arg(long, value_name = "FILE")]
+    pub file: Option<PathBuf>,
+    /// The subtasks it runs in.
+    #[arg(long, value_name = "N", default_value_t = 1)]
+    pub parallelism: u32,
+    /// Empties the tables it writes first, when they have rows: they then hold what the query gives.
+    #[arg(long)]
+    pub empty_target: bool,
 }
 
 #[derive(Debug, Args)]

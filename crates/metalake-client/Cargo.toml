@@ -23,6 +23,7 @@ datafusion = { version = "55.2", default-features = false, features = [
     "unicode_expressions",
 ] }
 futures-util.workspace = true
+object_store.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["time"] }

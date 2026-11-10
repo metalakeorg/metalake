@@ -25,10 +25,19 @@ use metalake_datafusion::{CommitDetails, MetaLake, Source};
 use crate::write::{Details, TablePath, Written};
 use crate::{Error, Lake, Result};
 
+/// One statement of a text: the engine's, or a pipeline's verb, which is the client's.
+#[derive(Debug)]
+pub enum Step {
+    Statement(Statement),
+    Pipeline(crate::pipeline::Verb),
+}
+
 /// The engine over a lake, and a session of it.
 pub struct Session {
     engine: MetaLake,
     context: SessionContext,
+    /// For what is the client's own and not the engine's: a pipeline's verbs.
+    lake: Lake,
 }
 
 /// Whether a plan only reads, and so can wait to be read. What is not known to be a read runs at once: running one early
@@ -111,7 +120,11 @@ impl Session {
     pub async fn new(lake: &Lake) -> Result<Self> {
         let engine = MetaLake::new(lake.catalog.clone(), lake.storage()?).await?;
         let context = engine.context()?;
-        Ok(Self { engine, context })
+        Ok(Self {
+            engine,
+            context,
+            lake: lake.clone(),
+        })
     }
 
     /// The statements of a text, in order. A text with none is a wrong use.
@@ -188,13 +201,42 @@ impl Session {
         Ok(Written::of_statement(details.outcome(), rows).merged(inserted, updated))
     }
 
+    /// The statements of a text, in order: the engine's, and a pipeline's verbs (`CREATE PIPELINE …`, `SHOW PIPELINES`,
+    /// …), which are the client's. A text with no verb goes to the engine whole, as written.
+    pub fn steps(text: &str) -> Result<Vec<Step>> {
+        let pieces = crate::pipeline::sql::pieces(text);
+        let mut verbs = Vec::with_capacity(pieces.len());
+        for piece in &pieces {
+            verbs.push(crate::pipeline::sql::verb_of(piece)?);
+        }
+        if verbs.iter().all(Option::is_none) {
+            return Ok(Self::parse(text)?.into_iter().map(Step::Statement).collect());
+        }
+        let mut steps = Vec::new();
+        for (piece, verb) in pieces.iter().zip(verbs) {
+            match verb {
+                Some(verb) => steps.push(Step::Pipeline(verb)),
+                None => steps.extend(Self::parse(piece)?.into_iter().map(Step::Statement)),
+            }
+        }
+        Ok(steps)
+    }
+
+    /// Prepares one step, and runs it if it does more than read.
+    pub async fn step(&self, step: Step) -> Result<Prepared> {
+        match step {
+            Step::Statement(statement) => self.prepare(statement).await,
+            Step::Pipeline(verb) => crate::pipeline::sql::run(&self.lake, verb).await,
+        }
+    }
+
     /// Prepares the statements of a text, each committed before the next, and answers the last.
     pub async fn run(&self, text: &str) -> Result<Prepared> {
         let mut last = None;
-        for statement in Self::parse(text)? {
-            last = Some(self.prepare(statement).await?);
+        for step in Self::steps(text)? {
+            last = Some(self.step(step).await?);
         }
-        Ok(last.expect("parse refuses a text with none"))
+        last.ok_or_else(|| Error::usage("no statement to run"))
     }
 
     /// Takes a new picture of what `information_schema` shows, for what others changed. A table or a ref named in a

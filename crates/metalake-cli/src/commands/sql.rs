@@ -8,10 +8,15 @@ use crate::args::Sql;
 use crate::out::Out;
 
 pub async fn run(sql: &Sql, lake: &Lake, out: &Out) -> Result<(), Error> {
-    let statements = Session::parse(&text(sql)?)?;
+    let text = text(sql)?;
+    // Parsed first, so that a text with a mistake runs none of it. A pipeline's verbs are among them, the client's.
+    let steps = Session::steps(&text)?;
+    if steps.is_empty() {
+        return Err(Error::usage("no statement to run"));
+    }
     let session = Session::new(lake).await?;
-    for statement in statements {
-        out.rows(session.prepare(statement).await?.read()?).await?;
+    for step in steps {
+        out.rows(session.step(step).await?.read()?).await?;
     }
     Ok(())
 }

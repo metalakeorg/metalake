@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use metalake_client::{Error, Lake, MaintainRequest, MergeRequest, RefKind, Retention, Session, Task, duration};
+use metalake_client::{
+    Error, Lake, MaintainRequest, MergeRequest, PipelineOptions, RefKind, Retention, Session, Task, duration,
+};
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
@@ -12,6 +14,7 @@ use crate::errors::to_python;
 use crate::iceberg::PyIceberg;
 use crate::info::{History, PyDone, PyMerged, PyRef, PyStatus};
 use crate::owner::Owner;
+use crate::pipeline::PyPipeline;
 use crate::result::QueryResult;
 use crate::runtime::wait;
 use crate::table::PyTable;
@@ -130,6 +133,50 @@ impl PyLake {
         let lake = self.lake.clone();
         let status = wait(py, async move { lake.status().await })?;
         status.map(PyStatus::from).map_err(|e| to_python(py, e))
+    }
+
+    /// Starts a continuous pipeline: `query` is `INSERT INTO t SELECT … FROM s`, over the lake's names, and Arroyo keeps
+    /// it running over each commit of what it reads until it is suspended or dropped. A table it writes must have no
+    /// commits, unless `empty_target` empties it first.
+    #[pyo3(signature = (name, query, *, parallelism=1, empty_target=false))]
+    fn create_pipeline(
+        &self,
+        py: Python<'_>,
+        name: String,
+        query: String,
+        parallelism: u32,
+        empty_target: bool,
+    ) -> PyResult<PyPipeline> {
+        self.owner.check(py, "Lake")?;
+        let lake = self.lake.clone();
+        let options = PipelineOptions {
+            parallelism,
+            empty_target,
+        };
+        let created = wait(py, async move { lake.create_pipeline(&name, &query, options).await })?;
+        let created = created.map_err(|e| to_python(py, e))?;
+        Ok(PyPipeline::new(self.owner.clone(), self.lake.clone(), created))
+    }
+
+    /// A pipeline, as it is now.
+    fn pipeline(&self, py: Python<'_>, name: String) -> PyResult<PyPipeline> {
+        self.owner.check(py, "Lake")?;
+        let lake = self.lake.clone();
+        let found = wait(py, async move { lake.pipeline(&name).await })?;
+        let found = found.map_err(|e| to_python(py, e))?;
+        Ok(PyPipeline::new(self.owner.clone(), self.lake.clone(), found))
+    }
+
+    /// Every pipeline of the lake, by name.
+    fn pipelines(&self, py: Python<'_>) -> PyResult<Vec<PyPipeline>> {
+        self.owner.check(py, "Lake")?;
+        let lake = self.lake.clone();
+        let found = wait(py, async move { lake.pipelines().await })?;
+        let found = found.map_err(|e| to_python(py, e))?;
+        Ok(found
+            .into_iter()
+            .map(|p| PyPipeline::new(self.owner.clone(), self.lake.clone(), p))
+            .collect())
     }
 
     /// Every branch and tag.
