@@ -9,14 +9,14 @@ use crate::out::Out;
 
 pub async fn run(sql: &Sql, lake: &Lake, out: &Out) -> Result<(), Error> {
     let text = text(sql)?;
-    let session = Session::new(lake).await?;
-    // A pipeline's verb is a text of its own, and the client's, not the engine's.
-    if let Some(answered) = session.pipeline(&text).await? {
-        return out.rows(answered.read()?).await;
+    // Parsed first, so that a text with a mistake runs none of it. A pipeline's verbs are among them, the client's.
+    let steps = Session::steps(&text)?;
+    if steps.is_empty() {
+        return Err(Error::usage("no statement to run"));
     }
-    let statements = Session::parse(&text)?;
-    for statement in statements {
-        out.rows(session.prepare(statement).await?.read()?).await?;
+    let session = Session::new(lake).await?;
+    for step in steps {
+        out.rows(session.step(step).await?.read()?).await?;
     }
     Ok(())
 }

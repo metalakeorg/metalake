@@ -2,6 +2,7 @@
 //! keeps its checkpoints. Both last as long as the lake, so that a pipeline is resumed from any machine that reaches it.
 //! A name is taken once: the record is created only if it is not there.
 
+use std::future::Future;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use metalake::Storage;
@@ -86,6 +87,9 @@ pub struct Records {
 }
 
 const RECORD: &str = "pipeline.json";
+const LOCK: &str = "lock";
+/// Longer than any change of a pipeline takes: a stop waits 90 seconds for its checkpoint.
+const LOCK_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
 impl Records {
     /// The pipelines of the lake whose warehouse is `warehouse`, a URL.
@@ -167,6 +171,55 @@ impl Records {
         Ok(records)
     }
 
+    /// Runs `work` holding the pipeline's lock, which it releases however `work` ends.
+    pub async fn locked<T>(&self, name: &str, work: impl Future<Output = Result<T>>) -> Result<T> {
+        let lock = self.lock(name).await?;
+        let done = work.await;
+        let _ = self.storage.delete(&lock).await;
+        done
+    }
+
+    /// Takes the pipeline's lock, so that one caller at a time changes it: two resuming it at once would start two
+    /// runners on one state. A lock older than any change takes (a stop's checkpoint, a start's settling) was left by
+    /// a caller that died, and is taken over.
+    async fn lock(&self, name: &str) -> Result<String> {
+        let url = format!("{}/{LOCK}", self.dir(name));
+        let path = self.storage.path(&url)?;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        for _ in 0..2 {
+            let options = PutOptions {
+                mode: PutMode::Create,
+                ..Default::default()
+            };
+            let held = format!("{} {now}", super::runner::host());
+            match self
+                .storage
+                .store()
+                .put_opts(&path, PutPayload::from(held), options)
+                .await
+            {
+                Ok(_) => return Ok(url),
+                Err(object_store::Error::AlreadyExists { .. }) => {
+                    let held = self.storage.get(&url).await.unwrap_or_default();
+                    let held = String::from_utf8_lossy(&held).to_string();
+                    let (host, since) = held.rsplit_once(' ').unwrap_or((held.as_str(), "0"));
+                    if now.saturating_sub(since.parse().unwrap_or(0)) < LOCK_TTL.as_secs() {
+                        return Err(Error::conflict(
+                            None,
+                            format!("the pipeline {name} is being changed by {host}: try again once it is done"),
+                        ));
+                    }
+                    self.storage.delete(&url).await?;
+                }
+                Err(e) => return Err(Error::failed(format!("the pipeline {name} could not be locked: {e}"))),
+            }
+        }
+        Err(Error::conflict(
+            None,
+            format!("the pipeline {name} is being changed: try again"),
+        ))
+    }
+
     /// The record and the state: what is left of the pipeline in the lake.
     pub async fn delete(&self, name: &str) -> Result<()> {
         for (url, _) in self.storage.list(&self.dir(name)).await? {
@@ -224,6 +277,54 @@ mod tests {
         let names: Vec<String> = records.list().await.unwrap().into_iter().map(|r| r.name).collect();
         assert_eq!(names, ["b"]);
         assert!(records.get("a").await.unwrap_err().message.contains("no pipeline"));
+    }
+
+    #[tokio::test]
+    async fn dropping_one_leaves_another_of_a_longer_name() {
+        let records = Records::new(Storage::in_memory(), "memory:///wh");
+        for name in ["a", "ab"] {
+            records.create(&record(name)).await.unwrap();
+            let state = format!("{}/checkpoint-1", records.state(name));
+            records.storage.put(&state, Vec::new().into()).await.unwrap();
+        }
+        records.delete("a").await.unwrap();
+        assert!(records.has("ab").await.unwrap());
+        let state = format!("{}/checkpoint-1", records.state("ab"));
+        assert!(records.storage.exists(&state).await.unwrap(), "its state stays");
+    }
+
+    #[tokio::test]
+    async fn one_caller_at_a_time() {
+        let records = Records::new(Storage::in_memory(), "memory:///wh");
+        records.create(&record("t")).await.unwrap();
+        let held = records
+            .locked("t", async {
+                let other = records.locked("t", async { Ok(()) }).await.unwrap_err();
+                assert!(other.message.contains("being changed"), "{}", other.message);
+                Ok(1)
+            })
+            .await
+            .unwrap();
+        assert_eq!(held, 1);
+        let failed: Result<()> = records.locked("t", async { Err(Error::failed("x")) }).await;
+        assert!(failed.is_err());
+        records
+            .locked("t", async { Ok(()) })
+            .await
+            .expect("released however the work ended");
+
+        // A lock a dead caller left is taken over once it is old.
+        let lock = format!("{}/{LOCK}", records.dir("t"));
+        records
+            .storage
+            .put(&lock, "gone 1".as_bytes().to_vec().into())
+            .await
+            .unwrap();
+        records
+            .locked("t", async { Ok(()) })
+            .await
+            .expect("a stale lock is taken over");
+        assert_eq!(records.list().await.unwrap().len(), 1, "a lock is not a pipeline");
     }
 
     #[test]

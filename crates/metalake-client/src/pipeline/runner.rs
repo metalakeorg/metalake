@@ -46,6 +46,8 @@ pub struct Launch<'a> {
     pub home: &'a Path,
     /// The warehouse's directory, when it is one of this machine, which a container must see where it is.
     pub warehouse: Option<PathBuf>,
+    /// Whether the catalog is the lake's own Postgres, which only this machine reaches.
+    pub own_postgres: bool,
 }
 
 impl Runner {
@@ -100,6 +102,25 @@ impl Runner {
                 })
             }
             Self::Docker { image } => {
+                let postgres = launch
+                    .env
+                    .iter()
+                    .find(|(name, _)| name == metalake::environment::POSTGRES)
+                    .map(|(_, value)| value.as_str())
+                    .unwrap_or_default();
+                // A lake's own Postgres listens on a socket in the lake (Linux, macOS) or on the loopback (Windows): a
+                // container reaches the socket, mounted where it is, only where Docker shares a socket, on Linux.
+                let socket = match (launch.own_postgres, socket_of(postgres)) {
+                    (false, _) => None,
+                    (true, Some(socket)) if cfg!(target_os = "linux") => Some(socket),
+                    (true, _) => {
+                        return Err(Error::usage(format!(
+                            "this lake's own Postgres is reached only from this machine, and Arroyo's container cannot \
+                             reach it here: install Arroyo and set {ARROYO} to run its pipelines as processes, or keep \
+                             the lake on a Postgres reached over the network"
+                        )));
+                    }
+                };
                 let container = container(launch.name, launch.state);
                 let _ = docker(&["rm", "-f", &container]);
                 let mut command = Command::new("docker");
@@ -110,6 +131,9 @@ impl Runner {
                     command.args(["--user", &user]);
                 }
                 command.arg("-v").arg(format!("{}:/pipeline:ro", launch.home.display()));
+                if let Some(socket) = &socket {
+                    command.arg("-v").arg(format!("{socket}:{socket}"));
+                }
                 if let Some(warehouse) = &launch.warehouse {
                     command.arg("-v").arg(format!("{0}:{0}", warehouse.display()));
                 }
@@ -142,13 +166,19 @@ impl Handle {
 
     pub fn alive(&self) -> bool {
         match self.kind {
+            // A process that ended is a zombie until its parent reaps it, which a long-lived parent, as a Python
+            // program, may never do: it still answers a signal, and is not running.
             RunnerKind::Process => {
                 cfg!(unix)
-                    && Command::new("kill")
-                        .args(["-0", &self.id])
+                    && Command::new("ps")
+                        .args(["-o", "stat=", "-p", &self.id])
                         .stderr(Stdio::null())
-                        .status()
-                        .is_ok_and(|s| s.success())
+                        .output()
+                        .is_ok_and(|o| {
+                            let stat = String::from_utf8_lossy(&o.stdout);
+                            let stat = stat.trim();
+                            o.status.success() && !stat.is_empty() && !stat.starts_with('Z')
+                        })
             }
             RunnerKind::Docker => docker(&["inspect", "-f", "{{.State.Running}}", &self.id])
                 .is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true"),
@@ -254,6 +284,27 @@ fn in_container(name: &str, value: &str) -> String {
     value
 }
 
+/// The directory of a Postgres socket a connection string names, `host=/path` or `host='/path'`, if it names one.
+fn socket_of(postgres: &str) -> Option<String> {
+    let (_, rest) = postgres.split_once("host=")?;
+    let host = match rest.strip_prefix('\'') {
+        Some(quoted) => {
+            let mut host = String::new();
+            let mut chars = quoted.chars();
+            while let Some(c) = chars.next() {
+                match c {
+                    '\\' => host.extend(chars.next()),
+                    '\'' => break,
+                    c => host.push(c),
+                }
+            }
+            host
+        }
+        None => rest.split_whitespace().next().unwrap_or_default().to_string(),
+    };
+    host.starts_with('/').then_some(host)
+}
+
 /// A name of this machine.
 pub fn host() -> String {
     env::var("HOSTNAME")
@@ -342,6 +393,18 @@ mod tests {
     }
 
     #[test]
+    fn sockets() {
+        assert_eq!(
+            socket_of("host='/lake/postgres/run' port=5432 user=metalake").as_deref(),
+            Some("/lake/postgres/run")
+        );
+        assert_eq!(socket_of(r"host='/a b/it\'s' port=1").as_deref(), Some("/a b/it's"));
+        assert_eq!(socket_of("host=/run/pg port=1").as_deref(), Some("/run/pg"));
+        assert_eq!(socket_of("host=127.0.0.1 port=1"), None);
+        assert_eq!(socket_of("postgresql://u@db/x"), None);
+    }
+
+    #[test]
     fn names_by_lake() {
         assert_ne!(
             container("t", "s3://a/_pipelines/t/state"),
@@ -363,6 +426,7 @@ mod tests {
             env: vec![],
             home: &home,
             warehouse: None,
+            own_postgres: false,
         };
         assert_eq!(
             arguments(&launch, "/pipeline/query.sql"),

@@ -57,5 +57,8 @@ def test_none_yet(lake):
     assert shown.columns[:4] == ["name", "state", "reads", "writes"]
     assert sum(batch.num_rows for batch in shown) == 0
     lake.sql("drop pipeline if exists totals")
+    # A batch takes a pipeline's verbs among other statements, in order, and answers the last.
+    assert lake.sql("select 1; show pipelines").columns[:2] == ["name", "state"]
+    assert lake.sql("show pipelines; select 1 as one").columns == ["one"]
     with pytest.raises(metalake.UsageError, match="no pipeline"):
         lake.sql("alter pipeline totals suspend")

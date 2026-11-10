@@ -117,7 +117,7 @@ impl Lake {
             strings(&names.writes),
         );
         records.create(&record).await?;
-        let started = async {
+        let started = records.locked(name, async {
             if options.empty_target {
                 let session = Session::new(self).await?;
                 for path in &names.writes {
@@ -128,15 +128,28 @@ impl Lake {
                     session.delete(path, "true", details).await?;
                 }
             }
-            record.runner = Some(self.launch(&records, &record)?);
-            records.put(&record).await
-        };
+            self.run(&records, &mut record).await
+        });
         if let Err(e) = started.await {
             // A pipeline that never ran leaves its name free.
             let _ = records.delete(name).await;
             return Err(e);
         }
         self.settle(&records, record).await
+    }
+
+    /// Starts its runner and keeps it in its record; a runner whose record could not be kept is stopped, since nothing
+    /// could find it to stop it after.
+    async fn run(&self, records: &Records, record: &mut Record) -> Result<()> {
+        let handle = self.launch(records, record)?;
+        record.runner = Some(handle.clone());
+        record.desired = Desired::Running;
+        if let Err(e) = records.put(record).await {
+            let _ = stopped(handle.clone()).await;
+            handle.remove();
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// A pipeline, as it is now.
@@ -159,45 +172,62 @@ impl Lake {
     /// Stops it with a checkpoint, to resume from it.
     pub async fn suspend_pipeline(&self, name: &str) -> Result<Pipeline> {
         let records = self.records()?;
-        let mut record = records.get(name).await?;
-        if let Some(handle) = &record.runner {
-            here(handle, name)?;
-            stopped(handle.clone()).await?;
-        }
-        record.desired = Desired::Suspended;
-        records.put(&record).await?;
+        let record = records
+            .locked(name, async {
+                let mut record = records.get(name).await?;
+                if let Some(handle) = &record.runner {
+                    here(handle, name)?;
+                    stopped(handle.clone()).await?;
+                }
+                record.desired = Desired::Suspended;
+                records.put(&record).await?;
+                Ok(record)
+            })
+            .await?;
         self.described(&records, record).await
     }
 
-    /// Runs it again, from its last checkpoint: what its sources committed meanwhile comes then.
+    /// Runs it again, from its last checkpoint: what its sources committed meanwhile comes then. Two callers take turns,
+    /// so one pipeline never has two runners.
     pub async fn resume_pipeline(&self, name: &str) -> Result<Pipeline> {
         let records = self.records()?;
-        let mut record = records.get(name).await?;
-        if let Some(handle) = &record.runner {
-            here(handle, name)?;
-            if handle.alive() {
-                record.desired = Desired::Running;
-                records.put(&record).await?;
-                return self.described(&records, record).await;
-            }
-            handle.remove();
+        let (record, started) = records
+            .locked(name, async {
+                let mut record = records.get(name).await?;
+                if let Some(handle) = &record.runner {
+                    here(handle, name)?;
+                    if handle.alive() {
+                        record.desired = Desired::Running;
+                        records.put(&record).await?;
+                        return Ok((record, false));
+                    }
+                    handle.remove();
+                }
+                self.run(&records, &mut record).await?;
+                Ok((record, true))
+            })
+            .await?;
+        match started {
+            true => self.settle(&records, record).await,
+            false => self.described(&records, record).await,
         }
-        record.runner = Some(self.launch(&records, &record)?);
-        record.desired = Desired::Running;
-        records.put(&record).await?;
-        self.settle(&records, record).await
     }
 
     /// Stops it and forgets it: its record and its state. What it wrote stays in its tables.
     pub async fn drop_pipeline(&self, name: &str) -> Result<()> {
         let records = self.records()?;
-        let record = records.get(name).await?;
-        if let Some(handle) = &record.runner {
-            here(handle, name)?;
-            stopped(handle.clone()).await?;
-            handle.remove();
-        }
-        records.delete(name).await?;
+        // Its lock goes with the rest of it.
+        records
+            .locked(name, async {
+                let record = records.get(name).await?;
+                if let Some(handle) = &record.runner {
+                    here(handle, name)?;
+                    stopped(handle.clone()).await?;
+                    handle.remove();
+                }
+                records.delete(name).await
+            })
+            .await?;
         if let Ok(home) = runner::home(&records.state(name)) {
             let _ = std::fs::remove_dir_all(home);
         }
@@ -225,6 +255,7 @@ impl Lake {
             env: self.pipeline_environment()?,
             home: &home,
             warehouse: local(&warehouse),
+            own_postgres: self.local().is_some(),
         };
         Runner::find()?.start(&launch)
     }

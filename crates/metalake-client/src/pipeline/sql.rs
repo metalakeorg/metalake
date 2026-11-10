@@ -40,6 +40,30 @@ pub enum Verb {
     },
 }
 
+/// The statements of a text, each as written, split at the `;` that end them: a `;` in a string or a comment is not
+/// one. A text the tokenizer cannot read is one piece, for DataFusion to say what is wrong with it.
+pub fn pieces(text: &str) -> Vec<String> {
+    let Ok(tokens) = Tokenizer::new(&GenericDialect {}, text).tokenize() else {
+        return vec![text.to_string()];
+    };
+    let mut pieces = Vec::new();
+    let mut piece = String::new();
+    for token in tokens {
+        match token {
+            Token::SemiColon => pieces.push(std::mem::take(&mut piece)),
+            token => piece.push_str(&token.to_string()),
+        }
+    }
+    pieces.push(piece);
+    // A piece of whitespace and comments alone is no statement.
+    pieces.retain(|piece| {
+        Tokenizer::new(&GenericDialect {}, piece)
+            .tokenize()
+            .map_or(true, |tokens| tokens.iter().any(|t| !matches!(t, Token::Whitespace(_))))
+    });
+    pieces
+}
+
 /// The pipeline verb a text says, if it says one: none for every other statement.
 pub fn verb_of(text: &str) -> Result<Option<Verb>> {
     let Ok(tokens) = Tokenizer::new(&GenericDialect {}, text).tokenize() else {
@@ -350,6 +374,23 @@ mod tests {
                 name: "t".into(),
                 if_exists: false
             }
+        );
+    }
+
+    #[test]
+    fn a_batch_in_pieces() {
+        assert_eq!(
+            pieces("select 1; show pipelines;\n-- the end\n"),
+            ["select 1", " show pipelines"]
+        );
+        assert_eq!(
+            pieces("select ';' -- a ; here\n; drop pipeline t"),
+            ["select ';' -- a ; here\n", " drop pipeline t"]
+        );
+        assert!(pieces("  ;\n").is_empty());
+        assert_eq!(
+            verb_of(&pieces("select 1; show pipelines")[1]).unwrap(),
+            Some(Verb::Show)
         );
     }
 
