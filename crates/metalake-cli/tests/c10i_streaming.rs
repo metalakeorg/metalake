@@ -221,3 +221,138 @@ fn ingest_upsert_by_key() {
     let rows = sql(&dir, "select k, s from main.db.t order by k", "csv");
     assert_eq!(rows.lines().skip(1).collect::<Vec<_>>(), ["1,one", "2,", "3,"]);
 }
+
+/// `metalake ingest` fed line by line, with a pause after each line that has one, for its output.
+fn ingest_slowly(dir: &Path, args: &[&str], lines: &[(&str, Duration)]) -> std::process::Output {
+    let mut child = metalake(dir)
+        .arg("ingest")
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    for (line, pause) in lines {
+        if stdin.write_all(format!("{line}\n").as_bytes()).is_err() {
+            break;
+        }
+        stdin.flush().unwrap();
+        thread::sleep(*pause);
+    }
+    drop(stdin);
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn ingest_quiet_input_commits_what_came() {
+    let dir = table();
+    let mut child = metalake(&dir)
+        .args(["ingest", "db.t", "--commit-every", "200ms"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(b"{\"k\": 30}\n").unwrap();
+    stdin.flush().unwrap();
+    // One line, far from a full batch, and nothing after it: it is committed while the input stays open.
+    thread::sleep(Duration::from_secs(2));
+    assert_eq!(keys(&dir), [1, 2, 30]);
+    drop(stdin);
+    assert!(child.wait_with_output().unwrap().status.success());
+}
+
+#[test]
+fn ingest_version_spanning_batches_whole() {
+    let dir = table();
+    let pause = Duration::from_millis(600);
+    let args = [
+        "db.t",
+        "--app-id",
+        "spans",
+        "--version-column",
+        "k",
+        "--batch-lines",
+        "1",
+        "--commit-every",
+        "200ms",
+    ];
+    let output = ingest_slowly(
+        &dir,
+        &args,
+        &[
+            ("{\"k\": 7, \"s\": \"a\"}", pause),
+            ("{\"k\": 7, \"s\": \"b\"}", pause),
+            ("{\"k\": 8, \"s\": \"c\"}", Duration::ZERO),
+        ],
+    );
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let rows = sql(&dir, "select k, s from main.db.t where k > 2 order by k, s", "csv");
+    assert_eq!(
+        rows.lines().skip(1).collect::<Vec<_>>(),
+        ["7,a", "7,b", "8,c"],
+        "a timer splits no version"
+    );
+}
+
+#[test]
+fn ingest_version_going_back_refused() {
+    let dir = table();
+    let pause = Duration::from_millis(600);
+    let args = [
+        "db.t",
+        "--app-id",
+        "back",
+        "--version-column",
+        "k",
+        "--batch-lines",
+        "1",
+        "--commit-every",
+        "200ms",
+    ];
+    let output = ingest_slowly(&dir, &args, &[("{\"k\": 10}", pause), ("{\"k\": 9}", pause)]);
+    assert!(!output.status.success());
+    assert!(
+        text(&output.stderr).contains("do not go back"),
+        "{}",
+        text(&output.stderr)
+    );
+    assert!(
+        !keys(&dir).contains(&9),
+        "a version that goes back is refused, not written"
+    );
+}
+
+#[test]
+fn follow_csv_position_after_printed() {
+    let dir = table();
+    let file = dir.join("csv.position");
+    let file_arg = file.to_string_lossy().to_string();
+    let (printed, _) = stopped(
+        follow(
+            &dir,
+            &[
+                "db.t",
+                "--format",
+                "csv",
+                "--position-file",
+                &file_arg,
+                "--interval",
+                "100ms",
+            ],
+        ),
+        Duration::from_secs(3),
+    );
+    // Killed with no chance to flush: what the file says was printed is in what was printed.
+    let kept: i64 = std::fs::read_to_string(&file).unwrap().trim().parse().unwrap();
+    let header: Vec<&str> = printed.lines().next().expect("a header").split(',').collect();
+    let seq = header.iter().position(|c| *c == "_commit_seq").unwrap();
+    let printed_seqs: Vec<i64> = printed
+        .lines()
+        .skip(1)
+        .map(|line| line.split(',').nth(seq).unwrap().parse().unwrap())
+        .collect();
+    assert!(printed_seqs.contains(&kept), "{kept} not among {printed_seqs:?}");
+}

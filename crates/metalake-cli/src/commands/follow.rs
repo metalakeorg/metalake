@@ -2,7 +2,7 @@
 //! go on after. A position file is read at the start and written after each step is printed, whole or not at all, so a
 //! follower stopped anywhere goes on with the first commit it had not printed.
 
-use std::io::{self, BufWriter, IsTerminal, Stdout, Write};
+use std::io::{self, IsTerminal, Stdout, Write};
 use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -38,7 +38,8 @@ pub async fn run(args: &Follow, lake: &Lake, format: Option<Format>) -> Result<(
         Format::Json
     });
     let out = Out::new(Some(format));
-    let mut csv: Option<(SchemaRef, csv::Writer<BufWriter<Stdout>>)> = None;
+    // Straight to stdout, with no buffer of its own: a step is out once stdout is flushed, before its position is kept.
+    let mut csv: Option<(SchemaRef, csv::Writer<Stdout>)> = None;
     loop {
         let step = tokio::select! {
             step = follower.wait(args.interval) => step?,
@@ -48,9 +49,7 @@ pub async fn run(args: &Follow, lake: &Lake, format: Option<Format>) -> Result<(
         let batches: Vec<RecordBatch> = step.try_collect().await?;
         if format == Format::Csv {
             let (columns, writer) = csv.get_or_insert_with(|| {
-                let writer = csv::WriterBuilder::new()
-                    .with_header(true)
-                    .build(BufWriter::new(io::stdout()));
+                let writer = csv::WriterBuilder::new().with_header(true).build(io::stdout());
                 (schema.clone(), writer)
             });
             if *columns != schema {
