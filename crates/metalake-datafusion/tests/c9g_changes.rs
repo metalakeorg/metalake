@@ -165,6 +165,15 @@ async fn table_changes_composes() {
         .await
         .unwrap();
     assert_eq!(both.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+
+    // Two ranges with no alias, joined: each keeps a name of its own.
+    let joined = lake
+        .run(&format!(
+            "select count(*) from table_changes('db.t', {one}) cross join table_changes('db.t', {one})"
+        ))
+        .await
+        .unwrap();
+    assert_eq!(joined.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
 }
 
 #[tokio::test]

@@ -176,6 +176,33 @@ def test_writer_reader_batch_by_batch(table):
     assert [w.rows for w in committed] == [1, 1, 1]
 
 
+def test_follow_step_counts_once_its_reader_ends(table):
+    append(table, [1])
+    follower = table.follow()
+    step = next(follower)
+    batches = iter(step.rows)
+    next(batches)
+    time.sleep(0.3)
+    assert follower.position is None, "a batch handed over is not the step read to its end"
+    list(batches)
+    assert follower.position == step.position
+
+
+def test_writer_failed_reader_commits_no_part(lake, table):
+    pa = pytest.importorskip("pyarrow")
+    schema = pa.schema([("k", pa.int64()), ("s", pa.string())])
+
+    def broken():
+        yield pa.record_batch([[1], ["1"]], schema=schema)
+        raise ValueError("the source fell over")
+
+    writer = table.writer(app_id="broken", commit_every=3600)
+    with pytest.raises(metalake.MetaLakeError):
+        writer.write(pa.RecordBatchReader.from_batches(schema, broken()), version=1)
+    assert writer.close() is None, "it is closed, with nothing held"
+    assert lake.key_version("broken") is None, "a version cut short is not committed"
+
+
 def test_follow_step_read_once_counts_when_read(table):
     append(table, [1])
     follower = table.follow()
