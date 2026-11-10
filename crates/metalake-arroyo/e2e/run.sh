@@ -40,10 +40,11 @@ if [ -z "${ARROYO_IMAGE:-}" ]; then
     "https://github.com/describeloai/arroyo.git#$ref" >/dev/null
 fi
 if [ -n "${METALAKE_BIN:-}" ]; then
-  # A command line already built for Linux: only put in an image.
+  # A command line already built for Linux: only put in an image of the system it was built on, for its C library.
   bin=$(cd "$(dirname "$METALAKE_BIN")" && pwd)
-  docker build -q -t metalake-e2e/metalake -f - "$bin" >/dev/null <<'EOF'
-FROM debian:trixie-slim
+  base=${METALAKE_BASE:-$(. /etc/os-release && echo "$ID:$VERSION_ID")}
+  docker build -q -t metalake-e2e/metalake -f - "$bin" >/dev/null <<EOF
+FROM $base
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY metalake /usr/local/bin/metalake
 ENTRYPOINT ["metalake"]
