@@ -205,17 +205,22 @@ impl Lake {
         let state = records.state(&record.name);
         let home = runner::home(&state)?;
         let warehouse = self.warehouse()?;
+        // Arroyo takes a local state as a path, and a URL only for an object store.
+        let local = |url: &str| {
+            Url::parse(url)
+                .ok()
+                .filter(|u| u.scheme() == "file")
+                .and_then(|u| u.to_file_path().ok())
+        };
+        let state_dir = local(&state).map_or(state.clone(), |path| path.display().to_string());
         let launch = Launch {
             name: &record.name,
             query: &record.query,
             parallelism: record.parallelism,
-            state: &state,
+            state: &state_dir,
             env: self.pipeline_environment()?,
             home: &home,
-            warehouse: Url::parse(&warehouse)
-                .ok()
-                .filter(|u| u.scheme() == "file")
-                .and_then(|u| u.to_file_path().ok()),
+            warehouse: local(&warehouse),
         };
         Runner::find()?.start(&launch)
     }
