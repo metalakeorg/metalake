@@ -2,6 +2,7 @@
 //! form, and decides nothing: which lake is meant and what each verb does live here, once.
 
 mod error;
+mod follow;
 mod history;
 mod iceberg;
 mod lake;
@@ -13,6 +14,7 @@ mod status;
 mod write;
 
 pub use error::{Error, Kind, Result};
+pub use follow::{Changes, Follower, StartAt};
 pub use history::duration;
 pub use iceberg::{Iceberg, IcebergTable};
 pub use lake::Lake;

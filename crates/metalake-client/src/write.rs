@@ -386,6 +386,11 @@ impl Lake {
         let table = on.table(&namespace, &path.name).await?;
         Ok((on, table))
     }
+
+    /// The version a writer's idempotency key reached on a ref, if any (CMT-5): where that writer goes on from.
+    pub async fn key_version(&self, on: &str, app_id: &str) -> Result<Option<i64>> {
+        Ok(self.find_ref(on).await?.key_version(app_id).await?)
+    }
 }
 
 #[cfg(test)]
