@@ -14,6 +14,7 @@ pub mod inserted;
 pub mod lake;
 pub mod locate;
 pub mod progress;
+pub mod resolve;
 pub mod schema;
 pub mod sink;
 pub mod source;
