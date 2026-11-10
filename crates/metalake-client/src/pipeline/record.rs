@@ -6,7 +6,7 @@ use std::future::Future;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use metalake::Storage;
-use object_store::{PutMode, PutOptions, PutPayload};
+use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion};
 use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
@@ -171,61 +171,140 @@ impl Records {
         Ok(records)
     }
 
-    /// Runs `work` holding the pipeline's lock, which it releases however `work` ends.
+    /// Runs `work` holding the pipeline's lock, which it releases however `work` ends: with its result, with an error,
+    /// or dropped before its end, as a caller interrupted drops it.
     pub async fn locked<T>(&self, name: &str, work: impl Future<Output = Result<T>>) -> Result<T> {
         let lock = self.lock(name).await?;
         let done = work.await;
-        let _ = self.storage.delete(&lock).await;
+        lock.release().await;
         done
     }
 
     /// Takes the pipeline's lock, so that one caller at a time changes it: two resuming it at once would start two
     /// runners on one state. A lock older than any change takes (a stop's checkpoint, a start's settling) was left by
-    /// a caller that died, and is taken over.
-    async fn lock(&self, name: &str) -> Result<String> {
+    /// a caller that died, and is taken over by replacing that very lock, so that two callers cannot both take it.
+    async fn lock(&self, name: &str) -> Result<Lock> {
         let url = format!("{}/{LOCK}", self.dir(name));
         let path = self.storage.path(&url)?;
+        let store = self.storage.store().clone();
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        for _ in 0..2 {
-            let options = PutOptions {
-                mode: PutMode::Create,
-                ..Default::default()
-            };
-            let held = format!("{} {now}", super::runner::host());
-            match self
-                .storage
-                .store()
-                .put_opts(&path, PutPayload::from(held), options)
-                .await
-            {
-                Ok(_) => return Ok(url),
-                Err(object_store::Error::AlreadyExists { .. }) => {
-                    let held = self.storage.get(&url).await.unwrap_or_default();
-                    let held = String::from_utf8_lossy(&held).to_string();
-                    let (host, since) = held.rsplit_once(' ').unwrap_or((held.as_str(), "0"));
-                    if now.saturating_sub(since.parse().unwrap_or(0)) < LOCK_TTL.as_secs() {
-                        return Err(Error::conflict(
-                            None,
-                            format!("the pipeline {name} is being changed by {host}: try again once it is done"),
-                        ));
-                    }
-                    self.storage.delete(&url).await?;
-                }
-                Err(e) => return Err(Error::failed(format!("the pipeline {name} could not be locked: {e}"))),
+        let token = format!("{} {} {now}", uuid::Uuid::new_v4().simple(), super::runner::host());
+        let taken = |mode| {
+            let store = store.clone();
+            let path = path.clone();
+            let token = token.clone();
+            async move {
+                let options = PutOptions {
+                    mode,
+                    ..Default::default()
+                };
+                store.put_opts(&path, PutPayload::from(token), options).await
             }
+        };
+        let busy = |held: &str| {
+            let host = held.split(' ').nth(1).unwrap_or("another caller");
+            Error::conflict(
+                None,
+                format!("the pipeline {name} is being changed by {host}: try again once it is done"),
+            )
+        };
+        let failed = |e: object_store::Error| Error::failed(format!("the pipeline {name} could not be locked: {e}"));
+        let lock = Lock {
+            store: store.clone(),
+            path: path.clone(),
+            token: token.clone(),
+            released: false,
+        };
+        match taken(PutMode::Create).await {
+            Ok(_) => return Ok(lock),
+            Err(object_store::Error::AlreadyExists { .. }) => {}
+            Err(e) => return Err(failed(e)),
         }
-        Err(Error::conflict(
-            None,
-            format!("the pipeline {name} is being changed: try again"),
-        ))
+        let held = match store.get(&path).await {
+            Ok(held) => held,
+            // Released meanwhile: take it now, or say who did.
+            Err(object_store::Error::NotFound { .. }) => {
+                return match taken(PutMode::Create).await {
+                    Ok(_) => Ok(lock),
+                    Err(object_store::Error::AlreadyExists { .. }) => Err(busy("")),
+                    Err(e) => Err(failed(e)),
+                };
+            }
+            Err(e) => return Err(failed(e)),
+        };
+        let version = UpdateVersion {
+            e_tag: held.meta.e_tag.clone(),
+            version: held.meta.version.clone(),
+        };
+        let text = String::from_utf8_lossy(&held.bytes().await.map_err(failed)?).to_string();
+        let since: u64 = text.rsplit(' ').next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        if now.saturating_sub(since) < LOCK_TTL.as_secs() {
+            return Err(busy(&text));
+        }
+        match taken(PutMode::Update(version)).await {
+            Ok(_) => Ok(lock),
+            Err(object_store::Error::Precondition { .. }) => Err(busy("")),
+            // A store with no conditional update, as a local directory: the stale lock is removed and taken anew,
+            // where two callers taking it at once is the one window left.
+            Err(object_store::Error::NotImplemented { .. }) => {
+                let _ = store.delete(&path).await;
+                match taken(PutMode::Create).await {
+                    Ok(_) => Ok(lock),
+                    Err(object_store::Error::AlreadyExists { .. }) => Err(busy("")),
+                    Err(e) => Err(failed(e)),
+                }
+            }
+            Err(e) => Err(failed(e)),
+        }
     }
 
-    /// The record and the state: what is left of the pipeline in the lake.
+    /// The record and the state: what is left of the pipeline in the lake. Its lock is its holder's to release.
     pub async fn delete(&self, name: &str) -> Result<()> {
         for (url, _) in self.storage.list(&self.dir(name)).await? {
+            if url.ends_with(&format!("/{LOCK}")) {
+                continue;
+            }
             self.storage.delete(&url).await?;
         }
         Ok(())
+    }
+}
+
+/// A pipeline's lock, held until released or dropped.
+pub struct Lock {
+    store: std::sync::Arc<dyn ObjectStore>,
+    path: object_store::path::Path,
+    /// What this holder wrote, so that it releases its own lock and never one another took over.
+    token: String,
+    released: bool,
+}
+
+impl Lock {
+    async fn release(mut self) {
+        self.released = true;
+        release(self.store.clone(), self.path.clone(), self.token.clone()).await;
+    }
+}
+
+impl Drop for Lock {
+    /// Dropped before its release, as when a caller interrupts a change: released in the background.
+    fn drop(&mut self) {
+        if self.released {
+            return;
+        }
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(release(self.store.clone(), self.path.clone(), self.token.clone()));
+        }
+    }
+}
+
+/// Removes the lock if it is still the one `token` wrote.
+async fn release(store: std::sync::Arc<dyn ObjectStore>, path: object_store::path::Path, token: String) {
+    let Ok(held) = store.get(&path).await else {
+        return;
+    };
+    if held.bytes().await.is_ok_and(|held| held.as_ref() == token.as_bytes()) {
+        let _ = store.delete(&path).await;
     }
 }
 
@@ -325,6 +404,53 @@ mod tests {
             .await
             .expect("a stale lock is taken over");
         assert_eq!(records.list().await.unwrap().len(), 1, "a lock is not a pipeline");
+    }
+
+    #[tokio::test]
+    async fn a_lock_outlives_the_drop_it_guards() {
+        let records = Records::new(Storage::in_memory(), "memory:///wh");
+        records.create(&record("t")).await.unwrap();
+        records
+            .locked("t", async {
+                records.delete("t").await?;
+                // Dropped, its name is free, but not to change while its dropper holds it.
+                let other = records.locked("t", async { Ok(()) }).await.unwrap_err();
+                assert!(other.message.contains("being changed"), "{}", other.message);
+                Ok(())
+            })
+            .await
+            .unwrap();
+        records
+            .locked("t", async { Ok(()) })
+            .await
+            .expect("released by its holder");
+    }
+
+    #[tokio::test]
+    async fn a_lock_is_released_by_its_holder_alone() {
+        let records = Records::new(Storage::in_memory(), "memory:///wh");
+        let lock = format!("{}/{LOCK}", records.dir("t"));
+        let mine = records.lock("t").await.unwrap();
+        // Another took it over meanwhile, as after a takeover: releasing mine leaves theirs.
+        records
+            .storage
+            .put(&lock, "theirs host 9999999999".as_bytes().to_vec().into())
+            .await
+            .unwrap();
+        mine.release().await;
+        assert!(records.storage.exists(&lock).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_change_releases_its_lock() {
+        let records = Records::new(Storage::in_memory(), "memory:///wh");
+        let interrupted = records.locked("t", std::future::pending::<Result<()>>());
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(50), interrupted).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        records
+            .locked("t", async { Ok(()) })
+            .await
+            .expect("released in the background");
     }
 
     #[test]

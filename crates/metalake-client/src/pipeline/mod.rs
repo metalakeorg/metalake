@@ -116,25 +116,30 @@ impl Lake {
             strings(&names.reads),
             strings(&names.writes),
         );
-        records.create(&record).await?;
+        // Locked before its record exists, so that no other caller changes it before it runs; one that failed to start
+        // leaves its name free, still under the lock.
         let started = records.locked(name, async {
-            if options.empty_target {
-                let session = Session::new(self).await?;
-                for path in &names.writes {
-                    let details = Details {
-                        message: Some(format!("emptied for the pipeline {name}")),
-                        ..Details::default()
-                    };
-                    session.delete(path, "true", details).await?;
+            records.create(&record).await?;
+            let starting = async {
+                if options.empty_target {
+                    let session = Session::new(self).await?;
+                    for path in &names.writes {
+                        let details = Details {
+                            message: Some(format!("emptied for the pipeline {name}")),
+                            ..Details::default()
+                        };
+                        session.delete(path, "true", details).await?;
+                    }
                 }
+                self.run(&records, &mut record).await
+            };
+            if let Err(e) = starting.await {
+                let _ = records.delete(name).await;
+                return Err(e);
             }
-            self.run(&records, &mut record).await
+            Ok(())
         });
-        if let Err(e) = started.await {
-            // A pipeline that never ran leaves its name free.
-            let _ = records.delete(name).await;
-            return Err(e);
-        }
+        started.await?;
         self.settle(&records, record).await
     }
 
