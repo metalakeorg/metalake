@@ -32,6 +32,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: e2e-cli
+          # the build is what takes long: kept even when the test after it fails
+          cache-on-failure: true
       - name: MetaLake's command line
         run: cargo build --release --locked -p metalake-cli
       # Until describeloai/arroyo#1 merges, the hook that finds the lake's names is on its branch's image.
