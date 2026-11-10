@@ -44,6 +44,10 @@ jobs:
         run: CRATE=metalake bash sql/test.sh
       - name: The client
         run: CRATE=metalake-client bash sql/test.sh
+      - name: DataFusion over the lake
+        run: CRATE=metalake-datafusion bash sql/test.sh
+      - name: The command line
+        run: CRATE=metalake-cli bash sql/test.sh
       - name: The Iceberg REST server
         run: CRATE=metalake-iceberg bash sql/test.sh
       - name: Lints of the Iceberg REST server
