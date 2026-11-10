@@ -208,6 +208,23 @@ async fn table_changes_qualified_and_quoted() {
         .await
         .unwrap();
     assert_eq!(qualified.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    // Each branch of a UNION is a scope of its own: one call in each keeps the function's name.
+    let branches = lake
+        .run(&format!(
+            "select table_changes.k from table_changes('db.t', {one}, {two}) \
+             union all select table_changes.k from table_changes('db.t', {one}, {two})"
+        ))
+        .await
+        .unwrap();
+    assert_eq!(branches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+    let nested = lake
+        .run(&format!(
+            "select c.k from table_changes('db.t', {one}, {two}) c \
+             where c.k in (select table_changes.k from table_changes('db.t', {one}, {two}))"
+        ))
+        .await
+        .unwrap();
+    assert_eq!(nested.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
     let quoted = lake
         .rows(&format!(r#"select * from "table_changes"('db.t', {one}, {two})"#))
         .await;
