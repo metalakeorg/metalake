@@ -75,7 +75,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn written_whole_and_read() {
+    fn runtime_file_round_trip() {
         let dir = std::env::temp_dir().join(format!("metalake-server-{}", uuid::Uuid::new_v4().simple()));
         let path = dir.join("lake.json");
         assert_eq!(Runtime::read(&path), None);

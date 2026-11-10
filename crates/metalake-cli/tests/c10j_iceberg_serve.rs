@@ -32,7 +32,7 @@ fn shutdown(port: u16, token: &str) -> u16 {
 }
 
 #[test]
-fn served_found_and_stopped() {
+fn serve_runtime_file_and_shutdown() {
     let (dir, _) = lake();
     let file = dir.join("server.json");
     let mut server = metalake(&dir)
@@ -74,7 +74,7 @@ fn served_found_and_stopped() {
 }
 
 #[test]
-fn a_runtime_file_needs_a_token() {
+fn runtime_file_requires_token() {
     let (dir, _) = lake();
     let output = metalake(&dir)
         .args(["iceberg", "serve", "--listen", "127.0.0.1:0", "--materialize", "off"])

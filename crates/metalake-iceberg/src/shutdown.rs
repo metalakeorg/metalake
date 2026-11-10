@@ -71,7 +71,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stopped_only_by_its_token() {
+    async fn shutdown_requires_token() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let stop = Arc::new(Notify::new());
@@ -96,7 +96,7 @@ mod tests {
     }
 
     #[test]
-    fn secrets_compared_whole() {
+    fn token_comparison() {
         assert!(same(b"abc", b"abc"));
         assert!(!same(b"abc", b"abd"));
         assert!(!same(b"abc", b"abcd"));
