@@ -1,6 +1,7 @@
-# The end-to-end test of MetaLake in Arroyo (crates/metalake-arroyo/e2e): Arroyo built from our fork, a Postgres for the
-# catalog, and a pipeline of standard SQL over the lake's names, through inserts, deletes and a restart. Building
-# Arroyo's image is long, so it runs when the test changes, and by hand.
+# The end-to-end test of MetaLake in Arroyo (crates/metalake-arroyo/e2e): Arroyo from our fork, a Postgres for the
+# catalog, and a pipeline of standard SQL over the lake's names, through inserts, deletes and a restart. Arroyo is
+# not built here: the fork's `metalake` workflow publishes its image once per commit, after its planner test passes,
+# and this pulls it. MetaLake's command line is built on the runner, with a cache, so a run takes minutes.
 name: e2e
 
 on:
@@ -10,9 +11,9 @@ on:
       - .github/workflows/e2e.yml
   workflow_dispatch:
     inputs:
-      arroyo_ref:
-        description: The branch of describeloai/arroyo to build Arroyo from
-        default: master
+      arroyo_image:
+        description: Arroyo's image, as the fork publishes it (a branch or a commit as its tag)
+        default: ghcr.io/describeloai/arroyo-metalake:feat-metalake-resolve
 
 permissions:
   contents: read
@@ -24,17 +25,20 @@ concurrency:
 jobs:
   arroyo:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      # Arroyo's image builds Rust in Docker, which a runner's disk barely holds with its preinstalled toolchains.
-      - name: Room on the disk
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          docker system prune -af >/dev/null
-          df -h /
-      # Until describeloai/arroyo#1 merges, the hook that finds the lake's names is on its branch.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: e2e-cli
+      - name: MetaLake's command line
+        run: cargo build --release --locked -p metalake-cli
+      # Until describeloai/arroyo#1 merges, the hook that finds the lake's names is on its branch's image.
       - name: The end-to-end test
         env:
-          ARROYO_REF: ${{ inputs.arroyo_ref || 'feat/metalake-resolve' }}
-        run: bash crates/metalake-arroyo/e2e/run.sh
+          ARROYO_IMAGE: ${{ inputs.arroyo_image || 'ghcr.io/describeloai/arroyo-metalake:feat-metalake-resolve' }}
+          METALAKE_BIN: target/release/metalake
+        run: |
+          docker pull "$ARROYO_IMAGE"
+          bash crates/metalake-arroyo/e2e/run.sh
