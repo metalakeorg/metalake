@@ -3,6 +3,8 @@
 # a Postgres for the catalog and a volume for the lake. A pipeline follows a table of orders and keeps totals by
 # customer in another; after each change to the orders, the totals must come to what the orders give, read by
 # DataFusion through MetaLake. Inserts, deletes, a customer gone, and a restart from the pipeline's checkpoint.
+# The pipeline is standard SQL over the lake's names, with no table declared: Arroyo finds them in the catalog its
+# environment names. Until the fork's master has that, run it with ARROYO_REF=feat/metalake-resolve.
 #
 #   bash crates/metalake-arroyo/e2e/run.sh
 #   ARROYO_REF=feat/metalake-connector bash crates/metalake-arroyo/e2e/run.sh
@@ -53,8 +55,10 @@ metalake sql "create schema main.shop;
               create table main.shop.totals (customer varchar, orders bigint, amount double);
               insert into main.shop.orders values (1, 'ana', 10), (2, 'ana', 20), (3, 'bo', 5), (4, 'cy', 7)"
 
+# Arroyo reaches the lake as a client does, from its environment: the pipeline names no catalog of its own.
 start() {
   docker run -d --name "$job" --network "$net" -v "$lake:/lake" -v "$here/pipeline.sql:/pipeline.sql:ro" \
+    -e METALAKE_POSTGRES="host=$pg user=postgres dbname=postgres" -e METALAKE_SCHEMA=lake \
     "$arroyo" run --name totals --parallelism 2 --state-dir /lake/state /pipeline.sql >/dev/null
 }
 
