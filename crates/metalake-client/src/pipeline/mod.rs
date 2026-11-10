@@ -87,6 +87,11 @@ impl Lake {
         if options.parallelism == 0 {
             return Err(Error::usage("a pipeline runs with a parallelism of 1 or more"));
         }
+        let records = self.records()?;
+        // Its name first: a taken one is the answer, whatever else the query says.
+        if records.has(name).await? {
+            return Err(Error::usage(format!("a pipeline {name} exists")));
+        }
         let names = names_of(query)?;
         for path in names.reads.iter().chain(&names.writes) {
             self.table(path).await?;
@@ -103,7 +108,6 @@ impl Lake {
                 }
             }
         }
-        let records = self.records()?;
         let strings = |paths: &[TablePath]| paths.iter().map(ToString::to_string).collect();
         let mut record = Record::new(
             name,

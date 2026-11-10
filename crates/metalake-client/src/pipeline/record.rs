@@ -131,6 +131,11 @@ impl Records {
         Ok(self.storage.put(&self.url(&record.name), bytes.into()).await?)
     }
 
+    /// Whether a pipeline has the name.
+    pub async fn has(&self, name: &str) -> Result<bool> {
+        Ok(self.storage.exists(&self.url(name)).await?)
+    }
+
     pub async fn get(&self, name: &str) -> Result<Record> {
         let url = self.url(name);
         if !self.storage.exists(&url).await? {
