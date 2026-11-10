@@ -12,7 +12,7 @@ use datafusion::arrow::array::{Array, AsArray, Int64Array, RecordBatch};
 use datafusion::arrow::datatypes::Int64Type;
 use futures_util::{TryStreamExt, stream};
 use metalake::NewTable;
-use metalake_client::{Changes, Details, Follower, Kind, Lake, Session, StartAt, TablePath};
+use metalake_client::{Changes, Details, Follower, Kind, Lake, Session, StartAt, TablePath, WriterOptions};
 
 fn url() -> String {
     std::env::var("DATABASE_URL").expect("DATABASE_URL: run CRATE=metalake-client bash sql/test.sh")
@@ -181,7 +181,7 @@ async fn changes_between_commits() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// What a copy took of a step: its inserted keys.
+/// What a copy takes of a step: its inserted keys.
 async fn inserted(step: Changes) -> Vec<RecordBatch> {
     let batches: Vec<RecordBatch> = step.try_collect().await.unwrap();
     batches
@@ -190,59 +190,48 @@ async fn inserted(step: Changes) -> Vec<RecordBatch> {
         .collect()
 }
 
+/// A copier: it follows `source` from where its writer's key is, and writes each step into `copy` with the step's
+/// position as its version: one step, or until it is past `until`. It answers where its key stopped.
+async fn copier(lake: &Arc<Lake>, until: Option<i64>) -> Option<i64> {
+    let options = WriterOptions {
+        app_id: Some("copier".into()),
+        commit_every: Duration::from_secs(3600),
+        ..Default::default()
+    };
+    let mut writer = lake.writer(&path("db.copy"), options).await.unwrap();
+    let start = writer.version().map_or(StartAt::Snapshot, StartAt::After);
+    let mut follower = lake.follow(&path("db.source"), start).await.unwrap();
+    loop {
+        let step = follower.wait(Duration::from_millis(50)).await.unwrap();
+        let position = follower.position();
+        for batch in inserted(step).await {
+            writer.write(batch, position).await.unwrap();
+        }
+        writer.flush().await.unwrap();
+        if until.is_none_or(|until| position >= Some(until)) {
+            return writer.version();
+        }
+    }
+}
+
 #[tokio::test]
 async fn copy_with_key_takes_each_commit_once() {
     let (lake, dir) = lake(&["source", "copy"]).await;
-    let (source, copy) = (path("db.source"), path("db.copy"));
+    let lake = Arc::new(lake);
+    let source = path("db.source");
     append(&lake, &source, 0..3, Details::default()).await;
-    let keyed = |seq: i64| Details {
-        idempotent: Some(("copier".into(), seq)),
-        ..Default::default()
-    };
 
-    // A copier writes each step with its position as its key, then falls over.
-    let mut follower = lake.follow(&source, StartAt::Snapshot).await.unwrap();
-    let step = inserted(follower.next().await.unwrap().expect("the read")).await;
-    let position = follower.position().unwrap();
-    let written = lake
-        .append(
-            &copy,
-            &shape(),
-            stream::iter(step.clone().into_iter().map(Ok)),
-            keyed(position),
-        )
-        .await
-        .unwrap();
-    assert!(written.applied);
-    // The same step again, as a copier that fell over before it knew, applies nothing.
-    let again = lake
-        .append(&copy, &shape(), stream::iter(step.into_iter().map(Ok)), keyed(position))
-        .await
-        .unwrap();
-    assert!(!again.applied);
-    drop(follower);
+    // A copier takes the table as it is, then falls over.
+    let first = copier(&lake, None).await.expect("its key");
 
-    // A new copier asks the key where it was, and goes on after it.
+    // While it is down, commits come; one that comes back goes on after its key, and takes each of them once.
+    let mut last = 0;
     for n in 1..4i64 {
-        append(&lake, &source, n * 10..n * 10 + 3, Details::default()).await;
+        last = append(&lake, &source, n * 10..n * 10 + 3, Details::default()).await;
     }
-    settle().await;
-    let at = lake.key_version("main", "copier").await.unwrap().expect("its key");
-    assert_eq!(at, position);
-    let mut follower = lake.follow(&source, StartAt::After(at)).await.unwrap();
-    while let Some(step) = follower.next().await.unwrap() {
-        let batches = inserted(step).await;
-        let position = follower.position().unwrap();
-        lake.append(
-            &copy,
-            &shape(),
-            stream::iter(batches.into_iter().map(Ok)),
-            keyed(position),
-        )
-        .await
-        .unwrap();
-    }
-    assert_eq!(lake.key_version("main", "copier").await.unwrap(), follower.position());
+    let reached = copier(&lake, Some(last)).await.expect("its key");
+    assert!(reached > first);
+    assert_eq!(reached, last);
 
     let session = Session::new(&lake).await.unwrap();
     let keys = |name: &str| format!("select k from db.{name} order by k");
