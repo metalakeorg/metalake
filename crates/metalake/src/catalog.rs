@@ -348,6 +348,13 @@ impl Ref {
             .await?)
     }
 
+    /// The version an idempotency key reached on this ref, if any (CMT-5): where a writer that keeps its key goes on
+    /// from.
+    pub async fn key_version(&self, app_id: &str) -> Result<Option<i64>> {
+        let p = self.catalog.protocol();
+        Ok(p.key_version(&self.catalog.session().await?, self.id(), app_id).await?)
+    }
+
     /// The namespaces this ref sees, in order.
     pub async fn namespaces(&self) -> Result<Vec<NamespaceRow>> {
         let p = self.catalog.protocol();
