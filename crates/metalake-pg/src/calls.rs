@@ -11,6 +11,7 @@ use serde_json::Value;
 use tokio_postgres::{GenericClient, Row};
 use uuid::Uuid;
 
+use crate::error::{Error, ErrorKind};
 use crate::records::{
     CommitChange, CommitEntry, CommitResult, FeedCommit, FileAdd, FileChange, FileRef, LATEST, ListedFile,
     NamespaceRow, PlannedFile, RefRow, SnapshotEntry, StablePoint, StreamPoint, TableAsOf, TableExpect, TableLatest,
@@ -162,33 +163,43 @@ impl Protocol {
 
     // Writing data and definitions.
 
+    /// A commit. `expected_app_version` is named only when it is given, so that a catalog whose protocol predates it
+    /// (0.3) takes every other commit as before; one that is given it there is refused as unsupported, until migrated.
     pub async fn commit(&self, s: &impl Session, c: &Commit) -> Result<CommitResult> {
-        let row = self
-            .one(
-                s,
-                "commit(ref_id => $1, operation => $2, files => $3, removed => $4, vectors => $5, expected => $6, \
-                 changes => $7, author => $8, actor => $9, app_id => $10, app_version => $11, message => $12, \
-                 definition => $13, namespaces => $14, summaries => $15, expected_app_version => $16)",
-                &[
-                    &c.ref_id,
-                    &c.operation,
-                    &c.files,
-                    &c.removed,
-                    &c.vectors,
-                    &c.expected,
-                    &c.changes,
-                    &c.author,
-                    &c.actor,
-                    &c.app_id,
-                    &c.app_version,
-                    &c.message,
-                    &c.definition,
-                    &c.namespaces,
-                    &c.summaries,
-                    &c.expected_app_version,
-                ],
-            )
-            .await?;
+        const CALL: &str = "commit(ref_id => $1, operation => $2, files => $3, removed => $4, vectors => $5, \
+             expected => $6, changes => $7, author => $8, actor => $9, app_id => $10, app_version => $11, \
+             message => $12, definition => $13, namespaces => $14, summaries => $15";
+        let params: &[Param<'_>] = &[
+            &c.ref_id,
+            &c.operation,
+            &c.files,
+            &c.removed,
+            &c.vectors,
+            &c.expected,
+            &c.changes,
+            &c.author,
+            &c.actor,
+            &c.app_id,
+            &c.app_version,
+            &c.message,
+            &c.definition,
+            &c.namespaces,
+            &c.summaries,
+            &c.expected_app_version,
+        ];
+        let row = match c.expected_app_version {
+            None => self.one(s, &format!("{CALL})"), &params[..15]).await?,
+            Some(_) => self
+                .one(s, &format!("{CALL}, expected_app_version => $16)"), params)
+                .await
+                .map_err(|e| match e.code() {
+                    Some("42883") => Error::new(
+                        ErrorKind::Unsupported,
+                        "this catalog's commit takes no expected_app_version (CMT-5, 0.3): migrate it",
+                    ),
+                    _ => e,
+                })?,
+        };
         Ok(CommitResult {
             commit_seq: row.get("commit_seq"),
             applied: row.get("applied"),
