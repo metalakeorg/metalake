@@ -203,8 +203,10 @@ async fn copier(lake: &Arc<Lake>, until: Option<i64>) -> Option<i64> {
     let mut follower = lake.follow(&path("db.source"), start).await.unwrap();
     loop {
         let step = follower.wait(Duration::from_millis(50)).await.unwrap();
+        let batches = inserted(step).await;
+        // Once its rows are read, the step counts.
         let position = follower.position();
-        for batch in inserted(step).await {
+        for batch in batches {
             writer.write(batch, position).await.unwrap();
         }
         writer.flush().await.unwrap();
@@ -418,6 +420,27 @@ async fn follow_stops_at_renamed_column() {
     assert!(stopped.message.contains("k renamed to key"), "{}", stopped.message);
     assert!(stopped.message.contains(&format!("after {at}")), "{}", stopped.message);
     assert_eq!(follower.position(), Some(at), "where to follow again from");
+    lake.close();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn follow_step_not_read_given_again() {
+    let (lake, dir) = lake(&["t"]).await;
+    let t = path("db.t");
+    let first = append(&lake, &t, 0..2, Details::default()).await;
+    let mut follower = lake.follow(&t, StartAt::After(first)).await.unwrap();
+    let added = append(&lake, &t, 2..4, Details::default()).await;
+    settle().await;
+
+    // Its rows dropped before their end: the step does not count, and comes again.
+    let dropped = follower.next().await.unwrap().expect("the commit");
+    drop(dropped);
+    assert_eq!(follower.position(), Some(first));
+    let again = rows(follower.next().await.unwrap().expect("the commit again")).await;
+    assert_eq!(again, [row("insert", 2, added), row("insert", 3, added)]);
+    assert_eq!(follower.position(), Some(added));
+    assert_eq!(drain(&mut follower).await, []);
     lake.close();
     let _ = std::fs::remove_dir_all(dir);
 }

@@ -250,3 +250,71 @@ async fn writer_second_producer_conflicts() {
     assert_eq!(table(&lake).await, pairs(&[(1, "one")]));
     done(lake, dir).await;
 }
+
+#[tokio::test]
+async fn writer_empty_write_lends_no_version() {
+    let (lake, dir) = lake().await;
+    let mut writer = lake.writer(&t(), keyed("empty")).await.unwrap();
+    writer.write(rows(&[(1, "a")]), Some(1)).await.unwrap();
+    assert!(matches!(
+        writer.write(rows(&[]), Some(2)).await.unwrap(),
+        Wrote::Buffered
+    ));
+    writer.close().await.unwrap().expect("a commit");
+    assert_eq!(
+        lake.key_version("main", "empty").await.unwrap(),
+        Some(1),
+        "the rows were of 1"
+    );
+
+    // The rows of 2 that come later are not taken for done.
+    let mut again = lake.writer(&t(), keyed("empty")).await.unwrap();
+    assert!(matches!(
+        again.write(rows(&[(2, "b")]), Some(2)).await.unwrap(),
+        Wrote::Buffered
+    ));
+    again.close().await.unwrap().expect("a commit");
+    assert_eq!(table(&lake).await, pairs(&[(1, "a"), (2, "b")]));
+    done(lake, dir).await;
+}
+
+#[tokio::test]
+async fn writer_lost_answer_is_its_own_commit() {
+    let (lake, dir) = lake().await;
+    let mut writer = lake.writer(&t(), keyed("lost")).await.unwrap();
+    writer.write(rows(&[(1, "a")]), Some(5)).await.unwrap();
+
+    // Its send applied, and the answer never came back: the key stands at its version.
+    let details = metalake_client::Details {
+        idempotent: Some(("lost".into(), 5)),
+        ..Default::default()
+    };
+    let sent = futures_util::stream::iter([Ok(rows(&[(1, "a")]))]);
+    let applied = lake.append(&t(), &shape(), sent, details).await.unwrap();
+
+    let written = writer.flush().await.unwrap().expect("what it held");
+    assert_eq!(written.commit, applied.commit);
+    assert!(!written.applied, "it applied before");
+    assert_eq!(writer.version(), Some(5));
+    writer.write(rows(&[(2, "b")]), Some(6)).await.unwrap();
+    writer.close().await.unwrap().expect("a commit");
+    assert_eq!(table(&lake).await, pairs(&[(1, "a"), (2, "b")]));
+    done(lake, dir).await;
+}
+
+#[tokio::test]
+async fn writer_stale_producer_ahead_conflicts() {
+    let (lake, dir) = lake().await;
+    let mut one = lake.writer(&t(), keyed("shared")).await.unwrap();
+    let mut two = lake.writer(&t(), keyed("shared")).await.unwrap();
+    one.write(rows(&[(1, "one")]), Some(5)).await.unwrap();
+    one.flush().await.unwrap().expect("a commit");
+
+    // A version past the other's is no less another writer's key.
+    two.write(rows(&[(2, "two")]), Some(6)).await.unwrap();
+    let refused = two.flush().await.unwrap_err();
+    assert_eq!(refused.kind, Kind::Conflict, "{}", refused.message);
+    assert_eq!(table(&lake).await, pairs(&[(1, "one")]));
+    assert_eq!(lake.key_version("main", "shared").await.unwrap(), Some(5));
+    done(lake, dir).await;
+}

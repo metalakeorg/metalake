@@ -146,6 +146,10 @@ impl Writer {
         {
             return Err(Error::usage("the rows of one writer have one schema"));
         }
+        // No rows give no version: an empty write must not lend its version to rows it holds of an earlier one.
+        if batch.num_rows() == 0 {
+            return Ok(Wrote::Buffered);
+        }
         let mut committed = None;
         if version.is_some() && version != self.pending && self.due() {
             committed = self.flush().await?;
@@ -153,11 +157,9 @@ impl Writer {
         if version.is_some() {
             self.pending = version;
         }
-        if batch.num_rows() > 0 {
-            self.bytes += batch.get_array_memory_size();
-            self.held.push(batch);
-            self.since.get_or_insert_with(Instant::now);
-        }
+        self.bytes += batch.get_array_memory_size();
+        self.held.push(batch);
+        self.since.get_or_insert_with(Instant::now);
         if version.is_none() && self.due() {
             committed = self.flush().await?;
         }
@@ -176,11 +178,25 @@ impl Writer {
     }
 
     /// Commits what it holds, if anything: with a key, a caller flushes between versions. A commit that fails keeps the
-    /// rows, and is sent again by the next one: with a key, a commit that had applied after all applies nothing the
-    /// second time.
+    /// rows, and is sent again by the next one: with a key, a commit that had applied after all, its answer lost, is
+    /// found by the key standing at its version, and is not sent again.
+    ///
+    /// With a key, the key is read first: if it stands neither where this writer left it nor at the version it holds,
+    /// another writer has it, and nothing is committed. A writer that takes the key between that read and the commit is
+    /// not seen; one key per producer is what makes that impossible, as the protocol does not compare a key's version
+    /// with an expected one.
     pub async fn flush(&mut self) -> Result<Option<Written>> {
         if self.held.is_empty() {
             return Ok(None);
+        }
+        if let Some(app_id) = &self.options.app_id {
+            let stored = self.lake.key_version(&self.path.on, app_id).await?;
+            if stored == self.pending && self.pending > self.version {
+                return Ok(Some(self.applied_before().await?));
+            }
+            if stored != self.version {
+                return Err(self.taken());
+            }
         }
         let details = Details {
             author: self.options.author.clone(),
@@ -201,25 +217,52 @@ impl Writer {
                 self.lake.append(&self.path, &given, rows, details).await?
             }
         };
-        if self.options.app_id.is_some() && !written.applied && written.commit.is_some() && self.version < self.pending
+        // Rows that changed nothing made no commit, and say nothing of the key.
+        if let Some(app_id) = &self.options.app_id
+            && !written.applied
+            && written.commit.is_some()
         {
-            // A version above the one it read was there already: another writer has this key. Rows that changed nothing
-            // made no commit, and say nothing of it.
-            self.clear();
-            return Err(Error::new(
-                Kind::Conflict,
-                format!(
-                    "the key {} is ahead of this writer on {}: another writer has it",
-                    self.options.app_id.as_deref().unwrap_or_default(),
-                    self.path
-                ),
-            ));
+            // The key was at this version or past it already: an earlier send of these rows, or another writer.
+            if self.lake.key_version(&self.path.on, app_id).await? != self.pending {
+                return Err(self.taken());
+            }
+            return Ok(Some(self.applied_before().await?));
         }
         if written.applied {
             self.version = self.pending.or(self.version);
         }
         self.clear();
         Ok(Some(written))
+    }
+
+    /// What an earlier send of the rows it holds committed, its answer lost: the key stands at their version.
+    async fn applied_before(&mut self) -> Result<Written> {
+        let app_id = self.options.app_id.as_deref().unwrap_or_default();
+        let on = self.lake.find_ref(&self.path.on).await?;
+        let commit = on.commit_of_key(app_id).await?;
+        let rows = self.held.iter().map(|b| b.num_rows() as u64).sum();
+        self.version = self.pending;
+        self.clear();
+        Ok(Written {
+            commit,
+            rows,
+            applied: false,
+            inserted: 0,
+            updated: 0,
+        })
+    }
+
+    /// Another writer has the key: what it holds is not this writer's to commit.
+    fn taken(&mut self) -> Error {
+        self.clear();
+        Error::new(
+            Kind::Conflict,
+            format!(
+                "the key {} on {} is not where this writer left it: another writer has it",
+                self.options.app_id.as_deref().unwrap_or_default(),
+                self.path.on
+            ),
+        )
     }
 
     /// Commits what it holds, and ends.
