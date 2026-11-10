@@ -274,7 +274,7 @@ impl PyTable {
     /// it holds reaches `max_bytes`. With `app_id`, each commit is idempotent with the highest `version` given, and
     /// `version` says where a producer that comes back goes on from. With `upsert_on`, rows replace those with their key.
     /// Used with `with`, it commits what it holds at the end.
-    #[pyo3(signature = (*, app_id=None, upsert_on=None, commit_every=1.0, max_bytes=64 << 20, author=None, message=None))]
+    #[pyo3(signature = (*, app_id=None, upsert_on=None, commit_every=1.0, max_bytes=67108864, author=None, message=None))]
     #[allow(clippy::too_many_arguments)]
     fn writer(
         &self,
