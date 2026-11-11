@@ -859,23 +859,27 @@ Iceberg REST server of the projection, and are checked by its tests.
 - **REST-10.** A request carries `Authorization: Bearer`. A token names the protocol's `reader` or `writer` role
   (§2), and the catalog's rights decide. The service keeps tokens as hashes.
 - **REST-11.** *0.4.* A table's load and `createTable` answer `storage-credentials` when the request asks for them
-  with `X-Iceberg-Access-Delegation: vended-credentials` and the warehouse is on an object store: one for each prefix
-  the table's files lie under. Each is a credential that expires, minted from the service's own (an AWS session token
-  from `GetSessionToken`, a GCS OAuth2 access token, an Azure SAS), or the service's own when that expires already;
-  never a long-lived key. Each is written in every spelling clients read: `s3.access-key-id`, `s3.secret-access-key`,
-  `s3.session-token` and `s3.session-token-expires-at-ms`, with the region and endpoint the service reaches the store
-  by; `gcs.oauth2.token` and `gcs.oauth2.token-expires-at`; `adls.sas-token.<account host>` and
-  `adls.sas-token-expires-at-ms.<account host>`. `loadCredentials` answers
-  fresh ones for a table, as a client asks when its own expire. They go only to a request that REST-10 authenticates,
-  or that comes from the loopback address; any other that asks for them is refused with 403, as a client that is not
-  given credentials would fail later, reading files, with no reason it can tell. A local warehouse vends none: a load
-  answers no `storage-credentials`, and its clients read its files as they are.
+  with `X-Iceberg-Access-Delegation: vended-credentials` and the table's files lie on an object store, by its location
+  (`tbl.location`), whatever the warehouse: one for each prefix its files lie under. Each is a credential that expires,
+  minted from the service's own (an AWS session token from `GetSessionToken`, a GCS OAuth2 access token, an Azure SAS),
+  or the service's own when that expires already; never a long-lived key. Each is written in every spelling clients
+  read: `s3.access-key-id`, `s3.secret-access-key`, `s3.session-token` and `s3.session-token-expires-at-ms`, with the
+  region and endpoint the service reaches the store by; `gcs.oauth2.token` and `gcs.oauth2.token-expires-at`;
+  `adls.sas-token.<account host>` and `adls.sas-token-expires-at-ms.<account host>`. `loadCredentials` answers fresh
+  ones for a table, as a client asks when its own expire. They go only to a request that REST-10 authenticates as a
+  `writer`, as they are not narrowed to reading (§19); any other that asks for them is refused with 403, as a client
+  that is not given credentials would fail later, reading files, with no reason it can tell. A service run for one user,
+  as a lake's own server on that user's machine is, holds a token of its own as a `writer`'s, kept where that user alone
+  reads it, and it is what that user's engines bear: no address, the loopback's included, stands for a token. A table
+  whose files are local vends none: a load answers no `storage-credentials`, and its clients read its files as they are.
 - **REST-12.** *0.4.* `updateTable` and `transactions/commit` hold `assert-current-schema-id`,
   `assert-last-assigned-field-id`, `assert-last-assigned-partition-id`, `assert-default-spec-id` and
-  `assert-default-sort-order-id` to the table on the ref, as a load would serve it: one that does not match is a 409,
-  and nothing is applied (REST-2). A client sends them to say that what it writes was planned against that definition,
-  as DuckDB does with every insert. They are checks: the updates that would change what they assert stay refused
-  (§19), as `assert-table-uuid` and `assert-ref-snapshot-id` stay as REST-3 and ICE-6 hold them.
+  `assert-default-sort-order-id` to the table's definition as a load serves it, `main`'s (ICE-1), whatever the ref the
+  commit is to: one that does not match is a 409, and nothing is applied (REST-2). A commit to `main` that asserts no
+  snapshot of it is held to the one the definition was read at, so that a definition changed in between is a 409 too.
+  A client sends them to say that what it writes was planned against that definition, as DuckDB does with every
+  insert. They are checks: the updates that would change what they assert stay refused (§19), as `assert-table-uuid`
+  and `assert-ref-snapshot-id` stay as REST-3 and ICE-6 hold them.
 
 ## 17. Conformance
 
