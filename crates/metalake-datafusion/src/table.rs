@@ -143,7 +143,11 @@ impl MetaTable {
                 evolve: Arc::new(Evolve::new(table)),
             })))
             .build();
-        Ok(Arc::new(MetaScanExec::new(DataSourceExec::from_data_source(config))))
+        Ok(Arc::new(MetaScanExec::new(
+            DataSourceExec::from_data_source(config),
+            Arc::new(table.clone()),
+            positions.is_some(),
+        )))
     }
 
     /// The files in `groups` groups, each a partition of the plan, with the statistics of each group: at least one

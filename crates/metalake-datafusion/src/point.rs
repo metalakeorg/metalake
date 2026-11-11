@@ -9,6 +9,8 @@
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
+use uuid::Uuid;
+
 use datafusion::arrow::compute::kernels::cast_utils::string_to_timestamp_nanos;
 use datafusion::catalog::default_table_source::{provider_as_source, source_as_provider};
 use datafusion::common::config::ConfigOptions;
@@ -24,6 +26,9 @@ use crate::table::MetaTable;
 /// Where a statement reads each of its tables, taken once, by the first of them to plan.
 #[derive(Debug)]
 pub(crate) struct StatementPoint {
+    /// Which statement: the tables of one plan that crosses processes share the point of this id again.
+    #[cfg_attr(not(feature = "proto"), allow(dead_code))]
+    pub id: Uuid,
     pub refs: Vec<i32>,
     pub points: OnceCell<LatestPoints>,
 }
@@ -69,6 +74,7 @@ impl AnalyzerRule for OnePoint {
         refs.sort_unstable();
         refs.dedup();
         let point = Arc::new(StatementPoint {
+            id: Uuid::new_v4(),
             refs,
             points: OnceCell::new(),
         });

@@ -19,16 +19,37 @@ use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SortOrderPushdownResult, StatisticsArgs,
 };
+use metalake::Table;
 
-/// A MetaLake table's scan: DataFusion's `DataSourceExec` inside.
+/// A MetaLake table's scan: DataFusion's `DataSourceExec` inside, and what its encoding needs besides.
 #[derive(Debug, Clone)]
 pub(crate) struct MetaScanExec {
     inner: Arc<dyn ExecutionPlan>,
+    /// The table read, whose fields match the files' columns by id.
+    #[cfg_attr(not(feature = "proto"), allow(dead_code))]
+    table: Arc<Table>,
+    /// Whether each row also says its file and position, for a statement that goes on to write.
+    #[cfg_attr(not(feature = "proto"), allow(dead_code))]
+    positions: bool,
 }
 
 impl MetaScanExec {
-    pub(crate) fn new(inner: Arc<DataSourceExec>) -> Self {
-        Self { inner }
+    pub(crate) fn new(inner: Arc<DataSourceExec>, table: Arc<Table>, positions: bool) -> Self {
+        Self {
+            inner,
+            table,
+            positions,
+        }
+    }
+
+    #[cfg_attr(not(feature = "proto"), allow(dead_code))]
+    pub(crate) fn table(&self) -> &Arc<Table> {
+        &self.table
+    }
+
+    #[cfg_attr(not(feature = "proto"), allow(dead_code))]
+    pub(crate) fn positions(&self) -> bool {
+        self.positions
     }
 
     /// The node that reads.
@@ -38,10 +59,13 @@ impl MetaScanExec {
             .expect("a scan wraps a DataSourceExec")
     }
 
-    /// `plan`, the inner node rewritten, as a scan again; anything else as it is.
-    fn wrap(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    /// `plan`, the inner node rewritten, as this scan again; anything else as it is.
+    fn wrap(&self, plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
         match plan.downcast_ref::<DataSourceExec>() {
-            Some(_) => Arc::new(Self { inner: plan }),
+            Some(_) => Arc::new(Self {
+                inner: plan,
+                ..self.clone()
+            }),
             None => plan,
         }
     }
@@ -85,7 +109,10 @@ impl ExecutionPlan for MetaScanExec {
         target_partitions: usize,
         config: &ConfigOptions,
     ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-        Ok(self.inner.repartitioned(target_partitions, config)?.map(Self::wrap))
+        Ok(self
+            .inner
+            .repartitioned(target_partitions, config)?
+            .map(|plan| self.wrap(plan)))
     }
 
     fn execute(&self, partition: usize, context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
@@ -105,7 +132,7 @@ impl ExecutionPlan for MetaScanExec {
     }
 
     fn with_fetch(&self, limit: Option<usize>) -> Option<Arc<dyn ExecutionPlan>> {
-        self.inner.with_fetch(limit).map(Self::wrap)
+        self.inner.with_fetch(limit).map(|plan| self.wrap(plan))
     }
 
     fn fetch(&self) -> Option<usize> {
@@ -113,7 +140,10 @@ impl ExecutionPlan for MetaScanExec {
     }
 
     fn try_swapping_with_projection(&self, projection: &ProjectionExec) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-        Ok(self.inner.try_swapping_with_projection(projection)?.map(Self::wrap))
+        Ok(self
+            .inner
+            .try_swapping_with_projection(projection)?
+            .map(|plan| self.wrap(plan)))
     }
 
     fn handle_child_pushdown_result(
@@ -125,25 +155,26 @@ impl ExecutionPlan for MetaScanExec {
         let mut result = self
             .inner
             .handle_child_pushdown_result(phase, child_pushdown_result, config)?;
-        result.updated_node = result.updated_node.map(Self::wrap);
+        result.updated_node = result.updated_node.map(|plan| self.wrap(plan));
         Ok(result)
     }
 
     fn try_pushdown_sort(&self, order: &[PhysicalSortExpr]) -> Result<SortOrderPushdownResult<Arc<dyn ExecutionPlan>>> {
-        self.inner
-            .try_pushdown_sort(order)?
-            .try_map(|plan| Ok(Self::wrap(plan)))
+        self.inner.try_pushdown_sort(order)?.try_map(|plan| Ok(self.wrap(plan)))
     }
 
     fn with_preserve_order(&self, preserve_order: bool) -> Option<Arc<dyn ExecutionPlan>> {
-        self.inner.with_preserve_order(preserve_order).map(Self::wrap)
+        self.inner
+            .with_preserve_order(preserve_order)
+            .map(|plan| self.wrap(plan))
     }
 
     fn with_new_state(&self, state: Arc<dyn Any + Send + Sync>) -> Option<Arc<dyn ExecutionPlan>> {
-        self.inner.with_new_state(state).map(Self::wrap)
+        self.inner.with_new_state(state).map(|plan| self.wrap(plan))
     }
 
     fn reset_state(self: Arc<Self>) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(Self::wrap(Arc::clone(&self.inner).reset_state()?))
+        let inner = Arc::clone(&self.inner).reset_state()?;
+        Ok(self.wrap(inner))
     }
 }

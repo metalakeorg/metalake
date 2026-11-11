@@ -8,14 +8,22 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# A plan that crosses processes (Ballista, or any engine that ships DataFusion's plans): MetaLake's codecs.
+proto = ["dep:datafusion-proto", "dep:postcard", "dep:serde"]
+
 [dependencies]
 metalake.workspace = true
 async-trait = "0.1"
 datafusion = { version = "55.2", default-features = false, features = ["parquet", "sql"] }
+datafusion-proto = { version = "55.2", default-features = false, features = ["parquet"], optional = true }
 futures-util.workspace = true
 object_store.workspace = true
+postcard = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["sync"] }
 url.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 chrono = "0.4"
