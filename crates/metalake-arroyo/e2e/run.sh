@@ -46,12 +46,23 @@ if [ -n "${METALAKE_BIN:-}" ]; then
   cp "$METALAKE_BIN" "$bin/metalake"
   if command -v cygpath >/dev/null 2>&1; then bin=$(cygpath -m "$bin"); fi
   base=${METALAKE_BASE:-$(. /etc/os-release && echo "$ID:$VERSION_ID")}
-  docker build -q -t metalake-e2e/metalake -f - "$bin" >/dev/null <<EOF
+  # The certificates the command line reaches stores with: this system's own, as the image is of this system, so that
+  # building it asks no mirror, which a runner does not always reach; a mirror, tried again, where there are none here.
+  certificates=/etc/ssl/certs/ca-certificates.crt
+  if [ -f "$certificates" ]; then
+    cp "$certificates" "$bin/ca-certificates.crt"
+    install='COPY ca-certificates.crt /etc/ssl/certs/ca-certificates.crt'
+  else
+    install='RUN apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*'
+  fi
+  # Said in full when it fails, which the quiet build would hide.
+  built=$(docker build -q -t metalake-e2e/metalake -f - "$bin" 2>&1 <<EOF
 FROM $base
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+$install
 COPY metalake /usr/local/bin/metalake
 ENTRYPOINT ["metalake"]
 EOF
+) || { echo "$built"; exit 1; }
 else
   docker build -q -t metalake-e2e/metalake -f "$here/metalake.Dockerfile" "$root" >/dev/null
 fi
