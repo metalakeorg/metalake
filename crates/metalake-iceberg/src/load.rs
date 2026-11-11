@@ -540,6 +540,7 @@ pub(crate) async fn load(state: &State, table: &Table) -> Result<LoadTableResult
         metadata_location: Some(metadata_location),
         metadata: served,
         config: BTreeMap::new(),
+        storage_credentials: Vec::new(),
     })
 }
 

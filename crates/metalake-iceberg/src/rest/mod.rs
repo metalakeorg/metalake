@@ -34,6 +34,10 @@ pub(crate) fn router(state: State) -> Router {
                 .post(tables::update)
                 .delete(tables::drop),
         )
+        .route(
+            "/v1/namespaces/{namespace}/tables/{table}/credentials",
+            get(tables::credentials),
+        )
         .fallback(async || Failure::no_route())
         .with_state(state)
 }

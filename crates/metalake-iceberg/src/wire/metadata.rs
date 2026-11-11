@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use serde_json::Value;
 
+use super::credentials::StorageCredential;
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct LoadTableResult {
@@ -13,6 +15,9 @@ pub struct LoadTableResult {
     pub metadata_location: Option<String>,
     pub metadata: TableMetadata,
     pub config: BTreeMap<String, String>,
+    /// For the table's files, when a client asks and is given them (REST-11).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub storage_credentials: Vec<StorageCredential>,
 }
 
 #[derive(Debug, Serialize)]

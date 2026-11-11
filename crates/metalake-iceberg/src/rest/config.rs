@@ -4,7 +4,7 @@ use axum::Json;
 use serde_json::{Value, json};
 
 /// What this server serves, as the OpenAPI spells a route. `{prefix}` is part of the spelling, and this server uses none.
-const ENDPOINTS: [&str; 14] = [
+const ENDPOINTS: [&str; 15] = [
     "GET /v1/{prefix}/namespaces",
     "POST /v1/{prefix}/namespaces",
     "GET /v1/{prefix}/namespaces/{namespace}",
@@ -17,6 +17,7 @@ const ENDPOINTS: [&str; 14] = [
     "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}",
     "HEAD /v1/{prefix}/namespaces/{namespace}/tables/{table}",
     "DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}",
+    "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}/credentials",
     "POST /v1/{prefix}/tables/rename",
     "POST /v1/{prefix}/transactions/commit",
 ];

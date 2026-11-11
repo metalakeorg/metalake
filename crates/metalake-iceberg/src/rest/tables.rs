@@ -2,10 +2,10 @@
 
 use std::collections::BTreeMap;
 
-use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, State as Shared};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
+use axum::{Extension, Json};
 use metalake::{Error, Table};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -16,11 +16,49 @@ use super::namespaces::SEPARATOR;
 use crate::apply::commit::Target;
 use crate::apply::update::{Change, asserted_uuid, change, check_uuid};
 use crate::apply::{Refused, commit, create, ddl};
+use crate::caller::Caller;
 use crate::load::load;
 use crate::project::metadata::staged;
 use crate::state::State;
+use crate::vend::{Access, refresh_path};
 use crate::wire::commit::{CommitTableRequest, CommitTransactionRequest, CreateTableRequest, RenameTableRequest};
+use crate::wire::credentials::{LoadCredentialsResponse, StorageCredential};
 use crate::wire::metadata::LoadTableResult;
+
+/// Whether a request asks for credentials for a table's files (REST-11).
+fn asks(headers: &HeaderMap) -> bool {
+    headers
+        .get_all("x-iceberg-access-delegation")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|mode| mode.trim().eq_ignore_ascii_case("vended-credentials"))
+}
+
+/// The credentials for a table at `location`, named `name` in `namespace` as its route names them (REST-11): none when
+/// they are not asked for or its files are local; a writer's when its token says so; refused when it bears none.
+async fn credentials_for(
+    state: &State,
+    caller: Option<Caller>,
+    asked: bool,
+    location: &str,
+    namespace: &str,
+    name: &str,
+) -> Result<Vec<StorageCredential>, Failure> {
+    if !asked || !state.vendor().serves(location) {
+        return Ok(Vec::new());
+    }
+    let access = match caller.unwrap_or(Caller::Anonymous) {
+        Caller::Writer => Access::ReadWrite,
+        Caller::Anonymous => return Err(Failure::credentials_refused()),
+    };
+    let refresh = refresh_path(namespace, name);
+    state
+        .vendor()
+        .vend(location, access, &refresh)
+        .await
+        .map_err(Failure::not_minted)
+}
 
 pub(super) fn levels(namespace: &str) -> Vec<&str> {
     namespace.split(SEPARATOR).collect()
@@ -65,8 +103,11 @@ pub(super) fn decoded<T: DeserializeOwned>(body: &Bytes) -> Result<T, Failure> {
 pub(crate) async fn create(
     Shared(state): Shared<State>,
     Path(namespace): Path<String>,
+    caller: Option<Extension<Caller>>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<LoadTableResult>, Failure> {
+    let (caller, asked) = (caller.map(|Extension(c)| c), asks(&headers));
     let wanted = levels(&namespace);
     let request: CreateTableRequest = decoded(&body)?;
     let name = request.name.clone();
@@ -80,10 +121,14 @@ pub(crate) async fn create(
     let new = create::requested(&state, &wanted, request)?;
     if new.stage {
         let described = create::described(&new.definition);
+        let metadata = staged(new.table_id.to_string(), described);
+        // A staged table's files are written before its commit: its client is given credentials for them now.
+        let storage_credentials = credentials_for(&state, caller, asked, &metadata.location, &namespace, &name).await?;
         return Ok(Json(LoadTableResult {
             metadata_location: None,
-            metadata: staged(new.table_id.to_string(), described),
+            metadata,
             config: BTreeMap::new(),
+            storage_credentials,
         }));
     }
     let table = create::create(&state, &wanted, &name, new).await.map_err(|e| {
@@ -94,16 +139,37 @@ pub(crate) async fn create(
             failure
         }
     })?;
-    Ok(Json(load(&state, &table).await?))
+    let mut loaded = load(&state, &table).await?;
+    loaded.storage_credentials = credentials_for(&state, caller, asked, table.location(), &namespace, &name).await?;
+    Ok(Json(loaded))
 }
 
 /// `GET /v1/namespaces/{namespace}/tables/{table}`.
 pub(crate) async fn get(
     Shared(state): Shared<State>,
     Path((namespace, name)): Path<(String, String)>,
+    caller: Option<Extension<Caller>>,
+    headers: HeaderMap,
 ) -> Result<Json<LoadTableResult>, Failure> {
     let table = found(&state, &levels(&namespace), &name).await?;
-    Ok(Json(load(&state, &table).await?))
+    let mut loaded = load(&state, &table).await?;
+    let caller = caller.map(|Extension(c)| c);
+    loaded.storage_credentials =
+        credentials_for(&state, caller, asks(&headers), table.location(), &namespace, &name).await?;
+    Ok(Json(loaded))
+}
+
+/// `GET /v1/namespaces/{namespace}/tables/{table}/credentials`: `loadCredentials`, fresh credentials for a table's files,
+/// as a client asks when its own expire (REST-11). Asking is what it is: none for a table whose files are local.
+pub(crate) async fn credentials(
+    Shared(state): Shared<State>,
+    Path((namespace, name)): Path<(String, String)>,
+    caller: Option<Extension<Caller>>,
+) -> Result<Json<LoadCredentialsResponse>, Failure> {
+    let table = found(&state, &levels(&namespace), &name).await?;
+    let caller = caller.map(|Extension(c)| c);
+    let storage_credentials = credentials_for(&state, caller, true, table.location(), &namespace, &name).await?;
+    Ok(Json(LoadCredentialsResponse { storage_credentials }))
 }
 
 /// What a commit asks of one table. Refused, it answers first that the table is not the one the client asserts, if so
