@@ -520,12 +520,28 @@ async fn write(
     Ok(())
 }
 
+/// Where a client writes a table's metadata, made on a local warehouse. An object store has no directories, and Iceberg
+/// clients that write through a file system make theirs, but DuckDB writes its manifests to `<location>/metadata/` on a
+/// local file system as if it were there, and MetaLake's own files lie under `metalake-*` (REST-6).
+fn writable_by_clients(location: &str) -> Result<()> {
+    let local = url::Url::parse(location)
+        .ok()
+        .filter(|url| url.scheme() == "file")
+        .and_then(|url| url.to_file_path().ok());
+    if let Some(directory) = local {
+        let metadata = directory.join("metadata");
+        std::fs::create_dir_all(&metadata).map_err(|e| Error::Location(format!("{}: {e}", metadata.display())))?;
+    }
+    Ok(())
+}
+
 /// `loadTable`. Its metadata file is written last, so finding it says that every file it names is there, and a load of
 /// what has not changed asks nothing else (REST-6). An engine reads that file itself for its metadata tables, as Trino does.
 pub(crate) async fn load(state: &State, table: &Table) -> Result<LoadTableResult> {
     let rows = rows(state, table).await?;
     let storage = state.storage()?;
     let location = table.location();
+    writable_by_clients(location)?;
     let served = metadata(&rows, |at| list_path(location, at));
     let (metadata_location, body) = rendered(location, &served)?;
     if !storage.exists(&metadata_location).await? {
@@ -555,6 +571,20 @@ mod tests {
     use crate::project::manifest::ROLL_UP;
 
     const TARGET: i64 = 1024;
+
+    #[test]
+    fn local_table_has_metadata_directory() {
+        let directory = std::env::temp_dir().join(format!("metalake-load-{}", uuid::Uuid::new_v4().simple()));
+        let location = url::Url::from_directory_path(&directory).unwrap();
+        writable_by_clients(location.as_str().trim_end_matches('/')).unwrap();
+        assert!(
+            directory.join("metadata").is_dir(),
+            "made where DuckDB writes its manifests"
+        );
+        writable_by_clients(location.as_str()).unwrap();
+        writable_by_clients("s3://bucket/lake/db/t").unwrap();
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
 
     fn snapshot(id: i64, parent: Option<i64>) -> TableSnapshot {
         TableSnapshot {
