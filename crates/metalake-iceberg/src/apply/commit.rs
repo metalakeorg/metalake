@@ -12,7 +12,7 @@ use super::files::{self, ManifestFile};
 use super::update::{Change, one_ref};
 use super::{ApplyError, Refused, create};
 use crate::footers::Job;
-use crate::project::metadata::is_empty_creation;
+use crate::project::metadata::{definition_ids, is_empty_creation};
 use crate::state::State;
 
 /// The version of every Iceberg idempotency key: a key names one proposed snapshot (REST-3).
@@ -110,6 +110,24 @@ async fn resolve(on: &Ref, target: &Target) -> Result<(Uuid, Option<Table>), App
     Ok((table.id(), Some(table)))
 }
 
+/// Holds what a change asserts of the table's definition to the table on the ref, as a load would serve it (REST-12).
+async fn check_asserted(state: &State, on: &Ref, change: &Change, table: &Table) -> Result<(), ApplyError> {
+    if change.asserted.is_empty() {
+        return Ok(());
+    }
+    let definition = on.definition(table, None).await?;
+    let head = definition["snapshot_id"].as_i64();
+    let heads: Vec<i64> = head.into_iter().collect();
+    let found = state.catalog().ancestors(table, &heads, 1, None).await?;
+    // The current snapshot's schema, as the load finds it among the snapshots it serves.
+    let current = found.iter().find(|s| Some(s.snapshot_id) == head);
+    let ids = definition_ids(&definition, current.map(|s| s.schema_seq));
+    for asserted in &change.asserted {
+        asserted.check(&ids)?;
+    }
+    Ok(())
+}
+
 /// What a client that saw a table with no snapshot expects: the snapshot its creation wrote, which it is not served
 /// (ICE-1). A table that has been written since keeps `None`, so the commit conflicts.
 async fn base_of_unwritten(state: &State, table: &Table) -> Result<Option<i64>, ApplyError> {
@@ -128,6 +146,9 @@ async fn prepare(
     table: Option<Table>,
 ) -> Result<Prepared, ApplyError> {
     let change = &target.change;
+    if let Some(table) = &table {
+        check_asserted(state, on, change, table).await?;
+    }
     let definition = match &change.creation {
         Some(creation) => Some(create::definition(
             &target.levels(),
@@ -328,6 +349,7 @@ mod tests {
                 creation: None,
                 snapshots: vec![proposed],
                 properties: BTreeMap::new(),
+                asserted: Vec::new(),
             },
         }
     }

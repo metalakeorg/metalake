@@ -25,6 +25,19 @@ def duckdb(uri):
     }
 
 
+def duckdb_insert(uri):
+    """An insert, which DuckDB commits with the requirements on the definition it planned against (REST-12)."""
+    import duckdb
+
+    connection = duckdb.connect()
+    connection.execute("INSTALL iceberg")
+    connection.execute("LOAD iceberg")
+    connection.execute(f"ATTACH '' AS lake (TYPE iceberg, ENDPOINT '{uri}', AUTHORIZATION_TYPE 'none')")
+    connection.execute("insert into lake.db.wide values (40), (41)")
+    rows = connection.execute("select k from lake.db.wide order by k").fetchall()
+    return {"version": duckdb.__version__, "rows": [row[0] for row in rows]}
+
+
 def spark_session(uri):
     from pyspark.sql import SparkSession
 
@@ -400,7 +413,7 @@ def flink_incremental(uri):
 
 
 if __name__ == "__main__":
-    said = "\n" + json.dumps({"duckdb": duckdb, "spark": spark, "spark_insert": spark_insert, "spark_lifecycle": spark_lifecycle, "spark_recovery": spark_recovery, "trino": trino_lifecycle, "flink": flink_lifecycle, "flink_recovery": flink_recovery, "spark_stream": spark_stream, "flink_incremental": flink_incremental}[sys.argv[1]](sys.argv[2]))
+    said = "\n" + json.dumps({"duckdb": duckdb, "duckdb_insert": duckdb_insert, "spark": spark, "spark_insert": spark_insert, "spark_lifecycle": spark_lifecycle, "spark_recovery": spark_recovery, "trino": trino_lifecycle, "flink": flink_lifecycle, "flink_recovery": flink_recovery, "spark_stream": spark_stream, "flink_incremental": flink_incremental}[sys.argv[1]](sys.argv[2]))
     print(said, flush=True)
     # A JVM an engine left behind may fail the interpreter's exit, after the answer is out.
     sys.stderr.flush()

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use super::Refused;
-use crate::project::metadata::{COPY_ON_WRITE, ICEBERG_METADATA, Materialize};
+use crate::project::metadata::{COPY_ON_WRITE, DefinitionIds, ICEBERG_METADATA, Materialize};
 use crate::wire::commit::{CommitTableRequest, Entry, ProposedSnapshot, Requirement, Update};
 
 /// The format a table is served in (ICE-1).
@@ -52,6 +52,38 @@ pub struct Change {
     pub snapshots: Vec<ProposedSnapshot>,
     /// By key: its new value, or `None` when it goes (REST-9).
     pub properties: BTreeMap<String, Option<String>>,
+    /// What it asserts of the table's definition on the ref (REST-12).
+    pub asserted: Vec<Asserted>,
+}
+
+/// A requirement on a table's definition, held to the table on the ref as a load would serve it (REST-12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Asserted {
+    CurrentSchemaId(i64),
+    LastAssignedFieldId(i64),
+    LastAssignedPartitionId(i64),
+    DefaultSpecId(i64),
+    DefaultSortOrderId(i64),
+}
+
+impl Asserted {
+    /// Whether the table's definition is as asserted: one that is not is a conflict, worded as Iceberg's catalogs word
+    /// a requirement that failed, and nothing is applied (REST-2).
+    pub fn check(self, ids: &DefinitionIds) -> Result<(), Refused> {
+        let (what, expected, actual) = match self {
+            Asserted::CurrentSchemaId(id) => ("current schema id", id, ids.current_schema_id),
+            Asserted::LastAssignedFieldId(id) => ("last assigned field id", id, ids.last_column_id.into()),
+            Asserted::LastAssignedPartitionId(id) => ("last assigned partition id", id, ids.last_partition_id.into()),
+            Asserted::DefaultSpecId(id) => ("default spec id", id, ids.default_spec_id.into()),
+            Asserted::DefaultSortOrderId(id) => ("default sort order id", id, ids.default_sort_order_id.into()),
+        };
+        match expected == actual {
+            true => Ok(()),
+            false => Err(Refused::Conflict(format!(
+                "Requirement failed: {what} changed: expected {expected} != {actual}"
+            ))),
+        }
+    }
 }
 
 impl Change {
@@ -105,11 +137,12 @@ fn invalid<T>(message: impl Into<String>) -> Result<T, Refused> {
     Err(Refused::Invalid(message.into()))
 }
 
-/// The requirements of a commit: whether it creates, its uuid, and the ref it expects, with what it expects of it.
-type Required = (bool, Option<String>, Option<(String, Option<i64>)>);
+/// The requirements of a commit: whether it creates, its uuid, the ref it expects, with what it expects of it, and what
+/// it asserts of the definition.
+type Required = (bool, Option<String>, Option<(String, Option<i64>)>, Vec<Asserted>);
 
 fn requirements(entries: Vec<Entry<Requirement>>) -> Result<Required, Refused> {
-    let (mut creates, mut uuid, mut expected) = (false, None, None);
+    let (mut creates, mut uuid, mut expected, mut asserted) = (false, None, None, Vec::new());
     let alone = entries.len() == 1;
     for entry in entries {
         match entry.known {
@@ -123,11 +156,26 @@ fn requirements(entries: Vec<Entry<Requirement>>) -> Result<Required, Refused> {
                 }
                 expected = Some(wanted);
             }
-            // They guard changes of a definition, which are refused: holding them to nothing would hide that.
+            // Checks of the definition a write was planned against (REST-12); the updates they guard stay refused.
+            Requirement::AssertCurrentSchemaId { current_schema_id } => {
+                asserted.push(Asserted::CurrentSchemaId(current_schema_id))
+            }
+            Requirement::AssertLastAssignedFieldId { last_assigned_field_id } => {
+                asserted.push(Asserted::LastAssignedFieldId(last_assigned_field_id))
+            }
+            Requirement::AssertLastAssignedPartitionId {
+                last_assigned_partition_id,
+            } => asserted.push(Asserted::LastAssignedPartitionId(last_assigned_partition_id)),
+            Requirement::AssertDefaultSpecId { default_spec_id } => {
+                asserted.push(Asserted::DefaultSpecId(default_spec_id))
+            }
+            Requirement::AssertDefaultSortOrderId { default_sort_order_id } => {
+                asserted.push(Asserted::DefaultSortOrderId(default_sort_order_id))
+            }
             Requirement::Other => return invalid(format!("{} is not served", entry.name)),
         }
     }
-    Ok((creates, uuid, expected))
+    Ok((creates, uuid, expected, asserted))
 }
 
 /// What the updates of a stage-create carry, as they arrive.
@@ -221,7 +269,7 @@ pub fn asserted_uuid(request: &CommitTableRequest) -> Option<String> {
 }
 
 pub fn change(request: CommitTableRequest) -> Result<Change, Refused> {
-    let (creates, table_uuid, expected) = requirements(request.requirements)?;
+    let (creates, table_uuid, expected, asserted) = requirements(request.requirements)?;
     let mut definition = Definition::default();
     let (mut snapshots, mut moves, mut properties) = (Vec::new(), Vec::new(), BTreeMap::new());
     for entry in request.updates {
@@ -286,6 +334,7 @@ pub fn change(request: CommitTableRequest) -> Result<Change, Refused> {
         creation,
         snapshots,
         properties,
+        asserted,
     })
 }
 
@@ -487,8 +536,8 @@ mod tests {
             "set-location",
         );
         let mut body = append();
-        body["requirements"] = json!([{"type": "assert-current-schema-id", "current-schema-id": 1}]);
-        refused(body, "assert-current-schema-id");
+        body["requirements"] = json!([{"type": "assert-view-uuid", "uuid": "x"}]);
+        refused(body, "assert-view-uuid");
         let mut body = create();
         body["updates"]
             .as_array_mut()
@@ -550,6 +599,58 @@ mod tests {
     }
 
     #[test]
+    fn rest12_definition_requirements_collected() {
+        let mut body = append();
+        body["requirements"] = json!([
+            {"type": "assert-current-schema-id", "current-schema-id": 3},
+            {"type": "assert-last-assigned-field-id", "last-assigned-field-id": 2},
+            {"type": "assert-last-assigned-partition-id", "last-assigned-partition-id": 999},
+            {"type": "assert-default-spec-id", "default-spec-id": 0},
+            {"type": "assert-default-sort-order-id", "default-sort-order-id": 0}]);
+        let asked = change(serde_json::from_value(body).unwrap()).unwrap();
+        assert_eq!(
+            asked.asserted,
+            [
+                Asserted::CurrentSchemaId(3),
+                Asserted::LastAssignedFieldId(2),
+                Asserted::LastAssignedPartitionId(999),
+                Asserted::DefaultSpecId(0),
+                Asserted::DefaultSortOrderId(0),
+            ]
+        );
+    }
+
+    #[test]
+    fn rest12_definition_requirement_check() {
+        let ids = DefinitionIds {
+            current_schema_id: 3,
+            last_column_id: 2,
+            last_partition_id: 999,
+            default_spec_id: 0,
+            default_sort_order_id: 1,
+        };
+        for held in [
+            Asserted::CurrentSchemaId(3),
+            Asserted::LastAssignedFieldId(2),
+            Asserted::LastAssignedPartitionId(999),
+            Asserted::DefaultSpecId(0),
+            Asserted::DefaultSortOrderId(1),
+        ] {
+            assert_eq!(held.check(&ids), Ok(()), "{held:?}");
+        }
+        assert_eq!(
+            Asserted::CurrentSchemaId(2).check(&ids),
+            Err(Refused::Conflict(
+                "Requirement failed: current schema id changed: expected 2 != 3".into()
+            ))
+        );
+        assert!(matches!(
+            Asserted::DefaultSortOrderId(0).check(&ids),
+            Err(Refused::Conflict(_))
+        ));
+    }
+
+    #[test]
     fn rest9_multi_ref_transaction_refused() {
         let on = |name: &str| Change {
             ref_name: name.to_string(),
@@ -558,6 +659,7 @@ mod tests {
             creation: None,
             snapshots: Vec::new(),
             properties: BTreeMap::new(),
+            asserted: Vec::new(),
         };
         assert_eq!(one_ref([on("b"), on("b")].iter()), Ok("b"));
         assert!(one_ref([on("main"), on("b")].iter()).is_err());
