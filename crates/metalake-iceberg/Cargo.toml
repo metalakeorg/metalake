@@ -29,6 +29,7 @@ futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["net", "signal", "sync", "time"] }
+url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

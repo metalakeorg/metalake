@@ -47,6 +47,21 @@ pub enum Requirement {
         #[serde(default)]
         snapshot_id: Option<i64>,
     },
+    AssertCurrentSchemaId {
+        current_schema_id: i64,
+    },
+    AssertLastAssignedFieldId {
+        last_assigned_field_id: i64,
+    },
+    AssertLastAssignedPartitionId {
+        last_assigned_partition_id: i64,
+    },
+    AssertDefaultSpecId {
+        default_spec_id: i64,
+    },
+    AssertDefaultSortOrderId {
+        default_sort_order_id: i64,
+    },
     #[serde(other)]
     Other,
 }

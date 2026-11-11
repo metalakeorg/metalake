@@ -1,7 +1,8 @@
 //! Failures as an Iceberg client reads them (REST-2), end to end: the server, as a process. A name that is missing or
 //! taken is reported as Iceberg's catalogs word it; a table that is not the one a commit asserts conflicts before
-//! anything the commit asks is refused (REST-3); and a creation whose name another took first reports Iceberg's failed
-//! `assert-create` (REST-7).
+//! anything the commit asks is refused (REST-3); a commit's requirements on the definition are held to the table, as a
+//! load serves it (REST-12); and a creation whose name another took first reports Iceberg's failed `assert-create`
+//! (REST-7).
 
 mod common;
 
@@ -105,10 +106,49 @@ async fn rest3_other_table_uuid_before_refusal_conflicts() -> Result<(), Failure
         "{answer}"
     );
 
-    let body = json!({"requirements": [{"type": "assert-last-assigned-field-id", "last-assigned-field-id": 1}],
-        "updates": []});
+    Ok(())
+}
+
+#[tokio::test]
+async fn rest12_definition_requirements_checked() -> Result<(), Failure> {
+    let (_server, uri) = served().await?;
+    let (status, loaded) = request(&uri, "GET", "/v1/namespaces/db/tables/t", None)?;
+    assert_eq!(status, 200, "{loaded}");
+    let served = &loaded["metadata"];
+    let asserted = |schema: &Value| {
+        json!([
+            {"type": "assert-current-schema-id", "current-schema-id": schema},
+            {"type": "assert-last-assigned-field-id", "last-assigned-field-id": served["last-column-id"]},
+            {"type": "assert-last-assigned-partition-id", "last-assigned-partition-id": served["last-partition-id"]},
+            {"type": "assert-default-spec-id", "default-spec-id": served["default-spec-id"]},
+            {"type": "assert-default-sort-order-id", "default-sort-order-id": served["default-sort-order-id"]}])
+    };
+    let set = |team: &str| json!([{"action": "set-properties", "updates": {"team": team}}]);
+
+    // As the load served it: the commit applies.
+    let body = json!({"requirements": asserted(&served["current-schema-id"]), "updates": set("data")});
     let (status, answer) = request(&uri, "POST", "/v1/namespaces/db/tables/t", Some(body))?;
-    assert_eq!(status, 400, "with no uuid asserted, the refusal stands: {answer}");
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(answer["metadata"]["properties"]["team"], "data");
+
+    // Another schema than the table's: a conflict, and nothing applied.
+    let other = json!(served["current-schema-id"].as_i64().unwrap_or(0) + 1000);
+    let body = json!({"requirements": asserted(&other), "updates": set("other")});
+    let (status, answer) = request(&uri, "POST", "/v1/namespaces/db/tables/t", Some(body))?;
+    assert_eq!(status, 409, "{answer}");
+    assert_eq!(answer["error"]["type"], "CommitFailedException");
+    assert!(
+        message(&answer).starts_with("Requirement failed: current schema id changed"),
+        "{answer}"
+    );
+    let (_, loaded) = request(&uri, "GET", "/v1/namespaces/db/tables/t", None)?;
+    assert_eq!(loaded["metadata"]["properties"]["team"], "data", "nothing applied");
+
+    // The updates they guard stay refused.
+    let body = json!({"requirements": asserted(&served["current-schema-id"]),
+        "updates": [{"action": "set-current-schema", "schema-id": 1}]});
+    let (status, answer) = request(&uri, "POST", "/v1/namespaces/db/tables/t", Some(body))?;
+    assert_eq!(status, 400, "{answer}");
     Ok(())
 }
 

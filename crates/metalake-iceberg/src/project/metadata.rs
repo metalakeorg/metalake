@@ -83,6 +83,27 @@ pub fn schema(id: i64, fields: &Value) -> Value {
     rendered
 }
 
+/// The ids of a table's definition on a ref, as a load serves them (ICE-1) and as REST-12 holds a commit to them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DefinitionIds {
+    pub current_schema_id: i64,
+    pub last_column_id: i32,
+    pub last_partition_id: i32,
+    pub default_spec_id: i32,
+    pub default_sort_order_id: i32,
+}
+
+/// The ids of `definition`, what `describe` answers, whose current snapshot has the schema `current_schema`.
+pub fn definition_ids(definition: &Value, current_schema: Option<i64>) -> DefinitionIds {
+    DefinitionIds {
+        current_schema_id: current_schema.unwrap_or(0),
+        last_column_id: int(&definition["last_field_id"]),
+        last_partition_id: int(&definition["last_partition_field_id"]),
+        default_spec_id: int(&definition["spec_id"]),
+        default_sort_order_id: int(&definition["sort_order_id"]),
+    }
+}
+
 fn int(value: &Value) -> i32 {
     value.as_i64().unwrap_or(0) as i32
 }
@@ -304,20 +325,21 @@ pub fn metadata(rows: &Rows, manifest_list: impl Fn(i64) -> String) -> TableMeta
     let unwritten = head.filter(|s| is_empty_creation(s)).map(|s| s.snapshot_id);
     let current = head.map(|s| s.snapshot_id).filter(|id| Some(*id) != unwritten);
     let properties = d["properties"].as_object().into_iter().flatten();
+    let ids = definition_ids(d, current_schema);
     TableMetadata {
         format_version: 2,
         table_uuid: rows.table_id.clone(),
         location: d["location"].as_str().unwrap_or_default().to_string(),
         last_sequence_number: rows.snapshots.iter().map(|s| s.snapshot_id).max().unwrap_or(0),
         last_updated_ms: rows.snapshots.iter().filter_map(|s| s.timestamp_ms).max().unwrap_or(0),
-        last_column_id: int(&d["last_field_id"]),
+        last_column_id: ids.last_column_id,
         schemas: rows.schemas.iter().map(|(id, fields)| schema(*id, fields)).collect(),
-        current_schema_id: current_schema.unwrap_or(0),
+        current_schema_id: ids.current_schema_id,
         partition_specs: specs(d),
-        default_spec_id: int(&d["spec_id"]),
-        last_partition_id: int(&d["last_partition_field_id"]),
+        default_spec_id: ids.default_spec_id,
+        last_partition_id: ids.last_partition_id,
         sort_orders: sort_orders(d),
-        default_sort_order_id: int(&d["sort_order_id"]),
+        default_sort_order_id: ids.default_sort_order_id,
         properties: properties
             .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
             .chain(COPY_ON_WRITE.map(|key| (key.to_string(), "copy-on-write".to_string())))
