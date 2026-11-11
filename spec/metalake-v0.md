@@ -864,7 +864,8 @@ Iceberg REST server of the projection, and are checked by its tests.
   from `GetSessionToken`, a GCS OAuth2 access token, an Azure SAS), or the service's own when that expires already;
   never a long-lived key. Each is written in every spelling clients read: `s3.access-key-id`, `s3.secret-access-key`,
   `s3.session-token` and `s3.session-token-expires-at-ms`, with the region and endpoint the service reaches the store
-  by; `gcs.oauth2.token` and `gcs.oauth2.token-expires-at`; `adls.sas-token.<account host>`. `loadCredentials` answers
+  by; `gcs.oauth2.token` and `gcs.oauth2.token-expires-at`; `adls.sas-token.<account host>` and
+  `adls.sas-token-expires-at-ms.<account host>`. `loadCredentials` answers
   fresh ones for a table, as a client asks when its own expire. They go only to a request that REST-10 authenticates,
   or that comes from the loopback address; any other that asks for them is refused with 403, as a client that is not
   given credentials would fail later, reading files, with no reason it can tell. A local warehouse vends none: a load
@@ -874,7 +875,7 @@ Iceberg REST server of the projection, and are checked by its tests.
   `assert-default-sort-order-id` to the table on the ref, as a load would serve it: one that does not match is a 409,
   and nothing is applied (REST-2). A client sends them to say that what it writes was planned against that definition,
   as DuckDB does with every insert. They are checks: the updates that would change what they assert stay refused
-  (§19), as `assert-table-uuid` and `assert-ref-snapshot-id` stay as REST-3 and §9 hold them.
+  (§19), as `assert-table-uuid` and `assert-ref-snapshot-id` stay as REST-3 and ICE-6 hold them.
 
 ## 17. Conformance
 
