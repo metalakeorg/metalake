@@ -178,7 +178,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      AZURE_STORAGE_USE_EMULATOR: "true"
       METALAKE_TEST_AZURE_BLOB_ENDPOINT: http://127.0.0.1:4577/devstoreaccount1
     steps:
       - uses: actions/checkout@v4
@@ -191,10 +190,11 @@ jobs:
           docker run -d --name floci-az -p 4577:4577 floci/floci-az:latest
           until curl -fs http://127.0.0.1:4577/_floci/info >/dev/null; do sleep 1; done
       - name: Credentials vended on Azure, signed with the account's key
+        env:
+          AZURE_STORAGE_USE_EMULATOR: "true"
         run: cargo test -p metalake-iceberg --test c19_azure_sas rest11_azure_sas_narrowed -- --nocapture
       - name: Credentials vended on Azure, signed with a key delegated to an Entra identity
         env:
-          AZURE_STORAGE_USE_EMULATOR: ""
           AZURE_STORAGE_ACCOUNT_NAME: devstoreaccount1
           AZURE_STORAGE_ENDPOINT: http://127.0.0.1:4577/devstoreaccount1
           AZURE_STORAGE_TOKEN: unchecked
