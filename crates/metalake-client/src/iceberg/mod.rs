@@ -7,6 +7,7 @@ mod duckdb;
 mod profile;
 mod pyiceberg;
 mod spark;
+mod trino;
 
 use std::collections::BTreeMap;
 

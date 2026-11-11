@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use url::Url;
 
-use super::{Iceberg, duckdb, pyiceberg, spark};
+use super::{Iceberg, duckdb, pyiceberg, spark, trino};
 use crate::{Error, Result};
 
 /// The version of Iceberg's Java libraries a profile names: the one CI and the REST Compatibility Kit hold the service
@@ -166,17 +166,20 @@ pub struct Profile {
     pub startup: BTreeMap<String, String>,
     /// The libraries it loads.
     pub artifacts: Vec<Artifact>,
+    /// What the lake gave it.
+    pub target: Target,
 }
 
 impl Profile {
     /// An engine's, with nothing in it yet.
-    pub(super) fn new(engine: Engine, name: &str) -> Profile {
+    pub(super) fn new(engine: Engine, name: &str, target: &Target) -> Profile {
         Profile {
             engine,
             name: name.to_string(),
             properties: BTreeMap::new(),
             startup: BTreeMap::new(),
             artifacts: Vec::new(),
+            target: target.clone(),
         }
     }
 
@@ -186,6 +189,7 @@ impl Profile {
             Engine::PyIceberg => pyiceberg::render(self),
             Engine::DuckDb => duckdb::render(self),
             Engine::Spark => spark::render(self),
+            Engine::Trino => trino::render(self),
             engine => unreachable!("no profile of {engine} is built"),
         }
     }
@@ -195,7 +199,7 @@ impl Profile {
         match self.engine {
             Engine::PyIceberg => Vec::new(),
             Engine::DuckDb => duckdb::statements(self),
-            Engine::Spark => Vec::new(),
+            Engine::Spark | Engine::Trino => Vec::new(),
             engine => unreachable!("no profile of {engine} is built"),
         }
     }
@@ -208,6 +212,7 @@ pub fn profile(engine: Engine, name: &str, target: &Target) -> Result<Profile> {
         Engine::PyIceberg => Ok(pyiceberg::profile(name, target)),
         Engine::DuckDb => Ok(duckdb::profile(name, target)),
         Engine::Spark => Ok(spark::profile(name, target)),
+        Engine::Trino => Ok(trino::profile(name, target)),
         engine => Err(Error::usage(format!("the profile of {engine} is not built yet"))),
     }
 }
