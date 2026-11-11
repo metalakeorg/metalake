@@ -89,9 +89,10 @@ async fn same(
     Ok(())
 }
 
+/// The plan of `sql`, verbose: every file group, whatever the machine's cores.
 async fn plan(context: &SessionContext, sql: &str) -> Result<String, Box<dyn std::error::Error>> {
     let plan = context.sql(sql).await?.create_physical_plan().await?;
-    Ok(displayable(plan.as_ref()).indent(false).to_string())
+    Ok(displayable(plan.as_ref()).indent(true).to_string())
 }
 
 #[tokio::test]

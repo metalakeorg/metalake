@@ -19,6 +19,7 @@ mod catalog;
 mod changes;
 mod ddl;
 mod details;
+mod exec;
 mod filters;
 mod merge;
 mod point;
