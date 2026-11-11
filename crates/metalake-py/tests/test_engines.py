@@ -145,14 +145,14 @@ def test_flink_adopts_environment(lake, flink_environment):
     environment = TableEnvironment.create(EnvironmentSettings.in_batch_mode())
     assert lake.iceberg.flink(environment, name="other") is environment
     assert flink_rows(environment, "select count(*) from other.default.t")[0][0] >= 3
-    # Again, under a third name: the jars it was given already are taken again without harm.
+    # Again, under a third name.
     assert lake.iceberg.flink(environment, name="third") is environment
     assert flink_rows(environment, "select count(*) from third.default.t")[0][0] >= 3
 
 
-def test_flink_without_hadoop_refused(directory, lake):
+def test_flink_without_jars_refused(directory, lake):
     pytest.importorskip("pyflink")
-    # Another process: a JVM of its own, started before the lake was asked for, without Hadoop.
+    # Another process: a JVM of its own, started before the lake was asked for, without the lake's jars.
     script = textwrap.dedent(
         f"""
         import os

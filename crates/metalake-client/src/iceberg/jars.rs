@@ -1,4 +1,4 @@
-//! The jars an engine is given as files (Flink's `pipeline.jars`), fetched once from Maven Central into this user's
+//! The jars an engine is given as files (the classpath Flink starts with), fetched once from Maven Central into this user's
 //! MetaLake directory, as `metalake-local` fetches Postgres. Each is held to the SHA-512 pinned here for its version,
 //! so that a jar is the one CI tested, whatever the mirror serves; one with no pinned hash is not fetched.
 

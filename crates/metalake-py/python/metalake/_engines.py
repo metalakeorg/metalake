@@ -83,20 +83,23 @@ def flink(profile, environment, streaming):
     import pyflink.version
 
     _same_version("Flink", pyflink.version.__version__, profile, "iceberg-flink-runtime-")
-    _hadoop_for(profile)
+    _classpath_for(profile)
     if environment is None:
         mode = table.EnvironmentSettings.in_streaming_mode() if streaming else table.EnvironmentSettings.in_batch_mode()
         environment = table.TableEnvironment.create(mode)
-    _hadoop_in(profile)
-    # `ADD JAR` puts each jar where Flink resolves the catalog's classes, in an environment that runs already.
+    _classpath_in(profile)
     for statement in profile.statements:
         environment.execute_sql(statement).wait()
     return environment
 
 
-def _hadoop_for(profile):
-    """Hadoop's client on the classpath PyFlink's JVM starts with, if it has not started: Flink loads Hadoop's classes
-    from there alone, whatever jars it is given later."""
+# What the lake's catalog needs on the classpath Flink started with: Iceberg's REST catalog, and Hadoop's client.
+FLINK_CLASSES = ("org.apache.iceberg.rest.RESTCatalog", "org.apache.hadoop.conf.Configuration")
+
+
+def _classpath_for(profile):
+    """The lake's jars on the classpath PyFlink's JVM starts with, if it has not started: Flink loads Hadoop's classes,
+    and Iceberg its catalog, from there alone, whatever jars it is given later."""
     import os
 
     from pyflink import java_gateway
@@ -109,17 +112,19 @@ def _hadoop_for(profile):
         os.environ[HADOOP_CLASSPATH] = os.pathsep.join(part for part in (held, wanted) if part)
 
 
-def _hadoop_in(profile):
-    """A Flink that started without Hadoop's classes cannot take them: it is refused, with what it needs at start."""
+def _classpath_in(profile):
+    """A Flink that started without the lake's jars cannot take them: it is refused, with what it needs at start."""
     from pyflink.java_gateway import get_gateway
 
-    try:
-        get_gateway().jvm.java.lang.Class.forName("org.apache.hadoop.conf.Configuration")
-    except Exception:
-        raise UsageError(
-            f"this Flink started without Hadoop's classes; start it with "
-            f"{HADOOP_CLASSPATH}={profile.startup[HADOOP_CLASSPATH]}"
-        ) from None
+    jvm = get_gateway().jvm
+    for name in FLINK_CLASSES:
+        try:
+            jvm.java.lang.Class.forName(name)
+        except Exception:
+            raise UsageError(
+                f"this Flink started without the lake's jars ({name}); start it with "
+                f"{HADOOP_CLASSPATH}={profile.startup[HADOOP_CLASSPATH]}"
+            ) from None
 
 
 def _same_version(engine, installed, profile, runtime):
