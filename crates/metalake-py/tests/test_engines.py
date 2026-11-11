@@ -120,6 +120,7 @@ def test_spark_without_iceberg_refused(directory, lake):
     assert "refused" in said.stdout, said.stderr[-2000:]
 
 
+# `default` is a word of Flink's SQL: a namespace of that name is quoted there.
 def flink_rows(environment, query):
     with environment.execute_sql(query).collect() as rows:
         return [tuple(row) for row in rows]
@@ -134,9 +135,9 @@ def flink_environment(lake):
 
 def test_flink_reads_and_inserts(lake, flink_environment):
     before = lake.log(limit=1)[0].seq
-    flink_environment.execute_sql("insert into lake.default.t values (30)").wait()
+    flink_environment.execute_sql("insert into lake.`default`.t values (30)").wait()
     assert lake.log(limit=1)[0].seq > before, "a commit of the lake"
-    assert flink_rows(flink_environment, "select max(k) from lake.default.t")[0][0] >= 30
+    assert flink_rows(flink_environment, "select max(k) from lake.`default`.t")[0][0] >= 30
 
 
 def test_flink_adopts_environment(lake, flink_environment):
@@ -144,10 +145,10 @@ def test_flink_adopts_environment(lake, flink_environment):
 
     environment = TableEnvironment.create(EnvironmentSettings.in_batch_mode())
     assert lake.iceberg.flink(environment, name="other") is environment
-    assert flink_rows(environment, "select count(*) from other.default.t")[0][0] >= 3
+    assert flink_rows(environment, "select count(*) from other.`default`.t")[0][0] >= 3
     # Again, under a third name.
     assert lake.iceberg.flink(environment, name="third") is environment
-    assert flink_rows(environment, "select count(*) from third.default.t")[0][0] >= 3
+    assert flink_rows(environment, "select count(*) from third.`default`.t")[0][0] >= 3
 
 
 def test_flink_without_jars_refused(directory, lake):
