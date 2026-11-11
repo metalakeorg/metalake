@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
+use serde::Serialize;
 use url::Url;
 
 use super::{Iceberg, duckdb, flink, jars, pyiceberg, spark, trino};
@@ -214,6 +215,38 @@ impl Profile {
     }
 }
 
+/// In the engine's own form, as [`Profile::render`] gives it.
+impl fmt::Display for Profile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.render().trim_end_matches('\n'))
+    }
+}
+
+/// What a program reads of a profile: the engine, the catalog's name, the server's URI, both sets of properties, and
+/// the libraries by their coordinates.
+impl Serialize for Profile {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Shown<'a> {
+            engine: &'static str,
+            name: &'a str,
+            uri: &'a str,
+            properties: &'a BTreeMap<String, String>,
+            startup: &'a BTreeMap<String, String>,
+            artifacts: Vec<String>,
+        }
+        Shown {
+            engine: self.engine.as_str(),
+            name: &self.name,
+            uri: &self.target.uri,
+            properties: &self.properties,
+            startup: &self.startup,
+            artifacts: self.artifacts.iter().map(Artifact::coordinate).collect(),
+        }
+        .serialize(serializer)
+    }
+}
+
 /// The profile of `engine` for a lake at `target`, its catalog named `name`.
 pub fn profile(engine: Engine, name: &str, target: &Target) -> Result<Profile> {
     let name = catalog_name(name)?;
@@ -253,6 +286,8 @@ impl Iceberg<'_> {
 
     /// The profile of `engine` for this lake, its catalog named `name`, with the jars it is given as files fetched.
     pub async fn profile(&self, engine: Engine, name: &str) -> Result<Profile> {
+        // A name refused before a server is started for it.
+        catalog_name(name)?;
         let profile = profile(engine, name, &self.target().await?)?;
         if engine == Engine::Flink {
             jars::fetch(&profile.artifacts).await?;

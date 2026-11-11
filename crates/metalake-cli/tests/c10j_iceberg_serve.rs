@@ -74,6 +74,34 @@ fn serve_runtime_file_and_shutdown() {
 }
 
 #[test]
+fn serve_port_taken() {
+    let (dir, _) = lake();
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let listen = taken.local_addr().unwrap().to_string();
+    let serve = |fallback: bool| {
+        let mut command = metalake(&dir);
+        command.args(["iceberg", "serve", "--listen", &listen, "--materialize", "off"]);
+        if fallback {
+            command.arg("--or-any-port");
+        }
+        command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap()
+    };
+
+    let refused = serve(false).wait_with_output().unwrap();
+    assert!(!refused.status.success(), "a port taken is refused");
+
+    let mut server = serve(true);
+    let mut first = String::new();
+    BufReader::new(server.stdout.take().unwrap())
+        .read_line(&mut first)
+        .unwrap();
+    let _ = server.kill();
+    let _ = server.wait();
+    assert!(first.starts_with("listening on 127.0.0.1:"), "{first}");
+    assert_ne!(first.trim(), format!("listening on {listen}"), "another port");
+}
+
+#[test]
 fn runtime_file_requires_token() {
     let (dir, _) = lake();
     let output = metalake(&dir)

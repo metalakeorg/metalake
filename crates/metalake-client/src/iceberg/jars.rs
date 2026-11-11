@@ -5,9 +5,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use object_store::{ObjectStore, ObjectStoreExt};
 use object_store::http::HttpBuilder;
 use object_store::path::Path as ObjectPath;
+use object_store::{ObjectStore, ObjectStoreExt};
 use sha2::{Digest, Sha512};
 
 use super::profile::Artifact;

@@ -71,6 +71,16 @@ pub(crate) fn key(identity: &str, schema: &str) -> String {
     format!("{:016x}", fnv(&format!("{identity}\0{schema}")))
 }
 
+/// The ports a lake's server tries first, one per lake by what names it.
+pub const PORTS: std::ops::Range<u16> = 18100..19000;
+
+/// The port a lake's server tries first: the same each time it starts, so that a profile written out, Trino's catalog
+/// file or Spark's defaults, still reaches it after a restart. If another holds it, the server takes a free one.
+pub fn preferred_port(identity: &str, schema: &str) -> u16 {
+    let count = u64::from(PORTS.end - PORTS.start);
+    PORTS.start + (fnv(&format!("{identity}\0{schema}")) % count) as u16
+}
+
 /// The files of a lake's server in this user's directory: where it says it runs, the lock callers take turns by, and its
 /// log.
 struct Files {
@@ -187,11 +197,11 @@ pub(crate) fn ensure(identity: &str, postgres: &str, schema: &str) -> Result<Run
         }
         let _ = fs::remove_file(&files.runtime);
     }
-    start(&files, postgres, schema)
+    start(&files, postgres, schema, preferred_port(identity, schema))
 }
 
 /// Starts a server, and waits until its runtime file names it and it answers.
-fn start(files: &Files, postgres: &str, schema: &str) -> Result<Runtime> {
+fn start(files: &Files, postgres: &str, schema: &str, port: u16) -> Result<Runtime> {
     let token = uuid::Uuid::new_v4().simple().to_string();
     let command = launcher()?;
     let (program, prefix) = command
@@ -201,7 +211,14 @@ fn start(files: &Files, postgres: &str, schema: &str) -> Result<Runtime> {
     let mut serve = Command::new(program);
     serve
         .args(prefix)
-        .args(["iceberg", "serve", "--listen", "127.0.0.1:0", "--runtime-file"])
+        .args([
+            "iceberg",
+            "serve",
+            "--listen",
+            &format!("127.0.0.1:{port}"),
+            "--or-any-port",
+            "--runtime-file",
+        ])
         .arg(&files.runtime)
         .env(environment::POSTGRES, postgres)
         .env(environment::SCHEMA, schema)
@@ -432,6 +449,21 @@ mod tests {
         );
         assert_eq!(resolve(Some("".into()), None), None);
         fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn preferred_port_by_lake() {
+        let one = preferred_port("local:/home/a/lake", "metalake");
+        assert!(PORTS.contains(&one));
+        assert_eq!(
+            one,
+            preferred_port("local:/home/a/lake", "metalake"),
+            "the same each time"
+        );
+        let ports: std::collections::HashSet<_> = (0..50)
+            .map(|i| preferred_port(&format!("local:/lake{i}"), "metalake"))
+            .collect();
+        assert!(ports.len() > 40, "lakes spread over the range: {}", ports.len());
     }
 
     #[test]

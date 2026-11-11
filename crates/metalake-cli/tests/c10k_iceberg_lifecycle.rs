@@ -144,6 +144,12 @@ fn ensure_replaces_dead_server() {
     let second = ensure(&dir);
     assert_ne!(second.pid, first.pid);
     assert!(answers(&second));
+    if server::PORTS.contains(&first.port) {
+        assert_eq!(
+            second.port, first.port,
+            "a restarted server takes the lake's port again"
+        );
+    }
     assert!(stop(&dir));
 }
 
@@ -156,8 +162,10 @@ fn ensure_replaces_other_version() {
     old.write(&file).unwrap();
     let new = ensure(&dir);
     assert_ne!(new.pid, old.pid, "a server of another version is replaced");
-    assert!(!answers(&old));
     assert!(answers(&new));
+    if server::PORTS.contains(&old.port) {
+        assert_eq!(new.port, old.port, "its replacement takes the lake's port");
+    }
     assert!(stop(&dir));
 }
 
