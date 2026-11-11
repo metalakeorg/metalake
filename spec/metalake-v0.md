@@ -820,8 +820,8 @@ Iceberg REST server of the projection, and are checked by its tests.
 *0.3.*
 
 - **REST-1.** `/v1/config` lists in `endpoints` what the service serves, and nothing else: namespaces, tables,
-  `renameTable` and `transactions/commit`. Scan planning, credentials, signing, metrics, views, `register` and
-  `unregister` are not in v0.
+  `renameTable`, `transactions/commit` and, *0.4*, `loadCredentials` (REST-11). Scan planning, signing, metrics, views,
+  `register` and `unregister` are not in v0.
 - **REST-2.** 409 means nothing was applied. An outcome that is not known is a 5xx, which a client takes as
   `CommitStateUnknownException`. A commit the protocol refuses as invalid is 400, a role without the right 403.
 - **REST-3.** `updateTable` requires `assert-table-uuid`, when sent, to match, and commits with `app_id`
@@ -909,7 +909,8 @@ shows conformance by running them with its own operations in place of the refere
   MetaLake commits only, and a table is not replaced.
 - **Position deletes from Iceberg writers,** so that Trino's row-level `DELETE`, `UPDATE` and `MERGE` are refused,
   while its `INSERT` and deletes of whole partitions are not. Turning them into vectors is the first thing after v0.
-- **Storage credentials** from the service: clients bring their own.
+- **Credentials narrowed to a table**: *0.4*, the service vends credentials of its own that expire (REST-11), but not
+  narrowed to a table's prefix or to reading.
 - **Merges** into a ref other than the parent, and merges that check rows or predicates rather than files and
   keys (§12).
 - **`variant` bounds** (STA-9).
