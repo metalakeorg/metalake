@@ -95,6 +95,14 @@ impl Vendor {
     }
 }
 
+/// The text of an element of a token service's XML answer.
+pub(crate) fn element<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
+    let open = format!("<{name}>");
+    let start = xml.find(&open)? + open.len();
+    let end = xml[start..].find(&format!("</{name}>"))? + start;
+    Some(xml[start..end].trim())
+}
+
 fn scheme(location: &str) -> Option<&str> {
     location.split_once("://").map(|(scheme, _)| scheme)
 }

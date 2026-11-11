@@ -35,7 +35,7 @@ uuid.workspace = true
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 hmac = "0.13"
-object_store = { workspace = true, features = ["aws", "gcp"] }
+object_store = { workspace = true, features = ["aws", "azure", "gcp"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json"] }
 ring = "0.17"
 sha2 = "0.11"

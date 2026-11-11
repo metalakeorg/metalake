@@ -1,15 +1,20 @@
 //! Credentials for a table's files on Azure (REST-11), against a store that checks them: a SAS minted for a table's
-//! directory reads its files and not another table's, and writes them only when minted for a writer. Needs an emulator
-//! that checks service SAS signatures, as Floci-az does, its Blob endpoint in METALAKE_TEST_AZURE_BLOB_ENDPOINT, and
-//! AZURE_STORAGE_USE_EMULATOR=true, so that the minter signs with the emulator's account and key.
+//! directory reads its files and not another table's, and writes them only when minted for a writer; signed with the
+//! account's key, or with a key Azure delegates to the server's Entra identity. Needs an emulator that checks both, as
+//! Floci-az does, its Blob endpoint in METALAKE_TEST_AZURE_BLOB_ENDPOINT, and, for each test, the server's own store as
+//! the minter reads it:
+//!
+//! - by the account's key: AZURE_STORAGE_USE_EMULATOR=true, which signs with the emulator's account and key;
+//! - by an Entra identity: no key, AZURE_STORAGE_ACCOUNT_NAME, AZURE_STORAGE_ENDPOINT, and the identity's token in
+//!   AZURE_STORAGE_TOKEN, which the emulator does not check.
 
 use metalake_iceberg::vend::azure::Azure;
 use metalake_iceberg::vend::{Access, Minter};
 
 type Failure = Box<dyn std::error::Error>;
 
-fn endpoint() -> Option<String> {
-    std::env::var("METALAKE_TEST_AZURE_BLOB_ENDPOINT").ok()
+fn set(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|value| !value.is_empty())
 }
 
 /// A request to the emulator with no SAS: its shared key is not checked.
@@ -30,12 +35,8 @@ async fn sas(directory: &str, access: Access) -> Result<String, Failure> {
     Ok(minted.config["adls.sas-token.devstoreaccount1.dfs.core.windows.net"].clone())
 }
 
-#[tokio::test]
-async fn rest11_azure_sas_narrowed() -> Result<(), Failure> {
-    let Some(blobs) = endpoint() else {
-        eprintln!("no emulator: METALAKE_TEST_AZURE_BLOB_ENDPOINT");
-        return Ok(());
-    };
+/// What a SAS for `db/t` opens, as the minter in this environment signs it.
+async fn narrowed(blobs: &str) -> Result<(), Failure> {
     let client = reqwest::Client::new();
     unchecked(client.put(format!("{blobs}/lake?restype=container")))
         .send()
@@ -46,12 +47,7 @@ async fn rest11_azure_sas_narrowed() -> Result<(), Failure> {
             .body("rows");
         assert!(put.send().await?.status().is_success(), "{blob} written");
     }
-
-    let read = sas("db/t", Access::Read).await?;
     let get = |blob: &str, sas: &str| client.get(format!("{blobs}/lake/{blob}?{sas}")).send();
-    assert_eq!(get("db/t/a.parquet", &read).await?.status(), 200, "its table's file");
-    assert_eq!(get("db/t2/a.parquet", &read).await?.status(), 403, "another table's");
-
     let put = |blob: &str, sas: &str| {
         client
             .put(format!("{blobs}/lake/{blob}?{sas}"))
@@ -60,6 +56,10 @@ async fn rest11_azure_sas_narrowed() -> Result<(), Failure> {
             .body("rows")
             .send()
     };
+
+    let read = sas("db/t", Access::Read).await?;
+    assert_eq!(get("db/t/a.parquet", &read).await?.status(), 200, "its table's file");
+    assert_eq!(get("db/t2/a.parquet", &read).await?.status(), 403, "another table's");
     assert_eq!(
         put("db/t/b.parquet", &read).await?.status(),
         403,
@@ -73,4 +73,32 @@ async fn rest11_azure_sas_narrowed() -> Result<(), Failure> {
         "not into another table"
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn rest11_azure_sas_narrowed() -> Result<(), Failure> {
+    match std::env::var("METALAKE_TEST_AZURE_BLOB_ENDPOINT") {
+        Ok(blobs) if set("AZURE_STORAGE_USE_EMULATOR") => narrowed(&blobs).await,
+        _ => {
+            eprintln!(
+                "no emulator signed for by its key: METALAKE_TEST_AZURE_BLOB_ENDPOINT, AZURE_STORAGE_USE_EMULATOR"
+            );
+            Ok(())
+        }
+    }
+}
+
+#[tokio::test]
+async fn rest11_azure_user_delegation_sas_narrowed() -> Result<(), Failure> {
+    match std::env::var("METALAKE_TEST_AZURE_BLOB_ENDPOINT") {
+        Ok(blobs) if set("AZURE_STORAGE_TOKEN") => {
+            let sas = sas("db/t", Access::Read).await?;
+            assert!(sas.contains("skoid="), "signed with a delegated key: {sas}");
+            narrowed(&blobs).await
+        }
+        _ => {
+            eprintln!("no emulator reached by an identity: METALAKE_TEST_AZURE_BLOB_ENDPOINT, AZURE_STORAGE_TOKEN");
+            Ok(())
+        }
+    }
 }

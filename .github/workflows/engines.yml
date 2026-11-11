@@ -160,8 +160,15 @@ jobs:
         run: |
           docker run -d --name floci-az -p 4577:4577 floci/floci-az:latest
           until curl -fs http://127.0.0.1:4577/_floci/info >/dev/null; do sleep 1; done
-      - name: Credentials vended on Azure
-        run: cargo test -p metalake-iceberg --test c19_azure_sas -- --nocapture
+      - name: Credentials vended on Azure, signed with the account's key
+        run: cargo test -p metalake-iceberg --test c19_azure_sas rest11_azure_sas_narrowed -- --nocapture
+      - name: Credentials vended on Azure, signed with a key delegated to an Entra identity
+        env:
+          AZURE_STORAGE_USE_EMULATOR: ""
+          AZURE_STORAGE_ACCOUNT_NAME: devstoreaccount1
+          AZURE_STORAGE_ENDPOINT: http://127.0.0.1:4577/devstoreaccount1
+          AZURE_STORAGE_TOKEN: unchecked
+        run: cargo test -p metalake-iceberg --test c19_azure_sas rest11_azure_user_delegation_sas_narrowed -- --nocapture
 
   # Credentials vended for a table's files on GCS (REST-11), against Floci-gcp, which gives a service account a token for
   # its JWT, downscopes it through its STS, and holds a downscoped token to its boundary.

@@ -12,7 +12,7 @@ use object_store::aws::AmazonS3Builder;
 use serde_json::{Value, json};
 
 use super::sigv4::{Signed, Signer};
-use super::{Access, Minted, Minter};
+use super::{Access, Minted, Minter, element};
 
 /// The variable naming the role whose session a credential is, narrowed by a policy.
 pub const ROLE: &str = "METALAKE_S3_ROLE_ARN";
@@ -216,14 +216,6 @@ struct Issued {
     secret: String,
     token: String,
     expires_at_ms: i64,
-}
-
-/// The text of an element of an XML answer.
-fn element<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
-    let open = format!("<{name}>");
-    let start = xml.find(&open)? + open.len();
-    let end = xml[start..].find(&format!("</{name}>"))? + start;
-    Some(xml[start..end].trim())
 }
 
 /// The credential in an answer of `AssumeRole` or `GetSessionToken`.
