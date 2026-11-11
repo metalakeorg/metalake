@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use url::Url;
 
-use super::{Iceberg, duckdb, pyiceberg, spark, trino};
+use super::{Iceberg, duckdb, flink, jars, pyiceberg, spark, trino};
 use crate::{Error, Result};
 
 /// The version of Iceberg's Java libraries a profile names: the one CI and the REST Compatibility Kit hold the service
@@ -130,10 +130,20 @@ impl Artifact {
         format!("{}:{}:{}", self.group, self.name, self.version)
     }
 
+    /// Its jar's file name, `name-version.jar`.
+    pub fn file_name(&self) -> String {
+        format!("{}-{}.jar", self.name, self.version)
+    }
+
+    /// Its jar's path in a Maven repository.
+    pub fn path(&self) -> String {
+        let group = self.group.replace('.', "/");
+        format!("{group}/{}/{}/{}", self.name, self.version, self.file_name())
+    }
+
     /// Its jar on Maven Central.
     pub fn url(&self) -> String {
-        let (group, name, version) = (self.group.replace('.', "/"), &self.name, self.version);
-        format!("https://repo1.maven.org/maven2/{group}/{name}/{version}/{name}-{version}.jar")
+        format!("https://repo1.maven.org/maven2/{}", self.path())
     }
 }
 
@@ -190,17 +200,16 @@ impl Profile {
             Engine::DuckDb => duckdb::render(self),
             Engine::Spark => spark::render(self),
             Engine::Trino => trino::render(self),
-            engine => unreachable!("no profile of {engine} is built"),
+            Engine::Flink => flink::render(self),
         }
     }
 
     /// For an engine connected by statements, DuckDB and Flink: those statements, in order.
     pub fn statements(&self) -> Vec<String> {
         match self.engine {
-            Engine::PyIceberg => Vec::new(),
             Engine::DuckDb => duckdb::statements(self),
-            Engine::Spark | Engine::Trino => Vec::new(),
-            engine => unreachable!("no profile of {engine} is built"),
+            Engine::PyIceberg | Engine::Spark | Engine::Trino => Vec::new(),
+            Engine::Flink => flink::statements(self),
         }
     }
 }
@@ -213,7 +222,7 @@ pub fn profile(engine: Engine, name: &str, target: &Target) -> Result<Profile> {
         Engine::DuckDb => Ok(duckdb::profile(name, target)),
         Engine::Spark => Ok(spark::profile(name, target)),
         Engine::Trino => Ok(trino::profile(name, target)),
-        engine => Err(Error::usage(format!("the profile of {engine} is not built yet"))),
+        Engine::Flink => flink::profile(name, target),
     }
 }
 
@@ -242,9 +251,13 @@ impl Iceberg<'_> {
         })
     }
 
-    /// The profile of `engine` for this lake, its catalog named `name`.
+    /// The profile of `engine` for this lake, its catalog named `name`, with the jars it is given as files fetched.
     pub async fn profile(&self, engine: Engine, name: &str) -> Result<Profile> {
-        profile(engine, name, &self.target().await?)
+        let profile = profile(engine, name, &self.target().await?)?;
+        if engine == Engine::Flink {
+            jars::fetch(&profile.artifacts).await?;
+        }
+        Ok(profile)
     }
 }
 

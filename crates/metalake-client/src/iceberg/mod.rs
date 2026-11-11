@@ -4,6 +4,8 @@
 //! alone finds it current. Setting it is a commit of the tables' definitions, on that ref: one commit for all of them.
 
 mod duckdb;
+mod flink;
+mod jars;
 mod profile;
 mod pyiceberg;
 mod spark;
