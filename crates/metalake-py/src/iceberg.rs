@@ -115,6 +115,34 @@ impl PyIceberg {
         engines(py)?.getattr("duckdb")?.call1((profile, connection))
     }
 
+    /// A SparkSession connected to the lake as `name`: the one given, else the active one, else a local one started
+    /// with Iceberg. A session that runs already gets only what can be set once running, the catalog; one started
+    /// without Iceberg is refused, with what it needs at start.
+    #[pyo3(signature = (session = None, *, name = "lake"))]
+    fn spark<'py>(
+        &self,
+        py: Python<'py>,
+        session: Option<Bound<'py, PyAny>>,
+        name: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let profile = self.profile(py, "spark", name)?;
+        engines(py)?.getattr("spark")?.call1((profile, session))
+    }
+
+    /// A Flink TableEnvironment with the lake's catalog as `name`: the one given, or a new one, in batch unless
+    /// `streaming`. Iceberg's and Hadoop's jars are added to the ones it has, fetched once into `~/.metalake/jars`.
+    #[pyo3(signature = (environment = None, *, name = "lake", streaming = false))]
+    fn flink<'py>(
+        &self,
+        py: Python<'py>,
+        environment: Option<Bound<'py, PyAny>>,
+        name: &str,
+        streaming: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let profile = self.profile(py, "flink", name)?;
+        engines(py)?.getattr("flink")?.call1((profile, environment, streaming))
+    }
+
     /// Stops the lake's server on this machine, if one runs, and says whether one did. `metalake.stop` stops it too.
     fn stop(&self, py: Python<'_>) -> PyResult<bool> {
         self.owner.check(py, "Lake")?;

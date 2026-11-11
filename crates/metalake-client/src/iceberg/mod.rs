@@ -18,7 +18,7 @@ use serde::Serialize;
 use serde_json::json;
 use uuid::Uuid;
 
-pub use profile::{Artifact, Engine, FLINK, ICEBERG_JAVA, Profile, SCALA, SPARK, Store, Target, profile};
+pub use profile::{Artifact, Engine, FLINK, HADOOP, ICEBERG_JAVA, Profile, SCALA, SPARK, Store, Target, profile};
 
 use crate::server::{self, Runtime};
 use crate::{Error, Lake, Result};

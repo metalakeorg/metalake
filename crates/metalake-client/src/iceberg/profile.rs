@@ -18,6 +18,9 @@ pub const ICEBERG_JAVA: &str = "1.11.0";
 /// The Spark, and its Scala, whose Iceberg runtime a Spark profile names.
 pub const SPARK: &str = "3.5";
 pub const SCALA: &str = "2.12";
+/// The Hadoop whose client jars a Flink profile names: Iceberg's Flink runtime needs Hadoop's classes, which Flink
+/// does not carry.
+pub const HADOOP: &str = "3.4.1";
 /// The Flink whose Iceberg runtime a Flink profile names.
 pub const FLINK: &str = "1.20";
 
@@ -123,6 +126,15 @@ impl Artifact {
             group: "org.apache.iceberg",
             name: name.into(),
             version: ICEBERG_JAVA,
+        }
+    }
+
+    /// One of Hadoop's, at [`HADOOP`].
+    pub fn hadoop(name: &str) -> Artifact {
+        Artifact {
+            group: "org.apache.hadoop",
+            name: name.into(),
+            version: HADOOP,
         }
     }
 

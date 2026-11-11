@@ -8,6 +8,8 @@ on:
     branches: [main]
     paths:
       - crates/metalake-iceberg/**
+      - crates/metalake-client/**
+      - crates/metalake-py/**
       - crates/metalake/**
       - crates/metalake-pg/**
       - sql/**
@@ -16,6 +18,8 @@ on:
     branches: [main]
     paths:
       - crates/metalake-iceberg/**
+      - crates/metalake-client/**
+      - crates/metalake-py/**
       - crates/metalake/**
       - crates/metalake-pg/**
       - sql/**
@@ -63,3 +67,35 @@ jobs:
           curl -fsSLO "$maven/hadoop/hadoop-client-runtime/$HADOOP/hadoop-client-runtime-$HADOOP.jar"
       - name: The engines
         run: CRATE=metalake-iceberg bash sql/test.sh --test c12_engines
+
+  # The Python faces that hand back a JVM engine connected to the lake, each in an environment of its own: PySpark and
+  # PyFlink pin libraries apart. The wheels have no Java; this builds the extension where there is one.
+  python-engines:
+    name: python ${{ matrix.engine }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [spark, flink]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Prepare Postgres
+        run: python packaging/postgres.py x86_64-unknown-linux-gnu
+      - name: The extension, and the engine
+        run: python -m pip install --quiet pytest "./crates/metalake-py[${{ matrix.engine }}]"
+      - name: The engine connected from Python
+        run: |
+          cd "$RUNNER_TEMP"
+          python -m pytest "$GITHUB_WORKSPACE/crates/metalake-py/tests/test_engines.py" -k ${{ matrix.engine }} -q --tb=short -p no:cacheprovider -rs
