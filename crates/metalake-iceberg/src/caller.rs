@@ -32,7 +32,8 @@ pub(crate) fn bearer(headers: &HeaderMap) -> Option<&str> {
 /// Who a request bearing `bearer` is, to a server holding `token`; `None` when it bears a token that is not the server's.
 pub(crate) fn caller(bearer: Option<&str>, token: &str) -> Option<Caller> {
     match bearer {
-        None => Some(Caller::Anonymous),
+        // PyIceberg 0.12, given no token, sends `Bearer None`: no token, not a wrong one.
+        None | Some("None") => Some(Caller::Anonymous),
         Some(given) if same(given.as_bytes(), token.as_bytes()) => Some(Caller::Writer),
         Some(_) => None,
     }
@@ -105,6 +106,11 @@ mod tests {
     fn caller_by_bearer() {
         assert_eq!(caller(Some("the-token"), "the-token"), Some(Caller::Writer));
         assert_eq!(caller(None, "the-token"), Some(Caller::Anonymous));
+        assert_eq!(
+            caller(Some("None"), "the-token"),
+            Some(Caller::Anonymous),
+            "PyIceberg's no token"
+        );
         assert_eq!(caller(Some("another"), "the-token"), None, "another token is refused");
         assert_eq!(caller(Some(""), "the-token"), None);
     }

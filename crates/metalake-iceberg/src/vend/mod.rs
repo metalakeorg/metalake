@@ -7,6 +7,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod s3;
+mod sigv4;
+
 use futures_util::future::BoxFuture;
 
 use crate::wire::credentials::StorageCredential;

@@ -31,6 +31,13 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["net", "signal", "sync", "time"] }
 url.workspace = true
 uuid.workspace = true
+# Minting credentials for a table's files (REST-11): the store's own credential, SigV4, and the token services.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+hmac = "0.13"
+object_store = { workspace = true, features = ["aws"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
+sha2 = "0.11"
+url.workspace = true
 
 [dev-dependencies]
 metalake-pg.workspace = true
