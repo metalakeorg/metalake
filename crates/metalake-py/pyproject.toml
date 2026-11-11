@@ -21,6 +21,9 @@ dynamic = ["version"]
 polars = ["polars>=1.22"]
 pyarrow = ["pyarrow>=15"]
 pandas = ["pandas", "pyarrow>=15"]
+# Engines connected to the lake by `lake.iceberg`.
+pyiceberg = ["pyiceberg[pyarrow]>=0.12"]
+duckdb = ["duckdb>=1.5"]
 
 [project.scripts]
 metalake = "metalake:_main"

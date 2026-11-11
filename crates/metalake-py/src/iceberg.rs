@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use metalake_client::{Engine, IcebergTable, Lake};
+use metalake_client::{Engine, IcebergTable, Lake, Profile};
 use pyo3::prelude::*;
 
 use crate::errors::to_python;
@@ -79,13 +79,40 @@ impl PyIceberg {
     /// MetaLake does not connect itself: a Spark Connect server, Trino, a file of one's own. Starts the lake's server.
     #[pyo3(signature = (engine, *, name = "lake"))]
     fn properties(&self, py: Python<'_>, engine: &str, name: &str) -> PyResult<BTreeMap<String, String>> {
+        let profile = self.profile(py, engine, name)?;
+        Ok(profile.startup.into_iter().chain(profile.properties).collect())
+    }
+
+    /// Everything `engine` needs to connect to the lake, its catalog named `name`, apart: what fixes it as it starts,
+    /// what sets it once running, the statements that make the catalog, the libraries it loads. Starts the lake's
+    /// server, and fetches the jars Flink is given as files.
+    #[pyo3(signature = (engine, *, name = "lake"))]
+    fn profile(&self, py: Python<'_>, engine: &str, name: &str) -> PyResult<PyProfile> {
         self.owner.check(py, "Lake")?;
         let engine: Engine = engine.parse().map_err(|e| to_python(py, e))?;
         let lake = self.lake.clone();
         let name = name.to_string();
         let profile = wait(py, async move { lake.iceberg().profile(engine, &name).await })?;
-        let profile = profile.map_err(|e| to_python(py, e))?;
-        Ok(profile.startup.into_iter().chain(profile.properties).collect())
+        Ok(PyProfile::from(profile.map_err(|e| to_python(py, e))?))
+    }
+
+    /// A PyIceberg catalog of the lake, named `name`. Polars' `scan_iceberg` and Daft take it as it is.
+    #[pyo3(signature = (*, name = "lake"))]
+    fn pyiceberg<'py>(&self, py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyAny>> {
+        let profile = self.profile(py, "pyiceberg", name)?;
+        engines(py)?.getattr("pyiceberg")?.call1((profile,))
+    }
+
+    /// A DuckDB connection with the lake attached as `name`: the one given, or a new one.
+    #[pyo3(signature = (connection = None, *, name = "lake"))]
+    fn duckdb<'py>(
+        &self,
+        py: Python<'py>,
+        connection: Option<Bound<'py, PyAny>>,
+        name: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let profile = self.profile(py, "duckdb", name)?;
+        engines(py)?.getattr("duckdb")?.call1((profile, connection))
     }
 
     /// Stops the lake's server on this machine, if one runs, and says whether one did. `metalake.stop` stops it too.
@@ -98,6 +125,63 @@ impl PyIceberg {
 
     fn __repr__(&self) -> &'static str {
         "Iceberg()"
+    }
+}
+
+/// Where each engine is connected, in Python: the engines are Python's own libraries, imported when one is asked for.
+fn engines(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
+    py.import("metalake._engines")
+}
+
+/// What an engine needs to connect to the lake, from `lake.iceberg.profile`; `str()` of it is the engine's own form,
+/// as `metalake iceberg connect` prints it.
+#[pyclass(name = "Profile", module = "metalake", frozen)]
+pub struct PyProfile {
+    #[pyo3(get)]
+    engine: String,
+    #[pyo3(get)]
+    name: String,
+    /// The lake's Iceberg REST server.
+    #[pyo3(get)]
+    uri: String,
+    /// What can be set on an engine already running.
+    #[pyo3(get)]
+    properties: BTreeMap<String, String>,
+    /// What is fixed only as an engine starts.
+    #[pyo3(get)]
+    startup: BTreeMap<String, String>,
+    /// For DuckDB and Flink, the statements that make the catalog, in order.
+    #[pyo3(get)]
+    statements: Vec<String>,
+    /// The libraries it loads, by their Maven coordinates.
+    #[pyo3(get)]
+    artifacts: Vec<String>,
+    rendered: String,
+}
+
+impl From<Profile> for PyProfile {
+    fn from(profile: Profile) -> Self {
+        Self {
+            engine: profile.engine.to_string(),
+            uri: profile.target.uri.clone(),
+            statements: profile.statements(),
+            artifacts: profile.artifacts.iter().map(|a| a.coordinate()).collect(),
+            rendered: profile.to_string(),
+            name: profile.name,
+            properties: profile.properties,
+            startup: profile.startup,
+        }
+    }
+}
+
+#[pymethods]
+impl PyProfile {
+    fn __str__(&self) -> &str {
+        &self.rendered
+    }
+
+    fn __repr__(&self) -> String {
+        format!("Profile({:?}, name={:?}, uri={:?})", self.engine, self.name, self.uri)
     }
 }
 
