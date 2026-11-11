@@ -1,7 +1,9 @@
-//! Flink's profile: Iceberg's Flink runtime and Hadoop's client, whose classes it needs, as files on the job's classpath
-//! (`pipeline.jars`), fixed as an environment starts, and the lake as a REST catalog made by a statement. On an object store, the cloud's bundle and the header
-//! that asks the server for credentials. The jars are where [`super::jars`] fetches them: [`super::Iceberg::profile`]
-//! fetches them, the pure profile only names them.
+//! Flink's profile: Iceberg's Flink runtime and Hadoop's client, whose classes it needs, as files, and the lake as a REST
+//! catalog. Its statements add the jars with `ADD JAR`, which puts them where Flink resolves a catalog's classes, in an
+//! environment that runs already, then make the catalog; `pipeline.jars` names the same files for an environment's
+//! configuration as it starts. On an object store, the cloud's bundle and the header that asks the server for
+//! credentials. The jars are where [`super::jars`] fetches them: [`super::Iceberg::profile`] fetches them, the pure
+//! profile only names them.
 
 use url::Url;
 
@@ -43,8 +45,14 @@ pub(super) fn profile(name: &str, target: &Target) -> Result<Profile> {
     Ok(profile)
 }
 
-/// The catalog made under the profile's name, `type` first as Flink's documents write it.
+/// Each jar added, then the catalog made under the profile's name, `type` first as Flink's documents write it.
 pub(super) fn statements(profile: &Profile) -> Vec<String> {
+    let jars = profile.startup.get("pipeline.jars").map(String::as_str).unwrap_or("");
+    let mut statements: Vec<String> = jars
+        .split(';')
+        .filter(|jar| !jar.is_empty())
+        .map(|jar| format!("ADD JAR {}", literal(jar)))
+        .collect();
     let properties = profile
         .properties
         .get_key_value(TYPE)
@@ -53,15 +61,13 @@ pub(super) fn statements(profile: &Profile) -> Vec<String> {
         .map(|(key, value)| format!("{} = {}", literal(key), literal(value)))
         .collect::<Vec<_>>()
         .join(", ");
-    vec![format!("CREATE CATALOG {} WITH ({properties})", profile.name)]
+    statements.push(format!("CREATE CATALOG {} WITH ({properties})", profile.name));
+    statements
 }
 
-/// As Flink's SQL client takes it: the jars set, then the catalog made.
+/// As Flink's SQL client takes it: each statement ended.
 pub(super) fn render(profile: &Profile) -> String {
     let mut sql = String::new();
-    for (key, value) in &profile.startup {
-        sql.push_str(&format!("SET {} = {};\n", literal(key), literal(value)));
-    }
     for statement in statements(profile) {
         sql.push_str(&format!("{statement};\n"));
     }
@@ -89,9 +95,15 @@ mod tests {
     #[test]
     fn flink_profile_local() {
         let profile = profile(Engine::Flink, "lake", &target(Store::Local, "file:///tmp/lake/")).unwrap();
+        let statements = profile.statements();
+        assert_eq!(statements.len(), 4, "{statements:?}");
+        assert!(
+            statements[..3].iter().all(|s| s.starts_with("ADD JAR 'file://")),
+            "{statements:?}"
+        );
         assert_eq!(
-            profile.statements(),
-            ["CREATE CATALOG lake WITH ('type' = 'iceberg', 'catalog-type' = 'rest', 'uri' = 'http://127.0.0.1:8181')"]
+            statements[3],
+            "CREATE CATALOG lake WITH ('type' = 'iceberg', 'catalog-type' = 'rest', 'uri' = 'http://127.0.0.1:8181')"
         );
         let jars = &profile.startup["pipeline.jars"];
         let files: Vec<_> = jars.split(';').collect();
@@ -109,7 +121,7 @@ mod tests {
         assert!(files[2].ends_with("/hadoop-client-runtime-3.4.1.jar"), "{files:?}");
         let rendered = profile.render();
         assert!(
-            rendered.starts_with(&format!("SET 'pipeline.jars' = '{jars}';\n")),
+            rendered.starts_with(&format!("ADD JAR '{}';\n", files[0])),
             "{rendered}"
         );
         assert!(rendered.ends_with("'uri' = 'http://127.0.0.1:8181');\n"), "{rendered}");
@@ -122,7 +134,7 @@ mod tests {
         assert_eq!(jars.len(), 4);
         assert!(jars[3].ends_with("/iceberg-aws-bundle-1.11.0.jar"), "{jars:?}");
         assert!(
-            profile.statements()[0].contains("'header.X-Iceberg-Access-Delegation' = 'vended-credentials'"),
+            profile.statements()[4].contains("'header.X-Iceberg-Access-Delegation' = 'vended-credentials'"),
             "{:?}",
             profile.statements()
         );
@@ -131,6 +143,6 @@ mod tests {
     #[test]
     fn flink_profile_name() {
         let profile = profile(Engine::Flink, "prod", &target(Store::Local, "file:///tmp/lake/")).unwrap();
-        assert!(profile.statements()[0].starts_with("CREATE CATALOG prod WITH"));
+        assert!(profile.statements()[3].starts_with("CREATE CATALOG prod WITH"));
     }
 }

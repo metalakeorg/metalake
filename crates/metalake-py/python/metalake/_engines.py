@@ -85,11 +85,7 @@ def flink(profile, environment, streaming):
     if environment is None:
         mode = table.EnvironmentSettings.in_streaming_mode() if streaming else table.EnvironmentSettings.in_batch_mode()
         environment = table.TableEnvironment.create(mode)
-    # Added to the jars it has, not over them; PyFlink loads them into its client as they are set.
-    config = environment.get_config()
-    held = [jar for jar in (config.get("pipeline.jars", "") or "").split(";") if jar]
-    wanted = profile.startup["pipeline.jars"].split(";")
-    config.set("pipeline.jars", ";".join(held + [jar for jar in wanted if jar not in held]))
+    # `ADD JAR` puts each jar where Flink resolves the catalog's classes, in an environment that runs already.
     for statement in profile.statements:
         environment.execute_sql(statement).wait()
     return environment
