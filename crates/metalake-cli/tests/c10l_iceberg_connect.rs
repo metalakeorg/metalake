@@ -28,15 +28,43 @@ fn connect_profile_per_engine() {
     let port: u16 = uri.rsplit(':').next().unwrap().parse().unwrap();
     assert!(PORTS.contains(&port), "the lake's own port: {uri}");
 
+    // The lake's token, which each engine bears as its bearer (REST-11).
+    let (json, _) = connect(&dir, &["pyiceberg", "--format", "json"]);
+    let profile: serde_json::Value = serde_json::from_str(json.trim()).unwrap();
+    let token = profile["properties"]["token"]
+        .as_str()
+        .expect("the lake's token")
+        .to_string();
+    assert_eq!(token.len(), 64, "{token}");
+
     let cases = [
-        ("pyiceberg", format!("catalog:\n  lake:\n    type: \"rest\"\n    uri: \"{uri}\"\n")),
-        ("duckdb", format!("ENDPOINT '{uri}'")),
-        ("spark", format!("spark.sql.catalog.lake.uri {uri}\n")),
-        ("trino", format!("iceberg.rest-catalog.uri={uri}\n")),
+        (
+            "pyiceberg",
+            vec![format!(
+                "    token: \"{token}\"\n    type: \"rest\"\n    uri: \"{uri}\"\n"
+            )],
+        ),
+        ("duckdb", vec![format!("ENDPOINT '{uri}'"), format!("TOKEN '{token}'")]),
+        (
+            "spark",
+            vec![
+                format!("spark.sql.catalog.lake.uri {uri}\n"),
+                format!("spark.sql.catalog.lake.token {token}\n"),
+            ],
+        ),
+        (
+            "trino",
+            vec![
+                format!("iceberg.rest-catalog.uri={uri}\n"),
+                format!("iceberg.rest-catalog.oauth2.token={token}\n"),
+            ],
+        ),
     ];
     for (engine, expected) in cases {
         let (printed, said) = connect(&dir, &[engine]);
-        assert!(printed.contains(&expected), "{engine}: {printed}");
+        for line in expected {
+            assert!(printed.contains(&line), "{engine}: {line} in {printed}");
+        }
         assert_eq!(self::uri(&said), uri, "{engine}: the same server");
     }
     common::ok(&dir, &["iceberg", "stop"]);

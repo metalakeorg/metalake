@@ -57,6 +57,8 @@ async fn serve(args: &IcebergServe, lake: &Lake) -> Result<(), Error> {
             pid,
             version: VERSION.to_string(),
             token,
+            // Which start of it this is, as the client that started it says.
+            start: std::env::var(server::START).unwrap_or_default(),
         };
         runtime.write(path)?;
     }

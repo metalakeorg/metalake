@@ -31,6 +31,9 @@ pub(super) fn profile(name: &str, target: &Target) -> Profile {
     set("", CATALOG);
     set("type", "rest");
     set("uri", &target.uri);
+    if let Some(token) = &target.token {
+        set("token", token);
+    }
     if target.store.bundle().is_some() {
         set(DELEGATION.0, DELEGATION.1);
     }
@@ -57,6 +60,7 @@ mod tests {
             uri: "http://127.0.0.1:8181".into(),
             store,
             warehouse: warehouse.into(),
+            token: None,
         }
     }
 
@@ -99,6 +103,14 @@ mod tests {
             bundle(Store::Azure, "abfss://c@a.dfs.core.windows.net/lake").as_deref(),
             Some("iceberg-azure-bundle")
         );
+    }
+
+    #[test]
+    fn spark_profile_token() {
+        let mut target = target(Store::Local, "file:///tmp/lake/");
+        target.token = Some("the-token".into());
+        let profile = profile(Engine::Spark, "lake", &target).unwrap();
+        assert_eq!(profile.properties["spark.sql.catalog.lake.token"], "the-token");
     }
 
     #[test]

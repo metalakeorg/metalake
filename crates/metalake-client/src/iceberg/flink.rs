@@ -39,6 +39,9 @@ pub(super) fn profile(name: &str, target: &Target) -> Result<Profile> {
     profile.properties.insert(TYPE.into(), "iceberg".into());
     profile.properties.insert("catalog-type".into(), "rest".into());
     profile.properties.insert("uri".into(), target.uri.clone());
+    if let Some(token) = &target.token {
+        profile.properties.insert("token".into(), token.clone());
+    }
     if target.store.bundle().is_some() {
         profile.properties.insert(DELEGATION.0.into(), DELEGATION.1.into());
     }
@@ -87,6 +90,7 @@ mod tests {
             uri: "http://127.0.0.1:8181".into(),
             store,
             warehouse: warehouse.into(),
+            token: None,
         }
     }
 
@@ -133,6 +137,18 @@ mod tests {
         assert!(
             statements[0].contains("'header.X-Iceberg-Access-Delegation' = 'vended-credentials'"),
             "{statements:?}"
+        );
+    }
+
+    #[test]
+    fn flink_profile_token() {
+        let mut target = target(Store::Local, "file:///tmp/lake/");
+        target.token = Some("the-token".into());
+        let profile = profile(Engine::Flink, "lake", &target).unwrap();
+        assert!(
+            profile.statements()[0].contains("'token' = 'the-token'"),
+            "{:?}",
+            profile.statements()
         );
     }
 

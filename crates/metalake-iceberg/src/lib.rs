@@ -2,6 +2,7 @@
 //! commits turned into one commit of the protocol (§16 of the specification). Postgres decides, and this translates.
 
 pub mod apply;
+pub mod caller;
 mod footers;
 mod generations;
 mod load;
@@ -41,7 +42,10 @@ pub async fn serve_with(
     let shut = Arc::new(Notify::new());
     let mut app = rest::router(state.clone());
     if let Some(token) = shutdown_token {
+        // The token stops the server, and makes a request that bears it a writer's (REST-11).
         app = shutdown::router(token, shut.clone()).merge(app);
+        let token: Arc<str> = token.into();
+        app = app.layer(axum::middleware::from_fn_with_state(token, caller::identify));
     }
     let stopped = async move {
         tokio::select! {

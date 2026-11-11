@@ -27,6 +27,15 @@ impl Failure {
         }
     }
 
+    /// A bearer that is not the server's token: the engine was given another (REST-10).
+    pub(crate) fn unknown_token() -> Self {
+        Self::new(
+            StatusCode::UNAUTHORIZED,
+            "NotAuthorizedException",
+            "the token is not this server's: connect the engine again from the lake",
+        )
+    }
+
     pub(crate) fn no_route() -> Self {
         Self::new(StatusCode::NOT_FOUND, "NoSuchEndpointException", "no such route")
     }

@@ -109,6 +109,8 @@ pub struct Target {
     pub store: Store,
     /// The warehouse's URL.
     pub warehouse: String,
+    /// What the engine bears to be a writer to the lake's server (REST-11): the lake's token, for its own server.
+    pub token: Option<String>,
 }
 
 /// A library of Iceberg's an engine loads, by its Maven coordinates.
@@ -289,10 +291,12 @@ impl Iceberg<'_> {
     pub async fn target(&self) -> Result<Target> {
         let warehouse = self.lake.warehouse()?;
         let store = Store::of(&warehouse)?;
+        let server = self.ensure().await?;
         Ok(Target {
-            uri: self.uri().await?,
+            uri: server.url,
             store,
             warehouse,
+            token: Some(server.token),
         })
     }
 

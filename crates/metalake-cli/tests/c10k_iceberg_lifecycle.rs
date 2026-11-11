@@ -144,6 +144,9 @@ fn ensure_replaces_dead_server() {
     let second = ensure(&dir);
     assert_ne!(second.pid, first.pid);
     assert!(answers(&second));
+    // The lake's token outlives a server, as what an engine was given must; each start is its own.
+    assert_eq!(second.token, first.token, "the lake's token, the same");
+    assert_ne!(second.start, first.start);
     if server::PORTS.contains(&first.port) {
         assert_eq!(
             second.port, first.port,

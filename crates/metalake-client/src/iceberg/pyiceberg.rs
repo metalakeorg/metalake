@@ -7,6 +7,9 @@ pub(super) fn profile(name: &str, target: &Target) -> Profile {
     let mut profile = Profile::new(Engine::PyIceberg, name, target);
     profile.properties.insert("type".into(), "rest".into());
     profile.properties.insert("uri".into(), target.uri.clone());
+    if let Some(token) = &target.token {
+        profile.properties.insert("token".into(), token.clone());
+    }
     // PyArrow's file IO, PyIceberg's default, reads `file:///C:/…` as the path `/C:/…`, which Windows refuses; fsspec's
     // reads a drive's path as it is.
     if target.store == Store::Local && on_a_drive(&target.warehouse) {
@@ -43,6 +46,7 @@ mod tests {
             uri: "http://127.0.0.1:8181".into(),
             store,
             warehouse: warehouse.into(),
+            token: None,
         }
     }
 
@@ -85,6 +89,19 @@ mod tests {
         assert_eq!(profile.properties["py-io-impl"], "pyiceberg.io.fsspec.FsspecFileIO");
         assert!(on_a_drive("file:///d:/lake/"));
         assert!(!on_a_drive("file:///tmp/lake/") && !on_a_drive("s3://c:/lake"));
+    }
+
+    #[test]
+    fn pyiceberg_profile_token() {
+        let mut target = target(Store::Local, "file:///tmp/lake/");
+        target.token = Some("the-token".into());
+        let profile = profile(Engine::PyIceberg, "lake", &target).unwrap();
+        assert_eq!(profile.properties["token"], "the-token");
+        assert!(
+            profile.render().contains("    token: \"the-token\"\n"),
+            "{}",
+            profile.render()
+        );
     }
 
     #[test]

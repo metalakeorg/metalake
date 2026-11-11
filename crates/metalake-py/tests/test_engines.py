@@ -29,7 +29,11 @@ def test_profile(lake):
     assert (profile.engine, profile.name) == ("duckdb", "prod")
     assert profile.uri == lake.iceberg.uri
     assert profile.statements[-1].startswith("ATTACH '' AS prod")
-    assert str(profile).endswith(f"ENDPOINT '{profile.uri}');")
+    assert f"ENDPOINT '{profile.uri}'" in str(profile)
+    # The lake's token, which DuckDB bears in place of no authorization (REST-11).
+    assert "AUTHORIZATION_TYPE" not in str(profile)
+    assert str(profile).endswith(f"TOKEN '{profile.properties['TOKEN']}');")
+    assert len(profile.properties["TOKEN"]) == 64
     with pytest.raises(metalake.UsageError, match="trino"):
         lake.iceberg.profile("hive")
 

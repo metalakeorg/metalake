@@ -6,9 +6,11 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
 use tokio::sync::Notify;
+
+use crate::caller::{bearer, same};
 
 /// The route's path.
 pub const PATH: &str = "/metalake/shutdown";
@@ -29,22 +31,13 @@ pub(crate) fn router(token: &str, stop: Arc<Notify>) -> Router {
 }
 
 async fn shut(State(shutdown): State<Shutdown>, headers: HeaderMap) -> StatusCode {
-    let bearer = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-    match bearer {
+    match bearer(&headers) {
         Some(given) if same(given.as_bytes(), shutdown.token.as_bytes()) => {
             shutdown.stop.notify_one();
             StatusCode::ACCEPTED
         }
         _ => StatusCode::UNAUTHORIZED,
     }
-}
-
-/// Whether two secrets are equal, in a time that does not say how much of them is.
-fn same(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |differ, (x, y)| differ | (x ^ y)) == 0
 }
 
 #[cfg(test)]
@@ -93,13 +86,5 @@ mod tests {
             .expect("it stops")
             .unwrap()
             .unwrap();
-    }
-
-    #[test]
-    fn token_comparison() {
-        assert!(same(b"abc", b"abc"));
-        assert!(!same(b"abc", b"abd"));
-        assert!(!same(b"abc", b"abcd"));
-        assert!(!same(b"", b"a"));
     }
 }
