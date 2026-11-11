@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use url::Url;
 
-use super::{Iceberg, duckdb, pyiceberg};
+use super::{Iceberg, duckdb, pyiceberg, spark};
 use crate::{Error, Result};
 
 /// The version of Iceberg's Java libraries a profile names: the one CI and the REST Compatibility Kit hold the service
@@ -137,6 +137,23 @@ impl Artifact {
     }
 }
 
+/// The header by which a Java engine asks the server for credentials to the lake's files, as Iceberg's REST catalog
+/// sends every catalog property under `header.`.
+pub(crate) const DELEGATION: (&str, &str) = ("header.X-Iceberg-Access-Delegation", "vended-credentials");
+
+impl Store {
+    /// The library of Iceberg's by which a Java engine reads this store with the credentials the server vends; none for
+    /// a local warehouse. Without it, Iceberg falls back to Hadoop's file system, which ignores them.
+    pub(crate) fn bundle(self) -> Option<Artifact> {
+        match self {
+            Store::Local => None,
+            Store::S3 => Some(Artifact::iceberg("iceberg-aws-bundle")),
+            Store::Gcs => Some(Artifact::iceberg("iceberg-gcp-bundle")),
+            Store::Azure => Some(Artifact::iceberg("iceberg-azure-bundle")),
+        }
+    }
+}
+
 /// What an engine needs to connect to a lake.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Profile {
@@ -168,6 +185,7 @@ impl Profile {
         match self.engine {
             Engine::PyIceberg => pyiceberg::render(self),
             Engine::DuckDb => duckdb::render(self),
+            Engine::Spark => spark::render(self),
             engine => unreachable!("no profile of {engine} is built"),
         }
     }
@@ -177,6 +195,7 @@ impl Profile {
         match self.engine {
             Engine::PyIceberg => Vec::new(),
             Engine::DuckDb => duckdb::statements(self),
+            Engine::Spark => Vec::new(),
             engine => unreachable!("no profile of {engine} is built"),
         }
     }
@@ -188,6 +207,7 @@ pub fn profile(engine: Engine, name: &str, target: &Target) -> Result<Profile> {
     match engine {
         Engine::PyIceberg => Ok(pyiceberg::profile(name, target)),
         Engine::DuckDb => Ok(duckdb::profile(name, target)),
+        Engine::Spark => Ok(spark::profile(name, target)),
         engine => Err(Error::usage(format!("the profile of {engine} is not built yet"))),
     }
 }
