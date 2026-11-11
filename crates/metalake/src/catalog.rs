@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime};
 use futures_util::TryStreamExt;
 use metalake_pg::records::{CommitEntry, ListedFile, NamespaceRow, RefRow, SnapshotEntry, TableName, TableSnapshot};
 use metalake_pg::{CreateRef, Pool, PooledSession, Protocol, Retention, Roles, Versions};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::{Error, Result};
@@ -594,6 +595,27 @@ impl Ref {
         Ok(p.delete_ref(&self.catalog.session().await?, self.id).await?)
     }
 
+    /// This handle without its catalog.
+    pub fn value(&self) -> RefValue {
+        RefValue {
+            id: self.id,
+            name: self.name.clone(),
+            kind: self.kind.clone(),
+            at: self.at,
+        }
+    }
+
+    /// The handle of `value` on `catalog`: the same ref, read at the same point. Nothing is asked of the catalog.
+    pub fn from_value(catalog: &Catalog, value: RefValue) -> Self {
+        Self {
+            catalog: catalog.clone(),
+            id: value.id,
+            name: value.name,
+            kind: value.kind,
+            at: value.at,
+        }
+    }
+
     /// Whether this handle reads the ref's latest state, not a point of its past.
     pub fn is_latest(&self) -> bool {
         matches!(self.at, Point::Latest)
@@ -633,8 +655,18 @@ impl Ref {
     }
 }
 
+/// A ref without its catalog: which ref, and where it is read. What a handle is in a process that has a catalog of
+/// its own, as `Ref::from_value` makes it there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefValue {
+    id: i32,
+    name: String,
+    kind: String,
+    at: Point,
+}
+
 /// Where a read of a ref is: its latest state, a sequence, or a time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum Point {
     Latest,
     Seq(i64),

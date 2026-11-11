@@ -34,4 +34,5 @@ url.workspace = true
 
 [dev-dependencies]
 async-trait = "0.1"
+postcard.workspace = true
 tokio.workspace = true

@@ -224,3 +224,37 @@ async fn time_travel_by_time_tag_branch() -> Result<(), Box<dyn std::error::Erro
     assert!(matches!(catalog.branch("old").await, Err(Error::NotFound(_))));
     Ok(())
 }
+
+/// A ref travels as its value and is a handle again on another catalog of the same lake: the same ref, at the same
+/// point, which finds the same tables.
+#[tokio::test]
+async fn ref_value_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+    let schema = fresh_schema();
+    let catalog = Catalog::init(CatalogConfig::new(url(), &schema).warehouse("memory:///wh"), None).await?;
+    let main = catalog.branch("main").await?;
+    let shape = batch(0..1).schema();
+    let (tx, _) = main
+        .transaction()
+        .create_namespace(&["db"])
+        .create_table(new_table("a", &shape))?;
+    let seq = tx.commit().await?.seq();
+    let elsewhere = Catalog::connect(CatalogConfig::new(url(), &schema)).await?;
+    // A time is read once it is a second old (TT-3).
+    let committed = SystemTime::now();
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+    for on in [main.clone(), main.at(seq), main.as_of(committed)] {
+        let bytes = postcard::to_stdvec(&on.value())?;
+        let value: metalake::RefValue = postcard::from_bytes(&bytes)?;
+        assert_eq!(value, on.value());
+        let rebuilt = Ref::from_value(&elsewhere, value);
+        assert_eq!(
+            (rebuilt.id(), rebuilt.name(), rebuilt.kind()),
+            (on.id(), on.name(), on.kind())
+        );
+        assert_eq!(rebuilt.is_latest(), on.is_latest());
+        let (found, there) = (rebuilt.table(&["db"], "a").await?, on.table(&["db"], "a").await?);
+        assert_eq!((found.id(), found.seq()), (there.id(), there.seq()));
+    }
+    Ok(())
+}
