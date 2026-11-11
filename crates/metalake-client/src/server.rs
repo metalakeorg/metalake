@@ -55,14 +55,31 @@ fn launcher() -> Result<Vec<OsString>> {
 }
 
 /// MetaLake's command line: the file `bin` names, else `metalake` in a directory of `path`.
+/// Absolute, as the server is started in another directory than this process's.
 fn resolve(bin: Option<OsString>, path: Option<OsString>) -> Option<PathBuf> {
     if let Some(bin) = bin.filter(|bin| !bin.is_empty()) {
-        return Some(PathBuf::from(bin));
+        return std::path::absolute(PathBuf::from(bin)).ok();
     }
     let name = format!("metalake{}", std::env::consts::EXE_SUFFIX);
     std::env::split_paths(&path?)
         .map(|directory| directory.join(&name))
-        .find(|candidate| candidate.is_file())
+        .find(|candidate| runnable(candidate))
+        .and_then(|found| std::path::absolute(found).ok())
+}
+
+/// Whether a file of the `PATH` can be run, as the system's own lookup asks: on Unix, one without a permission to execute
+/// is passed over for the next.
+fn runnable(candidate: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(candidate) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    metadata.is_file()
 }
 
 /// A lake, as its server's files name it: by what names the lake, its own directory or its catalog without a password
@@ -420,16 +437,36 @@ mod tests {
 
         assert_eq!(resolve(None, Some(path.clone())), None, "no metalake there");
         fs::write(directory.join(&name), b"").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let file = directory.join(&name);
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+            assert_eq!(
+                resolve(None, Some(path.clone())),
+                None,
+                "one that cannot be run is passed over"
+            );
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+        }
         assert_eq!(
             resolve(None, Some(path.clone())),
             Some(directory.join(&name)),
             "the first on the PATH"
         );
+        let named = std::path::absolute("/opt/metalake").unwrap();
         assert_eq!(
-            resolve(Some("/opt/metalake".into()), Some(path)),
-            Some(PathBuf::from("/opt/metalake")),
+            resolve(Some(named.clone().into_os_string()), Some(path)),
+            Some(named),
             "METALAKE_BIN first"
         );
+        let relative = resolve(Some("bin/metalake".into()), None).unwrap();
+        assert!(
+            relative.is_absolute(),
+            "a relative one is made absolute: {}",
+            relative.display()
+        );
+        assert_eq!(relative, std::env::current_dir().unwrap().join("bin/metalake"));
         assert_eq!(resolve(Some("".into()), None), None);
         fs::remove_dir_all(&directory).unwrap();
     }
