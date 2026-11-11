@@ -27,20 +27,42 @@ const PROBE: Duration = Duration::from_secs(2);
 /// The lines of its log a server that failed to start says.
 const TAIL: usize = 20;
 
-/// How this program runs itself, as `metalake …`: its own executable unless a face says otherwise, as Python does with
-/// `python -m metalake`, whose CLI lives in the interpreter's extension.
+/// How this process runs MetaLake's command line, as `metalake …`, when a face says: the command line itself, its own
+/// executable; Python, `python -m metalake`, whose command line lives in the interpreter's extension.
 static LAUNCHER: OnceLock<Vec<OsString>> = OnceLock::new();
+
+/// The variable that names MetaLake's command line for a program that links this client and is not it.
+pub const METALAKE_BIN: &str = "METALAKE_BIN";
 
 /// Says how to run MetaLake's command line from this process, once; later calls change nothing.
 pub fn set_launcher(command: Vec<OsString>) {
     let _ = LAUNCHER.set(command);
 }
 
+/// How to run MetaLake's command line: as a face said; otherwise, for any program that links this client, what
+/// `METALAKE_BIN` names or `metalake` on the `PATH`, and never the program itself, which may be anything.
 fn launcher() -> Result<Vec<OsString>> {
     if let Some(command) = LAUNCHER.get() {
         return Ok(command.clone());
     }
-    Ok(vec![std::env::current_exe()?.into_os_string()])
+    let found = resolve(std::env::var_os(METALAKE_BIN), std::env::var_os("PATH"));
+    found.map(|path| vec![path.into_os_string()]).ok_or_else(|| {
+        Error::failed(format!(
+            "the lake's Iceberg server runs as `metalake iceberg serve`, and no metalake was found: install it on the \
+             PATH, or set {METALAKE_BIN} to it"
+        ))
+    })
+}
+
+/// MetaLake's command line: the file `bin` names, else `metalake` in a directory of `path`.
+fn resolve(bin: Option<OsString>, path: Option<OsString>) -> Option<PathBuf> {
+    if let Some(bin) = bin.filter(|bin| !bin.is_empty()) {
+        return Some(PathBuf::from(bin));
+    }
+    let name = format!("metalake{}", std::env::consts::EXE_SUFFIX);
+    std::env::split_paths(&path?)
+        .map(|directory| directory.join(&name))
+        .find(|candidate| candidate.is_file())
 }
 
 /// A lake, as its server's files name it: by what names the lake, its own directory or its catalog without a password
@@ -126,15 +148,23 @@ fn answers(port: u16) -> bool {
 }
 
 /// Asks a server to stop, and waits until it no longer answers.
-fn shut(runtime: &Runtime) -> Result<()> {
+/// Asks a server to stop, and waits until it has: until it removes its runtime file at `path`, the last it does once it
+/// has finished what it was doing, its writes to the catalog among them. Not until it stops answering, which it does
+/// first: what stops the lake's Postgres after it would cut that work short. A server that died without removing its
+/// file has stopped once it no longer answers.
+fn shut(runtime: &Runtime, path: &Path) -> Result<()> {
     request(runtime.port, "POST", "/metalake/shutdown", Some(&runtime.token));
     let since = Instant::now();
-    while answers(runtime.port) {
+    let still = || Runtime::read(path).is_some_and(|on_file| on_file.token == runtime.token);
+    while still() {
         if since.elapsed() > STOPPING {
-            return Err(Error::failed(format!(
-                "the lake's server at {} did not stop within {STOPPING:?}",
-                runtime.url
-            )));
+            if answers(runtime.port) {
+                return Err(Error::failed(format!(
+                    "the lake's server at {} did not stop within {STOPPING:?}",
+                    runtime.url
+                )));
+            }
+            break;
         }
         thread::sleep(Duration::from_millis(100));
     }
@@ -153,7 +183,7 @@ pub(crate) fn ensure(identity: &str, postgres: &str, schema: &str) -> Result<Run
             if running.version == VERSION {
                 return Ok(running);
             }
-            shut(&running)?;
+            shut(&running, &files.runtime)?;
         }
         let _ = fs::remove_file(&files.runtime);
     }
@@ -274,8 +304,9 @@ impl Drop for StdHandlesKept {
 /// Stops the lake's server, if one runs, and says whether one did.
 pub fn stop(identity: &str, schema: &str) -> Result<bool> {
     let files = Files::of(&key(identity, schema))?;
-    // None was ever started: nothing to stop, and nothing left behind in this user's home by asking.
-    if !files.runtime.exists() {
+    // None was ever started, which takes the lock first: nothing to stop, and nothing left in this user's home by
+    // asking. Otherwise its turn, after one that may be starting a server now.
+    if !files.lock.exists() {
         return Ok(false);
     }
     let _turn = files.locked()?;
@@ -284,7 +315,7 @@ pub fn stop(identity: &str, schema: &str) -> Result<bool> {
     };
     let ran = answers(running.port);
     if ran {
-        shut(&running)?;
+        shut(&running, &files.runtime)?;
     }
     remove_if_mine(&files.runtime, running.pid);
     Ok(ran)
@@ -378,6 +409,29 @@ mod tests {
         fs::write(&path, "not json").unwrap();
         assert_eq!(Runtime::read(&path), None, "a file that does not read is no server");
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn launcher_resolution() {
+        let directory = std::env::temp_dir().join(format!("metalake-bin-{}", uuid::Uuid::new_v4().simple()));
+        fs::create_dir_all(&directory).unwrap();
+        let name = format!("metalake{}", std::env::consts::EXE_SUFFIX);
+        let path = std::env::join_paths([directory.join("empty"), directory.clone()]).unwrap();
+
+        assert_eq!(resolve(None, Some(path.clone())), None, "no metalake there");
+        fs::write(directory.join(&name), b"").unwrap();
+        assert_eq!(
+            resolve(None, Some(path.clone())),
+            Some(directory.join(&name)),
+            "the first on the PATH"
+        );
+        assert_eq!(
+            resolve(Some("/opt/metalake".into()), Some(path)),
+            Some(PathBuf::from("/opt/metalake")),
+            "METALAKE_BIN first"
+        );
+        assert_eq!(resolve(Some("".into()), None), None);
+        fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]

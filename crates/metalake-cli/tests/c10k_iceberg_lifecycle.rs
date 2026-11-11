@@ -82,12 +82,46 @@ fn file_of(dir: &Path) -> PathBuf {
 #[test]
 fn ensure_reuses_server() {
     let (dir, _) = lake();
+    let file = file_of(&dir);
     let first = ensure(&dir);
     assert!(answers(&first));
     assert_eq!(ensure(&dir), first, "the one that runs");
     assert!(stop(&dir));
+    // Stopped once it finished what it was doing, which it says by removing its file last.
+    assert!(
+        !file.exists(),
+        "stop returns once the server has removed its runtime file"
+    );
     assert!(!answers(&first));
     assert!(!stop(&dir), "none runs now");
+}
+
+#[test]
+fn stop_during_start() {
+    let (dir, _) = lake();
+    // A server was started once, so its lock is there; then one starts while another stops.
+    ensure(&dir);
+    assert!(stop(&dir));
+    let (started, stopped) = std::thread::scope(|scope| {
+        let starting = scope.spawn(|| ensure(&dir));
+        std::thread::sleep(Duration::from_millis(300));
+        let stopped = stop(&dir);
+        (starting.join().unwrap(), stopped)
+    });
+    assert!(stopped, "stop waits for the start under way, and stops what it started");
+    assert!(!answers(&started));
+}
+
+#[test]
+fn stop_external_lake_keeps_server() {
+    let (dir, _) = lake();
+    let running = ensure(&dir);
+    // The lake's Postgres is not its own: `metalake stop` is refused, and stops nothing.
+    let output = common::metalake(&dir).arg("stop").output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no Postgres of its own"));
+    assert!(answers(&running), "its Iceberg server still runs");
+    assert!(stop(&dir));
 }
 
 #[test]

@@ -88,7 +88,8 @@ impl Location {
     /// The lake a command means: the directory it names, the environment, or the nearest file.
     fn find(dir: Option<&Path>) -> Result<Self> {
         if let Some(dir) = dir {
-            return Self::read(&dir.join(FILE));
+            // Absolute, as `named` makes it: the lake's identity, and so its server, is the same however it is named.
+            return Self::read(&std::path::absolute(dir)?.join(FILE));
         }
         if let Ok(postgres) = env::var(environment::POSTGRES) {
             let schema = env::var(environment::SCHEMA).ok();
@@ -194,8 +195,10 @@ impl Lake {
     /// The lake's Iceberg server first, which reaches its Postgres, then the Postgres: one command leaves the lake with
     /// nothing running.
     fn stop_at(location: Location) -> Result<PathBuf> {
+        // A lake with no Postgres of its own is refused before anything stops: `metalake iceberg stop` stops its server.
+        let cluster = location.cluster()?;
         location.stop_server()?;
-        location.cluster()?.stop()?;
+        cluster.stop()?;
         Ok(location.local.expect("a cluster has a directory"))
     }
 
@@ -378,6 +381,25 @@ fn with_password(postgres: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identity_relative_and_absolute() {
+        // Relative to where tests run, the crate's directory.
+        let name = format!("lake-identity-{}", uuid::Uuid::new_v4().simple());
+        fs::create_dir_all(&name).unwrap();
+        fs::write(Path::new(&name).join(FILE), "local = \"lake\"\n").unwrap();
+        let relative = Location::find(Some(Path::new(&name))).unwrap();
+        let absolute = Location::find(Some(&std::path::absolute(&name).unwrap())).unwrap();
+        let dotted = Location::find(Some(&Path::new(&name).join("."))).unwrap();
+        fs::remove_dir_all(&name).unwrap();
+        assert!(
+            Path::new(&relative.identity()["local:".len()..]).is_absolute(),
+            "{}",
+            relative.identity()
+        );
+        assert_eq!(relative.identity(), absolute.identity());
+        assert_eq!(dotted.identity(), absolute.identity());
+    }
 
     #[test]
     fn config_file_omits_defaults() {
