@@ -869,6 +869,12 @@ Iceberg REST server of the projection, and are checked by its tests.
   or that comes from the loopback address; any other that asks for them is refused with 403, as a client that is not
   given credentials would fail later, reading files, with no reason it can tell. A local warehouse vends none: a load
   answers no `storage-credentials`, and its clients read its files as they are.
+- **REST-12.** *0.4.* `updateTable` and `transactions/commit` hold `assert-current-schema-id`,
+  `assert-last-assigned-field-id`, `assert-last-assigned-partition-id`, `assert-default-spec-id` and
+  `assert-default-sort-order-id` to the table on the ref, as a load would serve it: one that does not match is a 409,
+  and nothing is applied (REST-2). A client sends them to say that what it writes was planned against that definition,
+  as DuckDB does with every insert. They are checks: the updates that would change what they assert stay refused
+  (§19), as `assert-table-uuid` and `assert-ref-snapshot-id` stay as REST-3 and §9 hold them.
 
 ## 17. Conformance
 
