@@ -228,6 +228,41 @@ pub enum IcebergVerb {
     Serve(IcebergServe),
     /// Stops the lake's server on this machine, the one a client started; `metalake stop` stops it too.
     Stop,
+    /// Prints what an engine needs to connect to the lake, in the engine's own form: PyIceberg's YAML, DuckDB's and
+    /// Flink's statements, Spark's defaults, Trino's catalog file. It starts the lake's server if it does not run, on
+    /// the lake's own port, so that what is printed still reaches it after a restart.
+    Connect(IcebergConnect),
+}
+
+#[derive(Debug, Args)]
+pub struct IcebergConnect {
+    /// The engine.
+    #[arg(value_enum)]
+    pub engine: EngineName,
+    /// The name the lake's catalog takes in the engine, as `lake.db.t`.
+    #[arg(long, default_value = "lake")]
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum EngineName {
+    Pyiceberg,
+    Duckdb,
+    Spark,
+    Flink,
+    Trino,
+}
+
+impl From<EngineName> for metalake_client::Engine {
+    fn from(name: EngineName) -> Self {
+        match name {
+            EngineName::Pyiceberg => Self::PyIceberg,
+            EngineName::Duckdb => Self::DuckDb,
+            EngineName::Spark => Self::Spark,
+            EngineName::Flink => Self::Flink,
+            EngineName::Trino => Self::Trino,
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -243,6 +278,9 @@ pub struct IcebergServe {
     /// shutdown token from `METALAKE_ICEBERG_TOKEN`.
     #[arg(long, value_name = "FILE", hide = true)]
     pub runtime_file: Option<PathBuf>,
+    /// If the port is taken, listens on a free one: how a client starts a lake's server on its preferred port.
+    #[arg(long, hide = true)]
+    pub or_any_port: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

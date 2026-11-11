@@ -1,9 +1,10 @@
 //! `lake.iceberg`: when Iceberg clients find each table's metadata written (REST-9). Every table is served to them and
 //! written when one loads it; a table set `on_commit` on a ref is written by the Iceberg service after each commit.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use metalake_client::{IcebergTable, Lake};
+use metalake_client::{Engine, IcebergTable, Lake};
 use pyo3::prelude::*;
 
 use crate::errors::to_python;
@@ -71,6 +72,20 @@ impl PyIceberg {
         let lake = self.lake.clone();
         let uri = wait(py, async move { lake.iceberg().uri().await })?;
         uri.map_err(|e| to_python(py, e))
+    }
+
+    /// What `engine` (`pyiceberg`, `duckdb`, `spark`, `flink`, `trino`) needs to connect to the lake, its catalog named
+    /// `name`: what fixes it as it starts and what sets it once running, in one dict, by the engine's own keys. For what
+    /// MetaLake does not connect itself: a Spark Connect server, Trino, a file of one's own. Starts the lake's server.
+    #[pyo3(signature = (engine, *, name = "lake"))]
+    fn properties(&self, py: Python<'_>, engine: &str, name: &str) -> PyResult<BTreeMap<String, String>> {
+        self.owner.check(py, "Lake")?;
+        let engine: Engine = engine.parse().map_err(|e| to_python(py, e))?;
+        let lake = self.lake.clone();
+        let name = name.to_string();
+        let profile = wait(py, async move { lake.iceberg().profile(engine, &name).await })?;
+        let profile = profile.map_err(|e| to_python(py, e))?;
+        Ok(profile.startup.into_iter().chain(profile.properties).collect())
     }
 
     /// Stops the lake's server on this machine, if one runs, and says whether one did. `metalake.stop` stops it too.
