@@ -141,3 +141,24 @@ jobs:
         run: |
           cd "$RUNNER_TEMP"
           python -m pytest "$GITHUB_WORKSPACE/crates/metalake-py/tests/test_vended.py" -q --tb=short -p no:cacheprovider -rs
+
+  # Credentials vended for a table's files on Azure (REST-11), against Floci-az, which checks a service SAS's signature
+  # with its account's key: a SAS for a table's directory reads it and not another's, and writes it only for a writer.
+  vended-azure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AZURE_STORAGE_USE_EMULATOR: "true"
+      METALAKE_TEST_AZURE_BLOB_ENDPOINT: http://127.0.0.1:4577/devstoreaccount1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Floci-az
+        run: |
+          docker run -d --name floci-az -p 4577:4577 floci/floci-az:latest
+          until curl -fs http://127.0.0.1:4577/_floci/info >/dev/null; do sleep 1; done
+      - name: Credentials vended on Azure
+        run: cargo test -p metalake-iceberg --test c19_azure_sas -- --nocapture

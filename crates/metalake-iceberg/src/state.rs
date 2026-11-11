@@ -13,6 +13,7 @@ use crate::generations::Generations;
 use crate::load::load;
 use crate::materialize::Materializer;
 use crate::prune::{PRUNE_EVERY, prune};
+use crate::vend::azure::Azure;
 use crate::vend::s3::S3;
 use crate::vend::{Minter, Vendor};
 
@@ -166,7 +167,11 @@ impl State {
 /// The stores a server mints credentials for (REST-11), each from the credential its own store finds.
 fn stores() -> Vendor {
     let s3: Arc<dyn Minter> = Arc::new(S3::from_env());
-    Vendor::default().with("s3", s3.clone()).with("s3a", s3)
+    let azure: Arc<dyn Minter> = Arc::new(Azure::from_env());
+    let vendor = Vendor::default().with("s3", s3.clone()).with("s3a", s3);
+    ["abfs", "abfss", "az", "azure"]
+        .into_iter()
+        .fold(vendor, |vendor, scheme| vendor.with(scheme, azure.clone()))
 }
 
 fn warehouse(catalog: &Catalog) -> Result<Storage> {

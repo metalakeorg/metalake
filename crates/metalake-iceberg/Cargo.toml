@@ -32,6 +32,7 @@ tokio = { workspace = true, features = ["net", "signal", "sync", "time"] }
 url.workspace = true
 uuid.workspace = true
 # Minting credentials for a table's files (REST-11): the store's own credential, SigV4, and the token services.
+base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 hmac = "0.13"
 object_store = { workspace = true, features = ["aws"] }

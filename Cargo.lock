@@ -2589,6 +2589,7 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "axum",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "clap",
