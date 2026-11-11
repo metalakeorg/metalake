@@ -17,7 +17,7 @@ use metalake_client::{Error, Lake, RefKind};
 
 pub use failure::Exit;
 
-use args::{Cli, Verb};
+use args::{Cli, IcebergVerb, Verb};
 use out::Out;
 
 /// Runs a command line, its first argument being the program's name, and answers the code to exit with.
@@ -64,6 +64,10 @@ async fn run(cli: Cli) -> Result<(), Error> {
         Verb::Maintain(maintain) => commands::maintain::run(maintain, &Lake::open(dir).await?, &out).await,
         Verb::Stop => commands::stop::run(dir, &out).await,
         Verb::Log(log) => commands::log::run(log, &Lake::open(dir).await?, &out).await,
+        // Stopping a server reaches no catalog, as stopping the lake's Postgres does not.
+        Verb::Iceberg {
+            verb: IcebergVerb::Stop,
+        } => commands::iceberg::stop(dir, &out).await,
         Verb::Iceberg { verb } => commands::iceberg::run(verb, &Lake::open(dir).await?, &out).await,
         Verb::Changes(changes) => commands::changes::run(changes, &Lake::open(dir).await?, &out).await,
         Verb::Follow(follow) => commands::follow::run(follow, &Lake::open(dir).await?, cli.format).await,

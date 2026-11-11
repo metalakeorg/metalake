@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::hash::fnv;
 use crate::pipeline::record::{Handle, RunnerKind};
 use crate::{Error, Result};
 
@@ -360,13 +361,6 @@ fn check(output: &Output, what: &str) -> Result<()> {
         "{what}: {}",
         String::from_utf8_lossy(&output.stderr).trim()
     )))
-}
-
-/// FNV-1a: a hash that is the same on every machine and in every build.
-fn fnv(text: &str) -> u64 {
-    text.bytes().fold(0xcbf29ce484222325, |hash, byte| {
-        (hash ^ byte as u64).wrapping_mul(0x100000001b3)
-    })
 }
 
 #[cfg(test)]

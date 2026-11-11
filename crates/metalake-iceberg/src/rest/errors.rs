@@ -5,7 +5,7 @@
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use metalake_pg::ErrorKind;
+use metalake::ErrorKind;
 use serde_json::json;
 
 use crate::apply::{ApplyError, Refused};

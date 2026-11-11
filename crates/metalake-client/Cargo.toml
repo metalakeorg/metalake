@@ -31,6 +31,10 @@ uuid.workspace = true
 toml = "1"
 url.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+# To start a lake's server holding none of this process's own handles (§ server::start).
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }
+
 [dev-dependencies]
 arrow-schema.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

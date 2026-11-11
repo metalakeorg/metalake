@@ -3,6 +3,7 @@
 
 mod error;
 mod follow;
+mod hash;
 mod history;
 mod iceberg;
 mod ingest;
@@ -11,6 +12,7 @@ mod maintain;
 mod merge;
 mod pipeline;
 mod refs;
+pub mod server;
 mod session;
 mod status;
 mod write;
@@ -29,6 +31,7 @@ pub use pipeline::{
     state_name, verb_of,
 };
 pub use refs::{RefInfo, RefKind, table};
+pub use server::{Runtime, SHUTDOWN_TOKEN, VERSION};
 pub use session::{Prepared, Session, Step};
 pub use status::{Named, Status};
 pub use write::{Details, TablePath, Written};

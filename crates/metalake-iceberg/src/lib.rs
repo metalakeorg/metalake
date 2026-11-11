@@ -9,13 +9,16 @@ mod materialize;
 pub mod project;
 mod prune;
 mod rest;
+pub mod shutdown;
 mod state;
 pub mod wire;
 
 use std::future::Future;
+use std::sync::Arc;
 
 pub use state::State;
 use tokio::net::TcpListener;
+use tokio::sync::Notify;
 
 /// Answers on `listener` until `stop` ends, lets what is running finish, and the footers queued for a while, and closes
 /// the catalog's connections.
@@ -24,9 +27,29 @@ pub async fn serve(
     state: State,
     stop: impl Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
-    let served = axum::serve(listener, rest::router(state.clone()))
-        .with_graceful_shutdown(stop)
-        .await;
+    serve_with(listener, state, stop, None).await
+}
+
+/// As [`serve`], and, given a token, until a request bearing it reaches [`shutdown::PATH`]: how the process that started
+/// the server stops it.
+pub async fn serve_with(
+    listener: TcpListener,
+    state: State,
+    stop: impl Future<Output = ()> + Send + 'static,
+    shutdown_token: Option<&str>,
+) -> std::io::Result<()> {
+    let shut = Arc::new(Notify::new());
+    let mut app = rest::router(state.clone());
+    if let Some(token) = shutdown_token {
+        app = shutdown::router(token, shut.clone()).merge(app);
+    }
+    let stopped = async move {
+        tokio::select! {
+            () = stop => {}
+            () = shut.notified() => {}
+        }
+    };
+    let served = axum::serve(listener, app).with_graceful_shutdown(stopped).await;
     state.close().await;
     served
 }

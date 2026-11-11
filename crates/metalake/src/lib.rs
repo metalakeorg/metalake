@@ -41,7 +41,7 @@ pub use error::{Error, Result};
 pub use evolve::Evolve;
 pub use follow::{FeedCursor, Lead};
 pub use maintain::Maintenance;
-pub use metalake_pg::Retention;
+pub use metalake_pg::{ErrorKind, Retention};
 pub use metalake_pg::records::{
     CommitEntry, FeedCommit, FileAdd, ListedFile, NamespaceRow, RefRow, SnapshotEntry, TableName, TableSnapshot,
 };

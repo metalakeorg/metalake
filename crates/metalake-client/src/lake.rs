@@ -39,6 +39,21 @@ impl Location {
         self.schema.as_deref().unwrap_or(SCHEMA)
     }
 
+    /// What names the lake whatever reaching it takes: its own directory, or its catalog without a password. A lake's
+    /// own Postgres may listen elsewhere each time it starts, and a password may change.
+    fn identity(&self) -> String {
+        match (&self.local, &self.postgres) {
+            (Some(local), _) => format!("local:{}", local.display()),
+            (None, Some(postgres)) => format!("catalog:{}", without_password(postgres)),
+            (None, None) => String::new(),
+        }
+    }
+
+    /// Stops the lake's Iceberg server on this machine, if one runs, and says whether one did.
+    fn stop_server(&self) -> Result<bool> {
+        crate::server::stop(&self.identity(), self.schema())
+    }
+
     /// How to connect: a lake's own Postgres is brought up if it is not.
     fn config(&self, connections: Option<usize>) -> Result<CatalogConfig> {
         let connection = match (&self.postgres, &self.local) {
@@ -73,7 +88,8 @@ impl Location {
     /// The lake a command means: the directory it names, the environment, or the nearest file.
     fn find(dir: Option<&Path>) -> Result<Self> {
         if let Some(dir) = dir {
-            return Self::read(&dir.join(FILE));
+            // Absolute, as `named` makes it: the lake's identity, and so its server, is the same however it is named.
+            return Self::read(&std::path::absolute(dir)?.join(FILE));
         }
         if let Ok(postgres) = env::var(environment::POSTGRES) {
             let schema = env::var(environment::SCHEMA).ok();
@@ -165,13 +181,24 @@ impl Lake {
         Self::stop_at(Location::find(dir)?)
     }
 
+    /// Stops the Iceberg server of the lake a command means, if one runs on this machine, with no connection to its
+    /// catalog, and says whether one did.
+    pub fn stop_server(dir: Option<&Path>) -> Result<bool> {
+        Location::find(dir)?.stop_server()
+    }
+
     /// Stops the Postgres of the lake a program names, as `connect` names one.
     pub fn stop_named(target: Option<&str>) -> Result<PathBuf> {
         Self::stop_at(Location::named(target, None)?)
     }
 
+    /// The lake's Iceberg server first, which reaches its Postgres, then the Postgres: one command leaves the lake with
+    /// nothing running.
     fn stop_at(location: Location) -> Result<PathBuf> {
-        location.cluster()?.stop()?;
+        // A lake with no Postgres of its own is refused before anything stops: `metalake iceberg stop` stops its server.
+        let cluster = location.cluster()?;
+        location.stop_server()?;
+        cluster.stop()?;
         Ok(location.local.expect("a cluster has a directory"))
     }
 
@@ -278,6 +305,11 @@ impl Lake {
         self.location.schema()
     }
 
+    /// What names the lake to its Iceberg server's files, whatever reaching it takes.
+    pub(crate) fn identity(&self) -> String {
+        self.location.identity()
+    }
+
     /// The warehouse's URL, where the lake's files are.
     pub(crate) fn warehouse(&self) -> Result<String> {
         self.catalog
@@ -287,7 +319,7 @@ impl Lake {
     }
 
     /// How to reach the catalog's Postgres, with its password: what a pipeline's process is given, never printed.
-    pub(crate) fn catalog_postgres(&self) -> Result<String> {
+    pub fn catalog_postgres(&self) -> Result<String> {
         Ok(self.location.config(None)?.postgres)
     }
 
@@ -349,6 +381,25 @@ fn with_password(postgres: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identity_relative_and_absolute() {
+        // Relative to where tests run, the crate's directory.
+        let name = format!("lake-identity-{}", uuid::Uuid::new_v4().simple());
+        fs::create_dir_all(&name).unwrap();
+        fs::write(Path::new(&name).join(FILE), "local = \"lake\"\n").unwrap();
+        let relative = Location::find(Some(Path::new(&name))).unwrap();
+        let absolute = Location::find(Some(&std::path::absolute(&name).unwrap())).unwrap();
+        let dotted = Location::find(Some(&Path::new(&name).join("."))).unwrap();
+        fs::remove_dir_all(&name).unwrap();
+        assert!(
+            Path::new(&relative.identity()["local:".len()..]).is_absolute(),
+            "{}",
+            relative.identity()
+        );
+        assert_eq!(relative.identity(), absolute.identity());
+        assert_eq!(dotted.identity(), absolute.identity());
+    }
 
     #[test]
     fn config_file_omits_defaults() {

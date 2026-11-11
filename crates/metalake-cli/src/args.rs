@@ -223,6 +223,32 @@ pub enum IcebergVerb {
         #[arg(long = "ref", value_name = "REF", default_value = "main")]
         on: String,
     },
+    /// Runs the lake's Iceberg REST server in the foreground until Ctrl-C, for engines elsewhere: Spark, Trino, Flink,
+    /// DuckDB, PyIceberg. A client starts one of its own when it connects an engine.
+    Serve(IcebergServe),
+    /// Stops the lake's server on this machine, the one a client started; `metalake stop` stops it too.
+    Stop,
+}
+
+#[derive(Debug, Args)]
+pub struct IcebergServe {
+    /// Where to listen; port 0 takes a free one, which the first line says.
+    #[arg(long, value_name = "ADDRESS", default_value = "127.0.0.1:8181")]
+    pub listen: String,
+    /// Whether this process writes the metadata of the tables set on-commit after each of their commits, when it leads
+    /// the lake's servers; one leads, whatever their number.
+    #[arg(long, value_enum, default_value_t = Switch::On)]
+    pub materialize: Switch,
+    /// The file it writes once it listens and removes when it stops, which is how a client finds it. It takes its
+    /// shutdown token from `METALAKE_ICEBERG_TOKEN`.
+    #[arg(long, value_name = "FILE", hide = true)]
+    pub runtime_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Switch {
+    On,
+    Off,
 }
 
 #[derive(Debug, Args)]
