@@ -1,6 +1,10 @@
 """Engines connected to the lake by `lake.iceberg`: each reads a table of the lake, and a write through it is a commit of
 the lake. Each engine is skipped where it is not installed: MetaLake installs none."""
 
+import subprocess
+import sys
+import textwrap
+
 import pytest
 
 import metalake
@@ -64,3 +68,81 @@ def test_duckdb_reads_and_writes(lake):
     own = duckdb.connect()
     assert lake.iceberg.duckdb(own, name="other") is own
     assert own.sql("select max(k) from other.default.t").fetchone()[0] == 10
+
+
+@pytest.fixture(scope="module")
+def spark_session(lake):
+    pytest.importorskip("pyspark")
+    session = lake.iceberg.spark()
+    yield session
+    session.stop()
+
+
+def test_spark_reads_and_merges(lake, spark_session):
+    assert spark_session.sql("select count(*) from lake.default.t").first()[0] >= 3
+    before = lake.log(limit=1)[0].seq
+    spark_session.sql(
+        "merge into lake.default.t d using (select 1 as k union all select 20 as k) s on d.k = s.k "
+        "when not matched then insert *"
+    )
+    assert lake.log(limit=1)[0].seq > before, "a commit of the lake"
+    assert lake.sql("select count(*) as n from t where k = 20").to_arrow()["n"].to_pylist() == [1]
+
+
+def test_spark_adopts_session(lake, spark_session):
+    from pyspark.sql import SparkSession
+
+    adopted = lake.iceberg.spark(name="other")
+    assert adopted is SparkSession.getActiveSession()
+    assert adopted.sql("select max(k) from other.default.t").first()[0] >= 20
+
+
+def test_spark_without_iceberg_refused(directory, lake):
+    pytest.importorskip("pyspark")
+    # Another process: a JVM of its own, started without Iceberg.
+    script = textwrap.dedent(
+        f"""
+        import metalake
+        from pyspark.sql import SparkSession
+        session = SparkSession.builder.appName("plain").getOrCreate()
+        lake = metalake.connect({str(directory / "lake")!r})
+        try:
+            lake.iceberg.spark(session)
+        except metalake.UsageError as refused:
+            assert "spark.jars.packages" in str(refused), refused
+            print("refused")
+        finally:
+            session.stop()
+        """
+    )
+    said = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=300)
+    assert "refused" in said.stdout, said.stderr[-2000:]
+
+
+def flink_rows(environment, query):
+    with environment.execute_sql(query).collect() as rows:
+        return [tuple(row) for row in rows]
+
+
+def test_flink_reads_and_inserts(lake):
+    pytest.importorskip("pyflink")
+    environment = lake.iceberg.flink()
+    before = lake.log(limit=1)[0].seq
+    environment.execute_sql("insert into lake.default.t values (30)").wait()
+    assert lake.log(limit=1)[0].seq > before, "a commit of the lake"
+    assert flink_rows(environment, "select max(k) from lake.default.t")[0][0] >= 30
+
+
+def test_flink_adopts_environment(lake):
+    pytest.importorskip("pyflink")
+    from pyflink.table import EnvironmentSettings, TableEnvironment
+
+    environment = TableEnvironment.create(EnvironmentSettings.in_batch_mode())
+    # A jar it has already, which the lake also names: kept first, and not twice.
+    runtime = lake.iceberg.profile("flink").startup["pipeline.jars"].split(";")[0]
+    environment.get_config().set("pipeline.jars", runtime)
+    assert lake.iceberg.flink(environment, name="other") is environment
+    jars = environment.get_config().get("pipeline.jars", "").split(";")
+    assert jars[0] == runtime and jars.count(runtime) == 1, jars
+    assert len(jars) == 3, jars
+    assert flink_rows(environment, "select count(*) from other.default.t")[0][0] >= 3

@@ -15,27 +15,44 @@ use crate::{Error, Result, server};
 
 const MAVEN: &str = "https://repo1.maven.org/maven2";
 
-/// The SHA-512 of each jar a profile names, as Maven Central publishes it beside the jar.
-const PINNED: &[(&str, &str, &str)] = &[
+/// The SHA-512 of each jar a profile names: as Maven Central publishes it beside the jar, or, for Hadoop's, which has
+/// only SHA-1 there, computed from the jar once its SHA-1 was checked.
+const PINNED: &[(&str, &str, &str, &str)] = &[
     (
+        "org.apache.iceberg",
         "iceberg-flink-runtime-1.20",
         "1.11.0",
         "f39f4d984fd429f12dbe5eb2df7358d33602054d17a0c2d03e2cc98e4c95cf2de949d2f31da3d2c4c926c6755ca878621fb0e02c2fb5edf7526c362f5a0f7182",
     ),
     (
+        "org.apache.iceberg",
         "iceberg-aws-bundle",
         "1.11.0",
         "bb50f7dc5f36a001efecf15e4d03eff955466f06557261fbacdd7fe0d88113c82e0b9b2af96cd554cef4a1d4c2348fc950270bc3f51cf6bf1e4526f46ce336a0",
     ),
     (
+        "org.apache.iceberg",
         "iceberg-gcp-bundle",
         "1.11.0",
         "c38fb7c6ac3d04145b62ec79114af0bc6ccf0f6ab7a219cbf5286efd0dd63c33a0157a2662dc062c505defe203855b730b8ce30f0f7ddf0d60d79767ba27f5e3",
     ),
     (
+        "org.apache.iceberg",
         "iceberg-azure-bundle",
         "1.11.0",
         "4d14e6a631e4f1abb58b185847437873569e47b11a3bfe3697724591c5011bf8f330a0ed4eedbdfa5c7d44e03c20d0fb7a8e5a495ffcd0b4b826480ef30ffdc6",
+    ),
+    (
+        "org.apache.hadoop",
+        "hadoop-client-api",
+        "3.4.1",
+        "d505c0f8cfffcfe0090c69de854c971c7d88646f1f9f31af43ad3934a686dc06ae39250c3c99998ea57a27fc226a0fa5fb4da39867cac3997577ad7ffb01b239",
+    ),
+    (
+        "org.apache.hadoop",
+        "hadoop-client-runtime",
+        "3.4.1",
+        "6363e4b786f49c7f7e1efe733000399e781e4827e26f8f22259f2e32f907a37401283aaf5fea201584c6cc8ddba8716c0d305917bb628e3438ed199cb1a3e00a",
     ),
 ];
 
@@ -69,8 +86,10 @@ pub(crate) async fn fetch(artifacts: &[Artifact]) -> Result<Vec<PathBuf>> {
 fn pinned(artifact: &Artifact) -> Result<&'static str> {
     PINNED
         .iter()
-        .find(|(name, version, _)| *name == artifact.name && *version == artifact.version)
-        .map(|(_, _, sha512)| *sha512)
+        .find(|(group, name, version, _)| {
+            (*group, *name, *version) == (artifact.group, artifact.name.as_str(), artifact.version)
+        })
+        .map(|(_, _, _, sha512)| *sha512)
         .ok_or_else(|| Error::failed(format!("no hash is pinned for {}", artifact.coordinate())))
 }
 
@@ -184,6 +203,7 @@ mod tests {
         ] {
             assert!(pinned(&store.bundle().unwrap()).is_ok(), "{store:?}");
         }
+        assert!(pinned(&Artifact::hadoop("hadoop-client-api")).is_ok());
         assert!(pinned(&Artifact::iceberg("iceberg-hive-runtime")).is_err());
     }
 

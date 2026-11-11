@@ -4,6 +4,12 @@ Each engine is a library of its own, imported only when it is asked for: MetaLak
 the engine's own object, so what one knows of each keeps working.
 """
 
+import warnings
+
+from .errors import UsageError
+
+SPARK_EXTENSIONS = "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions"
+
 
 def _engine(module, method, extra):
     """The engine's module, or an error that says what to install."""
@@ -30,3 +36,68 @@ def duckdb(profile, connection):
     for statement in profile.statements:
         connection.execute(statement)
     return connection
+
+
+def spark(profile, session):
+    """`session`, else the active SparkSession, else a local one started with Iceberg: connected to the lake."""
+    pyspark = _engine("pyspark", "spark", "spark")
+    _same_version("Spark", pyspark.__version__, profile, "iceberg-spark-runtime-")
+    from pyspark.sql import SparkSession
+
+    if session is None:
+        session = SparkSession.getActiveSession()
+    if session is None:
+        builder = SparkSession.builder.appName("metalake")
+        for key, value in {**profile.startup, **profile.properties}.items():
+            builder = builder.config(key, value)
+        return builder.getOrCreate()
+    _iceberg_in(session, profile)
+    # Spark loads a catalog the first time it is named, from the session's configuration then.
+    for key, value in profile.properties.items():
+        session.conf.set(key, value)
+    return session
+
+
+def _iceberg_in(session, profile):
+    """A running session takes a catalog, but not Iceberg's classes, which are fixed as it starts."""
+    jvm = getattr(session, "_jvm", None)
+    if jvm is None:
+        # Spark Connect: the classpath is the server's, not ours to see.
+        return
+    try:
+        jvm.org.apache.spark.util.Utils.classForName("org.apache.iceberg.spark.SparkCatalog", True, False)
+    except Exception:
+        start = "".join(f"\n    .config({key!r}, {value!r})" for key, value in profile.startup.items())
+        raise UsageError(f"this SparkSession started without Iceberg; start it with:{start}") from None
+    if SPARK_EXTENSIONS not in (session.conf.get("spark.sql.extensions", "") or ""):
+        warnings.warn(
+            f"MERGE INTO and Iceberg's procedures need spark.sql.extensions={SPARK_EXTENSIONS} as the session starts",
+            stacklevel=3,
+        )
+
+
+def flink(profile, environment, streaming):
+    """`environment`, or a new TableEnvironment, batch unless `streaming`, with the lake's catalog."""
+    table = _engine("pyflink.table", "flink", "flink")
+    import pyflink.version
+
+    _same_version("Flink", pyflink.version.__version__, profile, "iceberg-flink-runtime-")
+    if environment is None:
+        mode = table.EnvironmentSettings.in_streaming_mode() if streaming else table.EnvironmentSettings.in_batch_mode()
+        environment = table.TableEnvironment.create(mode)
+    # Added to the jars it has, not over them; PyFlink loads them into its client as they are set.
+    config = environment.get_config()
+    held = [jar for jar in (config.get("pipeline.jars", "") or "").split(";") if jar]
+    wanted = profile.startup["pipeline.jars"].split(";")
+    config.set("pipeline.jars", ";".join(held + [jar for jar in wanted if jar not in held]))
+    for statement in profile.statements:
+        environment.execute_sql(statement).wait()
+    return environment
+
+
+def _same_version(engine, installed, profile, runtime):
+    """The engine's minor version is the one the Iceberg runtime the profile names was built for."""
+    named = next(artifact for artifact in profile.artifacts if runtime in artifact)
+    built = named.split(runtime)[1].split("_")[0].split(":")[0]
+    if not installed.startswith(built + "."):
+        raise UsageError(f"{engine} {installed} is installed; the lake's Iceberg runtime is for {engine} {built}")
