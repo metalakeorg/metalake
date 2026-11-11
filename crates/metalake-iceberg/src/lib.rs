@@ -12,6 +12,7 @@ mod prune;
 mod rest;
 pub mod shutdown;
 mod state;
+pub mod vend;
 pub mod wire;
 
 use std::future::Future;

@@ -13,6 +13,7 @@ use crate::generations::Generations;
 use crate::load::load;
 use crate::materialize::Materializer;
 use crate::prune::{PRUNE_EVERY, prune};
+use crate::vend::{Minter, Vendor};
 
 /// How long stopping waits for footers still queued, which are maintenance's after it.
 const FOOTERS_DRAIN: Duration = Duration::from_secs(10);
@@ -28,6 +29,8 @@ pub struct State {
     pruned: Arc<Mutex<HashMap<Uuid, Instant>>>,
     /// The tables a load of this process is generating, one load at a time each (REST-6).
     generations: Generations,
+    /// How the credentials for tables' files are minted, by their store (REST-11).
+    vendor: Vendor,
 }
 
 impl State {
@@ -52,12 +55,23 @@ impl State {
             materializer: None,
             pruned: Arc::default(),
             generations: Generations::default(),
+            vendor: Vendor::default(),
         })
     }
 
     /// The same, materializing the tables marked `on-commit` after each of their commits (REST-6), when this process
     /// leads the catalog's, as the service does unless told not to. A load is what a client's load is, of the table on
     /// `main`, as the service serves its tables there.
+    /// Vends credentials for tables whose location is of `scheme`, through `minter` (REST-11).
+    pub fn vending(mut self, scheme: &str, minter: std::sync::Arc<dyn Minter>) -> Self {
+        self.vendor = self.vendor.with(scheme, minter);
+        self
+    }
+
+    pub(crate) fn vendor(&self) -> &Vendor {
+        &self.vendor
+    }
+
     pub fn materializing(mut self) -> Self {
         let serving = self.clone();
         let load = move |table: uuid::Uuid| {
