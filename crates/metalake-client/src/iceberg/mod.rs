@@ -3,12 +3,22 @@
 //! Iceberg service after each of its commits there, so that a load finds it there, and a reader of the metadata file
 //! alone finds it current. Setting it is a commit of the tables' definitions, on that ref: one commit for all of them.
 
+mod duckdb;
+mod flink;
+mod jars;
+mod profile;
+mod pyiceberg;
+mod spark;
+mod trino;
+
 use std::collections::BTreeMap;
 
 use metalake::{ICEBERG_METADATA, Table};
 use serde::Serialize;
 use serde_json::json;
 use uuid::Uuid;
+
+pub use profile::{Artifact, Engine, FLINK, HADOOP, ICEBERG_JAVA, Profile, SCALA, SPARK, Store, Target, profile};
 
 use crate::server::{self, Runtime};
 use crate::{Error, Lake, Result};

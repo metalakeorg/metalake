@@ -27,6 +27,30 @@ impl Failure {
         }
     }
 
+    /// A bearer that is not the server's token: the engine was given another (REST-10).
+    pub(crate) fn unknown_token() -> Self {
+        Self::new(
+            StatusCode::UNAUTHORIZED,
+            "NotAuthorizedException",
+            "the token is not this server's: connect the engine again from the lake",
+        )
+    }
+
+    /// Credentials asked for by a request no token makes a writer's (REST-11).
+    pub(crate) fn credentials_refused() -> Self {
+        Self::new(
+            StatusCode::FORBIDDEN,
+            "ForbiddenException",
+            "credentials for a table's files go to a request that bears the lake's token: connect the engine from the lake",
+        )
+    }
+
+    /// Credentials a store's token service did not mint.
+    pub(crate) fn not_minted(message: impl Into<String>) -> Self {
+        let message = format!("credentials could not be minted: {}", message.into());
+        Self::new(StatusCode::SERVICE_UNAVAILABLE, "ServiceUnavailableException", message)
+    }
+
     pub(crate) fn no_route() -> Self {
         Self::new(StatusCode::NOT_FOUND, "NoSuchEndpointException", "no such route")
     }

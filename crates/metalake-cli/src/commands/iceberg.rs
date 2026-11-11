@@ -5,7 +5,7 @@ use std::path::Path;
 
 use serde_json::json;
 
-use crate::args::{IcebergServe, IcebergTables, IcebergVerb, Switch};
+use crate::args::{IcebergConnect, IcebergServe, IcebergTables, IcebergVerb, Switch};
 use crate::out::Out;
 use metalake_client::server::{self, Runtime, SHUTDOWN_TOKEN, VERSION};
 use metalake_client::{Error, Lake};
@@ -16,6 +16,7 @@ pub async fn run(verb: &IcebergVerb, lake: &Lake, out: &Out) -> Result<(), Error
     let iceberg = lake.iceberg();
     let (args, when, commit) = match verb {
         IcebergVerb::Serve(args) => return serve(args, lake).await,
+        IcebergVerb::Connect(args) => return connect(args, lake, out).await,
         IcebergVerb::Stop => unreachable!("stopping reaches no catalog: see `stop`"),
         IcebergVerb::Status { on } => {
             let columns = ["table", "head", "written", "behind", "since", "metadata"];
@@ -36,7 +37,13 @@ async fn serve(args: &IcebergServe, lake: &Lake) -> Result<(), Error> {
     if args.materialize == Switch::On {
         state = state.materializing();
     }
-    let listener = TcpListener::bind(&args.listen).await?;
+    let listener = match TcpListener::bind(&args.listen).await {
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && args.or_any_port => {
+            let taken: std::net::SocketAddr = args.listen.parse().map_err(|_| e)?;
+            TcpListener::bind((taken.ip(), 0)).await?
+        }
+        bound => bound?,
+    };
     let address = listener.local_addr()?;
     let token = std::env::var(SHUTDOWN_TOKEN).ok().filter(|token| !token.is_empty());
     let pid = std::process::id();
@@ -50,6 +57,8 @@ async fn serve(args: &IcebergServe, lake: &Lake) -> Result<(), Error> {
             pid,
             version: VERSION.to_string(),
             token,
+            // Which start of it this is, as the client that started it says.
+            start: std::env::var(server::START).unwrap_or_default(),
         };
         runtime.write(path)?;
     }
@@ -60,6 +69,17 @@ async fn serve(args: &IcebergServe, lake: &Lake) -> Result<(), Error> {
         server::remove_if_mine(path, pid);
     }
     Ok(served?)
+}
+
+/// An engine's profile for the lake, printed; where the server runs, said apart, so that the profile alone is what a
+/// redirection writes.
+async fn connect(args: &IcebergConnect, lake: &Lake, out: &Out) -> Result<(), Error> {
+    let profile = lake.iceberg().profile(args.engine.into(), &args.name).await?;
+    eprintln!(
+        "the lake's server runs at {}: `metalake iceberg stop` stops it",
+        profile.target.uri
+    );
+    out.value(&profile)
 }
 
 /// Stops the lake's server on this machine, if one runs.

@@ -2,7 +2,7 @@
 //! is told lives here, and what it means does not.
 
 mod config;
-mod errors;
+pub(crate) mod errors;
 mod namespaces;
 mod tables;
 
@@ -33,6 +33,10 @@ pub(crate) fn router(state: State) -> Router {
                 .head(tables::exists)
                 .post(tables::update)
                 .delete(tables::drop),
+        )
+        .route(
+            "/v1/namespaces/{namespace}/tables/{table}/credentials",
+            get(tables::credentials),
         )
         .fallback(async || Failure::no_route())
         .with_state(state)

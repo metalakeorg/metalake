@@ -8,6 +8,8 @@ on:
     branches: [main]
     paths:
       - crates/metalake-iceberg/**
+      - crates/metalake-client/**
+      - crates/metalake-py/**
       - crates/metalake/**
       - crates/metalake-pg/**
       - sql/**
@@ -16,6 +18,8 @@ on:
     branches: [main]
     paths:
       - crates/metalake-iceberg/**
+      - crates/metalake-client/**
+      - crates/metalake-py/**
       - crates/metalake/**
       - crates/metalake-pg/**
       - sql/**
@@ -63,3 +67,161 @@ jobs:
           curl -fsSLO "$maven/hadoop/hadoop-client-runtime/$HADOOP/hadoop-client-runtime-$HADOOP.jar"
       - name: The engines
         run: CRATE=metalake-iceberg bash sql/test.sh --test c12_engines
+
+  # The extension, built once, in its debug profile, with Rust's cache: the Python jobs below install its wheel rather
+  # than each building it again in release, which took them twelve minutes of their thirteen.
+  extension:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: python-extension
+          cache-on-failure: true
+      - name: Prepare Postgres
+        run: python packaging/postgres.py x86_64-unknown-linux-gnu
+      - name: The wheel
+        run: |
+          python -m pip install --quiet maturin
+          maturin build --profile dev --out dist -m crates/metalake-py/Cargo.toml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension
+          path: dist/*.whl
+
+  # The Python faces that hand back a JVM engine connected to the lake, each in an environment of its own: PySpark and
+  # PyFlink pin libraries apart.
+  python-engines:
+    name: python ${{ matrix.engine }}
+    needs: extension
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # A native crash, during the run or at the interpreter's exit, prints the stack of each thread.
+      PYTHONFAULTHANDLER: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [spark, flink]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/download-artifact@v4
+        with:
+          name: extension
+          path: dist
+      - name: The extension, and the engine
+        run: python -m pip install --quiet pytest "$(ls dist/*.whl)[${{ matrix.engine }}]"
+      - name: The engine connected from Python
+        run: |
+          cd "$RUNNER_TEMP"
+          python -m pytest "$GITHUB_WORKSPACE/crates/metalake-py/tests/test_engines.py" -k ${{ matrix.engine }} -q --tb=short -p no:cacheprovider -rs
+
+  # Credentials vended for a table's files on S3 (REST-11), on MinIO, whose token service answers AssumeRole with a
+  # session policy: PyIceberg, Spark and Trino, connected by the lake's profiles with no key of their own, read and write
+  # with what the lake's server mints. MinIO's own images are no longer published; Chainguard's is built from its source.
+  vended-s3:
+    needs: extension
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AWS_ACCESS_KEY_ID: metalake
+      AWS_SECRET_ACCESS_KEY: metalake-secret
+      AWS_ENDPOINT: http://127.0.0.1:9000
+      AWS_ALLOW_HTTP: "true"
+      AWS_REGION: us-east-1
+      METALAKE_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+      METALAKE_TEST_S3_BUCKET: metalake
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: MinIO, a bucket and a user that is not root, and Trino's image
+        run: |
+          docker pull --quiet trinodb/trino:484 &
+          docker network create s3
+          docker run -d --name minio --network s3 -u 0 -p 9000:9000 -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin cgr.dev/chainguard/minio:latest server /data
+          until curl -fs http://127.0.0.1:9000/minio/health/live; do sleep 1; done
+          mc() { docker run --rm -u 0 --network s3 -v mc:/tmp/mc -e MC_CONFIG_DIR=/tmp/mc cgr.dev/chainguard/minio-client:latest "$@"; }
+          mc alias set m http://minio:9000 minioadmin minioadmin
+          mc mb m/metalake
+          mc admin user add m metalake metalake-secret
+          mc admin policy attach m readwrite --user metalake
+          wait
+      - uses: actions/download-artifact@v4
+        with:
+          name: extension
+          path: dist
+      - name: The extension, PyIceberg, PySpark and Trino's client
+        run: python -m pip install --quiet pytest trino==0.340.0 "$(ls dist/*.whl)[pyiceberg,spark]"
+      - name: Credentials vended on S3
+        run: |
+          cd "$RUNNER_TEMP"
+          python -m pytest "$GITHUB_WORKSPACE/crates/metalake-py/tests/test_vended.py" -q --tb=short -p no:cacheprovider -rs
+
+  # Credentials vended for a table's files on Azure (REST-11), against Floci-az, which checks a service SAS's signature
+  # with its account's key: a SAS for a table's directory reads it and not another's, and writes it only for a writer.
+  vended-azure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      METALAKE_TEST_AZURE_BLOB_ENDPOINT: http://127.0.0.1:4577/devstoreaccount1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Floci-az
+        run: |
+          docker run -d --name floci-az -p 4577:4577 floci/floci-az:latest
+          until curl -fs http://127.0.0.1:4577/_floci/info >/dev/null; do sleep 1; done
+      - name: Credentials vended on Azure, signed with the account's key
+        env:
+          AZURE_STORAGE_USE_EMULATOR: "true"
+        run: cargo test -p metalake-iceberg --test c19_azure_sas rest11_azure_sas_narrowed -- --nocapture
+      - name: Credentials vended on Azure, signed with a key delegated to an Entra identity
+        env:
+          AZURE_STORAGE_ACCOUNT_NAME: devstoreaccount1
+          AZURE_STORAGE_ENDPOINT: http://127.0.0.1:4577/devstoreaccount1
+          AZURE_STORAGE_TOKEN: unchecked
+        run: cargo test -p metalake-iceberg --test c19_azure_sas rest11_azure_user_delegation_sas_narrowed -- --nocapture
+
+  # Credentials vended for a table's files on GCS (REST-11), against Floci-gcp, which gives a service account a token for
+  # its JWT, downscopes it through its STS, and holds a downscoped token to its boundary.
+  vended-gcs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      STORAGE_EMULATOR_HOST: http://127.0.0.1:4588
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Floci-gcp, and a service account whose tokens it gives
+        run: |
+          docker run -d --name floci-gcp -p 4588:4588 floci/floci-gcp:latest
+          until curl -s -o /dev/null http://127.0.0.1:4588/storage/v1/b?project=floci-local; do sleep 1; done
+          key=$(jq -n --rawfile pem crates/metalake-iceberg/src/vend/gcs_test_key.pem             '{type: "service_account", client_email: "lake@floci-local.iam.gserviceaccount.com",
+              private_key_id: "test", private_key: $pem, token_uri: "http://127.0.0.1:4588/token"}')
+          echo "GOOGLE_SERVICE_ACCOUNT_KEY<<EOF" >> "$GITHUB_ENV"; echo "$key" >> "$GITHUB_ENV"; echo "EOF" >> "$GITHUB_ENV"
+      - name: Credentials vended on GCS
+        run: cargo test -p metalake-iceberg --test c20_gcs_token -- --nocapture

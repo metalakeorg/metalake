@@ -32,6 +32,7 @@ fn _metalake(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<lake::PyLake>()?;
     module.add_class::<iceberg::PyIceberg>()?;
     module.add_class::<iceberg::PyIcebergTable>()?;
+    module.add_class::<iceberg::PyProfile>()?;
     module.add_class::<info::PyRef>()?;
     module.add_class::<info::PyCommit>()?;
     module.add_class::<info::PyDone>()?;

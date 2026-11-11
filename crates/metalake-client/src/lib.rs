@@ -20,7 +20,9 @@ mod write;
 pub use error::{Error, Kind, Result};
 pub use follow::{Changes, Follower, StartAt};
 pub use history::duration;
-pub use iceberg::{Iceberg, IcebergTable};
+pub use iceberg::{
+    Artifact, Engine, FLINK, HADOOP, ICEBERG_JAVA, Iceberg, IcebergTable, Profile, SCALA, SPARK, Store, Target, profile,
+};
 pub use ingest::{Mode, Writer, WriterOptions, Wrote};
 pub use lake::Lake;
 pub use maintain::{Done, MaintainRequest, MaintainRun, Task};

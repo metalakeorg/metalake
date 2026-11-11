@@ -144,6 +144,15 @@ fn ensure_replaces_dead_server() {
     let second = ensure(&dir);
     assert_ne!(second.pid, first.pid);
     assert!(answers(&second));
+    // The lake's token outlives a server, as what an engine was given must; each start is its own.
+    assert_eq!(second.token, first.token, "the lake's token, the same");
+    assert_ne!(second.start, first.start);
+    if server::PORTS.contains(&first.port) {
+        assert_eq!(
+            second.port, first.port,
+            "a restarted server takes the lake's port again"
+        );
+    }
     assert!(stop(&dir));
 }
 
@@ -156,8 +165,10 @@ fn ensure_replaces_other_version() {
     old.write(&file).unwrap();
     let new = ensure(&dir);
     assert_ne!(new.pid, old.pid, "a server of another version is replaced");
-    assert!(!answers(&old));
     assert!(answers(&new));
+    if server::PORTS.contains(&old.port) {
+        assert_eq!(new.port, old.port, "its replacement takes the lake's port");
+    }
     assert!(stop(&dir));
 }
 

@@ -865,13 +865,16 @@ Iceberg REST server of the projection, and are checked by its tests.
   Access Boundary on GCS, a SAS on the directory on Azure, a session policy of `AssumeRole` on S3. Each expires, minted
   from the service's own credential through the store's token service (Google STS; a SAS signed by the account key or
   a user delegation key; AWS STS `AssumeRole`), never a long-lived key. A service that cannot narrow them on S3, with no
-  role to assume, mints them with `GetSessionToken`, unnarrowed, for a `writer` alone. Each is written in every
+  role to assume, mints them with `GetSessionToken`, unnarrowed, for a `writer` alone, and only from a lasting key, as
+  AWS mints none from a temporary one. Each is written in every
   spelling clients read: `s3.access-key-id`, `s3.secret-access-key`, `s3.session-token` and
   `s3.session-token-expires-at-ms`, with the region and endpoint the service reaches the store by; `gcs.oauth2.token`
   and `gcs.oauth2.token-expires-at`; `adls.sas-token.<account host>` and `adls.sas-token-expires-at-ms.<account
   host>`; and the endpoint that refreshes them (`client.refresh-credentials-endpoint`,
   `gcs.oauth2.refresh-credentials-endpoint`, `adls.refresh-credentials-endpoint`), which is `loadCredentials`'s.
-  `loadCredentials` answers fresh ones for a table, as a client asks when its own expire. They go only to a request
+  `loadCredentials` answers fresh ones for a table, as a client asks when its own expire; a staged `createTable`'s
+  name no such endpoint, as no table is there to refresh them for until its commit. A `createTable` that asks for
+  them and cannot be given them commits nothing. They go only to a request
   that REST-10 authenticates; any other that asks for them is refused with 403, as a client that is not given
   credentials would fail later, reading files, with no reason it can tell. A service run for one user, as a lake's own
   server on that user's machine is, holds a token of its own as a `writer`'s, kept where that user alone reads it, and

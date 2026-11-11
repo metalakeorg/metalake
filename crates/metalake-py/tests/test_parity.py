@@ -45,6 +45,7 @@ FACES = {
     ("pipeline", "resume"): (metalake.Pipeline.resume, {}),
     ("pipeline", "drop"): (metalake.Pipeline.drop, {}),
     ("iceberg", "stop"): (metalake.Iceberg.stop, {}),
+    ("iceberg", "connect"): (metalake.Iceberg.properties, {}),
 }
 
 # What belongs to a terminal, or to the process of a command, and has no meaning in a program.

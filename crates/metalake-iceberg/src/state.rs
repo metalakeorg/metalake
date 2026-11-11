@@ -13,6 +13,10 @@ use crate::generations::Generations;
 use crate::load::load;
 use crate::materialize::Materializer;
 use crate::prune::{PRUNE_EVERY, prune};
+use crate::vend::azure::Azure;
+use crate::vend::gcs::Gcs;
+use crate::vend::s3::S3;
+use crate::vend::{Minter, Vendor};
 
 /// How long stopping waits for footers still queued, which are maintenance's after it.
 const FOOTERS_DRAIN: Duration = Duration::from_secs(10);
@@ -28,6 +32,8 @@ pub struct State {
     pruned: Arc<Mutex<HashMap<Uuid, Instant>>>,
     /// The tables a load of this process is generating, one load at a time each (REST-6).
     generations: Generations,
+    /// How the credentials for tables' files are minted, by their store (REST-11).
+    vendor: Vendor,
 }
 
 impl State {
@@ -52,12 +58,23 @@ impl State {
             materializer: None,
             pruned: Arc::default(),
             generations: Generations::default(),
+            vendor: stores(),
         })
     }
 
     /// The same, materializing the tables marked `on-commit` after each of their commits (REST-6), when this process
     /// leads the catalog's, as the service does unless told not to. A load is what a client's load is, of the table on
     /// `main`, as the service serves its tables there.
+    /// Vends credentials for tables whose location is of `scheme`, through `minter` (REST-11).
+    pub fn vending(mut self, scheme: &str, minter: std::sync::Arc<dyn Minter>) -> Self {
+        self.vendor = self.vendor.with(scheme, minter);
+        self
+    }
+
+    pub(crate) fn vendor(&self) -> &Vendor {
+        &self.vendor
+    }
+
     pub fn materializing(mut self) -> Self {
         let serving = self.clone();
         let load = move |table: uuid::Uuid| {
@@ -146,6 +163,17 @@ impl State {
         self.footers.stop(FOOTERS_DRAIN).await;
         self.catalog.close();
     }
+}
+
+/// The stores a server mints credentials for (REST-11), each from the credential its own store finds.
+fn stores() -> Vendor {
+    let s3: Arc<dyn Minter> = Arc::new(S3::from_env());
+    let azure: Arc<dyn Minter> = Arc::new(Azure::from_env());
+    let gcs: Arc<dyn Minter> = Arc::new(Gcs::from_env());
+    let vendor = Vendor::default().with("s3", s3.clone()).with("s3a", s3).with("gs", gcs);
+    ["abfs", "abfss", "az", "azure"]
+        .into_iter()
+        .fold(vendor, |vendor, scheme| vendor.with(scheme, azure.clone()))
 }
 
 fn warehouse(catalog: &Catalog) -> Result<Storage> {
