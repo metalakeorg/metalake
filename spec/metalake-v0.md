@@ -2,7 +2,9 @@
 
 **Status:** final, tagged `spec-v0` on 2026-11-02. Later changes follow §18. Revision 0.1 (namespaces as
 objects, `writer_version`) is in progress: its rules are marked *0.1*. Revision 0.2 (retention in two phases, time
-and changes complete) follows it: its rules are marked *0.2*.
+and changes complete) follows it: its rules are marked *0.2*. Revision 0.3 (footers as hints, the Iceberg REST
+service) follows it: its rules are marked *0.3*. Revision 0.4 (the Iceberg REST service vends credentials, and holds
+a commit's requirements) follows it: its rules are marked *0.4*.
 
 ## 1. Conventions
 
@@ -894,6 +896,8 @@ shows conformance by running them with its own operations in place of the refere
   reader takes `footer_size` as the hint FTR-1 now says it is, but its writers write a `footer_size` of `0` (STA-1) and
   add footers after a commit (FTR-1). **Migrating from 0.2** sets `writer_version` to `3`; it changes no row. A writer
   of 0.3 migrates a catalog of an earlier revision through each one before it.
+- *0.4.* Revision 0.4 is `format_version` 0, `writer_version` 3: it changes what the Iceberg REST service answers
+  (§16.3), and neither the catalog nor what its readers and writers do, so it migrates nothing.
 
 ## 19. Not in v0
 
