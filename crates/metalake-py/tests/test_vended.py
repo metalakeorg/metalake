@@ -1,4 +1,5 @@
-"""Credentials vended for a table's files on S3 (REST-11): an engine with no key of its own reads and writes a lake on an
+"""Credentials vended for a table's files on S3 (REST-11): an engine with no key of its own (PyIceberg, Spark, Trino, each
+connected by the lake's profile) reads and writes a lake on an
 object store with the credential its server mints, which expires and opens that table's files alone. Needs a store with
 a token service, as MinIO is, named by METALAKE_TEST_S3_ENDPOINT and METALAKE_TEST_S3_BUCKET, the server's own
 credential in AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, and AWS_ENDPOINT, AWS_ALLOW_HTTP, AWS_REGION for it."""
@@ -78,3 +79,81 @@ def test_vended_refused_without_token(lake):
     catalog = catalog_module.load_catalog("bare", type="rest", uri=lake.iceberg.uri)
     with pytest.raises(Exception, match="token"):
         catalog.load_table("default.t")
+
+
+def without_keys():
+    """This process's environment with no AWS key: an engine started in it has only what it is vended."""
+    return {k: v for k, v in os.environ.items() if k not in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")}
+
+
+def test_spark_merges_vended(directory, lake):
+    pytest.importorskip("pyspark")
+    import subprocess
+    import sys
+    import textwrap
+
+    lake.iceberg.uri  # the lake's server, started here with the store's keys
+    before = lake.log(limit=1)[0].seq
+    script = textwrap.dedent(
+        f"""
+        import metalake
+        lake = metalake.connect({str(directory / "lake")!r})
+        spark = lake.iceberg.spark()
+        try:
+            print("rows", spark.sql("select count(*) from lake.default.t").first()[0])
+            spark.sql("merge into lake.default.t d using (select 50 as k) s on d.k = s.k when not matched then insert *")
+            print("merged")
+        finally:
+            spark.stop()
+        """
+    )
+    said = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=600, env=without_keys()
+    )
+    assert "merged" in said.stdout, said.stderr[-3000:]
+    assert lake.log(limit=1)[0].seq > before, "a commit of the lake"
+
+
+def test_trino_inserts_vended(tmp_path, lake):
+    trino = pytest.importorskip("trino")
+    import shutil
+    import subprocess
+    import time
+
+    if not shutil.which("docker"):
+        pytest.skip("no docker")
+    catalog = tmp_path / "catalog"
+    catalog.mkdir()
+    (catalog / "lake.properties").write_text(str(lake.iceberg.profile("trino")))
+    catalog.chmod(0o755)
+    # No key of its own: the catalog file alone, as `metalake iceberg connect trino` prints it.
+    subprocess.run(
+        ["docker", "run", "-d", "--rm", "--name", "metalake-trino", "--network", "host", "-v",
+         f"{catalog}:/etc/trino/catalog", "trinodb/trino:484"],
+        check=True, stdout=subprocess.DEVNULL,
+    )
+    try:
+        connection = trino.dbapi.connect(host="127.0.0.1", port=8080, user="metalake", catalog="lake", schema="default")
+
+        def run(query):
+            cursor = connection.cursor()
+            cursor.execute(query)
+            return cursor.fetchall()
+
+        since = time.monotonic()
+        while True:
+            try:
+                rows = run("select count(*) from t")[0][0]
+                break
+            except Exception:
+                if time.monotonic() - since > 180:
+                    raise
+                time.sleep(2)
+        assert rows >= 3
+        before = lake.log(limit=1)[0].seq
+        run("insert into t values (60)")
+        assert lake.log(limit=1)[0].seq > before, "a commit of the lake"
+        assert sum(batch.num_rows for batch in lake.sql("select k from t where k = 60")) == 1
+    finally:
+        subprocess.run(["docker", "logs", "--tail", "40", "metalake-trino"], check=False)
+        subprocess.run(["docker", "rm", "-f", "metalake-trino"], stdout=subprocess.DEVNULL, check=False)

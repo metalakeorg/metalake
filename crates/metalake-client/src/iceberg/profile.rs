@@ -111,6 +111,10 @@ pub struct Target {
     pub warehouse: String,
     /// What the engine bears to be a writer to the lake's server (REST-11): the lake's token, for its own server.
     pub token: Option<String>,
+    /// On S3, the region and, for a store of its own, the endpoint the lake's store reaches it by, as its environment
+    /// says: what an engine that reads the store itself, as Trino, is told besides its credentials.
+    pub region: Option<String>,
+    pub endpoint: Option<String>,
 }
 
 /// A library of Iceberg's an engine loads, by its Maven coordinates.
@@ -292,11 +296,19 @@ impl Iceberg<'_> {
         let warehouse = self.lake.warehouse()?;
         let store = Store::of(&warehouse)?;
         let server = self.ensure().await?;
+        let var = |names: &[&str]| {
+            names
+                .iter()
+                .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()))
+        };
+        let s3 = store == Store::S3;
         Ok(Target {
             uri: server.url,
             store,
             warehouse,
             token: Some(server.token),
+            region: s3.then(|| var(&["AWS_REGION", "AWS_DEFAULT_REGION"]).unwrap_or_else(|| "us-east-1".into())),
+            endpoint: s3.then(|| var(&["AWS_ENDPOINT", "AWS_ENDPOINT_URL"])).flatten(),
         })
     }
 

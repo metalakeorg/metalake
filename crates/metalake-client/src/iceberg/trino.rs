@@ -22,6 +22,16 @@ pub(super) fn profile(name: &str, target: &Target) -> Profile {
         store => {
             set("iceberg.rest-catalog.vended-credentials-enabled", "true");
             set(native(store), "true");
+            // Trino's own S3 file system is told where the store is; the credentials it is vended say who reads it.
+            if store == Store::S3 {
+                if let Some(region) = &target.region {
+                    set("s3.region", region);
+                }
+                if let Some(endpoint) = &target.endpoint {
+                    set("s3.endpoint", endpoint);
+                    set("s3.path-style-access", "true");
+                }
+            }
         }
     }
     profile
@@ -64,6 +74,8 @@ mod tests {
             store,
             warehouse: warehouse.into(),
             token: None,
+            region: None,
+            endpoint: None,
         }
     }
 
@@ -95,6 +107,17 @@ mod tests {
         assert_eq!(profile.properties["fs.native-s3.enabled"], "true");
         assert!(!profile.properties.contains_key("fs.hadoop.enabled"));
         assert!(!profile.render().contains("their own path"));
+    }
+
+    #[test]
+    fn trino_profile_s3_endpoint() {
+        let mut target = target(Store::S3, "s3://bucket/lake");
+        target.region = Some("eu-west-1".into());
+        target.endpoint = Some("http://127.0.0.1:9000".into());
+        let profile = profile(Engine::Trino, "lake", &target).unwrap();
+        assert_eq!(profile.properties["s3.region"], "eu-west-1");
+        assert_eq!(profile.properties["s3.endpoint"], "http://127.0.0.1:9000");
+        assert_eq!(profile.properties["s3.path-style-access"], "true");
     }
 
     #[test]

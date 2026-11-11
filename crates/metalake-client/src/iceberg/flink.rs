@@ -91,6 +91,8 @@ mod tests {
             store,
             warehouse: warehouse.into(),
             token: None,
+            region: None,
+            endpoint: None,
         }
     }
 

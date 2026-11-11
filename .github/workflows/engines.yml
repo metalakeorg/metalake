@@ -68,12 +68,39 @@ jobs:
       - name: The engines
         run: CRATE=metalake-iceberg bash sql/test.sh --test c12_engines
 
+  # The extension, built once, in its debug profile, with Rust's cache: the Python jobs below install its wheel rather
+  # than each building it again in release, which took them twelve minutes of their thirteen.
+  extension:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: python-extension
+          cache-on-failure: true
+      - name: Prepare Postgres
+        run: python packaging/postgres.py x86_64-unknown-linux-gnu
+      - name: The wheel
+        run: |
+          python -m pip install --quiet maturin
+          maturin build --profile dev --out dist -m crates/metalake-py/Cargo.toml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension
+          path: dist/*.whl
+
   # The Python faces that hand back a JVM engine connected to the lake, each in an environment of its own: PySpark and
-  # PyFlink pin libraries apart. The wheels have no Java; this builds the extension where there is one.
+  # PyFlink pin libraries apart.
   python-engines:
     name: python ${{ matrix.engine }}
+    needs: extension
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -87,25 +114,24 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
         with:
-          cache-on-failure: true
-      - name: Prepare Postgres
-        run: python packaging/postgres.py x86_64-unknown-linux-gnu
+          name: extension
+          path: dist
       - name: The extension, and the engine
-        run: python -m pip install --quiet pytest "./crates/metalake-py[${{ matrix.engine }}]"
+        run: python -m pip install --quiet pytest "$(ls dist/*.whl)[${{ matrix.engine }}]"
       - name: The engine connected from Python
         run: |
           cd "$RUNNER_TEMP"
           python -m pytest "$GITHUB_WORKSPACE/crates/metalake-py/tests/test_engines.py" -k ${{ matrix.engine }} -q --tb=short -p no:cacheprovider -rs
 
   # Credentials vended for a table's files on S3 (REST-11), on MinIO, whose token service answers AssumeRole with a
-  # session policy: PyIceberg, with no key of its own, reads and writes with what the lake's server mints. MinIO's own
-  # images are no longer published; Chainguard's is built from its source.
+  # session policy: PyIceberg, Spark and Trino, connected by the lake's profiles with no key of their own, read and write
+  # with what the lake's server mints. MinIO's own images are no longer published; Chainguard's is built from its source.
   vended-s3:
+    needs: extension
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     env:
       AWS_ACCESS_KEY_ID: metalake
       AWS_SECRET_ACCESS_KEY: metalake-secret
@@ -119,24 +145,28 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-java@v4
         with:
-          cache-on-failure: true
-      - name: MinIO, a bucket and a user that is not root
+          distribution: temurin
+          java-version: "17"
+      - name: MinIO, a bucket and a user that is not root, and Trino's image
         run: |
+          docker pull --quiet trinodb/trino:484 &
           docker network create s3
-          docker run -d --name minio --network s3 -u 0 -p 9000:9000             -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin cgr.dev/chainguard/minio:latest server /data
+          docker run -d --name minio --network s3 -u 0 -p 9000:9000 -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin cgr.dev/chainguard/minio:latest server /data
           until curl -fs http://127.0.0.1:9000/minio/health/live; do sleep 1; done
           mc() { docker run --rm -u 0 --network s3 -v mc:/tmp/mc -e MC_CONFIG_DIR=/tmp/mc cgr.dev/chainguard/minio-client:latest "$@"; }
           mc alias set m http://minio:9000 minioadmin minioadmin
           mc mb m/metalake
           mc admin user add m metalake metalake-secret
           mc admin policy attach m readwrite --user metalake
-      - name: Prepare Postgres
-        run: python packaging/postgres.py x86_64-unknown-linux-gnu
-      - name: The extension, and PyIceberg
-        run: python -m pip install --quiet pytest "./crates/metalake-py[pyiceberg]"
+          wait
+      - uses: actions/download-artifact@v4
+        with:
+          name: extension
+          path: dist
+      - name: The extension, PyIceberg, PySpark and Trino's client
+        run: python -m pip install --quiet pytest trino==0.340.0 "$(ls dist/*.whl)[pyiceberg,spark]"
       - name: Credentials vended on S3
         run: |
           cd "$RUNNER_TEMP"
