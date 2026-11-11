@@ -111,11 +111,14 @@ async fn resolve(on: &Ref, target: &Target) -> Result<(Uuid, Option<Table>), App
 }
 
 /// Holds what a change asserts of the table's definition to the table on the ref, as a load would serve it (REST-12).
-async fn check_asserted(state: &State, on: &Ref, change: &Change, table: &Table) -> Result<(), ApplyError> {
+/// The definition is `main`'s, as a load serves it whatever the ref a client writes to (ICE-1). Answers the snapshot of
+/// `main` it was held at, which a commit to `main` then expects, so that a definition changed in between conflicts under
+/// the commit's lock rather than slipping past the check.
+async fn check_asserted(state: &State, change: &Change, table: &Table) -> Result<Option<i64>, ApplyError> {
     if change.asserted.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
-    let definition = on.definition(table, None).await?;
+    let definition = state.main().definition(table, None).await?;
     let head = definition["snapshot_id"].as_i64();
     let heads: Vec<i64> = head.into_iter().collect();
     let found = state.catalog().ancestors(table, &heads, 1, None).await?;
@@ -125,7 +128,7 @@ async fn check_asserted(state: &State, on: &Ref, change: &Change, table: &Table)
     for asserted in &change.asserted {
         asserted.check(&ids)?;
     }
-    Ok(())
+    Ok(head)
 }
 
 /// What a client that saw a table with no snapshot expects: the snapshot its creation wrote, which it is not served
@@ -146,9 +149,10 @@ async fn prepare(
     table: Option<Table>,
 ) -> Result<Prepared, ApplyError> {
     let change = &target.change;
-    if let Some(table) = &table {
-        check_asserted(state, on, change, table).await?;
-    }
+    let held = match &table {
+        Some(table) => check_asserted(state, change, table).await?,
+        None => None,
+    };
     let definition = match &change.creation {
         Some(creation) => Some(create::definition(
             &target.levels(),
@@ -184,6 +188,8 @@ async fn prepare(
     let expected = match (&table, change.expected) {
         (None, _) => None,
         (Some(table), Some(None)) => Some(base_of_unwritten(state, table).await?),
+        // What the requirements were held at, when the client expects nothing of the ref (REST-12).
+        (Some(_), None) if on.name() == state.main().name() => held.map(Some),
         (Some(_), expected) => expected,
     };
     Ok(Prepared {
