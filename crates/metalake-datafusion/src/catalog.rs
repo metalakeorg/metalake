@@ -63,6 +63,16 @@ impl MetaLake {
         Ok(lake)
     }
 
+    /// The codec of a logical plan that holds this lake's tables, for a plan that crosses processes: each table travels
+    /// as a value and is rebuilt with this lake's catalog and storage. `inner` encodes everything else.
+    #[cfg(feature = "proto")]
+    pub fn logical_codec(
+        &self,
+        inner: Arc<dyn datafusion_proto::logical_plan::LogicalExtensionCodec>,
+    ) -> crate::codec::MetaLakeLogicalCodec {
+        crate::codec::MetaLakeLogicalCodec::new(self.shared.catalog.clone(), self.shared.storage.clone(), inner)
+    }
+
     /// Lets statements read `provider` as long as what this answers lives, by the name it gives.
     pub fn source(&self, provider: Arc<dyn TableProvider>) -> Source {
         let name = NEXT_SOURCE.fetch_add(1, Ordering::Relaxed);
