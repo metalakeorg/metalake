@@ -1,14 +1,10 @@
-//! Flink's profile. Hadoop's client, whose classes Iceberg's runtime needs, goes on the classpath Flink starts with
-//! (`HADOOP_CLASSPATH`): Flink loads `org.apache.hadoop` from there alone, whatever jars it is given later. Iceberg's
-//! runtime, and on an object store the cloud's bundle, are added with `ADD JAR`, which puts them where Flink resolves
-//! a catalog's classes, in an environment that runs already; `pipeline.jars` names them for an environment's
-//! configuration as it starts. Then the lake as a REST catalog, with the header that asks the server for credentials
-//! on an object store. The jars are where [`super::jars`] fetches them: [`super::Iceberg::profile`] fetches them, the
-//! pure profile only names them.
-
-use std::path::PathBuf;
-
-use url::Url;
+//! Flink's profile. Every jar the lake's catalog needs goes on the classpath Flink starts with: Iceberg's Flink runtime,
+//! on an object store the cloud's bundle, and Hadoop's client, whose classes the runtime needs. Flink loads
+//! `org.apache.hadoop` from there alone, and Iceberg makes its REST catalog by name with the JVM's own class loader, so
+//! no jar given to an environment that runs already, by `pipeline.jars` or `ADD JAR`, serves. PyFlink's gateway and
+//! Flink's scripts add `HADOOP_CLASSPATH` to the classpath they start with, which is how the jars get there. Then the
+//! lake as a REST catalog, with the header that asks the server for credentials on an object store. The jars are where
+//! [`super::jars`] fetches them: [`super::Iceberg::profile`] fetches them, the pure profile only names them.
 
 use super::jars;
 use super::profile::{Artifact, DELEGATION, Engine, FLINK, Profile, Target};
@@ -16,41 +12,29 @@ use crate::{Error, Result};
 
 /// The property Flink's `CREATE CATALOG` names first, the kind of catalog.
 const TYPE: &str = "type";
-/// What Flink starts with on its classpath, read as its JVM starts: PyFlink's gateway, the SQL client, a cluster.
+/// What Flink adds to the classpath it starts with, read as its JVM starts: PyFlink's gateway, the SQL client, a
+/// cluster's scripts.
 pub const HADOOP_CLASSPATH: &str = "HADOOP_CLASSPATH";
 
 pub(super) fn profile(name: &str, target: &Target) -> Result<Profile> {
     let mut profile = Profile::new(Engine::Flink, name, target);
-    let hadoop = [
-        Artifact::hadoop("hadoop-client-api"),
-        Artifact::hadoop("hadoop-client-runtime"),
-    ];
-    let added: Vec<Artifact> = std::iter::once(Artifact::iceberg(format!("iceberg-flink-runtime-{FLINK}")))
+    profile.artifacts = std::iter::once(Artifact::iceberg(format!("iceberg-flink-runtime-{FLINK}")))
         .chain(target.store.bundle())
+        .chain([
+            Artifact::hadoop("hadoop-client-api"),
+            Artifact::hadoop("hadoop-client-runtime"),
+        ])
         .collect();
 
     let directory = jars::directory()?;
-    let paths = |artifacts: &[Artifact]| -> Vec<PathBuf> {
-        artifacts
-            .iter()
-            .map(|artifact| jars::path(&directory, artifact))
-            .collect()
-    };
-    let classpath = std::env::join_paths(paths(&hadoop))
-        .map_err(|e| Error::failed(format!("Hadoop's jars as a classpath: {e}")))?;
+    let paths = profile
+        .artifacts
+        .iter()
+        .map(|artifact| jars::path(&directory, artifact));
+    let classpath = std::env::join_paths(paths).map_err(|e| Error::failed(format!("the jars as a classpath: {e}")))?;
     profile
         .startup
         .insert(HADOOP_CLASSPATH.into(), classpath.to_string_lossy().into_owned());
-    let files = paths(&added)
-        .iter()
-        .map(|path| {
-            Url::from_file_path(path)
-                .map(String::from)
-                .map_err(|()| Error::failed(format!("{} is not a file's path", path.display())))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    profile.startup.insert("pipeline.jars".into(), files.join(";"));
-    profile.artifacts = added.into_iter().chain(hadoop).collect();
 
     profile.properties.insert(TYPE.into(), "iceberg".into());
     profile.properties.insert("catalog-type".into(), "rest".into());
@@ -61,15 +45,8 @@ pub(super) fn profile(name: &str, target: &Target) -> Result<Profile> {
     Ok(profile)
 }
 
-/// Each of Iceberg's jars added, then the catalog made under the profile's name, `type` first as Flink's documents
-/// write it.
+/// The catalog made under the profile's name, `type` first as Flink's documents write it.
 pub(super) fn statements(profile: &Profile) -> Vec<String> {
-    let jars = profile.startup.get("pipeline.jars").map(String::as_str).unwrap_or("");
-    let mut statements: Vec<String> = jars
-        .split(';')
-        .filter(|jar| !jar.is_empty())
-        .map(|jar| format!("ADD JAR {}", literal(jar)))
-        .collect();
     let properties = profile
         .properties
         .get_key_value(TYPE)
@@ -78,16 +55,15 @@ pub(super) fn statements(profile: &Profile) -> Vec<String> {
         .map(|(key, value)| format!("{} = {}", literal(key), literal(value)))
         .collect::<Vec<_>>()
         .join(", ");
-    statements.push(format!("CREATE CATALOG {} WITH ({properties})", profile.name));
-    statements
+    vec![format!("CREATE CATALOG {} WITH ({properties})", profile.name)]
 }
 
-/// As Flink's SQL client takes it: what it must start with, said first, then each statement ended.
+/// As Flink's SQL client takes it: what it must start with, said first, then the statement ended.
 pub(super) fn render(profile: &Profile) -> String {
     let mut sql = String::new();
     if let Some(classpath) = profile.startup.get(HADOOP_CLASSPATH) {
         sql.push_str(&format!(
-            "-- Flink starts with Hadoop's client: {HADOOP_CLASSPATH}={classpath}\n"
+            "-- Flink starts with the lake's jars: {HADOOP_CLASSPATH}={classpath}\n"
         ));
     }
     for statement in statements(profile) {
@@ -114,54 +90,48 @@ mod tests {
         }
     }
 
+    fn classpath(profile: &Profile) -> Vec<std::path::PathBuf> {
+        std::env::split_paths(&profile.startup[HADOOP_CLASSPATH]).collect()
+    }
+
     #[test]
     fn flink_profile_local() {
         let profile = profile(Engine::Flink, "lake", &target(Store::Local, "file:///tmp/lake/")).unwrap();
-        let jars = &profile.startup["pipeline.jars"];
+        let classpath = classpath(&profile);
+        assert_eq!(classpath.len(), 3, "{classpath:?}");
         assert!(
-            jars.starts_with("file://") && !jars.contains(';'),
-            "Iceberg's runtime alone: {jars}"
-        );
-        assert!(
-            jars.ends_with("/.metalake/jars/iceberg-flink-runtime-1.20-1.11.0.jar"),
-            "{jars}"
-        );
-
-        let classpath: Vec<_> = std::env::split_paths(&profile.startup[HADOOP_CLASSPATH]).collect();
-        assert_eq!(classpath.len(), 2, "{classpath:?}");
-        assert!(classpath[0].ends_with("hadoop-client-api-3.4.1.jar"), "{classpath:?}");
-        assert!(
-            classpath[1].ends_with("hadoop-client-runtime-3.4.1.jar"),
+            classpath[0].ends_with(".metalake/jars/iceberg-flink-runtime-1.20-1.11.0.jar"),
             "{classpath:?}"
         );
-        assert_eq!(profile.artifacts.len(), 3, "the runtime and Hadoop's two, to fetch");
+        assert!(classpath[1].ends_with("hadoop-client-api-3.4.1.jar"), "{classpath:?}");
+        assert!(
+            classpath[2].ends_with("hadoop-client-runtime-3.4.1.jar"),
+            "{classpath:?}"
+        );
+        assert_eq!(profile.startup.len(), 1, "the classpath alone: {:?}", profile.startup);
+        assert_eq!(profile.artifacts.len(), 3, "each fetched");
 
         assert_eq!(
             profile.statements(),
-            [
-                format!("ADD JAR '{jars}'"),
-                "CREATE CATALOG lake WITH ('type' = 'iceberg', 'catalog-type' = 'rest', 'uri' = 'http://127.0.0.1:8181')"
-                    .to_string(),
-            ]
+            ["CREATE CATALOG lake WITH ('type' = 'iceberg', 'catalog-type' = 'rest', 'uri' = 'http://127.0.0.1:8181')"]
         );
         let rendered = profile.render();
         assert!(
-            rendered.starts_with("-- Flink starts with Hadoop's client: HADOOP_CLASSPATH="),
+            rendered.starts_with("-- Flink starts with the lake's jars: HADOOP_CLASSPATH="),
             "{rendered}"
         );
-        assert!(rendered.contains(&format!("\nADD JAR '{jars}';\n")), "{rendered}");
         assert!(rendered.ends_with("'uri' = 'http://127.0.0.1:8181');\n"), "{rendered}");
     }
 
     #[test]
     fn flink_profile_object_store() {
         let profile = profile(Engine::Flink, "lake", &target(Store::S3, "s3://bucket/lake")).unwrap();
-        let jars: Vec<_> = profile.startup["pipeline.jars"].split(';').collect();
-        assert_eq!(jars.len(), 2);
-        assert!(jars[1].ends_with("/iceberg-aws-bundle-1.11.0.jar"), "{jars:?}");
+        let classpath = classpath(&profile);
+        assert_eq!(classpath.len(), 4);
+        assert!(classpath[1].ends_with("iceberg-aws-bundle-1.11.0.jar"), "{classpath:?}");
         let statements = profile.statements();
         assert!(
-            statements[2].contains("'header.X-Iceberg-Access-Delegation' = 'vended-credentials'"),
+            statements[0].contains("'header.X-Iceberg-Access-Delegation' = 'vended-credentials'"),
             "{statements:?}"
         );
     }
@@ -169,6 +139,6 @@ mod tests {
     #[test]
     fn flink_profile_name() {
         let profile = profile(Engine::Flink, "prod", &target(Store::Local, "file:///tmp/lake/")).unwrap();
-        assert!(profile.statements()[1].starts_with("CREATE CATALOG prod WITH"));
+        assert!(profile.statements()[0].starts_with("CREATE CATALOG prod WITH"));
     }
 }
