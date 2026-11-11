@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use url::Url;
 
-use super::Iceberg;
+use super::{Iceberg, pyiceberg};
 use crate::{Error, Result};
 
 /// The version of Iceberg's Java libraries a profile names: the one CI and the REST Compatibility Kit hold the service
@@ -20,7 +20,8 @@ pub const SCALA: &str = "2.12";
 /// The Flink whose Iceberg runtime a Flink profile names.
 pub const FLINK: &str = "1.20";
 
-/// The engines with a profile. Polars and Daft take PyIceberg's catalog as it is, and need none.
+/// The engines with a profile, named as text by `FromStr` and `Display`. Polars and Daft take PyIceberg's catalog as
+/// it is, and need none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Engine {
     PyIceberg,
@@ -151,21 +152,41 @@ pub struct Profile {
 }
 
 impl Profile {
+    /// An engine's, with nothing in it yet.
+    pub(super) fn new(engine: Engine, name: &str) -> Profile {
+        Profile {
+            engine,
+            name: name.to_string(),
+            properties: BTreeMap::new(),
+            startup: BTreeMap::new(),
+            artifacts: Vec::new(),
+        }
+    }
+
     /// The profile in the engine's own form: what the command line prints.
     pub fn render(&self) -> String {
-        unreachable!("no profile of {} is built", self.engine)
+        match self.engine {
+            Engine::PyIceberg => pyiceberg::render(self),
+            engine => unreachable!("no profile of {engine} is built"),
+        }
     }
 
     /// For an engine connected by statements, DuckDB and Flink: those statements, in order.
     pub fn statements(&self) -> Vec<String> {
-        unreachable!("no profile of {} is built", self.engine)
+        match self.engine {
+            Engine::PyIceberg => Vec::new(),
+            engine => unreachable!("no profile of {engine} is built"),
+        }
     }
 }
 
 /// The profile of `engine` for a lake at `target`, its catalog named `name`.
-pub fn profile(engine: Engine, name: &str, _target: &Target) -> Result<Profile> {
-    catalog_name(name)?;
-    Err(Error::usage(format!("the profile of {engine} is not built yet")))
+pub fn profile(engine: Engine, name: &str, target: &Target) -> Result<Profile> {
+    let name = catalog_name(name)?;
+    match engine {
+        Engine::PyIceberg => Ok(pyiceberg::profile(name, target)),
+        engine => Err(Error::usage(format!("the profile of {engine} is not built yet"))),
+    }
 }
 
 /// A catalog's name as an engine takes it: an identifier, since it goes into statements and file names.
