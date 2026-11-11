@@ -2,7 +2,9 @@
 
 **Status:** final, tagged `spec-v0` on 2026-11-02. Later changes follow §18. Revision 0.1 (namespaces as
 objects, `writer_version`) is in progress: its rules are marked *0.1*. Revision 0.2 (retention in two phases, time
-and changes complete) follows it: its rules are marked *0.2*.
+and changes complete) follows it: its rules are marked *0.2*. Revision 0.3 (footers as hints, the Iceberg REST
+service) follows it: its rules are marked *0.3*. Revision 0.4 (the Iceberg REST service vends credentials, and holds
+a commit's requirements) follows it: its rules are marked *0.4*.
 
 ## 1. Conventions
 
@@ -818,8 +820,8 @@ Iceberg REST server of the projection, and are checked by its tests.
 *0.3.*
 
 - **REST-1.** `/v1/config` lists in `endpoints` what the service serves, and nothing else: namespaces, tables,
-  `renameTable` and `transactions/commit`. Scan planning, credentials, signing, metrics, views, `register` and
-  `unregister` are not in v0.
+  `renameTable`, `transactions/commit` and, *0.4*, `loadCredentials` (REST-11). Scan planning, signing, metrics, views,
+  `register` and `unregister` are not in v0.
 - **REST-2.** 409 means nothing was applied. An outcome that is not known is a 5xx, which a client takes as
   `CommitStateUnknownException`. A commit the protocol refuses as invalid is 400, a role without the right 403.
 - **REST-3.** `updateTable` requires `assert-table-uuid`, when sent, to match, and commits with `app_id`
@@ -856,6 +858,33 @@ Iceberg REST server of the projection, and are checked by its tests.
   `on-load`. It is a table property (TBL-2), served as any other.
 - **REST-10.** A request carries `Authorization: Bearer`. A token names the protocol's `reader` or `writer` role
   (§2), and the catalog's rights decide. The service keeps tokens as hashes.
+- **REST-11.** *0.4.* A table's load and `createTable` answer `storage-credentials` when the request asks for them
+  with `X-Iceberg-Access-Delegation: vended-credentials` and the table's files lie on an object store, by its location
+  (`tbl.location`), whatever the warehouse: one for each prefix its files lie under, the table's location first. Each
+  is narrowed to its prefix, and to reading for a `reader` or to reading and writing for a `writer`: a Credential
+  Access Boundary on GCS, a SAS on the directory on Azure, a session policy of `AssumeRole` on S3. Each expires, minted
+  from the service's own credential through the store's token service (Google STS; a SAS signed by the account key or
+  a user delegation key; AWS STS `AssumeRole`), never a long-lived key. A service that cannot narrow them on S3, with no
+  role to assume, mints them with `GetSessionToken`, unnarrowed, for a `writer` alone. Each is written in every
+  spelling clients read: `s3.access-key-id`, `s3.secret-access-key`, `s3.session-token` and
+  `s3.session-token-expires-at-ms`, with the region and endpoint the service reaches the store by; `gcs.oauth2.token`
+  and `gcs.oauth2.token-expires-at`; `adls.sas-token.<account host>` and `adls.sas-token-expires-at-ms.<account
+  host>`; and the endpoint that refreshes them (`client.refresh-credentials-endpoint`,
+  `gcs.oauth2.refresh-credentials-endpoint`, `adls.refresh-credentials-endpoint`), which is `loadCredentials`'s.
+  `loadCredentials` answers fresh ones for a table, as a client asks when its own expire. They go only to a request
+  that REST-10 authenticates; any other that asks for them is refused with 403, as a client that is not given
+  credentials would fail later, reading files, with no reason it can tell. A service run for one user, as a lake's own
+  server on that user's machine is, holds a token of its own as a `writer`'s, kept where that user alone reads it, and
+  it is what that user's engines bear: no address, the loopback's included, stands for a token. A table whose files
+  are local vends none: a load answers no `storage-credentials`, and its clients read its files as they are.
+- **REST-12.** *0.4.* `updateTable` and `transactions/commit` hold `assert-current-schema-id`,
+  `assert-last-assigned-field-id`, `assert-last-assigned-partition-id`, `assert-default-spec-id` and
+  `assert-default-sort-order-id` to the table's definition as a load serves it, `main`'s (ICE-1), whatever the ref the
+  commit is to: one that does not match is a 409, and nothing is applied (REST-2). A commit to `main` that asserts no
+  snapshot of it is held to the one the definition was read at, so that a definition changed in between is a 409 too.
+  A client sends them to say that what it writes was planned against that definition, as DuckDB does with every
+  insert. They are checks: the updates that would change what they assert stay refused (§19), as `assert-table-uuid`
+  and `assert-ref-snapshot-id` stay as REST-3 and ICE-6 hold them.
 
 ## 17. Conformance
 
@@ -894,6 +923,8 @@ shows conformance by running them with its own operations in place of the refere
   reader takes `footer_size` as the hint FTR-1 now says it is, but its writers write a `footer_size` of `0` (STA-1) and
   add footers after a commit (FTR-1). **Migrating from 0.2** sets `writer_version` to `3`; it changes no row. A writer
   of 0.3 migrates a catalog of an earlier revision through each one before it.
+- *0.4.* Revision 0.4 is `format_version` 0, `writer_version` 3: it changes what the Iceberg REST service answers
+  (§16.3), and neither the catalog nor what its readers and writers do, so it migrates nothing.
 
 ## 19. Not in v0
 
@@ -905,7 +936,8 @@ shows conformance by running them with its own operations in place of the refere
   MetaLake commits only, and a table is not replaced.
 - **Position deletes from Iceberg writers,** so that Trino's row-level `DELETE`, `UPDATE` and `MERGE` are refused,
   while its `INSERT` and deletes of whole partitions are not. Turning them into vectors is the first thing after v0.
-- **Storage credentials** from the service: clients bring their own.
+- **Credentials narrowed to a query**: *0.4*, credentials are narrowed to a table's prefix and to reading or writing
+  (REST-11), not to the files one scan reads, which needs server-side scan planning.
 - **Merges** into a ref other than the parent, and merges that check rows or predicates rather than files and
   keys (§12).
 - **`variant` bounds** (STA-9).
