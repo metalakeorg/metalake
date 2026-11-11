@@ -8,7 +8,7 @@ use super::profile::{Engine, Profile, Target};
 const TYPE: &str = "TYPE";
 
 pub(super) fn profile(name: &str, target: &Target) -> Profile {
-    let mut profile = Profile::new(Engine::DuckDb, name);
+    let mut profile = Profile::new(Engine::DuckDb, name, target);
     profile.properties.insert(TYPE.into(), "iceberg".into());
     profile.properties.insert("ENDPOINT".into(), target.uri.clone());
     profile.properties.insert("AUTHORIZATION_TYPE".into(), "none".into());
@@ -87,7 +87,11 @@ mod tests {
     fn duckdb_profile_object_store() {
         let local = profile(Engine::DuckDb, "lake", &target(Store::Local, "file:///tmp/lake/")).unwrap();
         let s3 = profile(Engine::DuckDb, "lake", &target(Store::S3, "s3://bucket/lake")).unwrap();
-        assert_eq!(s3, local, "it asks for credentials by default");
+        assert_eq!(
+            (s3.properties, s3.startup, s3.artifacts),
+            (local.properties, local.startup, local.artifacts),
+            "it asks for credentials by default"
+        );
     }
 
     #[test]

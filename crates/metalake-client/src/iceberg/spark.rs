@@ -9,7 +9,7 @@ const EXTENSIONS: &str = "org.apache.iceberg.spark.extensions.IcebergSparkSessio
 const CATALOG: &str = "org.apache.iceberg.spark.SparkCatalog";
 
 pub(super) fn profile(name: &str, target: &Target) -> Profile {
-    let mut profile = Profile::new(Engine::Spark, name);
+    let mut profile = Profile::new(Engine::Spark, name, target);
     profile
         .artifacts
         .push(Artifact::iceberg(format!("iceberg-spark-runtime-{SPARK}_{SCALA}")));

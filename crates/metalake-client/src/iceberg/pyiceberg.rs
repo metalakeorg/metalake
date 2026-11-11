@@ -4,7 +4,7 @@
 use super::profile::{Engine, Profile, Target};
 
 pub(super) fn profile(name: &str, target: &Target) -> Profile {
-    let mut profile = Profile::new(Engine::PyIceberg, name);
+    let mut profile = Profile::new(Engine::PyIceberg, name, target);
     profile.properties.insert("type".into(), "rest".into());
     profile.properties.insert("uri".into(), target.uri.clone());
     profile
@@ -54,7 +54,11 @@ mod tests {
     fn pyiceberg_profile_object_store() {
         let local = profile(Engine::PyIceberg, "lake", &target(Store::Local, "file:///tmp/lake/")).unwrap();
         let s3 = profile(Engine::PyIceberg, "lake", &target(Store::S3, "s3://bucket/lake")).unwrap();
-        assert_eq!(s3, local, "it asks for credentials by default");
+        assert_eq!(
+            (s3.properties, s3.startup, s3.artifacts),
+            (local.properties, local.startup, local.artifacts),
+            "it asks for credentials by default"
+        );
     }
 
     #[test]
