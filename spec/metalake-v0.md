@@ -860,18 +860,23 @@ Iceberg REST server of the projection, and are checked by its tests.
   (§2), and the catalog's rights decide. The service keeps tokens as hashes.
 - **REST-11.** *0.4.* A table's load and `createTable` answer `storage-credentials` when the request asks for them
   with `X-Iceberg-Access-Delegation: vended-credentials` and the table's files lie on an object store, by its location
-  (`tbl.location`), whatever the warehouse: one for each prefix its files lie under. Each is a credential that expires,
-  minted from the service's own (an AWS session token from `GetSessionToken`, a GCS OAuth2 access token, an Azure SAS),
-  or the service's own when that expires already; never a long-lived key. Each is written in every spelling clients
-  read: `s3.access-key-id`, `s3.secret-access-key`, `s3.session-token` and `s3.session-token-expires-at-ms`, with the
-  region and endpoint the service reaches the store by; `gcs.oauth2.token` and `gcs.oauth2.token-expires-at`;
-  `adls.sas-token.<account host>` and `adls.sas-token-expires-at-ms.<account host>`. `loadCredentials` answers fresh
-  ones for a table, as a client asks when its own expire. They go only to a request that REST-10 authenticates as a
-  `writer`, as they are not narrowed to reading (§19); any other that asks for them is refused with 403, as a client
-  that is not given credentials would fail later, reading files, with no reason it can tell. A service run for one user,
-  as a lake's own server on that user's machine is, holds a token of its own as a `writer`'s, kept where that user alone
-  reads it, and it is what that user's engines bear: no address, the loopback's included, stands for a token. A table
-  whose files are local vends none: a load answers no `storage-credentials`, and its clients read its files as they are.
+  (`tbl.location`), whatever the warehouse: one for each prefix its files lie under, the table's location first. Each
+  is narrowed to its prefix, and to reading for a `reader` or to reading and writing for a `writer`: a Credential
+  Access Boundary on GCS, a SAS on the directory on Azure, a session policy of `AssumeRole` on S3. Each expires, minted
+  from the service's own credential through the store's token service (Google STS; a SAS signed by the account key or
+  a user delegation key; AWS STS `AssumeRole`), never a long-lived key. A service that cannot narrow them on S3, with no
+  role to assume, mints them with `GetSessionToken`, unnarrowed, for a `writer` alone. Each is written in every
+  spelling clients read: `s3.access-key-id`, `s3.secret-access-key`, `s3.session-token` and
+  `s3.session-token-expires-at-ms`, with the region and endpoint the service reaches the store by; `gcs.oauth2.token`
+  and `gcs.oauth2.token-expires-at`; `adls.sas-token.<account host>` and `adls.sas-token-expires-at-ms.<account
+  host>`; and the endpoint that refreshes them (`client.refresh-credentials-endpoint`,
+  `gcs.oauth2.refresh-credentials-endpoint`, `adls.refresh-credentials-endpoint`), which is `loadCredentials`'s.
+  `loadCredentials` answers fresh ones for a table, as a client asks when its own expire. They go only to a request
+  that REST-10 authenticates; any other that asks for them is refused with 403, as a client that is not given
+  credentials would fail later, reading files, with no reason it can tell. A service run for one user, as a lake's own
+  server on that user's machine is, holds a token of its own as a `writer`'s, kept where that user alone reads it, and
+  it is what that user's engines bear: no address, the loopback's included, stands for a token. A table whose files
+  are local vends none: a load answers no `storage-credentials`, and its clients read its files as they are.
 - **REST-12.** *0.4.* `updateTable` and `transactions/commit` hold `assert-current-schema-id`,
   `assert-last-assigned-field-id`, `assert-last-assigned-partition-id`, `assert-default-spec-id` and
   `assert-default-sort-order-id` to the table's definition as a load serves it, `main`'s (ICE-1), whatever the ref the
@@ -931,8 +936,8 @@ shows conformance by running them with its own operations in place of the refere
   MetaLake commits only, and a table is not replaced.
 - **Position deletes from Iceberg writers,** so that Trino's row-level `DELETE`, `UPDATE` and `MERGE` are refused,
   while its `INSERT` and deletes of whole partitions are not. Turning them into vectors is the first thing after v0.
-- **Credentials narrowed to a table**: *0.4*, the service vends credentials of its own that expire (REST-11), but not
-  narrowed to a table's prefix or to reading.
+- **Credentials narrowed to a query**: *0.4*, credentials are narrowed to a table's prefix and to reading or writing
+  (REST-11), not to the files one scan reads, which needs server-side scan planning.
 - **Merges** into a ref other than the parent, and merges that check rows or predicates rather than files and
   keys (§12).
 - **`variant` bounds** (STA-9).
