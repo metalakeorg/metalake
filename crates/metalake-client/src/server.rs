@@ -194,11 +194,11 @@ fn start(files: &Files, postgres: &str, schema: &str) -> Result<Runtime> {
         serve.spawn()
     };
     let mut child = spawned.map_err(|e| Error::failed(format!("the lake's server could not start: {e}")))?;
-    let pid = child.id();
     let since = Instant::now();
     loop {
+        // Its token, new for this start, names it: not its pid, which is another process's where the command run is a
+        // launcher, as a Windows venv's python.exe is, which starts Python itself as its child.
         if let Some(runtime) = Runtime::read(&files.runtime)
-            && runtime.pid == pid
             && runtime.token == token
             && answers(runtime.port)
         {
