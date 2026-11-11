@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use url::Url;
 
-use super::{Iceberg, pyiceberg};
+use super::{Iceberg, duckdb, pyiceberg};
 use crate::{Error, Result};
 
 /// The version of Iceberg's Java libraries a profile names: the one CI and the REST Compatibility Kit hold the service
@@ -167,6 +167,7 @@ impl Profile {
     pub fn render(&self) -> String {
         match self.engine {
             Engine::PyIceberg => pyiceberg::render(self),
+            Engine::DuckDb => duckdb::render(self),
             engine => unreachable!("no profile of {engine} is built"),
         }
     }
@@ -175,6 +176,7 @@ impl Profile {
     pub fn statements(&self) -> Vec<String> {
         match self.engine {
             Engine::PyIceberg => Vec::new(),
+            Engine::DuckDb => duckdb::statements(self),
             engine => unreachable!("no profile of {engine} is built"),
         }
     }
@@ -185,6 +187,7 @@ pub fn profile(engine: Engine, name: &str, target: &Target) -> Result<Profile> {
     let name = catalog_name(name)?;
     match engine {
         Engine::PyIceberg => Ok(pyiceberg::profile(name, target)),
+        Engine::DuckDb => Ok(duckdb::profile(name, target)),
         engine => Err(Error::usage(format!("the profile of {engine} is not built yet"))),
     }
 }

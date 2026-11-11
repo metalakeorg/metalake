@@ -3,6 +3,7 @@
 //! Iceberg service after each of its commits there, so that a load finds it there, and a reader of the metadata file
 //! alone finds it current. Setting it is a commit of the tables' definitions, on that ref: one commit for all of them.
 
+mod duckdb;
 mod profile;
 mod pyiceberg;
 
