@@ -58,7 +58,7 @@ def test_polars_reads_pyiceberg_catalog(lake):
 def test_duckdb_reads_and_writes(lake):
     duckdb = pytest.importorskip("duckdb")
     connection = lake.iceberg.duckdb()
-    assert connection.sql("select count(*) from lake.default.t").fetchone()[0] >= 3
+    assert connection.sql("select count(*) from lake.default.t").fetchall()[0][0] >= 3
 
     before = lake.log(limit=1)[0].seq
     connection.execute("insert into lake.default.t values (10)")
@@ -67,7 +67,7 @@ def test_duckdb_reads_and_writes(lake):
     # A connection of one's own, the lake attached under another name.
     own = duckdb.connect()
     assert lake.iceberg.duckdb(own, name="other") is own
-    assert own.sql("select max(k) from other.default.t").fetchone()[0] == 10
+    assert own.sql("select max(k) from other.default.t").fetchall()[0][0] == 10
 
 
 @pytest.fixture(scope="module")
@@ -86,7 +86,8 @@ def test_spark_reads_and_merges(lake, spark_session):
         "when not matched then insert *"
     )
     assert lake.log(limit=1)[0].seq > before, "a commit of the lake"
-    assert lake.sql("select count(*) as n from t where k = 20").to_arrow()["n"].to_pylist() == [1]
+    # Counted by MetaLake, through no library of Arrow's: the engine's environment may have none.
+    assert sum(batch.num_rows for batch in lake.sql("select k from t where k = 20")) == 1
 
 
 def test_spark_adopts_session(lake, spark_session):
@@ -138,11 +139,8 @@ def test_flink_adopts_environment(lake):
     from pyflink.table import EnvironmentSettings, TableEnvironment
 
     environment = TableEnvironment.create(EnvironmentSettings.in_batch_mode())
-    # A jar it has already, which the lake also names: kept first, and not twice.
-    runtime = lake.iceberg.profile("flink").startup["pipeline.jars"].split(";")[0]
-    environment.get_config().set("pipeline.jars", runtime)
     assert lake.iceberg.flink(environment, name="other") is environment
-    jars = environment.get_config().get("pipeline.jars", "").split(";")
-    assert jars[0] == runtime and jars.count(runtime) == 1, jars
-    assert len(jars) == 3, jars
     assert flink_rows(environment, "select count(*) from other.default.t")[0][0] >= 3
+    # Again, under a third name: the jars it was given already are taken again without harm.
+    assert lake.iceberg.flink(environment, name="third") is environment
+    assert flink_rows(environment, "select count(*) from third.default.t")[0][0] >= 3

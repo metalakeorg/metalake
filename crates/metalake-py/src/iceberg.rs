@@ -130,7 +130,7 @@ impl PyIceberg {
     }
 
     /// A Flink TableEnvironment with the lake's catalog as `name`: the one given, or a new one, in batch unless
-    /// `streaming`. Iceberg's and Hadoop's jars are added to the ones it has, fetched once into `~/.metalake/jars`.
+    /// `streaming`. Iceberg's and Hadoop's jars are added to it with `ADD JAR`, fetched once into `~/.metalake/jars`.
     #[pyo3(signature = (environment = None, *, name = "lake", streaming = false))]
     fn flink<'py>(
         &self,
