@@ -125,17 +125,21 @@ def flink_rows(environment, query):
         return [tuple(row) for row in rows]
 
 
-def test_flink_reads_and_inserts(lake):
+@pytest.fixture(scope="module")
+def flink_environment(lake):
     pytest.importorskip("pyflink")
-    environment = lake.iceberg.flink()
+    # The first: PyFlink's JVM starts here, with Hadoop's client on its classpath.
+    return lake.iceberg.flink()
+
+
+def test_flink_reads_and_inserts(lake, flink_environment):
     before = lake.log(limit=1)[0].seq
-    environment.execute_sql("insert into lake.default.t values (30)").wait()
+    flink_environment.execute_sql("insert into lake.default.t values (30)").wait()
     assert lake.log(limit=1)[0].seq > before, "a commit of the lake"
-    assert flink_rows(environment, "select max(k) from lake.default.t")[0][0] >= 30
+    assert flink_rows(flink_environment, "select max(k) from lake.default.t")[0][0] >= 30
 
 
-def test_flink_adopts_environment(lake):
-    pytest.importorskip("pyflink")
+def test_flink_adopts_environment(lake, flink_environment):
     from pyflink.table import EnvironmentSettings, TableEnvironment
 
     environment = TableEnvironment.create(EnvironmentSettings.in_batch_mode())
@@ -144,3 +148,25 @@ def test_flink_adopts_environment(lake):
     # Again, under a third name: the jars it was given already are taken again without harm.
     assert lake.iceberg.flink(environment, name="third") is environment
     assert flink_rows(environment, "select count(*) from third.default.t")[0][0] >= 3
+
+
+def test_flink_without_hadoop_refused(directory, lake):
+    pytest.importorskip("pyflink")
+    # Another process: a JVM of its own, started before the lake was asked for, without Hadoop.
+    script = textwrap.dedent(
+        f"""
+        import os
+        os.environ.pop("HADOOP_CLASSPATH", None)
+        import metalake
+        from pyflink.table import EnvironmentSettings, TableEnvironment
+        environment = TableEnvironment.create(EnvironmentSettings.in_batch_mode())
+        lake = metalake.connect({str(directory / "lake")!r})
+        try:
+            lake.iceberg.flink(environment)
+        except metalake.UsageError as refused:
+            assert "HADOOP_CLASSPATH=" in str(refused), refused
+            print("refused")
+        """
+    )
+    said = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=300)
+    assert "refused" in said.stdout, said.stderr[-2000:]
