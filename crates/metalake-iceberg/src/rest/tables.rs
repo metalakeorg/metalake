@@ -44,6 +44,7 @@ async fn credentials_for(
     location: &str,
     namespace: &str,
     name: &str,
+    renewable: bool,
 ) -> Result<Vec<StorageCredential>, Failure> {
     if !asked || !state.vendor().serves(location) {
         return Ok(Vec::new());
@@ -52,10 +53,10 @@ async fn credentials_for(
         Caller::Writer => Access::ReadWrite,
         Caller::Anonymous => return Err(Failure::credentials_refused()),
     };
-    let refresh = refresh_path(namespace, name);
+    let refresh = renewable.then(|| refresh_path(namespace, name));
     state
         .vendor()
-        .vend(location, access, &refresh)
+        .vend(location, access, refresh.as_deref())
         .await
         .map_err(Failure::not_minted)
 }
@@ -122,8 +123,10 @@ pub(crate) async fn create(
     if new.stage {
         let described = create::described(&new.definition);
         let metadata = staged(new.table_id.to_string(), described);
-        // A staged table's files are written before its commit: its client is given credentials for them now.
-        let storage_credentials = credentials_for(&state, caller, asked, &metadata.location, &namespace, &name).await?;
+        // A staged table's files are written before its commit: its client is given credentials for them now. They
+        // name no endpoint to refresh them, as `loadCredentials` finds only a table committed.
+        let storage_credentials =
+            credentials_for(&state, caller, asked, &metadata.location, &namespace, &name, false).await?;
         return Ok(Json(LoadTableResult {
             metadata_location: None,
             metadata,
@@ -131,6 +134,13 @@ pub(crate) async fn create(
             storage_credentials,
         }));
     }
+    // Minted before the commit: a create that cannot be given the credentials it asked for leaves no table behind, so
+    // that the client's retry finds none.
+    let location = new.definition["create"]["location"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let storage_credentials = credentials_for(&state, caller, asked, &location, &namespace, &name, true).await?;
     let table = create::create(&state, &wanted, &name, new).await.map_err(|e| {
         let failure = Failure::from(e);
         if failure.is_conflict() {
@@ -140,7 +150,7 @@ pub(crate) async fn create(
         }
     })?;
     let mut loaded = load(&state, &table).await?;
-    loaded.storage_credentials = credentials_for(&state, caller, asked, table.location(), &namespace, &name).await?;
+    loaded.storage_credentials = storage_credentials;
     Ok(Json(loaded))
 }
 
@@ -154,8 +164,16 @@ pub(crate) async fn get(
     let table = found(&state, &levels(&namespace), &name).await?;
     let mut loaded = load(&state, &table).await?;
     let caller = caller.map(|Extension(c)| c);
-    loaded.storage_credentials =
-        credentials_for(&state, caller, asks(&headers), table.location(), &namespace, &name).await?;
+    loaded.storage_credentials = credentials_for(
+        &state,
+        caller,
+        asks(&headers),
+        table.location(),
+        &namespace,
+        &name,
+        true,
+    )
+    .await?;
     Ok(Json(loaded))
 }
 
@@ -168,7 +186,7 @@ pub(crate) async fn credentials(
 ) -> Result<Json<LoadCredentialsResponse>, Failure> {
     let table = found(&state, &levels(&namespace), &name).await?;
     let caller = caller.map(|Extension(c)| c);
-    let storage_credentials = credentials_for(&state, caller, true, table.location(), &namespace, &name).await?;
+    let storage_credentials = credentials_for(&state, caller, true, table.location(), &namespace, &name, true).await?;
     Ok(Json(LoadCredentialsResponse { storage_credentials }))
 }
 

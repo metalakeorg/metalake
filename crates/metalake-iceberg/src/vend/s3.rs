@@ -79,10 +79,8 @@ impl S3 {
                 form.push(("RoleArn", role.clone()));
             }
         } else {
-            if access == Access::Read {
-                return Err(format!(
-                    "a credential narrowed to reading needs a role to assume: set {ROLE}"
-                ));
+            if let Some(refused) = unnarrowed_refused(access, own.token.is_some()) {
+                return Err(refused);
             }
             form.push(("Action", "GetSessionToken".into()));
         }
@@ -174,6 +172,21 @@ impl Minter for S3 {
     }
 }
 
+/// Why a credential cannot be minted unnarrowed, with `GetSessionToken`, if it cannot: one narrowed to reading needs a
+/// role, and AWS refuses that call to a temporary credential, as an instance's or a web identity's is.
+fn unnarrowed_refused(access: Access, temporary: bool) -> Option<String> {
+    if access == Access::Read {
+        return Some(format!(
+            "a credential narrowed to reading needs a role to assume: set {ROLE}"
+        ));
+    }
+    temporary.then(|| {
+        format!(
+            "the server's own S3 credential is temporary, as an instance's or a web identity's is, and AWS mints none              from it without a role to assume: set {ROLE}"
+        )
+    })
+}
+
 /// The bucket and the key a prefix such as `s3://bucket/lake/db/t/` names.
 fn bucket_and_key(prefix: &str) -> Result<(&str, &str), String> {
     let rest = prefix
@@ -251,6 +264,17 @@ mod tests {
         <AssumeRoleResult><Credentials><AccessKeyId>ASIAEXAMPLE</AccessKeyId>\
         <SecretAccessKey>secret</SecretAccessKey><SessionToken>token</SessionToken>\
         <Expiration>2026-11-11T17:00:00Z</Expiration></Credentials></AssumeRoleResult></AssumeRoleResponse>";
+
+    #[test]
+    fn unnarrowed_only_for_a_writer_from_a_lasting_key() {
+        assert!(unnarrowed_refused(Access::ReadWrite, false).is_none());
+        assert!(unnarrowed_refused(Access::Read, false).unwrap().contains(ROLE));
+        assert!(
+            unnarrowed_refused(Access::ReadWrite, true)
+                .unwrap()
+                .contains("temporary")
+        );
+    }
 
     #[test]
     fn sts_answer_read() {

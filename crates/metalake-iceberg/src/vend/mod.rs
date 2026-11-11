@@ -74,7 +74,12 @@ impl Vendor {
 
     /// The credentials for a table at `location`, with `access`, each saying `refresh` as where a client renews it; none
     /// for a store this server does not mint for.
-    pub async fn vend(&self, location: &str, access: Access, refresh: &str) -> Result<Vec<StorageCredential>, String> {
+    pub async fn vend(
+        &self,
+        location: &str,
+        access: Access,
+        refresh: Option<&str>,
+    ) -> Result<Vec<StorageCredential>, String> {
         let Some(minter) = self.minter(location) else {
             return Ok(Vec::new());
         };
@@ -90,7 +95,9 @@ impl Vendor {
             }
         };
         let mut config = minted.config;
-        config.insert(refresh_key(location).to_string(), refresh.to_string());
+        if let Some(refresh) = refresh {
+            config.insert(refresh_key(location).to_string(), refresh.to_string());
+        }
         Ok(vec![StorageCredential { prefix, config }])
     }
 }
@@ -190,13 +197,13 @@ pub(crate) mod tests {
         assert!(vendor.serves("s3://bucket/lake/db/t"));
         assert!(!vendor.serves("file:///tmp/lake/db/t"), "a local table vends none");
         let none = vendor
-            .vend("file:///tmp/lake/db/t", Access::ReadWrite, "r")
+            .vend("file:///tmp/lake/db/t", Access::ReadWrite, Some("r"))
             .await
             .unwrap();
         assert!(none.is_empty());
 
         let vended = vendor
-            .vend("s3://bucket/lake/db/t", Access::Read, "v1/x")
+            .vend("s3://bucket/lake/db/t", Access::Read, Some("v1/x"))
             .await
             .unwrap();
         assert_eq!(vended.len(), 1);
@@ -206,22 +213,27 @@ pub(crate) mod tests {
         );
         assert_eq!(vended[0].config["fake.access"], "Read");
         assert_eq!(vended[0].config["client.refresh-credentials-endpoint"], "v1/x");
+        let staged = vendor.vend("s3://bucket/lake/db/t", Access::Read, None).await.unwrap();
+        assert!(
+            !staged[0].config.contains_key("client.refresh-credentials-endpoint"),
+            "none to refresh by, for a table not committed"
+        );
     }
 
     #[tokio::test]
     async fn vend_kept_while_lasting() {
         let (vendor, fake) = fake_vendor(3_600_000);
         for _ in 0..3 {
-            vendor.vend("s3://b/t", Access::ReadWrite, "r").await.unwrap();
+            vendor.vend("s3://b/t", Access::ReadWrite, Some("r")).await.unwrap();
         }
         assert_eq!(fake.minted.load(Ordering::SeqCst), 1, "kept while it lasts");
-        vendor.vend("s3://b/t", Access::Read, "r").await.unwrap();
-        vendor.vend("s3://b/other", Access::ReadWrite, "r").await.unwrap();
+        vendor.vend("s3://b/t", Access::Read, Some("r")).await.unwrap();
+        vendor.vend("s3://b/other", Access::ReadWrite, Some("r")).await.unwrap();
         assert_eq!(fake.minted.load(Ordering::SeqCst), 3, "one per prefix and access");
 
         let (vendor, fake) = fake_vendor(MARGIN_MS / 2);
-        vendor.vend("s3://b/t", Access::ReadWrite, "r").await.unwrap();
-        vendor.vend("s3://b/t", Access::ReadWrite, "r").await.unwrap();
+        vendor.vend("s3://b/t", Access::ReadWrite, Some("r")).await.unwrap();
+        vendor.vend("s3://b/t", Access::ReadWrite, Some("r")).await.unwrap();
         assert_eq!(fake.minted.load(Ordering::SeqCst), 2, "minted again near its expiry");
     }
 
