@@ -2,7 +2,7 @@
 //! is told lives here, and what it means does not.
 
 mod config;
-mod errors;
+pub(crate) mod errors;
 mod namespaces;
 mod tables;
 

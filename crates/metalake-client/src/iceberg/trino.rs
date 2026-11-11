@@ -13,6 +13,10 @@ pub(super) fn profile(name: &str, target: &Target) -> Profile {
     set("connector.name", "iceberg");
     set("iceberg.catalog.type", "rest");
     set("iceberg.rest-catalog.uri", &target.uri);
+    if let Some(token) = &target.token {
+        set("iceberg.rest-catalog.security", "OAUTH2");
+        set("iceberg.rest-catalog.oauth2.token", token);
+    }
     match target.store {
         Store::Local => set("fs.hadoop.enabled", "true"),
         store => {
@@ -59,6 +63,7 @@ mod tests {
             uri: "http://127.0.0.1:8181".into(),
             store,
             warehouse: warehouse.into(),
+            token: None,
         }
     }
 
@@ -105,6 +110,15 @@ mod tests {
             let profile = profile(Engine::Trino, "lake", &target(store, warehouse)).unwrap();
             assert_eq!(profile.properties[key], "true", "{store:?}");
         }
+    }
+
+    #[test]
+    fn trino_profile_token() {
+        let mut target = target(Store::Local, "file:///tmp/lake/");
+        target.token = Some("the-token".into());
+        let profile = profile(Engine::Trino, "lake", &target).unwrap();
+        assert_eq!(profile.properties["iceberg.rest-catalog.security"], "OAUTH2");
+        assert_eq!(profile.properties["iceberg.rest-catalog.oauth2.token"], "the-token");
     }
 
     #[test]

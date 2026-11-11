@@ -11,7 +11,11 @@ pub(super) fn profile(name: &str, target: &Target) -> Profile {
     let mut profile = Profile::new(Engine::DuckDb, name, target);
     profile.properties.insert(TYPE.into(), "iceberg".into());
     profile.properties.insert("ENDPOINT".into(), target.uri.clone());
-    profile.properties.insert("AUTHORIZATION_TYPE".into(), "none".into());
+    // A token takes the place of no authorization: DuckDB refuses both together.
+    match &target.token {
+        Some(token) => profile.properties.insert("TOKEN".into(), token.clone()),
+        None => profile.properties.insert("AUTHORIZATION_TYPE".into(), "none".into()),
+    };
     profile
 }
 
@@ -60,6 +64,7 @@ mod tests {
             uri: "http://127.0.0.1:8181".into(),
             store,
             warehouse: warehouse.into(),
+            token: None,
         }
     }
 
@@ -92,6 +97,16 @@ mod tests {
             (local.properties, local.startup, local.artifacts),
             "it asks for credentials by default"
         );
+    }
+
+    #[test]
+    fn duckdb_profile_token() {
+        let mut target = target(Store::Local, "file:///tmp/lake/");
+        target.token = Some("the-token".into());
+        let profile = profile(Engine::DuckDb, "lake", &target).unwrap();
+        assert!(!profile.properties.contains_key("AUTHORIZATION_TYPE"));
+        let attach = &profile.statements()[2];
+        assert!(attach.contains("TOKEN 'the-token'"), "{attach}");
     }
 
     #[test]

@@ -87,6 +87,7 @@ struct Files {
     runtime: PathBuf,
     lock: PathBuf,
     log: PathBuf,
+    token: PathBuf,
 }
 
 impl Files {
@@ -96,6 +97,7 @@ impl Files {
             runtime: dir.join(format!("{key}.json")),
             lock: dir.join(format!("{key}.lock")),
             log: dir.join(format!("{key}.log")),
+            token: dir.join(format!("{key}.token")),
         })
     }
 
@@ -165,7 +167,7 @@ fn answers(port: u16) -> bool {
 fn shut(runtime: &Runtime, path: &Path) -> Result<()> {
     request(runtime.port, "POST", "/metalake/shutdown", Some(&runtime.token));
     let since = Instant::now();
-    let still = || Runtime::read(path).is_some_and(|on_file| on_file.token == runtime.token);
+    let still = || Runtime::read(path).is_some_and(|on_file| on_file.start == runtime.start);
     while still() {
         if since.elapsed() > STOPPING {
             if answers(runtime.port) {
@@ -197,12 +199,42 @@ pub(crate) fn ensure(identity: &str, postgres: &str, schema: &str) -> Result<Run
         }
         let _ = fs::remove_file(&files.runtime);
     }
-    start(&files, postgres, schema, preferred_port(identity, schema))
+    let token = lake_token(&files.token)?;
+    start(&files, postgres, schema, preferred_port(identity, schema), &token)
 }
 
+/// The lake's token: made the first time a server is started for it, kept where this user alone reads it, and the same
+/// at each start after, as the lake's port is, so that what an engine was given still serves after a restart. It stops
+/// the server, and makes a request that bears it a writer's (REST-11).
+fn lake_token(path: &Path) -> Result<String> {
+    if let Ok(held) = fs::read_to_string(path)
+        && !held.trim().is_empty()
+    {
+        return Ok(held.trim().to_string());
+    }
+    let token = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let partial = path.with_extension("partial");
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(&partial)?;
+    file.write_all(token.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(&partial, path)?;
+    Ok(token)
+}
+
+/// The variable a server is told the start it is of by, which it writes in its runtime file.
+pub const START: &str = "METALAKE_ICEBERG_START";
+
 /// Starts a server, and waits until its runtime file names it and it answers.
-fn start(files: &Files, postgres: &str, schema: &str, port: u16) -> Result<Runtime> {
-    let token = uuid::Uuid::new_v4().simple().to_string();
+fn start(files: &Files, postgres: &str, schema: &str, port: u16, token: &str) -> Result<Runtime> {
+    let started = uuid::Uuid::new_v4().simple().to_string();
     let command = launcher()?;
     let (program, prefix) = command
         .split_first()
@@ -222,7 +254,8 @@ fn start(files: &Files, postgres: &str, schema: &str, port: u16) -> Result<Runti
         .arg(&files.runtime)
         .env(environment::POSTGRES, postgres)
         .env(environment::SCHEMA, schema)
-        .env(SHUTDOWN_TOKEN, &token)
+        .env(SHUTDOWN_TOKEN, token)
+        .env(START, &started)
         .current_dir(directory()?)
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
@@ -243,10 +276,10 @@ fn start(files: &Files, postgres: &str, schema: &str, port: u16) -> Result<Runti
     let mut child = spawned.map_err(|e| Error::failed(format!("the lake's server could not start: {e}")))?;
     let since = Instant::now();
     loop {
-        // Its token, new for this start, names it: not its pid, which is another process's where the command run is a
+        // Its start, new each time, names it: not its pid, which is another process's where the command run is a
         // launcher, as a Windows venv's python.exe is, which starts Python itself as its child.
         if let Some(runtime) = Runtime::read(&files.runtime)
-            && runtime.token == token
+            && runtime.start == started
             && answers(runtime.port)
         {
             // Reaped when it ends, by a thread of this process if it is still here then.
@@ -353,8 +386,12 @@ pub struct Runtime {
     pub port: u16,
     pub pid: u32,
     pub version: String,
-    /// What a request to `POST /metalake/shutdown` bears to stop it.
+    /// The lake's token: what a request to `POST /metalake/shutdown` bears to stop it, and what makes a request a
+    /// writer's (REST-11).
     pub token: String,
+    /// What names this start of it, new each time.
+    #[serde(default)]
+    pub start: String,
 }
 
 impl Runtime {
@@ -413,6 +450,7 @@ mod tests {
             pid: 42,
             version: VERSION.into(),
             token: "t".into(),
+            start: "s".into(),
         };
         runtime.write(&path).unwrap();
         assert_eq!(Runtime::read(&path), Some(runtime.clone()));
@@ -426,6 +464,28 @@ mod tests {
         fs::write(&path, "not json").unwrap();
         assert_eq!(Runtime::read(&path), None, "a file that does not read is no server");
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn lake_token_kept() {
+        let dir = std::env::temp_dir().join(format!("metalake-token-{}", uuid::Uuid::new_v4().simple()));
+        let path = dir.join("lake.token");
+        let first = lake_token(&path).unwrap();
+        assert_eq!(first.len(), 64, "{first}");
+        assert_eq!(lake_token(&path).unwrap(), first, "the same at each start");
+        assert_ne!(
+            lake_token(&dir.join("other.token")).unwrap(),
+            first,
+            "each lake its own"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "readable by this user alone");
+        }
+        assert!(!path.with_extension("partial").exists());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
