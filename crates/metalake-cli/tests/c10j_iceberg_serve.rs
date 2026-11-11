@@ -91,7 +91,18 @@ fn runtime_file_requires_token() {
 #[test]
 fn stop_without_server() {
     let (dir, _) = lake();
-    let said = common::ok(&dir, &["iceberg", "stop", "--format", "json"]);
+    // A home of its own: stopping none leaves nothing there.
+    let home = dir.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let output = metalake(&dir)
+        .args(["iceberg", "stop", "--format", "json"])
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let said = String::from_utf8_lossy(&output.stdout);
     let row: serde_json::Value = serde_json::from_str(said.trim()).unwrap();
     assert_eq!(row["stopped"], false, "{said}");
+    assert!(!home.join(".metalake").exists(), "nothing left in the home");
 }

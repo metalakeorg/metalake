@@ -60,7 +60,6 @@ struct Files {
 impl Files {
     fn of(key: &str) -> Result<Self> {
         let dir = directory()?;
-        fs::create_dir_all(&dir)?;
         Ok(Self {
             runtime: dir.join(format!("{key}.json")),
             lock: dir.join(format!("{key}.lock")),
@@ -69,7 +68,11 @@ impl Files {
     }
 
     /// The lock, held until it is dropped; the system lets go of it if this process dies.
+    /// Its lock, taken: the first file a server leaves, so the directory is made here.
     fn locked(&self) -> Result<fs::File> {
+        if let Some(dir) = self.lock.parent() {
+            fs::create_dir_all(dir)?;
+        }
         let file = fs::OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -271,6 +274,10 @@ impl Drop for StdHandlesKept {
 /// Stops the lake's server, if one runs, and says whether one did.
 pub fn stop(identity: &str, schema: &str) -> Result<bool> {
     let files = Files::of(&key(identity, schema))?;
+    // None was ever started: nothing to stop, and nothing left behind in this user's home by asking.
+    if !files.runtime.exists() {
+        return Ok(false);
+    }
     let _turn = files.locked()?;
     let Some(running) = Runtime::read(&files.runtime) else {
         return Ok(false);
