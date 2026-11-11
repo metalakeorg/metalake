@@ -14,6 +14,7 @@ use crate::load::load;
 use crate::materialize::Materializer;
 use crate::prune::{PRUNE_EVERY, prune};
 use crate::vend::azure::Azure;
+use crate::vend::gcs::Gcs;
 use crate::vend::s3::S3;
 use crate::vend::{Minter, Vendor};
 
@@ -168,7 +169,8 @@ impl State {
 fn stores() -> Vendor {
     let s3: Arc<dyn Minter> = Arc::new(S3::from_env());
     let azure: Arc<dyn Minter> = Arc::new(Azure::from_env());
-    let vendor = Vendor::default().with("s3", s3.clone()).with("s3a", s3);
+    let gcs: Arc<dyn Minter> = Arc::new(Gcs::from_env());
+    let vendor = Vendor::default().with("s3", s3.clone()).with("s3a", s3).with("gs", gcs);
     ["abfs", "abfss", "az", "azure"]
         .into_iter()
         .fold(vendor, |vendor, scheme| vendor.with(scheme, azure.clone()))

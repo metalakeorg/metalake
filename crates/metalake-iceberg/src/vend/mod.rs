@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod azure;
+pub mod gcs;
 pub mod s3;
 mod sigv4;
 

@@ -162,3 +162,26 @@ jobs:
           until curl -fs http://127.0.0.1:4577/_floci/info >/dev/null; do sleep 1; done
       - name: Credentials vended on Azure
         run: cargo test -p metalake-iceberg --test c19_azure_sas -- --nocapture
+
+  # Credentials vended for a table's files on GCS (REST-11), against Floci-gcp, which gives a service account a token for
+  # its JWT, downscopes it through its STS, and holds a downscoped token to its boundary.
+  vended-gcs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      STORAGE_EMULATOR_HOST: http://127.0.0.1:4588
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Floci-gcp, and a service account whose tokens it gives
+        run: |
+          docker run -d --name floci-gcp -p 4588:4588 floci/floci-gcp:latest
+          until curl -s -o /dev/null http://127.0.0.1:4588/storage/v1/b?project=floci-local; do sleep 1; done
+          key=$(jq -n --rawfile pem crates/metalake-iceberg/src/vend/gcs_test_key.pem             '{type: "service_account", client_email: "lake@floci-local.iam.gserviceaccount.com",
+              private_key_id: "test", private_key: $pem, token_uri: "http://127.0.0.1:4588/token"}')
+          echo "GOOGLE_SERVICE_ACCOUNT_KEY<<EOF" >> "$GITHUB_ENV"; echo "$key" >> "$GITHUB_ENV"; echo "EOF" >> "$GITHUB_ENV"
+      - name: Credentials vended on GCS
+        run: cargo test -p metalake-iceberg --test c20_gcs_token -- --nocapture

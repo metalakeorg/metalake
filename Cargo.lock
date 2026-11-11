@@ -2600,6 +2600,7 @@ dependencies = [
  "object_store",
  "parquet",
  "reqwest 0.12.28",
+ "ring",
  "serde",
  "serde_json",
  "sha2",
