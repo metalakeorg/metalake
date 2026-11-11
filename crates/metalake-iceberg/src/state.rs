@@ -13,6 +13,7 @@ use crate::generations::Generations;
 use crate::load::load;
 use crate::materialize::Materializer;
 use crate::prune::{PRUNE_EVERY, prune};
+use crate::vend::s3::S3;
 use crate::vend::{Minter, Vendor};
 
 /// How long stopping waits for footers still queued, which are maintenance's after it.
@@ -55,7 +56,7 @@ impl State {
             materializer: None,
             pruned: Arc::default(),
             generations: Generations::default(),
-            vendor: Vendor::default(),
+            vendor: stores(),
         })
     }
 
@@ -160,6 +161,12 @@ impl State {
         self.footers.stop(FOOTERS_DRAIN).await;
         self.catalog.close();
     }
+}
+
+/// The stores a server mints credentials for (REST-11), each from the credential its own store finds.
+fn stores() -> Vendor {
+    let s3: Arc<dyn Minter> = Arc::new(S3::from_env());
+    Vendor::default().with("s3", s3.clone()).with("s3a", s3)
 }
 
 fn warehouse(catalog: &Catalog) -> Result<Storage> {

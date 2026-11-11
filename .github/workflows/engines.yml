@@ -99,3 +99,45 @@ jobs:
         run: |
           cd "$RUNNER_TEMP"
           python -m pytest "$GITHUB_WORKSPACE/crates/metalake-py/tests/test_engines.py" -k ${{ matrix.engine }} -q --tb=short -p no:cacheprovider -rs
+
+  # Credentials vended for a table's files on S3 (REST-11), on MinIO, whose token service answers AssumeRole with a
+  # session policy: PyIceberg, with no key of its own, reads and writes with what the lake's server mints. MinIO's own
+  # images are no longer published; Chainguard's is built from its source.
+  vended-s3:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      AWS_ACCESS_KEY_ID: metalake
+      AWS_SECRET_ACCESS_KEY: metalake-secret
+      AWS_ENDPOINT: http://127.0.0.1:9000
+      AWS_ALLOW_HTTP: "true"
+      AWS_REGION: us-east-1
+      METALAKE_TEST_S3_ENDPOINT: http://127.0.0.1:9000
+      METALAKE_TEST_S3_BUCKET: metalake
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: MinIO, a bucket and a user that is not root
+        run: |
+          docker network create s3
+          docker run -d --name minio --network s3 -u 0 -p 9000:9000             -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin cgr.dev/chainguard/minio:latest server /data
+          until curl -fs http://127.0.0.1:9000/minio/health/live; do sleep 1; done
+          mc() { docker run --rm -u 0 --network s3 -v mc:/tmp/mc -e MC_CONFIG_DIR=/tmp/mc cgr.dev/chainguard/minio-client:latest "$@"; }
+          mc alias set m http://minio:9000 minioadmin minioadmin
+          mc mb m/metalake
+          mc admin user add m metalake metalake-secret
+          mc admin policy attach m readwrite --user metalake
+      - name: Prepare Postgres
+        run: python packaging/postgres.py x86_64-unknown-linux-gnu
+      - name: The extension, and PyIceberg
+        run: python -m pip install --quiet pytest "./crates/metalake-py[pyiceberg]"
+      - name: Credentials vended on S3
+        run: |
+          cd "$RUNNER_TEMP"
+          python -m pytest "$GITHUB_WORKSPACE/crates/metalake-py/tests/test_vended.py" -q --tb=short -p no:cacheprovider -rs
