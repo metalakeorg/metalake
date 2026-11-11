@@ -14,12 +14,12 @@ bin="$work/venv/bin"
 "$bin/python" -m pip install --quiet --no-index "$wheel"
 case "$2" in
   bare) "$bin/python" -m pip install --quiet pytest polars; export METALAKE_TEST_BARE=1 ;;
-  current) "$bin/python" -m pip install --quiet pytest polars pyarrow pandas mypy ;;
+  current) "$bin/python" -m pip install --quiet pytest polars pyarrow pandas mypy "pyiceberg[pyarrow]>=0.12" "duckdb>=1.5" ;;
   oldest) "$bin/python" -m pip install --quiet pytest "polars==1.22.0" "pyarrow==15.0.0" "numpy<2" "pandas<3" ;;
   *) echo "bare, current or oldest"; exit 2 ;;
 esac
 "$bin/python" --version
-"$bin/python" -m pip list 2>/dev/null | grep -iE '^(polars|pyarrow|pandas) ' || true
+"$bin/python" -m pip list 2>/dev/null | grep -iE '^(polars|pyarrow|pandas|pyiceberg|duckdb) ' || true
 unset METALAKE_POSTGRES METALAKE_SCHEMA METALAKE_POSTGRES_BIN PGPASSWORD
 cd "$work"
 if [ "$2" = current ]; then

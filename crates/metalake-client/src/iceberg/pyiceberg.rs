@@ -1,13 +1,26 @@
 //! PyIceberg's profile: a REST catalog by its URI, nothing else on any store, since PyIceberg asks the server for
 //! credentials by default and applies what it vends. Polars and Daft take the catalog it gives as it is.
 
-use super::profile::{Engine, Profile, Target};
+use super::profile::{Engine, Profile, Store, Target};
 
 pub(super) fn profile(name: &str, target: &Target) -> Profile {
     let mut profile = Profile::new(Engine::PyIceberg, name, target);
     profile.properties.insert("type".into(), "rest".into());
     profile.properties.insert("uri".into(), target.uri.clone());
+    // PyArrow's file IO, PyIceberg's default, reads `file:///C:/…` as the path `/C:/…`, which Windows refuses; fsspec's
+    // reads a drive's path as it is.
+    if target.store == Store::Local && on_a_drive(&target.warehouse) {
+        profile
+            .properties
+            .insert("py-io-impl".into(), "pyiceberg.io.fsspec.FsspecFileIO".into());
+    }
     profile
+}
+
+/// Whether a `file:` URL is of a path on a Windows drive, `file:///C:/…`.
+fn on_a_drive(warehouse: &str) -> bool {
+    let path = warehouse.strip_prefix("file:///").unwrap_or("").as_bytes();
+    path.len() >= 2 && path[0].is_ascii_alphabetic() && path[1] == b':'
 }
 
 /// As `~/.pyiceberg.yaml` has it, where every tool that loads catalogs through PyIceberg finds it by its name.
@@ -59,6 +72,19 @@ mod tests {
             (local.properties, local.startup, local.artifacts),
             "it asks for credentials by default"
         );
+    }
+
+    #[test]
+    fn pyiceberg_profile_windows_drive() {
+        let profile = profile(
+            Engine::PyIceberg,
+            "lake",
+            &target(Store::Local, "file:///C:/Users/a/lake/"),
+        )
+        .unwrap();
+        assert_eq!(profile.properties["py-io-impl"], "pyiceberg.io.fsspec.FsspecFileIO");
+        assert!(on_a_drive("file:///d:/lake/"));
+        assert!(!on_a_drive("file:///tmp/lake/") && !on_a_drive("s3://c:/lake"));
     }
 
     #[test]
