@@ -7,3 +7,13 @@
 //! - An executor decodes its stage with storage and no catalog, and reads.
 //!
 //! See ADR 0006.
+
+mod client;
+mod executor;
+mod scheduler;
+mod standalone;
+
+pub use client::session;
+pub use executor::{ExecutorParts, executor};
+pub use scheduler::{SchedulerParts, scheduler};
+pub use standalone::standalone;
