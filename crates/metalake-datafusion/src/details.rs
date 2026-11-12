@@ -4,8 +4,58 @@
 
 use std::sync::Mutex;
 
+use datafusion::common::config::ConfigExtension;
+use datafusion::common::extensions_options;
 use datafusion::execution::TaskContext;
+use datafusion::prelude::SessionConfig;
 use metalake::{Outcome, Result, Transaction};
+
+extensions_options! {
+    /// What a caller wants said in a statement's commit, as options of the session's configuration: text that
+    /// travels wherever the configuration does, to a Ballista scheduler and its executors, where `CommitDetails`, an
+    /// object in memory, does not. SQL sets them too: `set metalake.author = 'ana'`.
+    pub struct CommitOptions {
+        /// Who commits.
+        pub author: Option<String>, default = None
+        /// What the commit says.
+        pub message: Option<String>, default = None
+        /// A writer's id: with `app_version`, a commit that applies once (CMT-8).
+        pub app: Option<String>, default = None
+        /// A version `app` never repeats for different data: positive (CMT-8).
+        pub app_version: Option<u64>, default = None
+    }
+}
+
+impl ConfigExtension for CommitOptions {
+    const PREFIX: &'static str = "metalake";
+}
+
+impl CommitOptions {
+    /// `config`, able to hold MetaLake's commit options: their keys known, so that a value set by name, or sent by
+    /// another process, is taken and not dropped.
+    pub fn register(mut config: SessionConfig) -> SessionConfig {
+        if config.options().extensions.get::<CommitOptions>().is_none() {
+            config.options_mut().extensions.insert(CommitOptions::default());
+        }
+        config
+    }
+
+    /// `config` with the options `details` asks for.
+    pub fn of(details: &CommitDetails, mut config: SessionConfig) -> SessionConfig {
+        let options = CommitOptions {
+            author: details.author.clone(),
+            message: details.message.clone(),
+            app: details.idempotent.as_ref().map(|(app, _)| app.clone()),
+            // A version is positive (CMT-8): one that is not is sent as 0, for the protocol to refuse, not dropped.
+            app_version: details
+                .idempotent
+                .as_ref()
+                .map(|(_, version)| u64::try_from(*version).unwrap_or(0)),
+        };
+        config.options_mut().extensions.insert(options);
+        config
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct CommitDetails {
@@ -47,18 +97,22 @@ pub(crate) fn merged(context: &TaskContext, inserted: u64, updated: u64) {
 
 /// Commits `transaction` with what the execution asks for, if it asks.
 pub(crate) async fn commit(mut transaction: Transaction, context: &TaskContext) -> Result<()> {
-    let details = context.session_config().get_extension::<CommitDetails>();
-    if let Some(details) = &details {
-        if let Some(author) = &details.author {
+    // What is asked comes in the options, which reach any process; what came of it goes back in memory, to the
+    // process that asked, when it is this one.
+    if let Some(options) = context.session_config().options().extensions.get::<CommitOptions>() {
+        if let Some(author) = &options.author {
             transaction = transaction.author(author);
         }
-        if let Some(message) = &details.message {
+        if let Some(message) = &options.message {
             transaction = transaction.message(message);
         }
-        if let Some((app, version)) = &details.idempotent {
-            transaction = transaction.idempotent(app, *version);
+        if let (Some(app), Some(version)) = (&options.app, options.app_version) {
+            let version = i64::try_from(version)
+                .map_err(|_| metalake::Error::Invalid(format!("{app}: version {version} is past a bigint")))?;
+            transaction = transaction.idempotent(app, version);
         }
     }
+    let details = context.session_config().get_extension::<CommitDetails>();
     let outcome = transaction.commit().await?;
     if let Some(details) = &details {
         *details.outcome.lock().expect("an outcome is only set") = Some(outcome);
