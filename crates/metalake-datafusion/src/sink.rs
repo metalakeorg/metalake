@@ -113,8 +113,7 @@ impl Selection {
     /// once. Their sizes and rows, for a measure.
     pub(crate) async fn measure(&self) -> Result<(u64, u64)> {
         let tasks = self.plan().await?;
-        let bytes = tasks.iter().map(|t| u64::try_from(t.file_size).unwrap_or(0)).sum();
-        let rows = tasks.iter().map(|t| u64::try_from(t.record_count).unwrap_or(0)).sum();
+        let (bytes, rows) = crate::measure::sizes(&tasks);
         *self.planned.lock().expect("planned files are only replaced") = Some(tasks);
         Ok((bytes, rows))
     }
