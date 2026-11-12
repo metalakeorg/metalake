@@ -1,0 +1,28 @@
+[package]
+name = "metalake-ballista"
+version = "0.0.0"
+description = "MetaLake on Ballista: MetaLake's DataFusion adapter wired into a Ballista client, scheduler and executor"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+metalake.workspace = true
+metalake-datafusion = { path = "../metalake-datafusion", features = ["proto"] }
+# Ballista 55 is on DataFusion 55 and Arrow 59, as the adapter is. Its scheduler and executor without their binaries,
+# REST API or allocator: this crate wires them; the binaries come with a real cluster.
+ballista = { version = "55.0.0", default-features = false }
+ballista-core = { version = "55.0.0", default-features = false }
+ballista-executor = { version = "55.0.0", default-features = false, features = ["arrow-ipc-optimizations"] }
+ballista-scheduler = { version = "55.0.0", default-features = false }
+datafusion = { version = "55.2", default-features = false, features = ["parquet", "sql"] }
+datafusion-proto = { version = "55.2", default-features = false, features = ["parquet"] }
+tokio.workspace = true
+
+[dev-dependencies]
+arrow-array.workspace = true
+arrow-schema.workspace = true
+metalake-pg.workspace = true
+serde_json.workspace = true
