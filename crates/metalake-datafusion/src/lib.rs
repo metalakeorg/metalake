@@ -17,8 +17,11 @@
 mod adapter;
 mod catalog;
 mod changes;
+#[cfg(feature = "proto")]
+mod codec;
 mod ddl;
 mod details;
+mod exec;
 mod filters;
 mod merge;
 mod point;
@@ -28,5 +31,7 @@ mod stats;
 mod table;
 
 pub use catalog::{MetaLake, Source};
+#[cfg(feature = "proto")]
+pub use codec::{MetaLakeLogicalCodec, MetaLakePhysicalCodec};
 pub use details::CommitDetails;
 pub use table::MetaTable;

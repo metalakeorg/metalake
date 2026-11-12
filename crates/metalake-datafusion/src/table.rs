@@ -27,6 +27,7 @@ use metalake::{Catalog, Evolve, Ref, Scan, Storage, Table};
 
 use crate::adapter::ByFieldId;
 use crate::catalog::external;
+use crate::exec::MetaScanExec;
 use crate::point::StatementPoint;
 use crate::read::{self, TaskReaders};
 use crate::sink::{Delete, Insert, Selection, Update};
@@ -142,7 +143,11 @@ impl MetaTable {
                 evolve: Arc::new(Evolve::new(table)),
             })))
             .build();
-        Ok(DataSourceExec::from_data_source(config))
+        Ok(Arc::new(MetaScanExec::new(
+            DataSourceExec::from_data_source(config),
+            Arc::new(table.clone()),
+            positions.is_some(),
+        )))
     }
 
     /// The files in `groups` groups, each a partition of the plan, with the statistics of each group: at least one

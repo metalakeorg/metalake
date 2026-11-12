@@ -36,15 +36,15 @@ mod write;
 /// table, or `on-commit`, after each commit, by the Iceberg service. A table property, so it is set on a ref.
 pub const ICEBERG_METADATA: &str = "metalake.iceberg.metadata";
 
-pub use catalog::{Catalog, CatalogConfig, LatestPoints, Ref};
+pub use catalog::{Catalog, CatalogConfig, LatestPoints, Ref, RefValue};
 pub use error::{Error, Result};
 pub use evolve::Evolve;
 pub use follow::{FeedCursor, Lead};
 pub use maintain::Maintenance;
-pub use metalake_pg::{ErrorKind, Retention};
 pub use metalake_pg::records::{
     CommitEntry, FeedCommit, FileAdd, ListedFile, NamespaceRow, RefRow, SnapshotEntry, TableName, TableSnapshot,
 };
+pub use metalake_pg::{ErrorKind, Retention};
 pub use path::{InvalidPath, TablePath};
 pub use scan::{Scan, ScanTask, TaskReader, TaskVector, listed_vector};
 pub use storage::Storage;

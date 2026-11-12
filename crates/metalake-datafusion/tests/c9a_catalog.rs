@@ -84,7 +84,7 @@ async fn reads(context: &SessionContext, sql: &str) -> Result<bool, Box<dyn std:
     Ok(displayable(plan.as_ref())
         .indent(false)
         .to_string()
-        .contains("DataSourceExec"))
+        .contains("MetaScanExec"))
 }
 
 async fn one(context: &SessionContext, sql: &str) -> Result<RecordBatch, Box<dyn std::error::Error>> {

@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arrow_schema::{Schema, SchemaRef};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -25,7 +26,11 @@ pub struct Field {
 }
 
 /// A table as one read sees it: on one ref, at one sequence. Every read of the same value sees the same table.
-#[derive(Debug, Clone)]
+///
+/// Serialized as the definition `describe` answered, with its ref and sequence, and read back through the same
+/// derivation: a table rebuilt in another process is the one a read there would see.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(into = "Described", try_from = "Described")]
 pub struct Table {
     id: Uuid,
     ref_id: i32,
@@ -42,6 +47,36 @@ pub struct Table {
     sort_orders: BTreeMap<i32, Value>,
     cluster_key: Vec<i32>,
     properties: BTreeMap<String, String>,
+    /// What `describe` answered, which everything above derives from.
+    definition: Value,
+}
+
+/// A table as it travels: the definition as JSON text, so that a format which does not describe itself carries it.
+#[derive(Serialize, Deserialize)]
+struct Described {
+    ref_id: i32,
+    seq: i64,
+    definition: String,
+}
+
+impl From<Table> for Described {
+    fn from(table: Table) -> Self {
+        Self {
+            ref_id: table.ref_id,
+            seq: table.seq,
+            definition: table.definition.to_string(),
+        }
+    }
+}
+
+impl TryFrom<Described> for Table {
+    type Error = Error;
+
+    fn try_from(described: Described) -> Result<Self> {
+        let definition: Value = serde_json::from_str(&described.definition)
+            .map_err(|e| Error::Schema(format!("a table's definition is not JSON: {e}")))?;
+        Self::from_definition(described.ref_id, described.seq, &definition)
+    }
 }
 
 impl Table {
@@ -110,6 +145,7 @@ impl Table {
                 .flatten()
                 .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
                 .collect(),
+            definition: d.clone(),
         })
     }
 
@@ -190,4 +226,73 @@ impl Table {
 
 fn int(v: &Value) -> Option<i32> {
     v.as_i64().and_then(|n| i32::try_from(n).ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn definition() -> Value {
+        json!({
+            "table_id": "6f1c2a3e-1b2c-4d5e-8f90-a1b2c3d4e5f6",
+            "snapshot_id": 7,
+            "namespace": ["db"],
+            "name": "events",
+            "location": "gs://lake/wh/db/events",
+            "fields": [
+                {"field_id": 1, "position": 0, "name": "id", "type": "long", "required": true},
+                {"field_id": 2, "position": 1, "name": "renamed", "type": "string", "doc": "was name"}
+            ],
+            "spec_id": 0,
+            "specs": {"0": {"fields": []}},
+            "sort_order_id": 0,
+            "sort_orders": {"0": {"fields": []}},
+            "cluster_key": [1],
+            "properties": {"inline.max-bytes": "0"}
+        })
+    }
+
+    fn assert_same(a: &Table, b: &Table) {
+        assert_eq!(
+            (a.id(), a.ref_id(), a.seq(), a.snapshot_id()),
+            (b.id(), b.ref_id(), b.seq(), b.snapshot_id())
+        );
+        assert_eq!(
+            (a.namespace(), a.name(), a.location()),
+            (b.namespace(), b.name(), b.location())
+        );
+        assert_eq!(a.fields(), b.fields());
+        assert_eq!(a.schema(), b.schema());
+        assert_eq!(
+            (a.specs(), a.sort_orders(), a.cluster_key()),
+            (b.specs(), b.sort_orders(), b.cluster_key())
+        );
+        assert_eq!(a.properties(), b.properties());
+    }
+
+    #[test]
+    fn serde_round_trip_postcard() {
+        let table = Table::from_definition(3, 42, &definition()).unwrap();
+        let bytes = postcard::to_stdvec(&table).unwrap();
+        assert_same(&table, &postcard::from_bytes(&bytes).unwrap());
+    }
+
+    #[test]
+    fn serde_round_trip_json() {
+        let table = Table::from_definition(3, 42, &definition()).unwrap();
+        let text = serde_json::to_string(&table).unwrap();
+        assert_same(&table, &serde_json::from_str(&text).unwrap());
+    }
+
+    #[test]
+    fn deserialize_malformed_definition_refused() {
+        let described = Described {
+            ref_id: 3,
+            seq: 42,
+            definition: json!({"name": "events"}).to_string(),
+        };
+        assert!(matches!(Table::try_from(described), Err(Error::Schema(_))));
+    }
 }
