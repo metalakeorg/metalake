@@ -99,6 +99,40 @@ impl Connect for WithCredential {
     }
 }
 
+/// Who connects where, as a connection string says: what a cloud's token is minted for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    /// The first host, by name or address.
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+}
+
+impl Target {
+    /// The target of a libpq connection string or URL.
+    pub fn of(url: &str) -> Result<Self> {
+        let (rest, tls) = tls::split(url)?;
+        let config: tokio_postgres::Config = tls
+            .driver_string(&rest)
+            .parse()
+            .map_err(|e: tokio_postgres::Error| Error::new(ErrorKind::Postgres, e.to_string()))?;
+        // A socket is a host only on Unix, so that elsewhere every host is one by name or address.
+        #[allow(clippy::unnecessary_find_map)]
+        let host = config.get_hosts().iter().find_map(|host| match host {
+            tokio_postgres::config::Host::Tcp(name) => Some(name.clone()),
+            #[cfg(unix)]
+            tokio_postgres::config::Host::Unix(_) => None,
+        });
+        let host = host.ok_or_else(|| Error::new(ErrorKind::Postgres, "the connection string names no host"))?;
+        let user = config
+            .get_user()
+            .ok_or_else(|| Error::new(ErrorKind::Postgres, "the connection string names no user"))?
+            .to_string();
+        let port = config.get_ports().first().copied().unwrap_or(5432);
+        Ok(Self { host, port, user })
+    }
+}
+
 /// A pool of connections to one Postgres database.
 #[derive(Clone)]
 pub struct Pool(deadpool_postgres::Pool, Duration, Option<Arc<Fresh>>);
