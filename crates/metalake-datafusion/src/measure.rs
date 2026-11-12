@@ -20,7 +20,7 @@ use metalake::Scan;
 use crate::catalog::external;
 use crate::exec::MetaScanExec;
 use crate::merge::Merge;
-use crate::sink::{Delete, Update};
+use crate::sink::{Delete, Selection, Update};
 
 /// What a plan reads, and whether it shuffles.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -44,19 +44,32 @@ pub async fn measure(plan: &Arc<dyn ExecutionPlan>) -> Result<Measure> {
     };
     let mut held = Vec::new();
     visit(plan, &mut measure, &mut held);
-    for scan in held {
-        let tasks: Vec<_> = scan.plan().await.map_err(external)?.try_collect().await.map_err(external)?;
+    for read in held {
+        let (bytes, rows) = match read {
+            // Planned once: the selection keeps its files for reading.
+            Held::Selection(selection) => selection.measure().await?,
+            Held::Scan(scan) => {
+                let tasks: Vec<_> = scan.plan().await.map_err(external)?.try_collect().await.map_err(external)?;
+                let bytes = tasks.iter().map(|t| u64::try_from(t.file_size).unwrap_or(0)).sum();
+                let rows = tasks.iter().map(|t| u64::try_from(t.record_count).unwrap_or(0)).sum();
+                (bytes, rows)
+            }
+        };
         measure.scans += 1;
-        for task in tasks {
-            measure.bytes += u64::try_from(task.file_size).unwrap_or(0);
-            measure.rows = measure.rows.map(|rows| rows + u64::try_from(task.record_count).unwrap_or(0));
-        }
+        measure.bytes += bytes;
+        measure.rows = measure.rows.map(|sum| sum + rows);
     }
     Ok(measure)
 }
 
+/// A read a write holds in its sink: the rows a delete or an update selects, or a merge's table.
+enum Held<'a> {
+    Selection(&'a Selection),
+    Scan(Scan),
+}
+
 /// Adds what `plan` reads to `measure`, and the scans its writes hold, to plan, to `held`.
-fn visit(plan: &Arc<dyn ExecutionPlan>, measure: &mut Measure, held: &mut Vec<Scan>) {
+fn visit<'a>(plan: &'a Arc<dyn ExecutionPlan>, measure: &mut Measure, held: &mut Vec<Held<'a>>) {
     if let Some(scan) = plan.downcast_ref::<MetaScanExec>() {
         read(scan, measure);
     }
@@ -67,14 +80,14 @@ fn visit(plan: &Arc<dyn ExecutionPlan>, measure: &mut Measure, held: &mut Vec<Sc
     }
     if let Some(sink) = plan.downcast_ref::<DataSinkExec>().map(DataSinkExec::sink) {
         if let Some(delete) = sink.downcast_ref::<Delete>() {
-            held.push(delete.rows.scan.clone());
+            held.push(Held::Selection(&delete.rows));
         }
         if let Some(update) = sink.downcast_ref::<Update>() {
-            held.push(update.rows.scan.clone());
+            held.push(Held::Selection(&update.rows));
         }
         if let Some(merge) = sink.downcast_ref::<Merge>() {
             // The table, whole, which its join reads, and the source, a plan of its own.
-            held.push(Scan::new(&merge.table.catalog, &merge.table.table));
+            held.push(Held::Scan(Scan::new(&merge.table.catalog, &merge.table.table)));
             measure.shuffle = true;
             visit(&merge.source, measure, held);
         }

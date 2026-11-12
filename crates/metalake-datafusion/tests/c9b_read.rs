@@ -20,7 +20,7 @@ use datafusion::prelude::SessionContext;
 use futures_util::TryStreamExt;
 use metalake::vectors::Deletes;
 use metalake::{Catalog, CatalogConfig, Error, NewTable, Ref, Scan, Storage, Table, TableWriter, WriteOptions};
-use metalake_datafusion::{MetaLake, measure};
+use metalake_datafusion::{MetaLake, WrittenRow, measure};
 use metalake_pg::{Commit, Pool, Protocol};
 use serde_json::{Value, json};
 
@@ -416,5 +416,17 @@ async fn measure_after_pruning() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
     assert_eq!((merged.scans, merged.rows, merged.shuffle), (2, Some(302), true));
+
+    // Measured, then run: the delete reads the files its measure planned, and deletes their rows.
+    let plan = context
+        .sql("delete from main.db.big where k >= 210 and k < 220")
+        .await?
+        .create_physical_plan()
+        .await?;
+    assert_eq!(measure(&plan).await?.rows, Some(50));
+    let answer = datafusion::physical_plan::collect(plan, context.task_ctx()).await?;
+    assert_eq!(WrittenRow::of(&answer[0])?.count, 10);
+    let left = context.sql("select count(*) from main.db.big").await?.collect().await?;
+    assert_eq!(pretty_format_batches(&left)?.to_string().matches("| 290 ").count(), 1);
     Ok(())
 }
