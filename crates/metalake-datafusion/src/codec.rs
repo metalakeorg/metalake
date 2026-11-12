@@ -15,6 +15,7 @@ use datafusion::common::{DataFusionError, Result, Statistics, TableReference};
 use datafusion::datasource::file_format::FileFormatFactory;
 use datafusion::datasource::physical_plan::parquet::ParquetRowSelection;
 use datafusion::datasource::physical_plan::{FileGroup, FileScanConfig, FileScanConfigBuilder, ParquetSource};
+use datafusion::datasource::sink::DataSinkExec;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::TaskContext;
 use datafusion::execution::object_store::ObjectStoreUrl;
@@ -39,6 +40,7 @@ use crate::adapter::ByFieldId;
 use crate::exec::MetaScanExec;
 use crate::point::StatementPoint;
 use crate::read::TaskReaders;
+use crate::sink::Insert;
 use crate::table::MetaTable;
 
 /// What every MetaLake encoding starts with.
@@ -52,6 +54,7 @@ const VERSION: u8 = 1;
 enum Kind {
     Table = 1,
     Scan = 2,
+    Insert = 3,
 }
 
 /// `value` as MetaLake's bytes of `kind`, appended to `buf`.
@@ -61,6 +64,11 @@ fn encode<T: Serialize>(kind: Kind, value: &T, buf: &mut Vec<u8>) -> Result<()> 
     let bytes = postcard::to_stdvec(value).map_err(|e| DataFusionError::Internal(format!("MetaLake encoding: {e}")))?;
     buf.extend_from_slice(&bytes);
     Ok(())
+}
+
+/// The kind `buf` holds, if it is MetaLake's bytes; none if it is another codec's.
+fn kind_of(buf: &[u8]) -> Option<u8> {
+    buf.strip_prefix(MAGIC)?.get(1).copied()
 }
 
 /// The value of `kind` in `buf`, if `buf` is MetaLake's; none if it is another codec's.
@@ -91,6 +99,23 @@ struct TableBytes {
 struct StatementBytes {
     id: Uuid,
     refs: Vec<i32>,
+}
+
+/// A `MetaTable` again, in the process that decoded it: its catalog and storage.
+fn rebuilt(
+    catalog: &Catalog,
+    storage: &Storage,
+    on: RefValue,
+    table: Table,
+    statement: Option<Arc<StatementPoint>>,
+) -> MetaTable {
+    MetaTable {
+        on: Ref::from_value(catalog, on),
+        catalog: catalog.clone(),
+        storage: storage.clone(),
+        table,
+        statement,
+    }
 }
 
 /// The statement points of the plans this process decodes, by id: the tables of one statement share one point again.
@@ -171,13 +196,8 @@ impl LogicalExtensionCodec for MetaLakeLogicalCodec {
                 "{table_ref}: the plan's schema is not its table's"
             )));
         }
-        Ok(Arc::new(MetaTable {
-            on: Ref::from_value(&self.catalog, on),
-            catalog: self.catalog.clone(),
-            storage: self.storage.clone(),
-            table,
-            statement: statement.map(|s| self.points.shared(s.id, s.refs)),
-        }))
+        let statement = statement.map(|s| self.points.shared(s.id, s.refs));
+        Ok(Arc::new(rebuilt(&self.catalog, &self.storage, on, table, statement)))
     }
 
     fn try_encode_table_provider(
@@ -252,6 +272,15 @@ struct ScanBytes {
     files: Vec<FileBytes>,
 }
 
+/// An `insert`'s sink as it travels: the table it writes and whether it overwrites. Its rows are its input's, which
+/// DataFusion encodes as the node's child.
+#[derive(Serialize, Deserialize)]
+struct InsertBytes {
+    on: RefValue,
+    table: Table,
+    overwrite: bool,
+}
+
 /// What DataFusion's encoding drops of a file: its task, and the rows its vector leaves.
 #[derive(Serialize, Deserialize)]
 struct FileBytes {
@@ -319,6 +348,8 @@ impl TaskBytes {
 /// without Postgres. Everything else is the inner codec's.
 pub struct MetaLakePhysicalCodec {
     storage: Storage,
+    /// A process that commits has one: a write's sink commits where it runs.
+    catalog: Option<Catalog>,
     inner: Arc<dyn PhysicalExtensionCodec>,
 }
 
@@ -333,7 +364,43 @@ impl fmt::Debug for MetaLakePhysicalCodec {
 impl MetaLakePhysicalCodec {
     /// The codec of a process that reads with `storage`; `inner` encodes everything else.
     pub fn new(storage: Storage, inner: Arc<dyn PhysicalExtensionCodec>) -> Self {
-        Self { storage, inner }
+        Self {
+            storage,
+            catalog: None,
+            inner,
+        }
+    }
+
+    /// The codec of a process that also commits, with `catalog`: it decodes writes, whose sinks commit where they run.
+    pub fn with_catalog(mut self, catalog: Catalog) -> Self {
+        self.catalog = Some(catalog);
+        self
+    }
+
+    fn encode_insert(&self, insert: &Insert, buf: &mut Vec<u8>) -> Result<()> {
+        let bytes = InsertBytes {
+            on: insert.table.on.value(),
+            table: insert.table.table.clone(),
+            overwrite: insert.overwrite,
+        };
+        encode(Kind::Insert, &bytes, buf)
+    }
+
+    fn decode_insert(&self, bytes: InsertBytes, inputs: &[Arc<dyn ExecutionPlan>]) -> Result<Arc<dyn ExecutionPlan>> {
+        let catalog = self.catalog.as_ref().ok_or_else(|| {
+            DataFusionError::Plan("a write commits where it runs, and this process has no catalog".into())
+        })?;
+        let [input] = inputs else {
+            return Err(DataFusionError::Internal(format!(
+                "an insert with {} inputs",
+                inputs.len()
+            )));
+        };
+        let sink = Insert {
+            table: rebuilt(catalog, &self.storage, bytes.on, bytes.table, None),
+            overwrite: bytes.overwrite,
+        };
+        Ok(Arc::new(DataSinkExec::new(Arc::clone(input), Arc::new(sink), None)))
     }
 
     fn encode_scan(&self, scan: &MetaScanExec, buf: &mut Vec<u8>) -> Result<()> {
@@ -466,8 +533,15 @@ impl PhysicalExtensionCodec for MetaLakePhysicalCodec {
         ctx: &TaskContext,
         proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        match decode::<ScanBytes>(Kind::Scan, buf) {
-            Some(bytes) => self.decode_scan(bytes?, ctx),
+        match kind_of(buf) {
+            Some(k) if k == Kind::Insert as u8 => {
+                let bytes = decode::<InsertBytes>(Kind::Insert, buf).expect("MetaLake's bytes")?;
+                self.decode_insert(bytes, inputs)
+            }
+            Some(_) => {
+                let bytes = decode::<ScanBytes>(Kind::Scan, buf).expect("MetaLake's bytes")?;
+                self.decode_scan(bytes, ctx)
+            }
             None => self.inner.try_decode(buf, inputs, ctx, proto_converter),
         }
     }
@@ -478,10 +552,16 @@ impl PhysicalExtensionCodec for MetaLakePhysicalCodec {
         buf: &mut Vec<u8>,
         proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<()> {
-        match node.downcast_ref::<MetaScanExec>() {
-            Some(scan) => self.encode_scan(scan, buf),
-            None => self.inner.try_encode(node, buf, proto_converter),
+        if let Some(scan) = node.downcast_ref::<MetaScanExec>() {
+            return self.encode_scan(scan, buf);
         }
+        if let Some(insert) = node
+            .downcast_ref::<DataSinkExec>()
+            .and_then(|exec| exec.sink().downcast_ref::<Insert>())
+        {
+            return self.encode_insert(insert, buf);
+        }
+        self.inner.try_encode(node, buf, proto_converter)
     }
 
     fn try_decode_udf(&self, name: &str, buf: &[u8]) -> Result<Arc<ScalarUDF>> {

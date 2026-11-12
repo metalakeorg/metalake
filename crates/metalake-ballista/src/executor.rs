@@ -1,5 +1,5 @@
-//! An executor of MetaLake's plans: storage and no catalog. It decodes each stage's MetaLake scans with the lake's
-//! storage, under its own identity, and reads; it never asks Postgres.
+//! An executor of MetaLake's plans: storage, and a catalog only to write. It decodes each stage's MetaLake scans with the
+//! lake's storage, under its own identity, and reads without asking Postgres; a write's sink commits where it runs.
 
 use std::sync::Arc;
 
@@ -9,7 +9,7 @@ use ballista_core::{ConfigProducer, RuntimeProducer};
 use datafusion::error::Result;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-use metalake::Storage;
+use metalake::{Catalog, Storage};
 use metalake_datafusion::{CommitOptions, MetaLakePhysicalCodec};
 
 /// What a Ballista executor is made of for a lake: its sessions' configuration, a runtime with the lake's store, and
@@ -21,8 +21,9 @@ pub struct ExecutorParts {
     pub codec: BallistaCodec,
 }
 
-/// The parts of an executor that reads the lake of `storage`.
-pub fn executor(storage: Storage) -> Result<ExecutorParts> {
+/// The parts of an executor that reads the lake of `storage` and, with `catalog`, also writes it: a write's sink
+/// commits where it runs (milestone 4's first cut). Without one, it refuses a write's plan.
+pub fn executor(storage: Storage, catalog: Option<Catalog>) -> Result<ExecutorParts> {
     let url = ObjectStoreUrl::parse(storage.base())?;
     let store = storage.store().clone();
     let runtime_producer: RuntimeProducer = Arc::new(move |_| {
@@ -30,7 +31,10 @@ pub fn executor(storage: Storage) -> Result<ExecutorParts> {
         runtime.register_object_store(url.as_ref(), store.clone());
         Ok(Arc::new(runtime))
     });
-    let physical = MetaLakePhysicalCodec::new(storage, Arc::new(BallistaPhysicalExtensionCodec::default()));
+    let mut physical = MetaLakePhysicalCodec::new(storage, Arc::new(BallistaPhysicalExtensionCodec::default()));
+    if let Some(catalog) = catalog {
+        physical = physical.with_catalog(catalog);
+    }
     Ok(ExecutorParts {
         // MetaLake's commit options known, so that a job's are taken and not dropped.
         config_producer: Arc::new(|| CommitOptions::register(default_config_producer())),
