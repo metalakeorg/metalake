@@ -85,8 +85,8 @@ impl Router {
     }
 
     /// The rule's route for `plan`, the cluster's only if it answers.
-    async fn decide(&self, plan: &Arc<dyn ExecutionPlan>, options: &MetaLakeOptions) -> Route {
-        let measured = measure(plan);
+    async fn decide(&self, plan: &Arc<dyn ExecutionPlan>, options: &MetaLakeOptions) -> Result<Route> {
+        let measured = measure(plan).await?;
         let (mut route, threshold) = route(&measured, options);
         if route == Route::Cluster && !self.scheduler.reachable().await {
             log::warn!("metalake: the cluster at {} does not answer; running locally", self.scheduler);
@@ -99,7 +99,7 @@ impl Router {
             measured.scans,
             measured.shuffle
         );
-        route
+        Ok(route)
     }
 }
 
@@ -113,7 +113,7 @@ impl QueryPlanner for Router {
             Engine::Cluster => self.cluster.create_physical_plan(plan, session).await,
             Engine::Auto => {
                 let local = self.local.create_physical_plan(plan, session).await?;
-                match self.decide(&local, &options).await {
+                match self.decide(&local, &options).await? {
                     Route::Local => Ok(local),
                     Route::Cluster => self.cluster.create_physical_plan(plan, session).await,
                 }

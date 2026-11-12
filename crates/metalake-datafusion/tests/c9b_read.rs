@@ -389,7 +389,7 @@ async fn measure_after_pruning() -> Result<(), Box<dyn std::error::Error>> {
         let context = context.clone();
         async move {
             let plan = context.sql(sql).await?.create_physical_plan().await?;
-            Ok::<_, Box<dyn std::error::Error>>(measure(&plan))
+            Ok::<_, Box<dyn std::error::Error>>(measure(&plan).await?)
         }
     };
 
@@ -404,5 +404,17 @@ async fn measure_after_pruning() -> Result<(), Box<dyn std::error::Error>> {
     assert!(grouped.shuffle, "{grouped:?}");
     let joined = measured("select b.s from main.db.big b join main.db.small s on b.k = s.k").await?;
     assert_eq!((joined.scans, joined.rows, joined.shuffle), (2, Some(302), true));
+
+    // A write's reads are in its sink, not the plan's children: measured all the same.
+    let deleted = measured("delete from main.db.big where k >= 210 and k < 220").await?;
+    assert_eq!((deleted.scans, deleted.rows, deleted.shuffle), (1, Some(50), false));
+    assert!(deleted.bytes > 0);
+    let updated = measured("update main.db.big set s = 'x' where k >= 210 and k < 220").await?;
+    assert_eq!((updated.scans, updated.rows), (1, Some(50)));
+    let merged = measured(
+        "merge into main.db.big t using main.db.small s on t.k = s.k when matched then delete",
+    )
+    .await?;
+    assert_eq!((merged.scans, merged.rows, merged.shuffle), (2, Some(302), true));
     Ok(())
 }

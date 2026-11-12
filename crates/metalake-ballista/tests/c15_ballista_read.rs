@@ -187,6 +187,15 @@ async fn ballista_engine_auto() -> Result<(), Box<dyn std::error::Error>> {
     }
     assert!(shown(&cluster, sql).await?.contains("DistributedQueryExec"));
     assert_eq!(rows(&cluster, sql).await?, here);
+    // Writes too, whose reads are in their sinks.
+    for write in [
+        "insert into main.db.t select k + 100, s from main.db.u",
+        "delete from main.db.t where k = 4",
+        "update main.db.t set label = 'x' where k = 5",
+        "merge into main.db.t t using main.db.u u on t.k = u.k when matched then delete",
+    ] {
+        assert!(shown(&cluster, write).await?.contains("DistributedQueryExec"), "{write}");
+    }
     assert_eq!(here, rows(&local, sql).await?);
     Ok(())
 }
