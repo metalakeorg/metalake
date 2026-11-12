@@ -94,6 +94,8 @@ async fn sessions() -> Result<(SessionContext, Standalone, i64, Ref, MetaLake), 
     .await?;
     let writes = Catalog::connect(CatalogConfig::new(url(), &schema)).await?;
     let cluster = metalake_ballista::standalone(&client, scheduler, storage, Some(writes)).await?;
+    // On the cluster, whatever the router's rule would say of these small tables.
+    cluster.sql("set metalake.engine = 'cluster'").await?.collect().await?;
     Ok((local, cluster, before, main, client))
 }
 
@@ -156,22 +158,67 @@ async fn ballista_plan_distributed() -> Result<(), Box<dyn std::error::Error>> {
 async fn ballista_engine_forced() -> Result<(), Box<dyn std::error::Error>> {
     let (local, cluster, _, _, _) = sessions().await?;
     let sql = "select k from main.db.u where k > 7 order by k";
-    let shown = |context: &SessionContext| {
-        let context = context.clone();
-        async move {
-            let plan = context.sql(sql).await?.create_physical_plan().await?;
-            Ok::<_, Box<dyn std::error::Error>>(displayable(plan.as_ref()).indent(true).to_string())
-        }
-    };
-    assert!(shown(&cluster).await?.contains("DistributedQueryExec"));
+    assert!(shown(&cluster, sql).await?.contains("DistributedQueryExec"));
     cluster.sql("set metalake.engine = 'local'").await?.collect().await?;
-    let here = shown(&cluster).await?;
+    let here = shown(&cluster, sql).await?;
     assert!(!here.contains("DistributedQueryExec") && here.contains("MetaScanExec"), "{here}");
     assert_eq!(rows(&cluster, sql).await?, rows(&local, sql).await?);
     cluster.sql("set metalake.engine = 'cluster'").await?.collect().await?;
-    assert!(shown(&cluster).await?.contains("DistributedQueryExec"));
+    assert!(shown(&cluster, sql).await?.contains("DistributedQueryExec"));
     assert!(cluster.sql("set metalake.engine = 'mars'").await.is_err());
     Ok(())
+}
+
+/// `auto` lets the rule choose: the tests' tables are far under its thresholds, so their statements run locally; with
+/// a threshold of none, on the cluster; the same rows either way.
+#[tokio::test(flavor = "multi_thread")]
+async fn ballista_engine_auto() -> Result<(), Box<dyn std::error::Error>> {
+    let (local, cluster, _, _, _) = sessions().await?;
+    let sql = "select u.k % 3 as g, count(*) as c from main.db.u group by 1 order by 1";
+    cluster.sql("set metalake.engine = 'auto'").await?.collect().await?;
+    let small = shown(&cluster, sql).await?;
+    assert!(!small.contains("DistributedQueryExec") && small.contains("MetaScanExec"), "{small}");
+    let here = rows(&cluster, sql).await?;
+    for set in [
+        "set metalake.engine.threshold = 0",
+        "set metalake.engine.shuffle_threshold = 0",
+    ] {
+        cluster.sql(set).await?.collect().await?;
+    }
+    assert!(shown(&cluster, sql).await?.contains("DistributedQueryExec"));
+    assert_eq!(rows(&cluster, sql).await?, here);
+    assert_eq!(here, rows(&local, sql).await?);
+    Ok(())
+}
+
+/// A cluster that does not answer: `auto` runs what the rule would send to it locally, and answers; forced to the
+/// cluster, the statement fails.
+#[tokio::test(flavor = "multi_thread")]
+async fn ballista_engine_auto_without_cluster() -> Result<(), Box<dyn std::error::Error>> {
+    let (local, _, _, _, client) = sessions().await?;
+    let nowhere = metalake_ballista::session(&client, &format!("df://127.0.0.1:{}", closed_port()?)).await?;
+    for set in ["set metalake.engine = 'auto'", "set metalake.engine.threshold = 0"] {
+        nowhere.sql(set).await?.collect().await?;
+    }
+    let sql = "select k from main.db.u where k > 7 order by k";
+    let shown_here = shown(&nowhere, sql).await?;
+    assert!(!shown_here.contains("DistributedQueryExec"), "{shown_here}");
+    assert_eq!(rows(&nowhere, sql).await?, rows(&local, sql).await?);
+    nowhere.sql("set metalake.engine = 'cluster'").await?.collect().await?;
+    assert!(rows(&nowhere, sql).await.is_err());
+    Ok(())
+}
+
+/// A port nothing listens on: one bound and let go.
+fn closed_port() -> std::io::Result<u16> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    listener.local_addr().map(|a| a.port())
+}
+
+/// The physical plan of `sql`, shown.
+async fn shown(context: &SessionContext, sql: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let plan = context.sql(sql).await?.create_physical_plan().await?;
+    Ok(displayable(plan.as_ref()).indent(true).to_string())
 }
 
 /// An insert runs on the cluster: its rows read there, written and committed by the executor, with what the session's

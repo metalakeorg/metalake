@@ -19,7 +19,7 @@ pub async fn session(lake: &MetaLake, scheduler: &str) -> Result<SessionContext>
     let state = with_codecs(lake, lake.context()?.state());
     let local = state.query_planner().clone();
     let remote = SessionContext::remote_with_state(scheduler, state).await?.state();
-    let router = Router::new(local, remote.query_planner().clone());
+    let router = Router::new(local, remote.query_planner().clone(), scheduler);
     let state = SessionStateBuilder::new_from_existing(remote)
         .with_query_planner(Arc::new(router))
         .build();

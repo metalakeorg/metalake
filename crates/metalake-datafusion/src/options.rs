@@ -20,6 +20,9 @@ pub enum Engine {
     Local,
     /// On the cluster the session reaches.
     Cluster,
+    /// Where the router's rule says, statement by statement: locally, unless what it reads after pruning is past a
+    /// threshold and the cluster answers.
+    Auto,
 }
 
 impl fmt::Display for Engine {
@@ -27,6 +30,7 @@ impl fmt::Display for Engine {
         f.write_str(match self {
             Engine::Local => "local",
             Engine::Cluster => "cluster",
+            Engine::Auto => "auto",
         })
     }
 }
@@ -38,8 +42,9 @@ impl FromStr for Engine {
         match value.to_ascii_lowercase().as_str() {
             "local" => Ok(Engine::Local),
             "cluster" => Ok(Engine::Cluster),
+            "auto" => Ok(Engine::Auto),
             _ => Err(DataFusionError::Configuration(format!(
-                "metalake.engine {value}: one of local, cluster"
+                "metalake.engine {value}: one of local, cluster, auto"
             ))),
         }
     }
@@ -61,6 +66,10 @@ pub struct MetaLakeOptions {
     pub app_version: Option<u64>,
     /// Where statements run; none, where the session runs them by default.
     pub engine: Option<Engine>,
+    /// With `auto`: the bytes read, after pruning, from which a statement goes to the cluster.
+    pub engine_threshold: Option<u64>,
+    /// The same, for a statement that shuffles (a hash join or aggregation).
+    pub engine_shuffle_threshold: Option<u64>,
 }
 
 impl ConfigExtension for MetaLakeOptions {
@@ -94,6 +103,8 @@ impl ExtensionOptions for MetaLakeOptions {
                 self.app_version = Some(version);
             }
             "engine" => self.engine = Some(value.parse()?),
+            "engine.threshold" => self.engine_threshold = Some(bytes(key, value)?),
+            "engine.shuffle_threshold" => self.engine_shuffle_threshold = Some(bytes(key, value)?),
             _ => {
                 return Err(DataFusionError::Configuration(format!(
                     "metalake.{key}: no such option"
@@ -125,10 +136,27 @@ impl ExtensionOptions for MetaLakeOptions {
             entry(
                 "engine",
                 self.engine.map(|e| e.to_string()),
-                "Where statements run: local or cluster.",
+                "Where statements run: local, cluster or auto.",
+            ),
+            entry(
+                "engine.threshold",
+                self.engine_threshold.map(|v| v.to_string()),
+                "With auto: the bytes read, after pruning, from which a statement goes to the cluster.",
+            ),
+            entry(
+                "engine.shuffle_threshold",
+                self.engine_shuffle_threshold.map(|v| v.to_string()),
+                "The same, for a statement that shuffles.",
             ),
         ]
     }
+}
+
+/// A number of bytes, as an option says it.
+fn bytes(key: &str, value: &str) -> datafusion::common::Result<u64> {
+    value
+        .parse()
+        .map_err(|e| DataFusionError::Configuration(format!("metalake.{key} {value}: a number of bytes: {e}")))
 }
 
 impl MetaLakeOptions {
@@ -171,7 +199,9 @@ mod tests {
             message: Some("two rows".into()),
             app: Some("loader".into()),
             app_version: Some(7),
-            engine: Some(Engine::Local),
+            engine: Some(Engine::Auto),
+            engine_threshold: Some(1 << 20),
+            engine_shuffle_threshold: Some(0),
         };
         let mut here = MetaLakeOptions::register(SessionConfig::new());
         here.options_mut().extensions.insert(sent.clone());
