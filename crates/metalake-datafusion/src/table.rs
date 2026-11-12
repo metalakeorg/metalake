@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::stats::Precision;
-use datafusion::common::{DFSchema, DFSchemaRef, Statistics, not_impl_err};
+use datafusion::common::{DFSchemaRef, Statistics, not_impl_err};
 use datafusion::datasource::TableType;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource};
@@ -18,7 +18,6 @@ use datafusion::datasource::table_schema::TableSchema;
 use datafusion::error::Result as DataFusionResult;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::dml::{InsertOp, MergeIntoClause};
-use datafusion::logical_expr::utils::conjunction;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::empty::EmptyExec;
@@ -57,17 +56,7 @@ impl MetaTable {
     /// The rows `filters` match, for a statement that writes them.
     fn selection(&self, state: &dyn Session, filters: Vec<Expr>) -> DataFusionResult<Selection> {
         self.on.writable().map_err(external)?;
-        let scan = Scan::new(&self.catalog, &self.table).with_positions();
-        let scan = filters::pruned(scan, &self.table, &filters).map_err(external)?;
-        let names = DFSchema::try_from(scan.schema().clone())?;
-        let filter = conjunction(filters)
-            .map(|f| state.create_physical_expr(f, &names))
-            .transpose()?;
-        Ok(Selection {
-            table: self.clone(),
-            scan,
-            filter,
-        })
+        Selection::new(self.clone(), filters, state)
     }
 
     /// This table at the point of its statement.
@@ -249,17 +238,8 @@ impl TableProvider for MetaTable {
         filters: Vec<Expr>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         let rows = self.selection(state, filters)?;
-        let names = DFSchema::try_from(rows.scan.schema().clone())?;
-        let assignments = assignments
-            .into_iter()
-            .map(|(column, value)| {
-                Ok((
-                    self.table.schema().index_of(&column)?,
-                    state.create_physical_expr(value, &names)?,
-                ))
-            })
-            .collect::<DataFusionResult<Vec<_>>>()?;
-        Ok(no_input(rows.scan.schema().clone(), Update { rows, assignments }))
+        let update = Update::new(rows, assignments, state)?;
+        Ok(no_input(update.rows.scan.schema().clone(), update))
     }
 }
 

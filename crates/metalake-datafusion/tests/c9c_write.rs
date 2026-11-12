@@ -232,3 +232,32 @@ async fn tag_refuses_writes() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(lake.keys("v1.db.t").await?, [1]);
     Ok(())
 }
+
+/// What a commit says comes in the session's options, which SQL sets and which travel to any process: an `insert`
+/// commits with its author and message, and one with a writer's key and a version it already used applies once.
+#[tokio::test]
+async fn insert_commit_options() -> Result<(), Box<dyn std::error::Error>> {
+    let lake = lake().await?;
+    let context = &lake.context;
+    for set in [
+        "set metalake.author = 'ana'",
+        "set metalake.message = 'two rows'",
+        "set metalake.app = 'loader'",
+        "set metalake.app_version = 1",
+    ] {
+        context.sql(set).await?.collect().await?;
+    }
+    let insert = "insert into main.db.t values (1, 'a'), (2, 'b')";
+    context.sql(insert).await?.collect().await?;
+    let last = &lake.main.history(1).await?[0];
+    assert_eq!(
+        (last.author.as_deref(), last.message.as_deref()),
+        (Some("ana"), Some("two rows"))
+    );
+
+    // The same writer and version again: already applied, nothing written twice.
+    context.sql(insert).await?.collect().await?;
+    let count = context.sql("select count(*) from main.db.t").await?.collect().await?;
+    assert_eq!(count[0].column(0).as_primitive::<Int64Type>().value(0), 2);
+    Ok(())
+}

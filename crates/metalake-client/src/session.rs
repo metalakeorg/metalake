@@ -20,7 +20,7 @@ use datafusion::physical_plan::{ExecutionPlan, collect, execute_stream};
 use datafusion::prelude::SessionContext;
 use datafusion::sql::parser::{DFParser, Statement};
 use futures_util::{StreamExt, TryStreamExt};
-use metalake_datafusion::{CommitDetails, MetaLake, Source};
+use metalake_datafusion::{CommitDetails, CommitOptions, MetaLake, Source};
 
 use crate::write::{Details, TablePath, Written};
 use crate::{Error, Lake, Result};
@@ -173,7 +173,8 @@ impl Session {
     /// Runs what writes, with what its commit should say.
     async fn run_with(&self, frame: DataFrame, details: Arc<CommitDetails>) -> Result<u64> {
         let task = frame.task_ctx();
-        let config = task.session_config().clone().with_extension(details);
+        // What it asks travels as options, to wherever it runs; what came of it comes back in `details`.
+        let config = CommitOptions::of(&details, task.session_config().clone()).with_extension(details);
         let task = Arc::new(task.with_session_config(config));
         let plan = frame.create_physical_plan().await?;
         Ok(rows_of(&collect(plan, task).await?))

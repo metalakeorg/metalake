@@ -18,6 +18,7 @@ use datafusion::sql::parser::Statement;
 use metalake::path::{DEFAULT_NAMESPACE, MAIN, NAMESPACE_SEPARATOR};
 use metalake::{Catalog, Error, Ref, Result, Storage, TablePath};
 
+use crate::details::CommitOptions;
 use crate::point::{self, OnePoint};
 use crate::table::MetaTable;
 use crate::{changes, ddl};
@@ -73,14 +74,15 @@ impl MetaLake {
         crate::codec::MetaLakeLogicalCodec::new(self.shared.catalog.clone(), self.shared.storage.clone(), inner)
     }
 
-    /// The codec of a physical plan that holds this lake's scans, built with this lake's storage. An executor without a
-    /// catalog makes one with `MetaLakePhysicalCodec::new`.
+    /// The codec of a physical plan that holds this lake's scans and writes, built with this lake's storage and catalog.
+    /// An executor that only reads makes one with `MetaLakePhysicalCodec::new`, without a catalog.
     #[cfg(feature = "proto")]
     pub fn physical_codec(
         &self,
         inner: Arc<dyn datafusion_proto::physical_plan::PhysicalExtensionCodec>,
     ) -> crate::codec::MetaLakePhysicalCodec {
         crate::codec::MetaLakePhysicalCodec::new(self.shared.storage.clone(), inner)
+            .with_catalog(self.shared.catalog.clone())
     }
 
     /// Lets statements read `provider` as long as what this answers lives, by the name it gives.
@@ -122,6 +124,7 @@ impl MetaLake {
             .with_create_default_catalog_and_schema(false);
         // `varchar` is a table's string, which has no view.
         config.options_mut().sql_parser.map_string_types_to_utf8view = false;
+        let config = CommitOptions::register(config);
         let context = SessionContext::new_with_config(config);
         context.register_catalog_list(Arc::new(self.clone()));
         context.add_analyzer_rule(Arc::new(OnePoint));

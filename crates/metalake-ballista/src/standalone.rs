@@ -14,7 +14,7 @@ use ballista_executor::new_standalone_executor_from_builder;
 use ballista_scheduler::standalone::new_standalone_scheduler_with_builder;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::prelude::SessionContext;
-use metalake::Storage;
+use metalake::{Catalog, Storage};
 use metalake_datafusion::MetaLake;
 use tokio::runtime::Runtime;
 
@@ -58,8 +58,13 @@ impl Deref for Standalone {
 }
 
 /// A session of `client` on a cluster in this process: a scheduler planning on `scheduler`, a lake connected apart,
-/// and an executor reading with `executor`.
-pub async fn standalone(client: &MetaLake, scheduler: MetaLake, executor: Storage) -> Result<Standalone> {
+/// and an executor reading with `executor` and, with `writes`, committing on it.
+pub async fn standalone(
+    client: &MetaLake,
+    scheduler: MetaLake,
+    executor: Storage,
+    writes: Option<Catalog>,
+) -> Result<Standalone> {
     let servers = Servers(Some(
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -69,7 +74,7 @@ pub async fn standalone(client: &MetaLake, scheduler: MetaLake, executor: Storag
             .map_err(external)?,
     ));
     let scheduler_parts = scheduler::scheduler(scheduler)?;
-    let executor_parts = executor::executor(executor)?;
+    let executor_parts = executor::executor(executor, writes)?;
     let started = servers.0.as_ref().expect("just built").spawn(async move {
         let address = new_standalone_scheduler_with_builder(
             scheduler_parts.session_builder,

@@ -10,9 +10,13 @@ use datafusion::arrow::array::{Array, ArrayRef, AsArray, RecordBatch};
 use datafusion::arrow::compute::kernels::cast::cast;
 use datafusion::arrow::compute::{filter_record_batch, prep_null_mask_filter};
 use datafusion::arrow::datatypes::{Int64Type, SchemaRef};
+use datafusion::catalog::Session;
+use datafusion::common::DFSchema;
 use datafusion::datasource::sink::DataSink;
 use datafusion::error::Result;
-use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::execution::{SendableRecordBatchStream, SessionState, SessionStateBuilder, TaskContext};
+use datafusion::logical_expr::Expr;
+use datafusion::logical_expr::utils::conjunction;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType};
 use futures_util::stream::{self, BoxStream};
@@ -21,8 +25,8 @@ use metalake::vectors::{Deletes, FILE_ID, POSITION};
 use metalake::{Scan, TableWriter, WriteOptions};
 
 use crate::catalog::external;
-use crate::details;
 use crate::table::MetaTable;
+use crate::{details, filters};
 
 /// An `insert`: the rows of its stream, in new files, in one commit. An `insert overwrite` removes in that commit the
 /// files its read saw, and is refused if the table has changed since (CMT-6).
@@ -77,9 +81,30 @@ pub(crate) struct Selection {
     pub scan: Scan,
     /// Over the scan's schema; none matches every row.
     pub filter: Option<Arc<dyn PhysicalExpr>>,
+    /// The statement's filters, which the scan and the filter are made of: what a process that runs it gets.
+    #[cfg_attr(not(feature = "proto"), allow(dead_code))]
+    pub filters: Vec<Expr>,
 }
 
 impl Selection {
+    /// The rows of `table` that `filters` match: the core's scan, its files pruned by them in Postgres, each row with its
+    /// file and position; and their conjunction over that scan, as `state` makes it. The same wherever it is made, in
+    /// the process that plans or in one that runs a statement it was sent.
+    pub(crate) fn new(table: MetaTable, filters: Vec<Expr>, state: &dyn Session) -> Result<Self> {
+        let scan = Scan::new(&table.catalog, &table.table).with_positions();
+        let scan = filters::pruned(scan, &table.table, &filters).map_err(external)?;
+        let names = DFSchema::try_from(scan.schema().clone())?;
+        let filter = conjunction(filters.clone())
+            .map(|f| state.create_physical_expr(f, &names))
+            .transpose()?;
+        Ok(Self {
+            table,
+            scan,
+            filter,
+            filters,
+        })
+    }
+
     /// The batches of the rows that match; a filter that is null for a row does not match it.
     async fn rows(&self) -> Result<BoxStream<'static, Result<RecordBatch>>> {
         // Taken whole: a stream of them keeps a connection, and what writes needs another while it reads them, so that as
@@ -108,6 +133,16 @@ impl Selection {
         });
         Ok(batches.boxed())
     }
+}
+
+/// A session of `context`'s configuration and runtime, with DataFusion's own functions and rules: where a process that
+/// runs a statement makes its expressions and plans as the planning process's session made them.
+pub(crate) fn session(context: &TaskContext) -> SessionState {
+    SessionStateBuilder::new()
+        .with_config(context.session_config().clone())
+        .with_runtime_env(context.runtime_env())
+        .with_default_features()
+        .build()
 }
 
 /// Marks the rows of `batch` to delete.
@@ -167,6 +202,31 @@ pub(crate) struct Update {
     pub rows: Selection,
     /// Each assigned column of the table, by its place, and its new value, over the scan's schema.
     pub assignments: Vec<(usize, Arc<dyn PhysicalExpr>)>,
+    /// The statement's assignments, which those are made of: what a process that runs it gets.
+    #[cfg_attr(not(feature = "proto"), allow(dead_code))]
+    pub statement: Vec<(String, Expr)>,
+}
+
+impl Update {
+    /// The update of `rows` that `assignments` (a column's name, its new value) say, as `state` makes their values.
+    pub(crate) fn new(rows: Selection, assignments: Vec<(String, Expr)>, state: &dyn Session) -> Result<Self> {
+        let names = DFSchema::try_from(rows.scan.schema().clone())?;
+        let schema = rows.table.table.schema().clone();
+        let physical = assignments
+            .iter()
+            .map(|(column, value)| {
+                Ok((
+                    schema.index_of(column)?,
+                    state.create_physical_expr(value.clone(), &names)?,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            rows,
+            assignments: physical,
+            statement: assignments,
+        })
+    }
 }
 
 impl Update {

@@ -8,37 +8,47 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex, Weak};
+use std::time::SystemTime;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::TableProvider;
-use datafusion::common::{DataFusionError, Result, Statistics, TableReference};
+use datafusion::common::{DFSchema, DataFusionError, Result, Statistics, TableReference};
 use datafusion::datasource::file_format::FileFormatFactory;
 use datafusion::datasource::physical_plan::parquet::ParquetRowSelection;
 use datafusion::datasource::physical_plan::{FileGroup, FileScanConfig, FileScanConfigBuilder, ParquetSource};
+use datafusion::datasource::sink::{DataSink, DataSinkExec};
 use datafusion::datasource::source::DataSourceExec;
-use datafusion::execution::TaskContext;
 use datafusion::execution::object_store::ObjectStoreUrl;
-use datafusion::logical_expr::{AggregateUDF, Extension, HigherOrderUDF, LogicalPlan, ScalarUDF, WindowUDF};
+use datafusion::execution::{SessionState, TaskContext};
+use datafusion::logical_expr::dml::{MergeIntoAction, MergeIntoClause, MergeIntoClauseKind};
+use datafusion::logical_expr::{AggregateUDF, Expr, Extension, HigherOrderUDF, LogicalPlan, ScalarUDF, WindowUDF};
 use datafusion::parquet::arrow::arrow_reader::{RowSelection, RowSelector};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::physical_expr::proto_decode::PhysicalExprDecodeCtx;
 use datafusion::physical_expr_common::physical_expr::proto_encode::PhysicalExprEncodeCtx;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::bytes::{
-    physical_plan_from_bytes_with_extension_codec, physical_plan_to_bytes_with_extension_codec,
+    Serializeable, physical_plan_from_bytes_with_extension_codec, physical_plan_to_bytes_with_extension_codec,
 };
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::{PhysicalExtensionCodec, PhysicalProtoConverterExtension};
-use metalake::{Catalog, Evolve, Ref, RefValue, ScanTask, Storage, Table, TaskVector};
+use datafusion_proto::protobuf::DfSchema;
+use metalake::{
+    Catalog, Evolve, Ref, RefValue, RowChange, ScanTask, Storage, StreamTask, Table, TableChanges, TaskRows, TaskVector,
+};
+use prost::Message;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
 use uuid::Uuid;
 
 use crate::adapter::ByFieldId;
+use crate::changes::{ChangesExec, ChangesTable};
 use crate::exec::MetaScanExec;
+use crate::merge::Merge;
 use crate::point::StatementPoint;
 use crate::read::TaskReaders;
+use crate::sink::{Delete, Insert, Selection, Update, session};
 use crate::table::MetaTable;
 
 /// What every MetaLake encoding starts with.
@@ -52,6 +62,12 @@ const VERSION: u8 = 1;
 enum Kind {
     Table = 1,
     Scan = 2,
+    Insert = 3,
+    Delete = 4,
+    Update = 5,
+    Merge = 6,
+    Changes = 7,
+    ChangesScan = 8,
 }
 
 /// `value` as MetaLake's bytes of `kind`, appended to `buf`.
@@ -61,6 +77,11 @@ fn encode<T: Serialize>(kind: Kind, value: &T, buf: &mut Vec<u8>) -> Result<()> 
     let bytes = postcard::to_stdvec(value).map_err(|e| DataFusionError::Internal(format!("MetaLake encoding: {e}")))?;
     buf.extend_from_slice(&bytes);
     Ok(())
+}
+
+/// The kind `buf` holds, if it is MetaLake's bytes; none if it is another codec's.
+fn kind_of(buf: &[u8]) -> Option<u8> {
+    buf.strip_prefix(MAGIC)?.get(1).copied()
 }
 
 /// The value of `kind` in `buf`, if `buf` is MetaLake's; none if it is another codec's.
@@ -91,6 +112,23 @@ struct TableBytes {
 struct StatementBytes {
     id: Uuid,
     refs: Vec<i32>,
+}
+
+/// A `MetaTable` again, in the process that decoded it: its catalog and storage.
+fn rebuilt(
+    catalog: &Catalog,
+    storage: &Storage,
+    on: RefValue,
+    table: Table,
+    statement: Option<Arc<StatementPoint>>,
+) -> MetaTable {
+    MetaTable {
+        on: Ref::from_value(catalog, on),
+        catalog: catalog.clone(),
+        storage: storage.clone(),
+        table,
+        statement,
+    }
 }
 
 /// The statement points of the plans this process decodes, by id: the tables of one statement share one point again.
@@ -162,6 +200,14 @@ impl LogicalExtensionCodec for MetaLakeLogicalCodec {
         schema: SchemaRef,
         ctx: &TaskContext,
     ) -> Result<Arc<dyn TableProvider>> {
+        if kind_of(buf) == Some(Kind::Changes as u8) {
+            let bytes = decode::<ChangesBytes>(Kind::Changes, buf).expect("MetaLake's bytes")?;
+            let changes = ChangesTable {
+                changes: bytes.changes()?,
+                storage: self.storage.clone(),
+            };
+            return Ok(Arc::new(changes));
+        }
         let Some(decoded) = decode::<TableBytes>(Kind::Table, buf) else {
             return self.inner.try_decode_table_provider(buf, table_ref, schema, ctx);
         };
@@ -171,13 +217,8 @@ impl LogicalExtensionCodec for MetaLakeLogicalCodec {
                 "{table_ref}: the plan's schema is not its table's"
             )));
         }
-        Ok(Arc::new(MetaTable {
-            on: Ref::from_value(&self.catalog, on),
-            catalog: self.catalog.clone(),
-            storage: self.storage.clone(),
-            table,
-            statement: statement.map(|s| self.points.shared(s.id, s.refs)),
-        }))
+        let statement = statement.map(|s| self.points.shared(s.id, s.refs));
+        Ok(Arc::new(rebuilt(&self.catalog, &self.storage, on, table, statement)))
     }
 
     fn try_encode_table_provider(
@@ -186,6 +227,9 @@ impl LogicalExtensionCodec for MetaLakeLogicalCodec {
         node: Arc<dyn TableProvider>,
         buf: &mut Vec<u8>,
     ) -> Result<()> {
+        if let Some(changes) = node.downcast_ref::<ChangesTable>() {
+            return encode(Kind::Changes, &ChangesBytes::of(&changes.changes), buf);
+        }
         let Some(table) = node.downcast_ref::<MetaTable>() else {
             return self.inner.try_encode_table_provider(table_ref, node, buf);
         };
@@ -250,6 +294,188 @@ struct ScanBytes {
     table: Table,
     /// Each file once, however many ranges of it the groups hold.
     files: Vec<FileBytes>,
+}
+
+/// An `insert`'s sink as it travels: the table it writes and whether it overwrites. Its rows are its input's, which
+/// DataFusion encodes as the node's child.
+#[derive(Serialize, Deserialize)]
+struct InsertBytes {
+    on: RefValue,
+    table: Table,
+    overwrite: bool,
+}
+
+/// The rows a `delete` or an `update` acts on, as they travel: the table, and the statement's filters, from which the
+/// process that runs it makes the core's scan, its pruning and its filter again, as the one that planned it did.
+#[derive(Serialize, Deserialize)]
+struct RowsBytes {
+    on: RefValue,
+    table: Table,
+    /// Each a logical expression, in DataFusion's encoding.
+    filters: Vec<Vec<u8>>,
+}
+
+/// An `update` as it travels: its rows, and each assigned column's name and new value, a logical expression.
+#[derive(Serialize, Deserialize)]
+struct UpdateBytes {
+    rows: RowsBytes,
+    assignments: Vec<(String, Vec<u8>)>,
+}
+
+/// A `merge into` as it travels: its statement, from which the process that runs it plans the join and makes its
+/// clauses, as the one that planned it did. The source is a plan, in this codec's encoding, so that MetaLake's scans in it
+/// keep their tasks; the combined schema is DataFusion's protobuf; expressions are logical, in DataFusion's encoding.
+#[derive(Serialize, Deserialize)]
+struct MergeBytes {
+    on: RefValue,
+    table: Table,
+    source: Vec<u8>,
+    combined: Vec<u8>,
+    join_on: Vec<u8>,
+    clauses: Vec<ClauseBytes>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ClauseBytes {
+    kind: ClauseKind,
+    predicate: Option<Vec<u8>>,
+    action: ActionBytes,
+}
+
+#[derive(Serialize, Deserialize)]
+enum ClauseKind {
+    Matched,
+    NotMatched,
+    NotMatchedByTarget,
+    NotMatchedBySource,
+}
+
+#[derive(Serialize, Deserialize)]
+enum ActionBytes {
+    Update(Vec<(String, Vec<u8>)>),
+    Insert { columns: Vec<String>, values: Vec<Vec<u8>> },
+    Delete,
+}
+
+fn expr_bytes(expr: &Expr) -> Result<Vec<u8>> {
+    Ok(expr.to_bytes()?.to_vec())
+}
+
+impl ClauseBytes {
+    fn of(clause: &MergeIntoClause) -> Result<Self> {
+        let kind = match clause.kind {
+            MergeIntoClauseKind::Matched => ClauseKind::Matched,
+            MergeIntoClauseKind::NotMatched => ClauseKind::NotMatched,
+            MergeIntoClauseKind::NotMatchedByTarget => ClauseKind::NotMatchedByTarget,
+            MergeIntoClauseKind::NotMatchedBySource => ClauseKind::NotMatchedBySource,
+        };
+        let action = match &clause.action {
+            MergeIntoAction::Update(assignments) => ActionBytes::Update(
+                assignments
+                    .iter()
+                    .map(|(column, value)| Ok((column.clone(), expr_bytes(value)?)))
+                    .collect::<Result<_>>()?,
+            ),
+            MergeIntoAction::Insert { columns, values } => ActionBytes::Insert {
+                columns: columns.clone(),
+                values: values.iter().map(expr_bytes).collect::<Result<_>>()?,
+            },
+            MergeIntoAction::Delete => ActionBytes::Delete,
+        };
+        Ok(Self {
+            kind,
+            predicate: clause.predicate.as_ref().map(expr_bytes).transpose()?,
+            action,
+        })
+    }
+
+    fn clause(&self, ctx: &TaskContext) -> Result<MergeIntoClause> {
+        let expr = |bytes: &Vec<u8>| Expr::from_bytes_with_ctx(bytes, ctx);
+        let kind = match self.kind {
+            ClauseKind::Matched => MergeIntoClauseKind::Matched,
+            ClauseKind::NotMatched => MergeIntoClauseKind::NotMatched,
+            ClauseKind::NotMatchedByTarget => MergeIntoClauseKind::NotMatchedByTarget,
+            ClauseKind::NotMatchedBySource => MergeIntoClauseKind::NotMatchedBySource,
+        };
+        let action = match &self.action {
+            ActionBytes::Update(assignments) => MergeIntoAction::Update(
+                assignments
+                    .iter()
+                    .map(|(column, value)| Ok((column.clone(), expr(value)?)))
+                    .collect::<Result<_>>()?,
+            ),
+            ActionBytes::Insert { columns, values } => MergeIntoAction::Insert {
+                columns: columns.clone(),
+                values: values.iter().map(expr).collect::<Result<_>>()?,
+            },
+            ActionBytes::Delete => MergeIntoAction::Delete,
+        };
+        Ok(MergeIntoClause {
+            kind,
+            predicate: self.predicate.as_ref().map(expr).transpose()?,
+            action,
+        })
+    }
+}
+
+/// The changes of a range of commits as they travel: the table and the tasks, all that reading them takes.
+#[derive(Serialize, Deserialize)]
+struct ChangesBytes {
+    table: Table,
+    tasks: Vec<StreamTaskBytes>,
+}
+
+/// A `StreamTask` as it travels: its file a `TaskBytes`, whose partition is JSON text.
+#[derive(Serialize, Deserialize)]
+struct StreamTaskBytes {
+    seq: i64,
+    committed_at: SystemTime,
+    change: RowChange,
+    rows: TaskRows,
+    file: TaskBytes,
+}
+
+impl ChangesBytes {
+    fn of(changes: &TableChanges) -> Self {
+        Self {
+            table: changes.table().clone(),
+            tasks: changes
+                .tasks()
+                .iter()
+                .map(|task| StreamTaskBytes {
+                    seq: task.seq,
+                    committed_at: task.committed_at,
+                    change: task.change,
+                    rows: task.rows.clone(),
+                    file: TaskBytes::from(&task.file),
+                })
+                .collect(),
+        }
+    }
+
+    fn changes(self) -> Result<TableChanges> {
+        let tasks = self
+            .tasks
+            .into_iter()
+            .map(|task| {
+                Ok(StreamTask {
+                    seq: task.seq,
+                    committed_at: task.committed_at,
+                    change: task.change,
+                    rows: task.rows,
+                    file: task.file.task()?,
+                })
+            })
+            .collect::<Result<_>>()?;
+        Ok(TableChanges::new(self.table, tasks))
+    }
+}
+
+/// A `ChangesExec` as it travels: its changes, and the columns it reads.
+#[derive(Serialize, Deserialize)]
+struct ChangesScanBytes {
+    changes: ChangesBytes,
+    projection: Option<Vec<usize>>,
 }
 
 /// What DataFusion's encoding drops of a file: its task, and the rows its vector leaves.
@@ -319,6 +545,8 @@ impl TaskBytes {
 /// without Postgres. Everything else is the inner codec's.
 pub struct MetaLakePhysicalCodec {
     storage: Storage,
+    /// A process that commits has one: a write's sink commits where it runs.
+    catalog: Option<Catalog>,
     inner: Arc<dyn PhysicalExtensionCodec>,
 }
 
@@ -333,7 +561,156 @@ impl fmt::Debug for MetaLakePhysicalCodec {
 impl MetaLakePhysicalCodec {
     /// The codec of a process that reads with `storage`; `inner` encodes everything else.
     pub fn new(storage: Storage, inner: Arc<dyn PhysicalExtensionCodec>) -> Self {
-        Self { storage, inner }
+        Self {
+            storage,
+            catalog: None,
+            inner,
+        }
+    }
+
+    /// The codec of a process that also commits, with `catalog`: it decodes writes, whose sinks commit where they run.
+    pub fn with_catalog(mut self, catalog: Catalog) -> Self {
+        self.catalog = Some(catalog);
+        self
+    }
+
+    /// The catalog a write's sink commits with, which a process that only reads lacks.
+    fn writer(&self) -> Result<&Catalog> {
+        self.catalog.as_ref().ok_or_else(|| {
+            DataFusionError::Plan("a write commits where it runs, and this process has no catalog".into())
+        })
+    }
+
+    fn encode_rows(rows: &Selection) -> Result<RowsBytes> {
+        Ok(RowsBytes {
+            on: rows.table.on.value(),
+            table: rows.table.table.clone(),
+            filters: rows
+                .filters
+                .iter()
+                .map(|f| Ok(f.to_bytes()?.to_vec()))
+                .collect::<Result<_>>()?,
+        })
+    }
+
+    /// The rows again, made as the process that planned them made them, in a session of `ctx`'s configuration.
+    fn decode_rows(&self, bytes: RowsBytes, state: &SessionState, ctx: &TaskContext) -> Result<Selection> {
+        let table = rebuilt(self.writer()?, &self.storage, bytes.on, bytes.table, None);
+        let filters = bytes
+            .filters
+            .iter()
+            .map(|f| Expr::from_bytes_with_ctx(f, ctx))
+            .collect::<Result<_>>()?;
+        Selection::new(table, filters, state)
+    }
+
+    fn encode_insert(&self, insert: &Insert, buf: &mut Vec<u8>) -> Result<()> {
+        let bytes = InsertBytes {
+            on: insert.table.on.value(),
+            table: insert.table.table.clone(),
+            overwrite: insert.overwrite,
+        };
+        encode(Kind::Insert, &bytes, buf)
+    }
+
+    fn decode_insert(&self, bytes: InsertBytes, inputs: &[Arc<dyn ExecutionPlan>]) -> Result<Arc<dyn ExecutionPlan>> {
+        let catalog = self.writer()?;
+        let [input] = inputs else {
+            return Err(DataFusionError::Internal(format!(
+                "an insert with {} inputs",
+                inputs.len()
+            )));
+        };
+        let sink = Insert {
+            table: rebuilt(catalog, &self.storage, bytes.on, bytes.table, None),
+            overwrite: bytes.overwrite,
+        };
+        Ok(Arc::new(DataSinkExec::new(Arc::clone(input), Arc::new(sink), None)))
+    }
+
+    fn encode_delete(&self, delete: &Delete, buf: &mut Vec<u8>) -> Result<()> {
+        encode(Kind::Delete, &Self::encode_rows(&delete.rows)?, buf)
+    }
+
+    fn encode_update(&self, update: &Update, buf: &mut Vec<u8>) -> Result<()> {
+        let bytes = UpdateBytes {
+            rows: Self::encode_rows(&update.rows)?,
+            assignments: update
+                .statement
+                .iter()
+                .map(|(column, value)| Ok((column.clone(), value.to_bytes()?.to_vec())))
+                .collect::<Result<_>>()?,
+        };
+        encode(Kind::Update, &bytes, buf)
+    }
+
+    /// A delete's or an update's sink over `inputs`, which DataFusion gives it none of: the rows it finds itself.
+    fn sink_over(inputs: &[Arc<dyn ExecutionPlan>], sink: Arc<dyn DataSink>) -> Result<Arc<dyn ExecutionPlan>> {
+        let [input] = inputs else {
+            return Err(DataFusionError::Internal(format!(
+                "a write with {} inputs",
+                inputs.len()
+            )));
+        };
+        Ok(Arc::new(DataSinkExec::new(Arc::clone(input), sink, None)))
+    }
+
+    fn decode_delete(
+        &self,
+        bytes: RowsBytes,
+        inputs: &[Arc<dyn ExecutionPlan>],
+        ctx: &TaskContext,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let rows = self.decode_rows(bytes, &session(ctx), ctx)?;
+        Self::sink_over(inputs, Arc::new(Delete { rows }))
+    }
+
+    fn decode_update(
+        &self,
+        bytes: UpdateBytes,
+        inputs: &[Arc<dyn ExecutionPlan>],
+        ctx: &TaskContext,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let state = session(ctx);
+        let rows = self.decode_rows(bytes.rows, &state, ctx)?;
+        let assignments = bytes
+            .assignments
+            .iter()
+            .map(|(column, value)| Ok((column.clone(), Expr::from_bytes_with_ctx(value, ctx)?)))
+            .collect::<Result<_>>()?;
+        Self::sink_over(inputs, Arc::new(Update::new(rows, assignments, &state)?))
+    }
+
+    fn encode_merge(&self, merge: &Merge, buf: &mut Vec<u8>) -> Result<()> {
+        let combined = DfSchema::try_from(merge.combined.as_ref())
+            .map_err(|e| DataFusionError::Internal(format!("a merge's schema: {e}")))?;
+        let bytes = MergeBytes {
+            on: merge.table.on.value(),
+            table: merge.table.table.clone(),
+            source: physical_plan_to_bytes_with_extension_codec(Arc::clone(&merge.source), self)?.to_vec(),
+            combined: combined.encode_to_vec(),
+            join_on: expr_bytes(&merge.on)?,
+            clauses: merge.statement.iter().map(ClauseBytes::of).collect::<Result<_>>()?,
+        };
+        encode(Kind::Merge, &bytes, buf)
+    }
+
+    fn decode_merge(
+        &self,
+        bytes: MergeBytes,
+        inputs: &[Arc<dyn ExecutionPlan>],
+        ctx: &TaskContext,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let table = rebuilt(self.writer()?, &self.storage, bytes.on, bytes.table, None);
+        let source = physical_plan_from_bytes_with_extension_codec(&bytes.source, ctx, self)?;
+        let combined = DfSchema::decode(bytes.combined.as_slice())
+            .map_err(|e| DataFusionError::Internal(format!("a merge's schema: {e}")))?;
+        let combined =
+            DFSchema::try_from(&combined).map_err(|e| DataFusionError::Internal(format!("a merge's schema: {e}")))?;
+        let on = Expr::from_bytes_with_ctx(&bytes.join_on, ctx)?;
+        let clauses = bytes.clauses.iter().map(|c| c.clause(ctx)).collect::<Result<_>>()?;
+        let merge = Merge::new(table, source, Arc::new(combined), on, clauses, &session(ctx))?;
+        Self::sink_over(inputs, Arc::new(merge))
     }
 
     fn encode_scan(&self, scan: &MetaScanExec, buf: &mut Vec<u8>) -> Result<()> {
@@ -466,8 +843,32 @@ impl PhysicalExtensionCodec for MetaLakePhysicalCodec {
         ctx: &TaskContext,
         proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        match decode::<ScanBytes>(Kind::Scan, buf) {
-            Some(bytes) => self.decode_scan(bytes?, ctx),
+        match kind_of(buf) {
+            Some(k) if k == Kind::Insert as u8 => {
+                let bytes = decode::<InsertBytes>(Kind::Insert, buf).expect("MetaLake's bytes")?;
+                self.decode_insert(bytes, inputs)
+            }
+            Some(k) if k == Kind::Delete as u8 => {
+                let bytes = decode::<RowsBytes>(Kind::Delete, buf).expect("MetaLake's bytes")?;
+                self.decode_delete(bytes, inputs, ctx)
+            }
+            Some(k) if k == Kind::ChangesScan as u8 => {
+                let bytes = decode::<ChangesScanBytes>(Kind::ChangesScan, buf).expect("MetaLake's bytes")?;
+                let exec = ChangesExec::new(bytes.changes.changes()?, self.storage.clone(), bytes.projection)?;
+                Ok(Arc::new(exec))
+            }
+            Some(k) if k == Kind::Merge as u8 => {
+                let bytes = decode::<MergeBytes>(Kind::Merge, buf).expect("MetaLake's bytes")?;
+                self.decode_merge(bytes, inputs, ctx)
+            }
+            Some(k) if k == Kind::Update as u8 => {
+                let bytes = decode::<UpdateBytes>(Kind::Update, buf).expect("MetaLake's bytes")?;
+                self.decode_update(bytes, inputs, ctx)
+            }
+            Some(_) => {
+                let bytes = decode::<ScanBytes>(Kind::Scan, buf).expect("MetaLake's bytes")?;
+                self.decode_scan(bytes, ctx)
+            }
             None => self.inner.try_decode(buf, inputs, ctx, proto_converter),
         }
     }
@@ -478,10 +879,31 @@ impl PhysicalExtensionCodec for MetaLakePhysicalCodec {
         buf: &mut Vec<u8>,
         proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<()> {
-        match node.downcast_ref::<MetaScanExec>() {
-            Some(scan) => self.encode_scan(scan, buf),
-            None => self.inner.try_encode(node, buf, proto_converter),
+        if let Some(scan) = node.downcast_ref::<MetaScanExec>() {
+            return self.encode_scan(scan, buf);
         }
+        if let Some(changes) = node.downcast_ref::<ChangesExec>() {
+            let bytes = ChangesScanBytes {
+                changes: ChangesBytes::of(&changes.changes),
+                projection: changes.projection.clone(),
+            };
+            return encode(Kind::ChangesScan, &bytes, buf);
+        }
+        if let Some(sink) = node.downcast_ref::<DataSinkExec>().map(DataSinkExec::sink) {
+            if let Some(insert) = sink.downcast_ref::<Insert>() {
+                return self.encode_insert(insert, buf);
+            }
+            if let Some(delete) = sink.downcast_ref::<Delete>() {
+                return self.encode_delete(delete, buf);
+            }
+            if let Some(update) = sink.downcast_ref::<Update>() {
+                return self.encode_update(update, buf);
+            }
+            if let Some(merge) = sink.downcast_ref::<Merge>() {
+                return self.encode_merge(merge, buf);
+            }
+        }
+        self.inner.try_encode(node, buf, proto_converter)
     }
 
     fn try_decode_udf(&self, name: &str, buf: &[u8]) -> Result<Arc<ScalarUDF>> {

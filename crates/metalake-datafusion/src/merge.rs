@@ -21,8 +21,8 @@ use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::{Column, DFSchema, DFSchemaRef, JoinType, TableReference, exec_err};
 use datafusion::datasource::TableType;
 use datafusion::datasource::sink::DataSink;
-use datafusion::error::{DataFusionError, Result};
-use datafusion::execution::{SendableRecordBatchStream, SessionState, TaskContext};
+use datafusion::error::Result;
+use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::dml::{MergeIntoAction, MergeIntoClause, MergeIntoClauseKind};
 use datafusion::logical_expr::{Expr, LogicalPlanBuilder, col, lit};
 use datafusion::parquet::arrow::RowNumber;
@@ -37,7 +37,7 @@ use metalake::{Scan, TableWriter, WriteOptions};
 
 use crate::catalog::external;
 use crate::details;
-use crate::sink::mark;
+use crate::sink::{mark, session};
 use crate::table::{MetaTable, no_input};
 
 /// The column that tells a row that came from the source.
@@ -147,58 +147,7 @@ pub(crate) async fn plan(
 ) -> Result<Arc<dyn ExecutionPlan>> {
     table.on.writable().map_err(external)?;
     let schema = table.table.schema().clone();
-    let clauses = clauses
-        .into_iter()
-        .map(|clause| physical(clause, &schema, state, &combined))
-        .collect::<Result<Vec<_>>>()?;
-
-    // The source on the left, marked, so that it builds the join and its keys filter the table on the right, read with
-    // its positions. Rows of the table that the source lacks are read only for a clause about them.
-    let columns = schema.fields().len();
-    let source_schema = source.schema();
-    let right = Source {
-        plan: source,
-        schema: source_schema.clone(),
-    };
-    let right = StreamingTable::try_new(source_schema.clone(), vec![Arc::new(right)])?;
-    let source_name = qualifier(&combined, columns);
-    let marked = source_schema
-        .fields()
-        .iter()
-        .map(|f| col(Column::new(Some(source_name.clone()), f.name())))
-        .chain([lit(true).alias(FROM_SOURCE)]);
-    let left =
-        LogicalPlanBuilder::scan(source_name.clone(), provider_as_source(Arc::new(right)), None)?.project(marked)?;
-    let rows = provider_as_source(Arc::new(Positioned::new(table)));
-    let rows = LogicalPlanBuilder::scan(qualifier(&combined, 0), rows, None)?.build()?;
-    let join = match clauses.iter().any(|c| c.kind == Kind::NotMatchedBySource) {
-        true => JoinType::Full,
-        false => JoinType::Left,
-    };
-    let joined = left.join_on(rows, join, [on])?.build()?;
-    // A join across partitions starts reading the table before the source has been read, and its filter comes too late:
-    // one that collects the source first reads the table after it. So the whole source goes into memory.
-    let mut planner = state
-        .as_any()
-        .downcast_ref::<SessionState>()
-        .ok_or_else(|| DataFusionError::Internal("a session without its state".into()))?
-        .clone();
-    planner.config_mut().options_mut().optimizer.repartition_joins = false;
-    let joined = planner.create_physical_plan(&joined).await?;
-
-    let inserts = clauses.iter().any(|c| matches!(c.action, Action::Insert(_)));
-
-    // The rows clauses read, in the combined schema's order, where either side may be missing.
-    let fields = combined.fields().iter().map(|f| f.as_ref().clone().with_nullable(true));
-    let view = Arc::new(Schema::new(fields.collect::<Vec<Field>>()));
-    let sink = Merge {
-        table: table.clone(),
-        joined,
-        view,
-        columns,
-        clauses,
-        inserts,
-    };
+    let sink = Merge::new(table.clone(), source, combined, on, clauses, state)?;
     Ok(no_input(schema, sink))
 }
 
@@ -239,11 +188,19 @@ fn physical(clause: MergeIntoClause, schema: &SchemaRef, state: &dyn Session, co
     })
 }
 
-/// A `merge into`: it runs the join, and commits what its clauses did to its rows, once.
+/// A `merge into`: it plans the join of the source and the table when it runs, runs it, and commits what its clauses did
+/// to its rows, once. It keeps the statement it was made of, which is what a process that runs it is sent: the join
+/// reads the table with each row's file and position, which no plan's encoding keeps, so it is planned where it runs.
 #[derive(Debug)]
-struct Merge {
-    table: MetaTable,
-    joined: Arc<dyn ExecutionPlan>,
+pub(crate) struct Merge {
+    pub table: MetaTable,
+    /// The statement: its source, already planned; the schema of the table's columns and the source's; the join's
+    /// condition; its clauses.
+    pub source: Arc<dyn ExecutionPlan>,
+    pub combined: DFSchemaRef,
+    pub on: Expr,
+    #[cfg_attr(not(feature = "proto"), allow(dead_code))]
+    pub statement: Vec<MergeIntoClause>,
     view: SchemaRef,
     /// How many of the view's first columns are the table's.
     columns: usize,
@@ -253,6 +210,71 @@ struct Merge {
 }
 
 impl Merge {
+    /// The merge of `source` into `table` that `on` and `statement` say, its expressions made as `state` makes them.
+    /// The same wherever it is made, in the process that plans or in one that runs a statement it was sent.
+    pub(crate) fn new(
+        table: MetaTable,
+        source: Arc<dyn ExecutionPlan>,
+        combined: DFSchemaRef,
+        on: Expr,
+        statement: Vec<MergeIntoClause>,
+        state: &dyn Session,
+    ) -> Result<Self> {
+        let schema = table.table.schema().clone();
+        let clauses = statement
+            .iter()
+            .cloned()
+            .map(|clause| physical(clause, &schema, state, &combined))
+            .collect::<Result<Vec<_>>>()?;
+        let inserts = clauses.iter().any(|c| matches!(c.action, Action::Insert(_)));
+        // The rows clauses read, in the combined schema's order, where either side may be missing.
+        let fields = combined.fields().iter().map(|f| f.as_ref().clone().with_nullable(true));
+        let view = Arc::new(Schema::new(fields.collect::<Vec<Field>>()));
+        Ok(Self {
+            columns: schema.fields().len(),
+            table,
+            source,
+            combined,
+            on,
+            statement,
+            view,
+            clauses,
+            inserts,
+        })
+    }
+
+    /// The join of the source and the table, planned in a session of `context`'s configuration.
+    async fn joined(&self, context: &TaskContext) -> Result<Arc<dyn ExecutionPlan>> {
+        // The source on the left, marked, so that it builds the join and its keys filter the table on the right, read
+        // with its positions. Rows of the table that the source lacks are read only for a clause about them.
+        let source_schema = self.source.schema();
+        let right = Source {
+            plan: self.source.clone(),
+            schema: source_schema.clone(),
+        };
+        let right = StreamingTable::try_new(source_schema.clone(), vec![Arc::new(right)])?;
+        let source_name = qualifier(&self.combined, self.columns);
+        let marked = source_schema
+            .fields()
+            .iter()
+            .map(|f| col(Column::new(Some(source_name.clone()), f.name())))
+            .chain([lit(true).alias(FROM_SOURCE)]);
+        let left = LogicalPlanBuilder::scan(source_name.clone(), provider_as_source(Arc::new(right)), None)?
+            .project(marked)?;
+        let rows = provider_as_source(Arc::new(Positioned::new(&self.table)));
+        let rows = LogicalPlanBuilder::scan(qualifier(&self.combined, 0), rows, None)?.build()?;
+        let join = match self.clauses.iter().any(|c| c.kind == Kind::NotMatchedBySource) {
+            true => JoinType::Full,
+            false => JoinType::Left,
+        };
+        let joined = left.join_on(rows, join, [self.on.clone()])?.build()?;
+        // A join across partitions starts reading the table before the source has been read, and its filter comes too
+        // late: one that collects the source first reads the table after it. So the whole source goes into memory.
+        let mut planner = session(context);
+        planner.config_mut().options_mut().optimizer.repartition_joins = false;
+        planner.create_physical_plan(&joined).await
+    }
+
     /// A join's rows as clauses read them: the table's columns, then the source's, without the positions or the mark.
     fn view(&self, joined: &RecordBatch) -> Result<RecordBatch> {
         // The join's columns: the source's, its mark, the table's, and its two of position.
@@ -315,7 +337,7 @@ impl DataSink for Merge {
             table,
             ..
         } = &self.table;
-        let mut joined = execute_stream(self.joined.clone(), context.clone())?;
+        let mut joined = execute_stream(self.joined(context).await?, context.clone())?;
         let mut writer =
             TableWriter::new(catalog, table, storage.clone(), WriteOptions::default()).map_err(external)?;
         let mut deletes = Deletes::new();

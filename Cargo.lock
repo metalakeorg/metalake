@@ -3000,6 +3000,7 @@ dependencies = [
  "metalake-pg",
  "object_store",
  "postcard",
+ "prost",
  "serde",
  "serde_json",
  "tokio",

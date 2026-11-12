@@ -15,7 +15,8 @@ use common::{fresh_schema, url};
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::physical_plan::displayable;
 use datafusion::prelude::SessionContext;
-use metalake::{Catalog, CatalogConfig, NewTable, Storage, TableWriter, WriteOptions};
+use datafusion::sql::parser::DFParser;
+use metalake::{Catalog, CatalogConfig, NewTable, Ref, Storage, TableWriter, WriteOptions};
 use metalake_ballista::Standalone;
 use metalake_datafusion::MetaLake;
 use metalake_pg::{Commit, Pool, Protocol};
@@ -36,10 +37,10 @@ fn batch(keys: std::ops::Range<i64>) -> RecordBatch {
     RecordBatch::try_new(shape(), columns).unwrap()
 }
 
-/// A local session of the lake, the same lake on a cluster in this process, and the sequence before `t`'s
-/// delete. The lake: `main.db.t`, keys 0..10 in an object, its `s` then renamed `label`, then key 3 deleted; and
+/// A local session of the lake, the same lake on a cluster in this process, the sequence before `t`'s delete,
+/// `main`, to read its commits, and the client's lake, which runs what a statement needs it to (`table_changes`). The lake: `main.db.t`, keys 0..10 in an object, its `s` then renamed `label`, then key 3 deleted; and
 /// `main.db.u`, keys 5..15 in an inline file.
-async fn sessions() -> Result<(SessionContext, Standalone, i64), Box<dyn std::error::Error>> {
+async fn sessions() -> Result<(SessionContext, Standalone, i64, Ref, MetaLake), Box<dyn std::error::Error>> {
     let schema = fresh_schema();
     let catalog = Catalog::init(CatalogConfig::new(url(), &schema).warehouse("memory:///wh"), None).await?;
     let storage = Storage::in_memory();
@@ -85,14 +86,15 @@ async fn sessions() -> Result<(SessionContext, Standalone, i64), Box<dyn std::er
     let local = client.context()?;
     local.sql("delete from main.db.t where k = 3").await?.collect().await?;
 
-    // The scheduler's lake, connected apart; the executor, storage alone.
+    // The scheduler's lake, connected apart; the executor, storage and, to commit a write, a catalog of its own.
     let scheduler = MetaLake::new(
         Catalog::connect(CatalogConfig::new(url(), &schema)).await?,
         storage.clone(),
     )
     .await?;
-    let cluster = metalake_ballista::standalone(&client, scheduler, storage).await?;
-    Ok((local, cluster, before))
+    let writes = Catalog::connect(CatalogConfig::new(url(), &schema)).await?;
+    let cluster = metalake_ballista::standalone(&client, scheduler, storage, Some(writes)).await?;
+    Ok((local, cluster, before, main, client))
 }
 
 async fn rows(context: &SessionContext, sql: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -101,7 +103,7 @@ async fn rows(context: &SessionContext, sql: &str) -> Result<String, Box<dyn std
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ballista_join_vector_inline_rename() -> Result<(), Box<dyn std::error::Error>> {
-    let (local, cluster, _) = sessions().await?;
+    let (local, cluster, _, _, _) = sessions().await?;
     for sql in [
         "select t.k, t.label, u.s from main.db.t join main.db.u on t.k = u.k where t.k < 9 order by 1",
         "select count(*) as c, sum(k) as s, min(label) as l from main.db.t",
@@ -121,7 +123,7 @@ async fn ballista_join_vector_inline_rename() -> Result<(), Box<dyn std::error::
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ballista_at_point() -> Result<(), Box<dyn std::error::Error>> {
-    let (local, cluster, before) = sessions().await?;
+    let (local, cluster, before, _, _) = sessions().await?;
     let sql = format!("select k, label from \"main@{before}\".db.t where k = 3");
     let (here, there) = (rows(&local, &sql).await?, rows(&cluster, &sql).await?);
     assert_eq!(here, there);
@@ -131,7 +133,7 @@ async fn ballista_at_point() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ballista_plan_distributed() -> Result<(), Box<dyn std::error::Error>> {
-    let (_, cluster, _) = sessions().await?;
+    let (_, cluster, _, _, _) = sessions().await?;
     let plan = cluster
         .sql("select k from main.db.u where k > 7")
         .await?
@@ -142,25 +144,128 @@ async fn ballista_plan_distributed() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// An insert runs on the cluster: its rows read there, written and committed by the executor, with what the session's
+/// options ask of the commit; again with the same writer's key and version, it applies once.
 #[tokio::test(flavor = "multi_thread")]
-async fn ballista_write_fails() -> Result<(), Box<dyn std::error::Error>> {
-    let (_, cluster, _) = sessions().await?;
-    let insert = async {
-        cluster
-            .sql("insert into main.db.t select k, s from main.db.u")
-            .await?
-            .collect()
-            .await
-    };
-    let done = tokio::time::timeout(Duration::from_secs(60), insert).await;
-    assert!(matches!(done, Ok(Err(_))), "a write fails, and does not hang: {done:?}");
+async fn ballista_insert() -> Result<(), Box<dyn std::error::Error>> {
+    let (local, cluster, _, main, _) = sessions().await?;
+    for set in [
+        "set metalake.author = 'ana'",
+        "set metalake.message = 'from u'",
+        "set metalake.app = 'loader'",
+        "set metalake.app_version = 1",
+    ] {
+        cluster.sql(set).await?.collect().await?;
+    }
+    let insert = "insert into main.db.t select k + 100, s from main.db.u where k < 8";
+    let written = rows(&cluster, insert).await?;
+    assert!(written.contains("| 3     |"), "{written}");
+    let last = &main.history(1).await?[0];
+    assert_eq!(
+        (last.author.as_deref(), last.message.as_deref()),
+        (Some("ana"), Some("from u"))
+    );
+
+    // The same writer and version again: already applied, nothing written twice.
+    rows(&cluster, insert).await?;
+    let sql = "select k, label from main.db.t where k >= 100 order by k";
+    let (here, there) = (rows(&local, sql).await?, rows(&cluster, sql).await?);
+    assert_eq!(here, there);
+    assert_eq!(here.matches("| 10").count(), 3, "{here}");
+    Ok(())
+}
+
+/// A delete and an update run on the cluster: the executor makes their rows again from the statement's filters (the
+/// core's scan, pruned in Postgres, and their filter), and commits with what the session's options ask.
+#[tokio::test(flavor = "multi_thread")]
+async fn ballista_delete_update() -> Result<(), Box<dyn std::error::Error>> {
+    let (local, cluster, _, main, _) = sessions().await?;
+    cluster.sql("set metalake.author = 'bea'").await?.collect().await?;
+
+    let deleted = rows(&cluster, "delete from main.db.t where k >= 7").await?;
+    assert!(deleted.contains("| 3     |"), "{deleted}");
+    assert_eq!(main.history(1).await?[0].author.as_deref(), Some("bea"));
+
+    let updated = rows(
+        &cluster,
+        "update main.db.t set label = concat(label, '!') where k in (1, 2)",
+    )
+    .await?;
+    assert!(updated.contains("| 2     |"), "{updated}");
+    let last = &main.history(1).await?[0];
+    assert_eq!(
+        (last.operation.as_str(), last.author.as_deref()),
+        // New rows and vectors in one commit: the protocol's overwrite.
+        ("overwrite", Some("bea"))
+    );
+
+    let sql = "select k, label from main.db.t order by k";
+    let (here, there) = (rows(&local, sql).await?, rows(&cluster, sql).await?);
+    assert_eq!(here, there);
+    assert!(
+        here.contains("| 1 | s1!   |") && here.contains("| 6 | s6    |"),
+        "{here}"
+    );
+    assert!(!here.contains("| 7 |") && !here.contains("| 3 |"), "{here}");
+    Ok(())
+}
+
+/// A merge runs on the cluster: the executor plans the join of the source and the table (each row with its file and
+/// position) from the statement it was sent, and commits what its clauses did, once, with the session's author.
+#[tokio::test(flavor = "multi_thread")]
+async fn ballista_merge() -> Result<(), Box<dyn std::error::Error>> {
+    let (local, cluster, _, main, _) = sessions().await?;
+    cluster.sql("set metalake.author = 'cai'").await?.collect().await?;
+    let merge = "merge into main.db.t t using (select k, s from main.db.u where k < 12) u on t.k = u.k
+                 when matched and u.k = 9 then delete
+                 when matched then update set label = concat(u.s, '*')
+                 when not matched then insert (k, label) values (u.k, u.s)";
+    let affected = rows(&cluster, merge).await?;
+    // Keys 5..12 of u: 5, 6, 7, 8 and 9 match t (9 is deleted), 10 and 11 are new.
+    assert!(affected.contains("| 7     |"), "{affected}");
+    assert_eq!(main.history(1).await?[0].author.as_deref(), Some("cai"));
+
+    let sql = "select k, label from main.db.t order by k";
+    let (here, there) = (rows(&local, sql).await?, rows(&cluster, sql).await?);
+    assert_eq!(here, there);
+    assert!(
+        here.contains("| 5  | s5*   |") && here.contains("| 11 | s11   |"),
+        "{here}"
+    );
+    assert!(!here.contains("| 9  |") && !here.contains("| 3  |"), "{here}");
+    Ok(())
+}
+
+/// `table_changes` runs on the cluster: the client finds the range, and it travels as its value to the executor, which
+/// reads the commits' rows as a local read does.
+#[tokio::test(flavor = "multi_thread")]
+async fn ballista_table_changes() -> Result<(), Box<dyn std::error::Error>> {
+    let (local, cluster, before, _, client) = sessions().await?;
+    rows(&cluster, "insert into main.db.t values (50, 'x')").await?;
+    // After the rename: key 3 deleted, key 50 inserted on the cluster.
+    // With no end, the range reaches the last commit a second old (CHG-1).
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let sql =
+        format!("select k, label, _change_type from table_changes('main.db.t', {before}) order by k, _change_type");
+    let statement = || DFParser::parse_sql(&sql).map(|mut s| s.pop_front().unwrap());
+    let here = client.execute(&local, statement()?).await?.collect().await?;
+    let there = client.execute(&cluster, statement()?).await?.collect().await?;
+    let (here, there) = (
+        pretty_format_batches(&here)?.to_string(),
+        pretty_format_batches(&there)?.to_string(),
+    );
+    assert_eq!(here, there);
+    assert!(
+        here.contains("| 3  | s3    | delete") && here.contains("| 50 | x     | insert"),
+        "{here}"
+    );
     Ok(())
 }
 
 /// A cluster's servers end with it: once dropped, its scheduler's port takes no connection.
 #[tokio::test(flavor = "multi_thread")]
 async fn standalone_drop_stops_servers() -> Result<(), Box<dyn std::error::Error>> {
-    let (_, cluster, _) = sessions().await?;
+    let (_, cluster, _, _, _) = sessions().await?;
     let port = cluster.scheduler().rsplit(':').next().unwrap().parse::<u16>()?;
     assert!(tokio::net::TcpStream::connect(("localhost", port)).await.is_ok());
     drop(cluster);
