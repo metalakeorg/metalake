@@ -24,6 +24,7 @@ mod details;
 mod exec;
 mod filters;
 mod merge;
+mod options;
 mod point;
 mod read;
 mod sink;
@@ -33,5 +34,6 @@ mod table;
 pub use catalog::{MetaLake, Source};
 #[cfg(feature = "proto")]
 pub use codec::{MetaLakeLogicalCodec, MetaLakePhysicalCodec};
-pub use details::{CommitDetails, CommitOptions};
+pub use details::CommitDetails;
+pub use options::{Engine, MetaLakeOptions};
 pub use table::MetaTable;

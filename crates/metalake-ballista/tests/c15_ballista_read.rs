@@ -144,6 +144,30 @@ async fn ballista_plan_distributed() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// `metalake.engine` says where a session's statements run: forced local, its plan runs in the client's process, with
+/// the same rows; forced back, on the cluster again. A value that is no engine is refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn ballista_engine_forced() -> Result<(), Box<dyn std::error::Error>> {
+    let (local, cluster, _, _, _) = sessions().await?;
+    let sql = "select k from main.db.u where k > 7 order by k";
+    let shown = |context: &SessionContext| {
+        let context = context.clone();
+        async move {
+            let plan = context.sql(sql).await?.create_physical_plan().await?;
+            Ok::<_, Box<dyn std::error::Error>>(displayable(plan.as_ref()).indent(true).to_string())
+        }
+    };
+    assert!(shown(&cluster).await?.contains("DistributedQueryExec"));
+    cluster.sql("set metalake.engine = 'local'").await?.collect().await?;
+    let here = shown(&cluster).await?;
+    assert!(!here.contains("DistributedQueryExec") && here.contains("MetaScanExec"), "{here}");
+    assert_eq!(rows(&cluster, sql).await?, rows(&local, sql).await?);
+    cluster.sql("set metalake.engine = 'cluster'").await?.collect().await?;
+    assert!(shown(&cluster).await?.contains("DistributedQueryExec"));
+    assert!(cluster.sql("set metalake.engine = 'mars'").await.is_err());
+    Ok(())
+}
+
 /// An insert runs on the cluster: its rows read there, written and committed by the executor, with what the session's
 /// options ask of the commit; again with the same writer's key and version, it applies once.
 #[tokio::test(flavor = "multi_thread")]
