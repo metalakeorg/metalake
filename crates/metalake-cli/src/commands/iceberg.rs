@@ -59,6 +59,7 @@ async fn serve(args: &IcebergServe, lake: &Lake) -> Result<(), Error> {
             token,
             // Which start of it this is, as the client that started it says.
             start: std::env::var(server::START).unwrap_or_default(),
+            auth: lake.catalog_auth()?.name().to_string(),
         };
         runtime.write(path)?;
     }

@@ -196,14 +196,23 @@ impl Pool {
     }
 
     /// A connection of the pool, opened if none is free.
+    /// With a credential, its password is made fresh first, for a connection this may open. When the credential fails,
+    /// an open connection is still given, as it signed in already; only one that must open says why it cannot.
     pub async fn get(&self) -> Result<PooledSession> {
-        if let Some(fresh) = &self.2 {
-            fresh
-                .password()
-                .await
-                .map_err(|e| e.context("the catalog's credential"))?;
-        }
-        self.0.get().await.map_err(|e| match e {
+        let unrefreshed = match &self.2 {
+            Some(fresh) => fresh.password().await.err(),
+            None => None,
+        };
+        self.0.get().await.map_err(|e| match (e, unrefreshed) {
+            (deadpool_postgres::PoolError::Backend(_), Some(credential)) => {
+                credential.context("the catalog's credential")
+            }
+            (e, _) => self.failure(e),
+        })
+    }
+
+    fn failure(&self, e: deadpool_postgres::PoolError) -> Error {
+        match e {
             deadpool_postgres::PoolError::Backend(e) => Error::from(e),
             deadpool_postgres::PoolError::Timeout(_) => {
                 let (wait, size) = (self.1.as_secs_f64(), self.0.status().max_size);
@@ -213,6 +222,6 @@ impl Pool {
                 )
             }
             e => Error::new(ErrorKind::Unknown, e.to_string()),
-        })
+        }
     }
 }

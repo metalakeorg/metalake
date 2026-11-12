@@ -56,10 +56,20 @@ impl CatalogConfig {
 }
 
 /// Where a catalog's pools connect, and the credential they sign in with if not the string's password.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct Reach {
     postgres: String,
     credential: Option<Arc<dyn Credential>>,
+}
+
+/// Where, without the password `PGPASSWORD` put in the string: a catalog's handle is printed.
+impl std::fmt::Debug for Reach {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Reach")
+            .field("postgres", &crate::environment::without_password(&self.postgres))
+            .field("credential", &self.credential)
+            .finish()
+    }
 }
 
 impl Reach {

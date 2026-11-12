@@ -209,7 +209,8 @@ pub(crate) fn ensure(identity: &str, postgres: &str, schema: &str, auth: &str) -
     let _turn = files.locked()?;
     if let Some(running) = Runtime::read(&files.runtime) {
         if answers(running.port) {
-            if running.version == VERSION {
+            // One of another version, or that signs in otherwise than the lake now says, is replaced.
+            if running.version == VERSION && running.auth == auth {
                 return Ok(running);
             }
             shut(&running, &files.runtime)?;
@@ -410,6 +411,13 @@ pub struct Runtime {
     /// What names this start of it, new each time.
     #[serde(default)]
     pub start: String,
+    /// How it signs in to the catalog, by name: `password` when a server's file of before said nothing.
+    #[serde(default = "password")]
+    pub auth: String,
+}
+
+fn password() -> String {
+    "password".into()
 }
 
 impl Runtime {
@@ -469,6 +477,7 @@ mod tests {
             version: VERSION.into(),
             token: "t".into(),
             start: "s".into(),
+            auth: "password".into(),
         };
         runtime.write(&path).unwrap();
         assert_eq!(Runtime::read(&path), Some(runtime.clone()));

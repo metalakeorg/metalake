@@ -4,6 +4,9 @@
 //! login`, refreshed; or the metadata server of the machine it runs on.
 //! <https://cloud.google.com/sql/docs/postgres/iam-logins>
 
+use std::fmt;
+use std::path::PathBuf;
+
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use futures_util::future::BoxFuture;
@@ -19,7 +22,7 @@ const TOKEN_URI: &str = "https://oauth2.googleapis.com/token";
 const METADATA: &str = "http://metadata.google.internal";
 
 /// The client's Google identity, as its credentials file has it.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Identity {
     ServiceAccount {
@@ -41,6 +44,22 @@ enum Identity {
 
 fn token_uri() -> String {
     TOKEN_URI.into()
+}
+
+/// Who the identity is, never its key or its tokens: a catalog's handle is printed.
+impl fmt::Debug for Identity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ServiceAccount { client_email, .. } => f
+                .debug_struct("ServiceAccount")
+                .field("client_email", client_email)
+                .finish_non_exhaustive(),
+            Self::AuthorizedUser { client_id, .. } => f
+                .debug_struct("AuthorizedUser")
+                .field("client_id", client_id)
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -134,14 +153,21 @@ fn read(json: &str, from: &str) -> Result<Identity, String> {
 
 /// gcloud's application default credentials, where it writes them.
 fn gcloud_default() -> Option<String> {
+    std::fs::read_to_string(gcloud_dir(|name| std::env::var_os(name))?.join("application_default_credentials.json"))
+        .ok()
+}
+
+/// gcloud's configuration directory: `CLOUDSDK_CONFIG`, which names it, or `gcloud` in the system's place for it.
+fn gcloud_dir(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<PathBuf> {
+    if let Some(dir) = var("CLOUDSDK_CONFIG").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
     let base = if cfg!(windows) {
-        std::env::var_os("APPDATA").map(std::path::PathBuf::from)?
+        PathBuf::from(var("APPDATA")?)
     } else {
-        std::env::var_os("CLOUDSDK_CONFIG")
-            .map(std::path::PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".config")))?
+        PathBuf::from(var("HOME")?).join(".config")
     };
-    std::fs::read_to_string(base.join("gcloud").join("application_default_credentials.json")).ok()
+    Some(base.join("gcloud"))
 }
 
 /// A service account's JWT for its token service, for an hour from `now`.
@@ -211,6 +237,35 @@ mod tests {
         public
             .verify(signed.as_bytes(), &URL_SAFE_NO_PAD.decode(parts[2]).unwrap())
             .unwrap();
+    }
+
+    #[test]
+    fn gcloud_dir_named_by_cloudsdk_config() {
+        let vars = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| pairs.iter().find(|(k, _)| *k == name).map(|(_, v)| (*v).into())
+        };
+        let named = gcloud_dir(vars(&[
+            ("CLOUDSDK_CONFIG", "/etc/gcloud"),
+            ("HOME", "/h"),
+            ("APPDATA", "/a"),
+        ]));
+        assert_eq!(
+            named,
+            Some(PathBuf::from("/etc/gcloud")),
+            "it names the directory itself"
+        );
+        let default = gcloud_dir(vars(&[("HOME", "/h"), ("APPDATA", "/a")])).unwrap();
+        assert!(default.ends_with("gcloud") && default.starts_with(if cfg!(windows) { "/a" } else { "/h/.config" }));
+    }
+
+    #[test]
+    fn secrets_not_printed() {
+        let printed = format!("{:?}", account("http://t"));
+        assert!(printed.contains("lake@p.iam.gserviceaccount.com"), "{printed}");
+        assert!(
+            !printed.contains("PRIVATE KEY") && !printed.contains(&KEY[40..80]),
+            "{printed}"
+        );
     }
 
     #[tokio::test]

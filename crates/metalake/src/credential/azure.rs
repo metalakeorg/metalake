@@ -5,6 +5,7 @@
 //! an App Service's (`IDENTITY_ENDPOINT`) or an instance's (IMDS); and last the Azure CLI's signed-in user.
 //! <https://learn.microsoft.com/azure/postgresql/flexible-server/how-to-configure-sign-in-azure-ad-authentication>
 
+use std::fmt;
 use std::time::Duration;
 
 use futures_util::future::BoxFuture;
@@ -19,7 +20,7 @@ const IMDS: &str = "http://169.254.169.254/metadata/identity/oauth2/token";
 const IMDS_WAIT: Duration = Duration::from_secs(2);
 
 /// Where the client's identity comes from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum Source {
     Secret {
         tenant: String,
@@ -38,6 +39,31 @@ enum Source {
     },
     /// An instance's metadata service, then the Azure CLI.
     Instance { client: Option<String> },
+}
+
+/// Who the identity is, never its secret or an App Service's header: a catalog's handle is printed.
+impl fmt::Debug for Source {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Secret { tenant, client, .. } => f
+                .debug_struct("Secret")
+                .field("tenant", tenant)
+                .field("client", client)
+                .finish_non_exhaustive(),
+            Self::Federated { tenant, client, file } => f
+                .debug_struct("Federated")
+                .field("tenant", tenant)
+                .field("client", client)
+                .field("file", file)
+                .finish(),
+            Self::AppService { endpoint, client, .. } => f
+                .debug_struct("AppService")
+                .field("endpoint", endpoint)
+                .field("client", client)
+                .finish_non_exhaustive(),
+            Self::Instance { client } => f.debug_struct("Instance").field("client", client).finish(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -237,6 +263,23 @@ mod tests {
         assert_eq!(with(source, &address).mint().await.unwrap().value, "f");
         assert!(got.recv().unwrap().contains("client_assertion=k8s.token&"));
         std::fs::remove_file(file).unwrap();
+    }
+
+    #[test]
+    fn secrets_not_printed() {
+        let secret = Source::Secret {
+            tenant: "t".into(),
+            client: "c".into(),
+            secret: "s3cr3t".into(),
+        };
+        let app = Source::AppService {
+            endpoint: "http://e".into(),
+            header: "h3ad3r".into(),
+            client: None,
+        };
+        let printed = format!("{:?} {:?}", with(secret, AUTHORITY), with(app, AUTHORITY));
+        assert!(printed.contains("client: \"c\""), "{printed}");
+        assert!(!printed.contains("s3cr3t") && !printed.contains("h3ad3r"), "{printed}");
     }
 
     #[tokio::test]

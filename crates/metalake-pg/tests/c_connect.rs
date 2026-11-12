@@ -172,5 +172,13 @@ async fn each_connection_opens_with_the_password_of_its_time() {
     turns.next(Err("no identity"));
     let refused = pool.get().await.unwrap_err();
     assert!(refused.to_string().contains("the catalog's credential"), "{refused}");
-    drop((first, second));
+
+    drop(first);
+    turns.next(Err("no identity still"));
+    let idle = pool
+        .get()
+        .await
+        .expect("an open connection is given while the credential fails");
+    idle.simple_query("select 1").await.unwrap();
+    drop((idle, second));
 }
