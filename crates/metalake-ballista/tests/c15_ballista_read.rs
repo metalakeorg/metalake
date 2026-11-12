@@ -16,6 +16,7 @@ use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::physical_plan::displayable;
 use datafusion::prelude::SessionContext;
 use metalake::{Catalog, CatalogConfig, NewTable, Storage, TableWriter, WriteOptions};
+use metalake_ballista::Standalone;
 use metalake_datafusion::MetaLake;
 use metalake_pg::{Commit, Pool, Protocol};
 use serde_json::json;
@@ -35,10 +36,10 @@ fn batch(keys: std::ops::Range<i64>) -> RecordBatch {
     RecordBatch::try_new(shape(), columns).unwrap()
 }
 
-/// A local session of the lake, a session of the same lake on a cluster in this process, and the sequence before `t`'s
+/// A local session of the lake, the same lake on a cluster in this process, and the sequence before `t`'s
 /// delete. The lake: `main.db.t`, keys 0..10 in an object, its `s` then renamed `label`, then key 3 deleted; and
 /// `main.db.u`, keys 5..15 in an inline file.
-async fn sessions() -> Result<(SessionContext, SessionContext, i64), Box<dyn std::error::Error>> {
+async fn sessions() -> Result<(SessionContext, Standalone, i64), Box<dyn std::error::Error>> {
     let schema = fresh_schema();
     let catalog = Catalog::init(CatalogConfig::new(url(), &schema).warehouse("memory:///wh"), None).await?;
     let storage = Storage::in_memory();
@@ -153,5 +154,27 @@ async fn ballista_write_fails() -> Result<(), Box<dyn std::error::Error>> {
     };
     let done = tokio::time::timeout(Duration::from_secs(60), insert).await;
     assert!(matches!(done, Ok(Err(_))), "a write fails, and does not hang: {done:?}");
+    Ok(())
+}
+
+/// A cluster's servers end with it: once dropped, its scheduler's port takes no connection.
+#[tokio::test(flavor = "multi_thread")]
+async fn standalone_drop_stops_servers() -> Result<(), Box<dyn std::error::Error>> {
+    let (_, cluster, _) = sessions().await?;
+    let port = cluster.scheduler().rsplit(':').next().unwrap().parse::<u16>()?;
+    assert!(tokio::net::TcpStream::connect(("localhost", port)).await.is_ok());
+    drop(cluster);
+    let mut refused = false;
+    for _ in 0..50 {
+        if tokio::net::TcpStream::connect(("localhost", port)).await.is_err() {
+            refused = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        refused,
+        "the scheduler on {port} still answers after its cluster was dropped"
+    );
     Ok(())
 }

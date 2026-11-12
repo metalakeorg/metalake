@@ -16,4 +16,4 @@ mod standalone;
 pub use client::session;
 pub use executor::{ExecutorParts, executor};
 pub use scheduler::{SchedulerParts, scheduler};
-pub use standalone::standalone;
+pub use standalone::{Standalone, standalone};
