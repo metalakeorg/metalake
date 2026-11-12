@@ -10,6 +10,7 @@ use ballista_core::serde::{BallistaCodec, BallistaLogicalExtensionCodec, Ballist
 use ballista_scheduler::scheduler_server::SessionBuilder;
 use datafusion::error::Result;
 use datafusion::execution::SessionStateBuilder;
+use datafusion::prelude::SessionConfig;
 use metalake_datafusion::MetaLake;
 
 /// What a Ballista scheduler is made of for a lake: a session per job with the lake's catalogs, its sessions'
@@ -27,7 +28,9 @@ pub fn scheduler(lake: MetaLake) -> Result<SchedulerParts> {
     // The lake's own session: refs as catalogs, one point per statement, its options and store.
     let base = lake.context()?.state();
     let config = base.config().clone().upgrade_for_ballista();
-    let session_builder: SessionBuilder = Arc::new(move |config| {
+    let session_builder: SessionBuilder = Arc::new(move |config: SessionConfig| {
+        // The catalogs are the lake's refs, whatever configuration the client sent.
+        let config = config.with_create_default_catalog_and_schema(false);
         Ok(SessionStateBuilder::new_from_existing(base.clone())
             .with_config(config)
             .build())

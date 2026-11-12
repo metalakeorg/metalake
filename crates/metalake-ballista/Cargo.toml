@@ -24,5 +24,8 @@ tokio.workspace = true
 [dev-dependencies]
 arrow-array.workspace = true
 arrow-schema.workspace = true
+async-trait = "0.1"
+futures-util.workspace = true
 metalake-pg.workspace = true
+object_store.workspace = true
 serde_json.workspace = true

@@ -115,9 +115,11 @@ impl MetaLake {
 
     /// A session over this catalog, with `information_schema`, and reading unqualified tables from `main.default`.
     pub fn context(&self) -> Result<SessionContext, DataFusionError> {
+        // The catalogs are the refs: DataFusion makes none of its own, here or in a session rebuilt from this one.
         let mut config = SessionConfig::new()
             .with_information_schema(true)
-            .with_default_catalog_and_schema(MAIN, DEFAULT_NAMESPACE);
+            .with_default_catalog_and_schema(MAIN, DEFAULT_NAMESPACE)
+            .with_create_default_catalog_and_schema(false);
         // `varchar` is a table's string, which has no view.
         config.options_mut().sql_parser.map_string_types_to_utf8view = false;
         let context = SessionContext::new_with_config(config);

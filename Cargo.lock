@@ -2933,15 +2933,18 @@ version = "0.0.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
+ "async-trait",
  "ballista",
  "ballista-core",
  "ballista-executor",
  "ballista-scheduler",
  "datafusion",
  "datafusion-proto",
+ "futures-util",
  "metalake",
  "metalake-datafusion",
  "metalake-pg",
+ "object_store",
  "serde_json",
  "tokio",
 ]
