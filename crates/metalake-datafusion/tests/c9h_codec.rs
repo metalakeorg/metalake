@@ -239,23 +239,30 @@ async fn round_trip_file_in_ranges() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Writes cross processes in milestone 4: until then a write's plan is refused whole, never sent in part.
+/// A write's sink commits where it runs: an insert, a delete or an update travels, and a process without a catalog
+/// refuses to run it; one with the lake's catalog takes it. A merge does not travel yet: refused whole, never in part.
 #[tokio::test]
-async fn encode_write_refused() -> Result<(), Box<dyn std::error::Error>> {
+async fn encode_writes() -> Result<(), Box<dyn std::error::Error>> {
     let lakes = lakes().await?;
     let context = lakes.here.context()?;
     let codec = lakes.here.physical_codec(Arc::new(DefaultPhysicalExtensionCodec {}));
+    let reader = MetaLakePhysicalCodec::new(lakes.storage.clone(), Arc::new(DefaultPhysicalExtensionCodec {}));
+    let writer = lakes.there.physical_codec(Arc::new(DefaultPhysicalExtensionCodec {}));
+    let task = SessionContext::new().task_ctx();
     for sql in [
-        "merge into main.db.t t using main.db.u u on t.k = u.k when matched then delete",
-        "delete from main.db.t where k = 4",
         "insert into main.db.t select k, s from main.db.u",
+        "delete from main.db.t where k = 4",
+        "update main.db.t set label = 'x' where k = 5",
     ] {
         let plan = context.sql(sql).await?.create_physical_plan().await?;
-        assert!(
-            physical_plan_to_bytes_with_extension_codec(plan, &codec).is_err(),
-            "{sql}"
-        );
+        let bytes = physical_plan_to_bytes_with_extension_codec(plan, &codec)?;
+        let refused = physical_plan_from_bytes_with_extension_codec(&bytes, &task, &reader).unwrap_err();
+        assert!(refused.to_string().contains("no catalog"), "{sql}: {refused}");
+        physical_plan_from_bytes_with_extension_codec(&bytes, &task, &writer)?;
     }
+    let merge = "merge into main.db.t t using main.db.u u on t.k = u.k when matched then delete";
+    let plan = context.sql(merge).await?.create_physical_plan().await?;
+    assert!(physical_plan_to_bytes_with_extension_codec(plan, &codec).is_err());
     Ok(())
 }
 

@@ -15,18 +15,18 @@ use datafusion::common::{DataFusionError, Result, Statistics, TableReference};
 use datafusion::datasource::file_format::FileFormatFactory;
 use datafusion::datasource::physical_plan::parquet::ParquetRowSelection;
 use datafusion::datasource::physical_plan::{FileGroup, FileScanConfig, FileScanConfigBuilder, ParquetSource};
-use datafusion::datasource::sink::DataSinkExec;
+use datafusion::datasource::sink::{DataSink, DataSinkExec};
 use datafusion::datasource::source::DataSourceExec;
-use datafusion::execution::TaskContext;
 use datafusion::execution::object_store::ObjectStoreUrl;
-use datafusion::logical_expr::{AggregateUDF, Extension, HigherOrderUDF, LogicalPlan, ScalarUDF, WindowUDF};
+use datafusion::execution::{SessionState, SessionStateBuilder, TaskContext};
+use datafusion::logical_expr::{AggregateUDF, Expr, Extension, HigherOrderUDF, LogicalPlan, ScalarUDF, WindowUDF};
 use datafusion::parquet::arrow::arrow_reader::{RowSelection, RowSelector};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::physical_expr::proto_decode::PhysicalExprDecodeCtx;
 use datafusion::physical_expr_common::physical_expr::proto_encode::PhysicalExprEncodeCtx;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_proto::bytes::{
-    physical_plan_from_bytes_with_extension_codec, physical_plan_to_bytes_with_extension_codec,
+    Serializeable, physical_plan_from_bytes_with_extension_codec, physical_plan_to_bytes_with_extension_codec,
 };
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::{PhysicalExtensionCodec, PhysicalProtoConverterExtension};
@@ -40,7 +40,7 @@ use crate::adapter::ByFieldId;
 use crate::exec::MetaScanExec;
 use crate::point::StatementPoint;
 use crate::read::TaskReaders;
-use crate::sink::Insert;
+use crate::sink::{Delete, Insert, Selection, Update};
 use crate::table::MetaTable;
 
 /// What every MetaLake encoding starts with.
@@ -55,6 +55,8 @@ enum Kind {
     Table = 1,
     Scan = 2,
     Insert = 3,
+    Delete = 4,
+    Update = 5,
 }
 
 /// `value` as MetaLake's bytes of `kind`, appended to `buf`.
@@ -281,6 +283,23 @@ struct InsertBytes {
     overwrite: bool,
 }
 
+/// The rows a `delete` or an `update` acts on, as they travel: the table, and the statement's filters, from which the
+/// process that runs it makes the core's scan, its pruning and its filter again, as the one that planned it did.
+#[derive(Serialize, Deserialize)]
+struct RowsBytes {
+    on: RefValue,
+    table: Table,
+    /// Each a logical expression, in DataFusion's encoding.
+    filters: Vec<Vec<u8>>,
+}
+
+/// An `update` as it travels: its rows, and each assigned column's name and new value, a logical expression.
+#[derive(Serialize, Deserialize)]
+struct UpdateBytes {
+    rows: RowsBytes,
+    assignments: Vec<(String, Vec<u8>)>,
+}
+
 /// What DataFusion's encoding drops of a file: its task, and the rows its vector leaves.
 #[derive(Serialize, Deserialize)]
 struct FileBytes {
@@ -377,6 +396,36 @@ impl MetaLakePhysicalCodec {
         self
     }
 
+    /// The catalog a write's sink commits with, which a process that only reads lacks.
+    fn writer(&self) -> Result<&Catalog> {
+        self.catalog.as_ref().ok_or_else(|| {
+            DataFusionError::Plan("a write commits where it runs, and this process has no catalog".into())
+        })
+    }
+
+    fn encode_rows(rows: &Selection) -> Result<RowsBytes> {
+        Ok(RowsBytes {
+            on: rows.table.on.value(),
+            table: rows.table.table.clone(),
+            filters: rows
+                .filters
+                .iter()
+                .map(|f| Ok(f.to_bytes()?.to_vec()))
+                .collect::<Result<_>>()?,
+        })
+    }
+
+    /// The rows again, made as the process that planned them made them, in a session of `ctx`'s configuration.
+    fn decode_rows(&self, bytes: RowsBytes, state: &SessionState, ctx: &TaskContext) -> Result<Selection> {
+        let table = rebuilt(self.writer()?, &self.storage, bytes.on, bytes.table, None);
+        let filters = bytes
+            .filters
+            .iter()
+            .map(|f| Expr::from_bytes_with_ctx(f, ctx))
+            .collect::<Result<_>>()?;
+        Selection::new(table, filters, state)
+    }
+
     fn encode_insert(&self, insert: &Insert, buf: &mut Vec<u8>) -> Result<()> {
         let bytes = InsertBytes {
             on: insert.table.on.value(),
@@ -387,9 +436,7 @@ impl MetaLakePhysicalCodec {
     }
 
     fn decode_insert(&self, bytes: InsertBytes, inputs: &[Arc<dyn ExecutionPlan>]) -> Result<Arc<dyn ExecutionPlan>> {
-        let catalog = self.catalog.as_ref().ok_or_else(|| {
-            DataFusionError::Plan("a write commits where it runs, and this process has no catalog".into())
-        })?;
+        let catalog = self.writer()?;
         let [input] = inputs else {
             return Err(DataFusionError::Internal(format!(
                 "an insert with {} inputs",
@@ -401,6 +448,59 @@ impl MetaLakePhysicalCodec {
             overwrite: bytes.overwrite,
         };
         Ok(Arc::new(DataSinkExec::new(Arc::clone(input), Arc::new(sink), None)))
+    }
+
+    fn encode_delete(&self, delete: &Delete, buf: &mut Vec<u8>) -> Result<()> {
+        encode(Kind::Delete, &Self::encode_rows(&delete.rows)?, buf)
+    }
+
+    fn encode_update(&self, update: &Update, buf: &mut Vec<u8>) -> Result<()> {
+        let bytes = UpdateBytes {
+            rows: Self::encode_rows(&update.rows)?,
+            assignments: update
+                .statement
+                .iter()
+                .map(|(column, value)| Ok((column.clone(), value.to_bytes()?.to_vec())))
+                .collect::<Result<_>>()?,
+        };
+        encode(Kind::Update, &bytes, buf)
+    }
+
+    /// A delete's or an update's sink over `inputs`, which DataFusion gives it none of: the rows it finds itself.
+    fn sink_over(inputs: &[Arc<dyn ExecutionPlan>], sink: Arc<dyn DataSink>) -> Result<Arc<dyn ExecutionPlan>> {
+        let [input] = inputs else {
+            return Err(DataFusionError::Internal(format!(
+                "a write with {} inputs",
+                inputs.len()
+            )));
+        };
+        Ok(Arc::new(DataSinkExec::new(Arc::clone(input), sink, None)))
+    }
+
+    fn decode_delete(
+        &self,
+        bytes: RowsBytes,
+        inputs: &[Arc<dyn ExecutionPlan>],
+        ctx: &TaskContext,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let rows = self.decode_rows(bytes, &session(ctx), ctx)?;
+        Self::sink_over(inputs, Arc::new(Delete { rows }))
+    }
+
+    fn decode_update(
+        &self,
+        bytes: UpdateBytes,
+        inputs: &[Arc<dyn ExecutionPlan>],
+        ctx: &TaskContext,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let state = session(ctx);
+        let rows = self.decode_rows(bytes.rows, &state, ctx)?;
+        let assignments = bytes
+            .assignments
+            .iter()
+            .map(|(column, value)| Ok((column.clone(), Expr::from_bytes_with_ctx(value, ctx)?)))
+            .collect::<Result<_>>()?;
+        Self::sink_over(inputs, Arc::new(Update::new(rows, assignments, &state)?))
     }
 
     fn encode_scan(&self, scan: &MetaScanExec, buf: &mut Vec<u8>) -> Result<()> {
@@ -517,6 +617,17 @@ impl MetaLakePhysicalCodec {
     }
 }
 
+/// A session of `ctx`'s configuration and runtime, with DataFusion's own functions and rules: where a process that
+/// runs a statement makes its expressions as the planning process's session made them (coercion, rewrites,
+/// simplification).
+fn session(ctx: &TaskContext) -> SessionState {
+    SessionStateBuilder::new()
+        .with_config(ctx.session_config().clone())
+        .with_runtime_env(ctx.runtime_env())
+        .with_default_features()
+        .build()
+}
+
 /// The file scan a `DataSourceExec` of MetaLake's reads.
 fn file_scan(source: &DataSourceExec) -> Result<&FileScanConfig> {
     source
@@ -538,6 +649,14 @@ impl PhysicalExtensionCodec for MetaLakePhysicalCodec {
                 let bytes = decode::<InsertBytes>(Kind::Insert, buf).expect("MetaLake's bytes")?;
                 self.decode_insert(bytes, inputs)
             }
+            Some(k) if k == Kind::Delete as u8 => {
+                let bytes = decode::<RowsBytes>(Kind::Delete, buf).expect("MetaLake's bytes")?;
+                self.decode_delete(bytes, inputs, ctx)
+            }
+            Some(k) if k == Kind::Update as u8 => {
+                let bytes = decode::<UpdateBytes>(Kind::Update, buf).expect("MetaLake's bytes")?;
+                self.decode_update(bytes, inputs, ctx)
+            }
             Some(_) => {
                 let bytes = decode::<ScanBytes>(Kind::Scan, buf).expect("MetaLake's bytes")?;
                 self.decode_scan(bytes, ctx)
@@ -555,11 +674,16 @@ impl PhysicalExtensionCodec for MetaLakePhysicalCodec {
         if let Some(scan) = node.downcast_ref::<MetaScanExec>() {
             return self.encode_scan(scan, buf);
         }
-        if let Some(insert) = node
-            .downcast_ref::<DataSinkExec>()
-            .and_then(|exec| exec.sink().downcast_ref::<Insert>())
-        {
-            return self.encode_insert(insert, buf);
+        if let Some(sink) = node.downcast_ref::<DataSinkExec>().map(DataSinkExec::sink) {
+            if let Some(insert) = sink.downcast_ref::<Insert>() {
+                return self.encode_insert(insert, buf);
+            }
+            if let Some(delete) = sink.downcast_ref::<Delete>() {
+                return self.encode_delete(delete, buf);
+            }
+            if let Some(update) = sink.downcast_ref::<Update>() {
+                return self.encode_update(update, buf);
+            }
         }
         self.inner.try_encode(node, buf, proto_converter)
     }

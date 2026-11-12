@@ -174,16 +174,49 @@ async fn ballista_insert() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// A delete does not cross processes yet (its sink is the next step's): it fails, and does not hang.
+/// A delete and an update run on the cluster: the executor makes their rows again from the statement's filters (the
+/// core's scan, pruned in Postgres, and their filter), and commits with what the session's options ask.
 #[tokio::test(flavor = "multi_thread")]
-async fn ballista_delete_fails() -> Result<(), Box<dyn std::error::Error>> {
-    let (_, cluster, _, _) = sessions().await?;
-    let delete = async { cluster.sql("delete from main.db.t where k = 4").await?.collect().await };
-    let done = tokio::time::timeout(Duration::from_secs(60), delete).await;
-    assert!(
-        matches!(done, Ok(Err(_))),
-        "a delete fails, and does not hang: {done:?}"
+async fn ballista_delete_update() -> Result<(), Box<dyn std::error::Error>> {
+    let (local, cluster, _, main) = sessions().await?;
+    cluster.sql("set metalake.author = 'bea'").await?.collect().await?;
+
+    let deleted = rows(&cluster, "delete from main.db.t where k >= 7").await?;
+    assert!(deleted.contains("| 3     |"), "{deleted}");
+    assert_eq!(main.history(1).await?[0].author.as_deref(), Some("bea"));
+
+    let updated = rows(
+        &cluster,
+        "update main.db.t set label = concat(label, '!') where k in (1, 2)",
+    )
+    .await?;
+    assert!(updated.contains("| 2     |"), "{updated}");
+    let last = &main.history(1).await?[0];
+    assert_eq!(
+        (last.operation.as_str(), last.author.as_deref()),
+        // New rows and vectors in one commit: the protocol's overwrite.
+        ("overwrite", Some("bea"))
     );
+
+    let sql = "select k, label from main.db.t order by k";
+    let (here, there) = (rows(&local, sql).await?, rows(&cluster, sql).await?);
+    assert_eq!(here, there);
+    assert!(
+        here.contains("| 1 | s1!   |") && here.contains("| 6 | s6    |"),
+        "{here}"
+    );
+    assert!(!here.contains("| 7 |") && !here.contains("| 3 |"), "{here}");
+    Ok(())
+}
+
+/// A merge does not cross processes yet (its sink is the next step's): it fails, and does not hang.
+#[tokio::test(flavor = "multi_thread")]
+async fn ballista_merge_fails() -> Result<(), Box<dyn std::error::Error>> {
+    let (_, cluster, _, _) = sessions().await?;
+    let sql = "merge into main.db.t t using main.db.u u on t.k = u.k when matched then delete";
+    let merge = async { cluster.sql(sql).await?.collect().await };
+    let done = tokio::time::timeout(Duration::from_secs(60), merge).await;
+    assert!(matches!(done, Ok(Err(_))), "a merge fails, and does not hang: {done:?}");
     Ok(())
 }
 
