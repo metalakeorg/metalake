@@ -25,8 +25,8 @@ trap 'docker rm -f "$name" >/dev/null' EXIT
 until docker exec "$name" pg_isready -q -U postgres 2>/dev/null; do sleep 1; done; sleep 2
 if [ -n "${TLS:-}" ]; then
   # TLS=1 also serves TLS, by a server certificate for metalake-test.invalid that a CA of this run signs; another CA
-  # signs nothing. The role tls_only may connect only over TLS. METALAKE_TEST_TLS names the directory of ca.pem and
-  # other-ca.pem.
+  # signs nothing. The role tls_only may connect only over TLS; by_password only by its password, which has none until
+  # a test sets one. METALAKE_TEST_TLS names the directory of ca.pem and other-ca.pem.
   # On Windows the paths are written as the system's, so that no argument is rewritten as one, `/CN=…` included.
   export MSYS_NO_PATHCONV=1
   tls=$(mktemp -d); if command -v cygpath >/dev/null 2>&1; then tls=$(cygpath -m "$tls"); fi; trap 'docker rm -f "$name" >/dev/null; rm -rf "$tls"' EXIT
@@ -45,9 +45,10 @@ if [ -n "${TLS:-}" ]; then
   docker cp "$tls/server.crt" "$name:$data/server.crt" >/dev/null
   docker cp "$tls/server.key" "$name:$data/server.key" >/dev/null
   docker exec "$name" sh -c "chown postgres:postgres $data/server.* && chmod 600 $data/server.key &&
-    sed -i -e '1i hostssl all tls_only all trust' -e '1i host all tls_only all reject' $data/pg_hba.conf"
+    sed -i -e '1i hostssl all tls_only all trust' -e '1i host all tls_only all reject' \
+      -e '1i host all by_password all scram-sha-256' $data/pg_hba.conf"
   docker exec "$name" psql -q -U postgres -c "alter system set ssl = on" -c "create role tls_only login" \
-    -c "select pg_reload_conf()" >/dev/null
+    -c "create role by_password login" -c "select pg_reload_conf()" >/dev/null
   export METALAKE_TEST_TLS="$tls"
 fi
 export DATABASE_URL="host=$host port=$port user=postgres dbname=postgres"

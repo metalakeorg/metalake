@@ -20,7 +20,7 @@ mod version;
 pub use calls::{BATCH, Commit, CreateRef, INTERFACE, Merge, Protocol, Prune, Retention, Sweep};
 pub use error::{Error, ErrorKind};
 pub use install::{Roles, init, migrate};
-pub use pool::{Pool, PooledSession};
+pub use pool::{Credential, Password, Pool, PooledSession};
 pub use session::Session;
 pub use sources::{quote_ident, render};
 pub use version::{FORMAT_VERSION, PROTOCOL_VERSION, Versions, WRITER_VERSION, check_versions, versions, warehouse};
