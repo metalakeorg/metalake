@@ -67,6 +67,19 @@ fn is_read(plan: &LogicalPlan) -> bool {
     )
 }
 
+/// A session of `engine` that reaches the scheduler at `url`, its router over this process and the cluster.
+#[cfg(feature = "distributed")]
+async fn distributed(engine: &MetaLake, url: &str) -> Result<SessionContext> {
+    Ok(metalake_ballista::session(engine, url).await?)
+}
+
+#[cfg(not(feature = "distributed"))]
+async fn distributed(_: &MetaLake, url: &str) -> Result<SessionContext> {
+    Err(Error::usage(format!(
+        "{url}: this build runs statements in its own process only, without the `distributed` feature"
+    )))
+}
+
 /// A statement ready to read: a read at the point it was prepared, or what a statement that already ran answered.
 pub struct Prepared {
     plan: Arc<dyn ExecutionPlan>,
@@ -111,7 +124,11 @@ impl Prepared {
 impl Session {
     pub async fn new(lake: &Lake) -> Result<Self> {
         let engine = MetaLake::new(lake.catalog.clone(), lake.storage()?).await?;
-        let context = engine.context()?;
+        // With a scheduler, the session's router chooses where each statement runs; without, all run here.
+        let context = match lake.scheduler() {
+            Some(url) => distributed(&engine, &url).await?,
+            None => engine.context()?,
+        };
         Ok(Self {
             engine,
             context,

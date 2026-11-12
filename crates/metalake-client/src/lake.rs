@@ -32,11 +32,20 @@ struct Location {
     local: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     schema: Option<String>,
+    /// A Ballista scheduler of the lake's (`df://host:port`), where the router may send a statement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scheduler: Option<String>,
 }
 
 impl Location {
     fn schema(&self) -> &str {
         self.schema.as_deref().unwrap_or(SCHEMA)
+    }
+
+    /// The scheduler the file names, or a program set; else the environment's.
+    fn scheduler(&self) -> Option<String> {
+        let named = || env::var(environment::SCHEDULER).ok().filter(|s| !s.is_empty());
+        self.scheduler.clone().or_else(named)
     }
 
     /// What names the lake whatever reaching it takes: its own directory, or its catalog without a password. A lake's
@@ -97,6 +106,7 @@ impl Location {
                 postgres: Some(postgres),
                 local: None,
                 schema,
+                scheduler: None,
             });
         }
         let here = env::current_dir()?;
@@ -117,6 +127,7 @@ impl Location {
                 postgres: Some(postgres.to_string()),
                 local: None,
                 schema: None,
+                scheduler: None,
             },
             Some(directory) => {
                 let directory = std::path::absolute(directory)?;
@@ -126,6 +137,7 @@ impl Location {
                         postgres: None,
                         local: Some(directory),
                         schema: None,
+                        scheduler: None,
                     },
                     _ => {
                         return Err(Error::failed(format!(
@@ -160,6 +172,19 @@ pub struct Lake {
 impl Lake {
     /// Enough for one statement: a command runs one at a time, and the core's default is for a long-lived engine.
     pub const ONE_COMMAND: Option<usize> = Some(4);
+
+    /// The Ballista scheduler this lake's sessions reach (`df://host:port`), if any: what `with_scheduler` set, the
+    /// file's `scheduler`, or `METALAKE_SCHEDULER`. With one, a session's statements go where its router says; without,
+    /// they run in this process.
+    pub fn scheduler(&self) -> Option<String> {
+        self.location.scheduler()
+    }
+
+    /// This lake, its sessions reaching the scheduler at `url`.
+    pub fn with_scheduler(mut self, url: impl Into<String>) -> Self {
+        self.location.scheduler = Some(url.into());
+        self
+    }
 
     /// The lake a command means.
     pub async fn open(dir: Option<&Path>) -> Result<Self> {
@@ -260,6 +285,7 @@ impl Lake {
             postgres: (!own).then(|| catalog.to_string()),
             local: own.then(|| PathBuf::from(catalog)),
             schema: schema.filter(|s| *s != SCHEMA).map(str::to_string),
+            scheduler: None,
         };
         fs::create_dir_all(dir)?;
         let file = dir.join(FILE);
@@ -407,6 +433,7 @@ mod tests {
             postgres: Some("postgresql://host/db".into()),
             local: None,
             schema: None,
+            scheduler: None,
         };
         assert_eq!(
             toml::to_string(&plain).unwrap(),
@@ -416,11 +443,13 @@ mod tests {
             postgres: Some("host=h".into()),
             local: None,
             schema: Some("other".into()),
+            scheduler: None,
         };
         let own = Location {
             postgres: None,
             local: Some("./lake".into()),
             schema: None,
+            scheduler: None,
         };
         assert_eq!(toml::to_string(&own).unwrap(), "local = \"./lake\"\n");
         assert!(is_postgres("postgresql://h/db") && is_postgres("host=h user=u"));
