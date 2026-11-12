@@ -1,6 +1,7 @@
-//! What a caller wants said in the commit of a statement, and what came of it. A sink is made by DataFusion from the SQL
-//! and knows nothing of its caller, but it runs with the context of its execution, so this travels there, for that one
-//! execution: two threads of one session do not meet.
+//! A statement's commit: what the caller asks of it, which comes in the options of the session, and what came of it,
+//! which goes in a slot of the write's execution, where it runs. A sink is made by DataFusion from the SQL and knows
+//! nothing of its caller, but it runs with the context of its execution, for that one execution: two threads of one
+//! session do not meet.
 
 use std::sync::Mutex;
 
@@ -9,33 +10,21 @@ use metalake::{Outcome, Result, Transaction};
 
 use crate::options::MetaLakeOptions;
 
+/// What came of a write's commit, where it runs: the slot `MetaWriteExec` hands its sink, read into the write's row.
 #[derive(Debug, Default)]
-pub struct CommitDetails {
-    pub author: Option<String>,
-    pub message: Option<String>,
-    pub idempotent: Option<(String, i64)>,
+pub(crate) struct CommitDetails {
     outcome: Mutex<Option<Outcome>>,
     merged: Mutex<(u64, u64)>,
 }
 
 impl CommitDetails {
-    pub fn new(author: Option<String>, message: Option<String>, idempotent: Option<(String, i64)>) -> Self {
-        Self {
-            author,
-            message,
-            idempotent,
-            outcome: Mutex::default(),
-            merged: Mutex::default(),
-        }
-    }
-
     /// How many rows a merge inserted and how many it updated.
-    pub fn merged(&self) -> (u64, u64) {
+    pub(crate) fn merged(&self) -> (u64, u64) {
         *self.merged.lock().expect("a count is only set")
     }
 
     /// What the statement's commit did, if it had one: a statement that changed no row has none.
-    pub fn outcome(&self) -> Option<Outcome> {
+    pub(crate) fn outcome(&self) -> Option<Outcome> {
         *self.outcome.lock().expect("an outcome is only set")
     }
 }
@@ -49,8 +38,8 @@ pub(crate) fn merged(context: &TaskContext, inserted: u64, updated: u64) {
 
 /// Commits `transaction` with what the execution asks for, if it asks.
 pub(crate) async fn commit(mut transaction: Transaction, context: &TaskContext) -> Result<()> {
-    // What is asked comes in the options, which reach any process; what came of it goes back in memory, to the
-    // process that asked, when it is this one.
+    // What is asked comes in the options, which reach any process; what came of it goes in the slot of the write
+    // running here, which answers it as its row.
     if let Some(options) = context.session_config().options().extensions.get::<MetaLakeOptions>() {
         if let Some(author) = &options.author {
             transaction = transaction.author(author);

@@ -19,6 +19,7 @@ use metalake::path::{DEFAULT_NAMESPACE, MAIN, NAMESPACE_SEPARATOR};
 use metalake::{Catalog, Error, Ref, Result, Storage, TablePath};
 
 use crate::options::MetaLakeOptions;
+use crate::written::Written;
 use crate::point::{self, OnePoint};
 use crate::table::MetaTable;
 use crate::{changes, ddl};
@@ -128,6 +129,8 @@ impl MetaLake {
         let context = SessionContext::new_with_config(config);
         context.register_catalog_list(Arc::new(self.clone()));
         context.add_analyzer_rule(Arc::new(OnePoint));
+        // A write on a table answers its row, what came of its commit with its count.
+        context.add_analyzer_rule(Arc::new(Written));
         let url = ObjectStoreUrl::parse(self.shared.storage.base())?;
         context.register_object_store(url.as_ref(), self.shared.storage.store().clone());
         Ok(context)

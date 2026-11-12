@@ -16,9 +16,9 @@ use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::physical_plan::displayable;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::parser::DFParser;
-use metalake::{Catalog, CatalogConfig, NewTable, Ref, Storage, TableWriter, WriteOptions};
+use metalake::{Catalog, CatalogConfig, NewTable, Outcome, Ref, Storage, TableWriter, WriteOptions};
 use metalake_ballista::Standalone;
-use metalake_datafusion::MetaLake;
+use metalake_datafusion::{MetaLake, WrittenRow};
 use metalake_pg::{Commit, Pool, Protocol};
 use serde_json::json;
 
@@ -97,6 +97,12 @@ async fn sessions() -> Result<(SessionContext, Standalone, i64, Ref, MetaLake), 
     Ok((local, cluster, before, main, client))
 }
 
+/// The row a write answers.
+async fn written(context: &SessionContext, sql: &str) -> Result<WrittenRow, Box<dyn std::error::Error>> {
+    let batches = context.sql(sql).await?.collect().await?;
+    Ok(WrittenRow::of(&batches[0])?)
+}
+
 async fn rows(context: &SessionContext, sql: &str) -> Result<String, Box<dyn std::error::Error>> {
     Ok(pretty_format_batches(&context.sql(sql).await?.collect().await?)?.to_string())
 }
@@ -169,7 +175,8 @@ async fn ballista_engine_forced() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// An insert runs on the cluster: its rows read there, written and committed by the executor, with what the session's
-/// options ask of the commit; again with the same writer's key and version, it applies once.
+/// options ask of the commit; again with the same writer's key and version, it applies once. What came of each commit
+/// comes back from the executor as the write's row.
 #[tokio::test(flavor = "multi_thread")]
 async fn ballista_insert() -> Result<(), Box<dyn std::error::Error>> {
     let (local, cluster, _, main, _) = sessions().await?;
@@ -182,16 +189,17 @@ async fn ballista_insert() -> Result<(), Box<dyn std::error::Error>> {
         cluster.sql(set).await?.collect().await?;
     }
     let insert = "insert into main.db.t select k + 100, s from main.db.u where k < 8";
-    let written = rows(&cluster, insert).await?;
-    assert!(written.contains("| 3     |"), "{written}");
+    let first = written(&cluster, insert).await?;
     let last = &main.history(1).await?[0];
     assert_eq!(
         (last.author.as_deref(), last.message.as_deref()),
         (Some("ana"), Some("from u"))
     );
+    assert_eq!((first.count, first.outcome), (3, Some(Outcome::Committed(last.commit_seq))));
 
-    // The same writer and version again: already applied, nothing written twice.
-    rows(&cluster, insert).await?;
+    // The same writer and version again: already applied, nothing written twice, and the row says which commit had.
+    let again = written(&cluster, insert).await?;
+    assert_eq!(again.outcome, Some(Outcome::AlreadyApplied(last.commit_seq)));
     let sql = "select k, label from main.db.t where k >= 100 order by k";
     let (here, there) = (rows(&local, sql).await?, rows(&cluster, sql).await?);
     assert_eq!(here, there);
@@ -244,9 +252,10 @@ async fn ballista_merge() -> Result<(), Box<dyn std::error::Error>> {
                  when matched and u.k = 9 then delete
                  when matched then update set label = concat(u.s, '*')
                  when not matched then insert (k, label) values (u.k, u.s)";
-    let affected = rows(&cluster, merge).await?;
+    let affected = written(&cluster, merge).await?;
     // Keys 5..12 of u: 5, 6, 7, 8 and 9 match t (9 is deleted), 10 and 11 are new.
-    assert!(affected.contains("| 7     |"), "{affected}");
+    assert_eq!((affected.count, affected.inserted, affected.updated), (7, 2, 5));
+    assert!(matches!(affected.outcome, Some(Outcome::Committed(_))));
     assert_eq!(main.history(1).await?[0].author.as_deref(), Some("cai"));
 
     let sql = "select k, label from main.db.t order by k";

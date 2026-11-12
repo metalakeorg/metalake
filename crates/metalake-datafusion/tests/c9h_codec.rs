@@ -29,7 +29,7 @@ use datafusion_proto::bytes::{
 use datafusion_proto::logical_plan::DefaultLogicalExtensionCodec;
 use datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec;
 use metalake::{Catalog, CatalogConfig, NewTable, Storage, TableWriter, WriteOptions};
-use metalake_datafusion::{MetaLake, MetaLakePhysicalCodec};
+use metalake_datafusion::{MetaLake, MetaLakePhysicalCodec, written_schema};
 use metalake_pg::{Commit, Pool, Protocol};
 use serde_json::json;
 
@@ -260,7 +260,9 @@ async fn encode_writes() -> Result<(), Box<dyn std::error::Error>> {
         let bytes = physical_plan_to_bytes_with_extension_codec(plan, &codec)?;
         let refused = physical_plan_from_bytes_with_extension_codec(&bytes, &task, &reader).unwrap_err();
         assert!(refused.to_string().contains("no catalog"), "{sql}: {refused}");
-        physical_plan_from_bytes_with_extension_codec(&bytes, &task, &writer)?;
+        // Around its sink, the write's row, which crosses with it.
+        let decoded = physical_plan_from_bytes_with_extension_codec(&bytes, &task, &writer)?;
+        assert_eq!((decoded.name(), decoded.schema()), ("MetaWriteExec", written_schema()), "{sql}");
     }
     Ok(())
 }

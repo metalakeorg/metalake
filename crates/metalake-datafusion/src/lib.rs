@@ -30,10 +30,11 @@ mod read;
 mod sink;
 mod stats;
 mod table;
+mod written;
 
 pub use catalog::{MetaLake, Source};
 #[cfg(feature = "proto")]
 pub use codec::{MetaLakeLogicalCodec, MetaLakePhysicalCodec};
-pub use details::CommitDetails;
 pub use options::{Engine, MetaLakeOptions};
+pub use written::{WrittenRow, written_schema};
 pub use table::MetaTable;

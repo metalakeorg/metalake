@@ -12,8 +12,6 @@ use datafusion::common::DataFusionError;
 use datafusion::common::config::{ConfigEntry, ConfigExtension, ExtensionOptions};
 use datafusion::prelude::SessionConfig;
 
-use crate::details::CommitDetails;
-
 /// Where a session's statements run, in a session that can reach a cluster. One that cannot runs them where it is,
 /// whatever this says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,17 +141,19 @@ impl MetaLakeOptions {
         config
     }
 
-    /// `config` with the commit `details` asks for, its other options as they were.
-    pub fn of(details: &CommitDetails, mut config: SessionConfig) -> SessionConfig {
+    /// `config` with the commit asked for: who, what it says, and a writer's key; its other options as they were.
+    pub fn commit(
+        mut config: SessionConfig,
+        author: Option<String>,
+        message: Option<String>,
+        idempotent: Option<(String, i64)>,
+    ) -> SessionConfig {
         let mut options = config.options().extensions.get::<MetaLakeOptions>().cloned().unwrap_or_default();
-        options.author = details.author.clone();
-        options.message = details.message.clone();
-        options.app = details.idempotent.as_ref().map(|(app, _)| app.clone());
+        options.author = author;
+        options.message = message;
         // A version is positive (CMT-8): one that is not is sent as 0, for the protocol to refuse, not dropped.
-        options.app_version = details
-            .idempotent
-            .as_ref()
-            .map(|(_, version)| u64::try_from(*version).unwrap_or(0));
+        options.app_version = idempotent.as_ref().map(|(_, version)| u64::try_from(*version).unwrap_or(0));
+        options.app = idempotent.map(|(app, _)| app);
         config.options_mut().extensions.insert(options);
         config
     }
@@ -184,13 +184,12 @@ mod tests {
         assert_eq!(there.options().extensions.get::<MetaLakeOptions>(), Some(&sent));
     }
 
-    /// A commit's details leave the engine as the session had it.
+    /// The commit asked for leaves the engine as the session had it.
     #[test]
-    fn details_keep_engine() {
+    fn commit_keeps_engine() {
         let mut config = MetaLakeOptions::register(SessionConfig::new());
         config.options_mut().set("metalake.engine", "cluster").unwrap();
-        let details = CommitDetails::new(Some("ana".into()), None, None);
-        let config = MetaLakeOptions::of(&details, config);
+        let config = MetaLakeOptions::commit(config, Some("ana".into()), None, None);
         let options = config.options().extensions.get::<MetaLakeOptions>().unwrap();
         assert_eq!((options.engine, options.author.as_deref()), (Some(Engine::Cluster), Some("ana")));
     }

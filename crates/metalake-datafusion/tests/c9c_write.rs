@@ -15,8 +15,8 @@ use arrow_schema::{DataType, Field, Schema};
 use common::{fresh_schema, url};
 use datafusion::prelude::SessionContext;
 use futures_util::TryStreamExt;
-use metalake::{Catalog, CatalogConfig, Error, NewTable, Ref, Scan, Storage, Table};
-use metalake_datafusion::MetaLake;
+use metalake::{Catalog, CatalogConfig, Error, NewTable, Outcome, Ref, Scan, Storage, Table};
+use metalake_datafusion::{MetaLake, WrittenRow};
 use metalake_pg::{Commit, Pool, Protocol};
 use serde_json::json;
 
@@ -248,15 +248,19 @@ async fn insert_commit_options() -> Result<(), Box<dyn std::error::Error>> {
         context.sql(set).await?.collect().await?;
     }
     let insert = "insert into main.db.t values (1, 'a'), (2, 'b')";
-    context.sql(insert).await?.collect().await?;
+    let written = context.sql(insert).await?.collect().await?;
     let last = &lake.main.history(1).await?[0];
     assert_eq!(
         (last.author.as_deref(), last.message.as_deref()),
         (Some("ana"), Some("two rows"))
     );
+    // What came of the commit is the write's row, with its count.
+    let row = WrittenRow::of(&written[0])?;
+    assert_eq!((row.count, row.outcome), (2, Some(Outcome::Committed(last.commit_seq))));
 
     // The same writer and version again: already applied, nothing written twice.
-    context.sql(insert).await?.collect().await?;
+    let again = context.sql(insert).await?.collect().await?;
+    assert_eq!(WrittenRow::of(&again[0])?.outcome, Some(Outcome::AlreadyApplied(last.commit_seq)));
     let count = context.sql("select count(*) from main.db.t").await?.collect().await?;
     assert_eq!(count[0].column(0).as_primitive::<Int64Type>().value(0), 2);
     Ok(())

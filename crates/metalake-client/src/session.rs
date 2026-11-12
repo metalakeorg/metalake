@@ -4,8 +4,8 @@
 
 use std::sync::Arc;
 
-use datafusion::arrow::array::{AsArray, RecordBatch};
-use datafusion::arrow::datatypes::{SchemaRef, UInt64Type};
+use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::dataframe::DataFrame;
 use datafusion::datasource::MemTable;
 use datafusion::datasource::memory::MemorySourceConfig;
@@ -20,7 +20,7 @@ use datafusion::physical_plan::{ExecutionPlan, collect, execute_stream};
 use datafusion::prelude::SessionContext;
 use datafusion::sql::parser::{DFParser, Statement};
 use futures_util::{StreamExt, TryStreamExt};
-use metalake_datafusion::{CommitDetails, MetaLake, MetaLakeOptions, Source};
+use metalake_datafusion::{MetaLake, MetaLakeOptions, Source, WrittenRow};
 
 use crate::write::{Details, TablePath, Written};
 use crate::{Error, Lake, Result};
@@ -65,14 +65,6 @@ fn is_read(plan: &LogicalPlan) -> bool {
             | LogicalPlan::Explain(_)
             | LogicalPlan::DescribeTable(_)
     )
-}
-
-/// The rows a statement says it wrote, in the one column of its answer.
-fn rows_of(answer: &[RecordBatch]) -> u64 {
-    let count = answer.first().filter(|b| b.num_rows() > 0 && b.num_columns() > 0);
-    count
-        .and_then(|b| b.column(0).as_primitive_opt::<UInt64Type>())
-        .map_or(0, |column| column.value(0))
 }
 
 /// A statement ready to read: a read at the point it was prepared, or what a statement that already ran answered.
@@ -165,19 +157,21 @@ impl Session {
         if delete.op != WriteOp::Delete || delete.table_name.table() != path.name {
             return Err(Error::usage(format!("{filter}: a filter is one expression")));
         }
-        let details = Arc::new(details.into_commit());
-        let rows = self.run_with(frame, details.clone()).await?;
-        Ok(Written::of_statement(details.outcome(), rows))
+        let row = self.run_with(frame, details).await?;
+        Ok(Written::of_statement(row.outcome, row.count))
     }
 
-    /// Runs what writes, with what its commit should say.
-    async fn run_with(&self, frame: DataFrame, details: Arc<CommitDetails>) -> Result<u64> {
+    /// Runs what writes, with what its commit should say, and answers its row.
+    async fn run_with(&self, frame: DataFrame, details: Details) -> Result<WrittenRow> {
         let task = frame.task_ctx();
-        // What it asks travels as options, to wherever it runs; what came of it comes back in `details`.
-        let config = MetaLakeOptions::of(&details, task.session_config().clone()).with_extension(details);
+        // What it asks travels as options, to wherever it runs; what came of it comes back as the write's row.
+        let (author, message, idempotent) = details.asked();
+        let config = MetaLakeOptions::commit(task.session_config().clone(), author, message, idempotent);
         let task = Arc::new(task.with_session_config(config));
         let plan = frame.create_physical_plan().await?;
-        Ok(rows_of(&collect(plan, task).await?))
+        let batches = collect(plan, task).await?;
+        let batch = batches.iter().find(|b| b.num_rows() > 0).ok_or_else(|| Error::failed("a write answered no row"))?;
+        Ok(WrittenRow::of(batch)?)
     }
 
     /// Rows in memory that statements can read as long as what this answers lives.
@@ -196,10 +190,8 @@ impl Session {
         let [statement] =
             <[Statement; 1]>::try_from(Self::parse(text)?).map_err(|_| Error::failed("a merge is one statement"))?;
         let frame = self.engine.execute(&self.context, statement).await?;
-        let details = Arc::new(details.into_commit());
-        let rows = self.run_with(frame, details.clone()).await?;
-        let (inserted, updated) = details.merged();
-        Ok(Written::of_statement(details.outcome(), rows).merged(inserted, updated))
+        let row = self.run_with(frame, details).await?;
+        Ok(Written::of_statement(row.outcome, row.count).merged(row.inserted, row.updated))
     }
 
     /// The statements of a text, in order: the engine's, and a pipeline's verbs (`CREATE PIPELINE …`, `SHOW PIPELINES`,
