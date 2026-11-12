@@ -16,8 +16,10 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use common::{fresh_schema, url};
 use datafusion::arrow::util::pretty::pretty_format_batches;
+use datafusion::common::Statistics;
+use datafusion::common::stats::Precision;
 use datafusion::datasource::MemTable;
-use datafusion::physical_plan::{collect, displayable};
+use datafusion::physical_plan::{ExecutionPlan, StatisticsArgs, StatisticsContext, collect, displayable};
 use datafusion::prelude::SessionContext;
 use datafusion_proto::bytes::{
     logical_plan_from_bytes_with_extension_codec, logical_plan_to_bytes_with_extension_codec,
@@ -145,20 +147,40 @@ async fn both(
     let scheduler = lakes.there.logical_codec(Arc::new(DefaultLogicalExtensionCodec {}));
     let decoded = logical_plan_from_bytes_with_extension_codec(&logical, &remote.task_ctx(), &scheduler)?;
     let physical = remote.state().create_physical_plan(&decoded).await?;
+    let planned = scan_statistics(&physical);
     let encoder = lakes.there.physical_codec(Arc::new(DefaultPhysicalExtensionCodec {}));
     let physical = physical_plan_to_bytes_with_extension_codec(physical, &encoder)?;
 
-    // The executor: storage and no catalog.
+    // The executor: storage, no catalog, and a session of DataFusion's own with no store registered.
     let executor = MetaLakePhysicalCodec::new(lakes.storage.clone(), Arc::new(DefaultPhysicalExtensionCodec {}));
-    let task = remote.task_ctx();
+    let task = SessionContext::new().task_ctx();
     let plan = physical_plan_from_bytes_with_extension_codec(&physical, &task, &executor)?;
     let shown = displayable(plan.as_ref()).indent(true).to_string();
+    // Each partition of each scan knows what it knew before it travelled.
+    assert_eq!(scan_statistics(&plan), planned, "{shown}");
     let travelled = collect(plan, task).await?;
     Ok((
         pretty_format_batches(&direct)?.to_string(),
         pretty_format_batches(&travelled)?.to_string(),
         shown,
     ))
+}
+
+/// The statistics of each partition of each MetaLake scan in `plan`, in the order a walk of it meets them.
+fn scan_statistics(plan: &Arc<dyn ExecutionPlan>) -> Vec<Statistics> {
+    let mut found = Vec::new();
+    let mut nodes = vec![Arc::clone(plan)];
+    while let Some(node) = nodes.pop() {
+        if node.name() == "MetaScanExec" {
+            for partition in 0..node.properties().partitioning.partition_count() {
+                let args = StatisticsArgs::new().with_partition(Some(partition));
+                let statistics = StatisticsContext::new().compute(node.as_ref(), &args).unwrap();
+                found.push(statistics.as_ref().clone());
+            }
+        }
+        nodes.extend(node.children().into_iter().cloned());
+    }
+    found
 }
 
 #[tokio::test]
@@ -170,6 +192,24 @@ async fn round_trip_vector_inline_rename() -> Result<(), Box<dyn std::error::Err
     assert!(direct.contains("| 8 | s8    | s8 |"), "{direct}");
     assert!(!direct.contains("| 3 |"), "{direct}");
     assert!(shown.contains("inline/") && shown.contains(".parquet"), "{shown}");
+    Ok(())
+}
+
+/// A scan with nothing pushed into it knows its rows per partition, before and after it travels.
+#[tokio::test]
+async fn round_trip_partition_statistics() -> Result<(), Box<dyn std::error::Error>> {
+    let lakes = lakes().await?;
+    let sql = "select k, s from main.db.u order by k";
+    let (direct, travelled, _) = both(&lakes, sql, &[]).await?;
+    assert_eq!(direct, travelled);
+    let context = lakes.here.context()?;
+    let plan = context.sql(sql).await?.create_physical_plan().await?;
+    let statistics = scan_statistics(&plan);
+    assert!(!statistics.is_empty());
+    assert!(
+        statistics.iter().all(|s| !matches!(s.num_rows, Precision::Absent)),
+        "{statistics:?}"
+    );
     Ok(())
 }
 

@@ -11,12 +11,13 @@ use std::sync::{Arc, Mutex, Weak};
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::TableProvider;
-use datafusion::common::{DataFusionError, Result, TableReference};
+use datafusion::common::{DataFusionError, Result, Statistics, TableReference};
 use datafusion::datasource::file_format::FileFormatFactory;
 use datafusion::datasource::physical_plan::parquet::ParquetRowSelection;
 use datafusion::datasource::physical_plan::{FileGroup, FileScanConfig, FileScanConfigBuilder, ParquetSource};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::TaskContext;
+use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::{AggregateUDF, Extension, HigherOrderUDF, LogicalPlan, ScalarUDF, WindowUDF};
 use datafusion::parquet::arrow::arrow_reader::{RowSelection, RowSelector};
 use datafusion::physical_expr::PhysicalExpr;
@@ -372,6 +373,13 @@ impl MetaLakePhysicalCodec {
 
     fn decode_scan(&self, bytes: ScanBytes, ctx: &TaskContext) -> Result<Arc<dyn ExecutionPlan>> {
         let ScanBytes { standard, table, files } = bytes;
+        // DataFusion's decoding of a Parquet scan looks its store up in the runtime before MetaLake's reader replaces
+        // its own: a process with storage and nothing registered (an executor) registers the lake's here.
+        let url = ObjectStoreUrl::parse(self.storage.base())?;
+        let runtime = ctx.runtime_env();
+        if runtime.object_store(&url).is_err() {
+            runtime.register_object_store(url.as_ref(), self.storage.store().clone());
+        }
         let plan = physical_plan_from_bytes_with_extension_codec(&standard, ctx, self.inner.as_ref())?;
         let source = plan
             .downcast_ref::<DataSourceExec>()
@@ -411,9 +419,19 @@ impl MetaLakePhysicalCodec {
                         Ok(file.with_extension(Arc::new(found.task.task()?)))
                     })
                     .collect::<Result<Vec<_>>>()?;
+                // DataFusion's encoding keeps each file's statistics and drops the group's: merged again, as the read
+                // that planned it merged them. A range reads part of its file, whose statistics are the whole file's:
+                // a group with one is unknown, as DataFusion leaves the groups it splits.
+                let whole = files.iter().all(|f| f.range.is_none());
+                let statistics: Option<Vec<Statistics>> = whole
+                    .then(|| files.iter().map(|f| f.statistics.as_deref().cloned()).collect())
+                    .flatten();
                 let rebuilt = FileGroup::new(files);
-                Ok(match group.file_statistics(None) {
-                    Some(statistics) => rebuilt.with_statistics(Arc::new(statistics.clone())),
+                Ok(match statistics {
+                    Some(statistics) => {
+                        let merged = Statistics::try_merge_iter(&statistics, table.schema())?;
+                        rebuilt.with_statistics(Arc::new(merged))
+                    }
                     None => rebuilt,
                 })
             })
