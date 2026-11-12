@@ -174,10 +174,12 @@ fn local_warehouse_round_trip() {
         "{written:?}"
     );
     assert_eq!(sql(&dir, "select count(*) as n from main.db.t", "csv"), "n\n200002\n");
-    assert_eq!(
-        sql(&dir, "delete from main.db.t where k > 10", "csv"),
-        "count\n199990\n"
-    );
+    // A write answers its row: the count, and what came of its commit.
+    let deleted = sql(&dir, "delete from main.db.t where k > 10", "csv");
+    let row = deleted
+        .strip_prefix("count,commit,applied,inserted,updated\n199990,")
+        .unwrap_or_default();
+    assert!(row.ends_with(",true,0,0\n"), "{deleted}");
     assert_eq!(sql(&dir, "select count(*) as n from main.db.t", "csv"), "n\n12\n");
 }
 
