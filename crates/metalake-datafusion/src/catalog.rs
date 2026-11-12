@@ -73,6 +73,16 @@ impl MetaLake {
         crate::codec::MetaLakeLogicalCodec::new(self.shared.catalog.clone(), self.shared.storage.clone(), inner)
     }
 
+    /// The codec of a physical plan that holds this lake's scans, built with this lake's storage. An executor without a
+    /// catalog makes one with `MetaLakePhysicalCodec::new`.
+    #[cfg(feature = "proto")]
+    pub fn physical_codec(
+        &self,
+        inner: Arc<dyn datafusion_proto::physical_plan::PhysicalExtensionCodec>,
+    ) -> crate::codec::MetaLakePhysicalCodec {
+        crate::codec::MetaLakePhysicalCodec::new(self.shared.storage.clone(), inner)
+    }
+
     /// Lets statements read `provider` as long as what this answers lives, by the name it gives.
     pub fn source(&self, provider: Arc<dyn TableProvider>) -> Source {
         let name = NEXT_SOURCE.fetch_add(1, Ordering::Relaxed);

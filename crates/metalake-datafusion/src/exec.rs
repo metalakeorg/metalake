@@ -52,6 +52,12 @@ impl MetaScanExec {
         self.positions
     }
 
+    /// The node that reads, as a plan.
+    #[cfg_attr(not(feature = "proto"), allow(dead_code))]
+    pub(crate) fn inner(&self) -> &Arc<dyn ExecutionPlan> {
+        &self.inner
+    }
+
     /// The node that reads.
     pub(crate) fn source(&self) -> &DataSourceExec {
         self.inner

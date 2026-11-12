@@ -32,6 +32,6 @@ mod table;
 
 pub use catalog::{MetaLake, Source};
 #[cfg(feature = "proto")]
-pub use codec::MetaLakeLogicalCodec;
+pub use codec::{MetaLakeLogicalCodec, MetaLakePhysicalCodec};
 pub use details::CommitDetails;
 pub use table::MetaTable;
