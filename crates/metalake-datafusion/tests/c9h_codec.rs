@@ -21,6 +21,7 @@ use datafusion::common::stats::Precision;
 use datafusion::datasource::MemTable;
 use datafusion::physical_plan::{ExecutionPlan, StatisticsArgs, StatisticsContext, collect, displayable};
 use datafusion::prelude::SessionContext;
+use datafusion::sql::parser::DFParser;
 use datafusion_proto::bytes::{
     logical_plan_from_bytes_with_extension_codec, logical_plan_to_bytes_with_extension_codec,
     physical_plan_from_bytes_with_extension_codec, physical_plan_to_bytes_with_extension_codec,
@@ -277,6 +278,57 @@ async fn encode_foreign_table_to_inner() -> Result<(), Box<dyn std::error::Error
     assert!(
         refused.to_string().contains("LogicalExtensionCodec is not provided"),
         "{refused}"
+    );
+    Ok(())
+}
+
+/// `table_changes` crosses both hops as its value, the table and its tasks: the executor reads the commits' rows, live
+/// and deleted, with storage and no catalog, as a local read does.
+#[tokio::test]
+async fn round_trip_table_changes() -> Result<(), Box<dyn std::error::Error>> {
+    let lakes = lakes().await?;
+    let context = lakes.here.context()?;
+    context
+        .sql("insert into main.db.t values (50, 'x')")
+        .await?
+        .collect()
+        .await?;
+    // After the rename: key 3 deleted, key 50 inserted.
+    // With no end, the range reaches the last commit a second old (CHG-1).
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let sql = format!(
+        "select k, _change_type from table_changes('main.db.t', {}) order by k, _change_type",
+        lakes.before
+    );
+    let statement = || DFParser::parse_sql(&sql).map(|mut s| s.pop_front().unwrap());
+    let direct = lakes.here.execute(&context, statement()?).await?.collect().await?;
+
+    let plan = lakes
+        .here
+        .execute(&context, statement()?)
+        .await?
+        .into_optimized_plan()?;
+    let client = lakes.here.logical_codec(Arc::new(DefaultLogicalExtensionCodec {}));
+    let logical = logical_plan_to_bytes_with_extension_codec(&plan, &client)?;
+    let remote = lakes.there.context()?;
+    let scheduler = lakes.there.logical_codec(Arc::new(DefaultLogicalExtensionCodec {}));
+    let decoded = logical_plan_from_bytes_with_extension_codec(&logical, &remote.task_ctx(), &scheduler)?;
+    let physical = remote.state().create_physical_plan(&decoded).await?;
+    let encoder = lakes.there.physical_codec(Arc::new(DefaultPhysicalExtensionCodec {}));
+    let physical = physical_plan_to_bytes_with_extension_codec(physical, &encoder)?;
+    let reader = MetaLakePhysicalCodec::new(lakes.storage.clone(), Arc::new(DefaultPhysicalExtensionCodec {}));
+    let task = SessionContext::new().task_ctx();
+    let plan = physical_plan_from_bytes_with_extension_codec(&physical, &task, &reader)?;
+    let travelled = collect(plan, task).await?;
+
+    let (direct, travelled) = (
+        pretty_format_batches(&direct)?.to_string(),
+        pretty_format_batches(&travelled)?.to_string(),
+    );
+    assert_eq!(direct, travelled);
+    assert!(
+        direct.contains("| 3  | delete") && direct.contains("| 50 | insert"),
+        "{direct}"
     );
     Ok(())
 }

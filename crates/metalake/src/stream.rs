@@ -23,7 +23,7 @@ use serde_json::Value;
 
 use crate::catalog::{Catalog, Ref};
 use crate::error::{Error, Result};
-use crate::scan::{Scan, ScanTask, TaskVector, vector};
+use crate::scan::{Scan, ScanTask, TaskVector, open_whole, vector};
 use crate::storage::Storage;
 use crate::table::Table;
 use crate::vectors::DeletionVector;
@@ -110,7 +110,6 @@ pub struct TableStream {
     catalog: Catalog,
     branch: Ref,
     table: Table,
-    scan: Scan,
     schema: SchemaRef,
     schema_seq: i64,
     start: Start,
@@ -158,15 +157,7 @@ impl Ref {
             .snapshot_id()
             .ok_or_else(|| Error::Invalid(format!("{} has no snapshot to follow from", table.name())))?;
         let schema_seq = schema_seq(catalog, table, head).await?;
-        let scan = Scan::new(catalog, table);
-        let mut fields = scan.schema().fields().to_vec();
-        fields.push(Arc::new(ArrowField::new(CHANGE_TYPE, DataType::Utf8, false)));
-        fields.push(Arc::new(ArrowField::new(COMMIT_SEQ, DataType::Int64, false)));
-        fields.push(Arc::new(ArrowField::new(
-            COMMIT_TIMESTAMP,
-            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-            false,
-        )));
+        let schema = change_schema(table.schema());
         let (cursor, position) = match &start {
             Start::Cursor(cursor) => (Some(cursor.clone()), None),
             Start::After(seq) => (Some(cursor_after(&branch, table, *seq).await?), Some(*seq)),
@@ -176,8 +167,7 @@ impl Ref {
             catalog: catalog.clone(),
             branch,
             table: table.clone(),
-            scan,
-            schema: Arc::new(Schema::new(fields)),
+            schema,
             schema_seq,
             start,
             from,
@@ -189,17 +179,38 @@ impl Ref {
 }
 
 /// The rows of a range of a table's commits (CHG-2, CHG-3): which files to open is found once, and they are read each
-/// time they are asked for, from the same files.
+/// time they are asked for, from the same files. A value: the table and its tasks, which are all its reading takes, so
+/// that it travels, and is read where no catalog is.
 #[derive(Debug, Clone)]
 pub struct TableChanges {
-    stream: TableStream,
+    table: Table,
+    schema: SchemaRef,
     tasks: Vec<StreamTask>,
 }
 
 impl TableChanges {
+    /// The changes `tasks` hold of `table`, as `Ref::changes` found them.
+    pub fn new(table: Table, tasks: Vec<StreamTask>) -> Self {
+        Self {
+            schema: change_schema(table.schema()),
+            table,
+            tasks,
+        }
+    }
+
+    /// The table as the changes read it.
+    pub fn table(&self) -> &Table {
+        &self.table
+    }
+
+    /// The files to open, commit after commit.
+    pub fn tasks(&self) -> &[StreamTask] {
+        &self.tasks
+    }
+
     /// The table's columns, then `_change_type`, `_commit_seq` and `_commit_timestamp`.
     pub fn schema(&self) -> &SchemaRef {
-        self.stream.schema()
+        &self.schema
     }
 
     /// Its rows, commit after commit.
@@ -207,10 +218,54 @@ impl TableChanges {
         let opened: Vec<_> = self
             .tasks
             .iter()
-            .map(|task| self.stream.open(task.clone(), storage))
+            .map(|task| open_change(&self.table, &self.schema, task.clone(), storage))
             .collect();
         stream::iter(opened).flatten().boxed()
     }
+}
+
+/// The schema of a table's changes: its columns, then `_change_type`, `_commit_seq` and `_commit_timestamp`.
+fn change_schema(columns: &SchemaRef) -> SchemaRef {
+    let mut fields = columns.fields().to_vec();
+    fields.push(Arc::new(ArrowField::new(CHANGE_TYPE, DataType::Utf8, false)));
+    fields.push(Arc::new(ArrowField::new(COMMIT_SEQ, DataType::Int64, false)));
+    fields.push(Arc::new(ArrowField::new(
+        COMMIT_TIMESTAMP,
+        DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+        false,
+    )));
+    Arc::new(Schema::new(fields))
+}
+
+/// The batches of one task of `table`'s changes, under `schema`: its file's rows, the live ones or those deleted since,
+/// each with its change, commit and time. It takes no catalog: the task names the file, and storage holds its vectors.
+fn open_change(
+    table: &Table,
+    schema: &SchemaRef,
+    task: StreamTask,
+    storage: &Storage,
+) -> BoxStream<'static, Result<RecordBatch>> {
+    let (table, schema, storage) = (table.clone(), schema.clone(), storage.clone());
+    let StreamTask {
+        seq,
+        committed_at,
+        change,
+        rows,
+        file,
+    } = task;
+    stream::once(async move {
+        let batches = match rows {
+            TaskRows::Live => open_whole(&table, file, None, &storage),
+            TaskRows::DeletedSince(before) => {
+                let rows = deleted_since(&file, before.as_ref(), &storage).await?;
+                open_whole(&table, ScanTask { vector: None, ..file }, Some(rows), &storage)
+            }
+        };
+        Ok::<_, Error>(batches)
+    })
+    .try_flatten()
+    .map(move |batch| with_change(&schema, &batch?, change, seq, committed_at))
+    .boxed()
 }
 
 impl Ref {
@@ -236,7 +291,7 @@ impl Ref {
                 break;
             }
         }
-        Ok(TableChanges { stream, tasks })
+        Ok(TableChanges::new(stream.table.clone(), tasks))
     }
 }
 
@@ -311,27 +366,7 @@ impl TableStream {
 
     /// The batches of one of a step's tasks.
     pub fn open(&self, task: StreamTask, storage: &Storage) -> BoxStream<'static, Result<RecordBatch>> {
-        let (scan, schema, storage) = (self.scan.clone(), self.schema.clone(), storage.clone());
-        let StreamTask {
-            seq,
-            committed_at,
-            change,
-            rows,
-            file,
-        } = task;
-        stream::once(async move {
-            let batches = match rows {
-                TaskRows::Live => scan.open(file, &storage),
-                TaskRows::DeletedSince(before) => {
-                    let rows = deleted_since(&file, before.as_ref(), &storage).await?;
-                    scan.open_only(ScanTask { vector: None, ..file }, rows, &storage)
-                }
-            };
-            Ok::<_, Error>(batches)
-        })
-        .try_flatten()
-        .map(move |batch| with_change(&schema, &batch?, change, seq, committed_at))
-        .boxed()
+        open_change(&self.table, &self.schema, task, storage)
     }
 
     /// CHG-4 and CHG-5: the read at a stream point or as of a time, and a cursor for the feed from that time.

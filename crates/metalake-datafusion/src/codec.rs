@@ -8,6 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex, Weak};
+use std::time::SystemTime;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::TableProvider;
@@ -32,7 +33,9 @@ use datafusion_proto::bytes::{
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::{PhysicalExtensionCodec, PhysicalProtoConverterExtension};
 use datafusion_proto::protobuf::DfSchema;
-use metalake::{Catalog, Evolve, Ref, RefValue, ScanTask, Storage, Table, TaskVector};
+use metalake::{
+    Catalog, Evolve, Ref, RefValue, RowChange, ScanTask, Storage, StreamTask, Table, TableChanges, TaskRows, TaskVector,
+};
 use prost::Message;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -40,6 +43,7 @@ use tokio::sync::OnceCell;
 use uuid::Uuid;
 
 use crate::adapter::ByFieldId;
+use crate::changes::{ChangesExec, ChangesTable};
 use crate::exec::MetaScanExec;
 use crate::merge::Merge;
 use crate::point::StatementPoint;
@@ -62,6 +66,8 @@ enum Kind {
     Delete = 4,
     Update = 5,
     Merge = 6,
+    Changes = 7,
+    ChangesScan = 8,
 }
 
 /// `value` as MetaLake's bytes of `kind`, appended to `buf`.
@@ -194,6 +200,14 @@ impl LogicalExtensionCodec for MetaLakeLogicalCodec {
         schema: SchemaRef,
         ctx: &TaskContext,
     ) -> Result<Arc<dyn TableProvider>> {
+        if kind_of(buf) == Some(Kind::Changes as u8) {
+            let bytes = decode::<ChangesBytes>(Kind::Changes, buf).expect("MetaLake's bytes")?;
+            let changes = ChangesTable {
+                changes: bytes.changes()?,
+                storage: self.storage.clone(),
+            };
+            return Ok(Arc::new(changes));
+        }
         let Some(decoded) = decode::<TableBytes>(Kind::Table, buf) else {
             return self.inner.try_decode_table_provider(buf, table_ref, schema, ctx);
         };
@@ -213,6 +227,9 @@ impl LogicalExtensionCodec for MetaLakeLogicalCodec {
         node: Arc<dyn TableProvider>,
         buf: &mut Vec<u8>,
     ) -> Result<()> {
+        if let Some(changes) = node.downcast_ref::<ChangesTable>() {
+            return encode(Kind::Changes, &ChangesBytes::of(&changes.changes), buf);
+        }
         let Some(table) = node.downcast_ref::<MetaTable>() else {
             return self.inner.try_encode_table_provider(table_ref, node, buf);
         };
@@ -399,6 +416,66 @@ impl ClauseBytes {
             action,
         })
     }
+}
+
+/// The changes of a range of commits as they travel: the table and the tasks, all that reading them takes.
+#[derive(Serialize, Deserialize)]
+struct ChangesBytes {
+    table: Table,
+    tasks: Vec<StreamTaskBytes>,
+}
+
+/// A `StreamTask` as it travels: its file a `TaskBytes`, whose partition is JSON text.
+#[derive(Serialize, Deserialize)]
+struct StreamTaskBytes {
+    seq: i64,
+    committed_at: SystemTime,
+    change: RowChange,
+    rows: TaskRows,
+    file: TaskBytes,
+}
+
+impl ChangesBytes {
+    fn of(changes: &TableChanges) -> Self {
+        Self {
+            table: changes.table().clone(),
+            tasks: changes
+                .tasks()
+                .iter()
+                .map(|task| StreamTaskBytes {
+                    seq: task.seq,
+                    committed_at: task.committed_at,
+                    change: task.change,
+                    rows: task.rows.clone(),
+                    file: TaskBytes::from(&task.file),
+                })
+                .collect(),
+        }
+    }
+
+    fn changes(self) -> Result<TableChanges> {
+        let tasks = self
+            .tasks
+            .into_iter()
+            .map(|task| {
+                Ok(StreamTask {
+                    seq: task.seq,
+                    committed_at: task.committed_at,
+                    change: task.change,
+                    rows: task.rows,
+                    file: task.file.task()?,
+                })
+            })
+            .collect::<Result<_>>()?;
+        Ok(TableChanges::new(self.table, tasks))
+    }
+}
+
+/// A `ChangesExec` as it travels: its changes, and the columns it reads.
+#[derive(Serialize, Deserialize)]
+struct ChangesScanBytes {
+    changes: ChangesBytes,
+    projection: Option<Vec<usize>>,
 }
 
 /// What DataFusion's encoding drops of a file: its task, and the rows its vector leaves.
@@ -775,6 +852,11 @@ impl PhysicalExtensionCodec for MetaLakePhysicalCodec {
                 let bytes = decode::<RowsBytes>(Kind::Delete, buf).expect("MetaLake's bytes")?;
                 self.decode_delete(bytes, inputs, ctx)
             }
+            Some(k) if k == Kind::ChangesScan as u8 => {
+                let bytes = decode::<ChangesScanBytes>(Kind::ChangesScan, buf).expect("MetaLake's bytes")?;
+                let exec = ChangesExec::new(bytes.changes.changes()?, self.storage.clone(), bytes.projection)?;
+                Ok(Arc::new(exec))
+            }
             Some(k) if k == Kind::Merge as u8 => {
                 let bytes = decode::<MergeBytes>(Kind::Merge, buf).expect("MetaLake's bytes")?;
                 self.decode_merge(bytes, inputs, ctx)
@@ -799,6 +881,13 @@ impl PhysicalExtensionCodec for MetaLakePhysicalCodec {
     ) -> Result<()> {
         if let Some(scan) = node.downcast_ref::<MetaScanExec>() {
             return self.encode_scan(scan, buf);
+        }
+        if let Some(changes) = node.downcast_ref::<ChangesExec>() {
+            let bytes = ChangesScanBytes {
+                changes: ChangesBytes::of(&changes.changes),
+                projection: changes.projection.clone(),
+            };
+            return encode(Kind::ChangesScan, &bytes, buf);
         }
         if let Some(sink) = node.downcast_ref::<DataSinkExec>().map(DataSinkExec::sink) {
             if let Some(insert) = sink.downcast_ref::<Insert>() {

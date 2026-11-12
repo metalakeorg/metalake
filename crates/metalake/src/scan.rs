@@ -301,16 +301,6 @@ impl Scan {
         self.opened(task, None, storage)
     }
 
-    /// The batches of those rows of one task's file, deleted or not.
-    pub(crate) fn open_only(
-        &self,
-        task: ScanTask,
-        rows: DeletionVector,
-        storage: &Storage,
-    ) -> BoxStream<'static, Result<RecordBatch>> {
-        self.opened(task, Some(rows), storage)
-    }
-
     fn opened(
         &self,
         task: ScanTask,
@@ -331,6 +321,29 @@ impl Scan {
             .try_flatten()
             .boxed()
     }
+}
+
+/// The batches of one task's file as a read of every column of `table` gives them (`Scan::new(…).open`), only the rows
+/// of `only` if given: what opening a file already planned takes, which is no catalog.
+pub(crate) fn open_whole(
+    table: &Table,
+    task: ScanTask,
+    only: Option<DeletionVector>,
+    storage: &Storage,
+) -> BoxStream<'static, Result<RecordBatch>> {
+    let reading = Reading {
+        columns: table.schema().clone(),
+        schema: table.schema().clone(),
+        evolve: Arc::new(Evolve::new(table)),
+        filter: None,
+        positions: false,
+        batch_size: BATCH_SIZE,
+        only,
+    };
+    let storage = storage.clone();
+    stream::once(async move { batches(task, &storage, reading).await })
+        .try_flatten()
+        .boxed()
 }
 
 /// The batches of one file, under the scan's schema.

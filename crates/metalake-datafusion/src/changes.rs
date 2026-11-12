@@ -5,51 +5,148 @@
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
+use std::fmt;
+
+use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::catalog::TableProvider;
-use datafusion::catalog::streaming::StreamingTable;
+use datafusion::catalog::{Session, TableProvider};
+use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::datasource::TableType;
 use datafusion::error::DataFusionError;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr};
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use datafusion::physical_plan::streaming::PartitionStream;
+use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use datafusion::sql::sqlparser::ast::{
     Expr, FunctionArg, FunctionArgExpr, ObjectName, Query, SetExpr, Statement, TableAlias, TableFactor, TableWithJoins,
     Value, Visit, VisitMut, Visitor, VisitorMut,
 };
 use datafusion::sql::sqlparser::dialect::GenericDialect;
 use datafusion::sql::sqlparser::parser::Parser;
-use futures_util::TryStreamExt;
+use futures_util::StreamExt;
 use metalake::{Storage, TableChanges, TablePath};
 
 /// The name a statement calls it by.
 pub(crate) const FUNCTION: &str = "table_changes";
 
-/// The rows of a range of commits, read in one partition, commit after commit.
+/// The changes of a range of commits as a table: bounded, so that a statement over it ends. A table of its own, not
+/// DataFusion's streaming one, so that a plan holding it can name it and send it as its value.
 #[derive(Debug)]
-struct Partition {
-    changes: TableChanges,
-    storage: Storage,
+pub(crate) struct ChangesTable {
+    pub changes: TableChanges,
+    pub storage: Storage,
 }
 
-impl PartitionStream for Partition {
-    fn schema(&self) -> &SchemaRef {
-        self.changes.schema()
+#[async_trait]
+impl TableProvider for ChangesTable {
+    fn schema(&self) -> SchemaRef {
+        self.changes.schema().clone()
     }
 
-    fn execute(&self, _: Arc<TaskContext>) -> SendableRecordBatchStream {
-        let rows = self
-            .changes
-            .read(&self.storage)
-            .map_err(|e| DataFusionError::External(Box::new(e)));
-        Box::pin(RecordBatchStreamAdapter::new(self.changes.schema().clone(), rows))
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    async fn scan(
+        &self,
+        _: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        _: &[datafusion::prelude::Expr],
+        _: Option<usize>,
+    ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+        let exec = ChangesExec::new(self.changes.clone(), self.storage.clone(), projection.cloned())?;
+        Ok(Arc::new(exec))
     }
 }
 
-/// The range as a table: bounded, so that a statement over it ends.
+/// The read of a range of commits: one partition, commit after commit, each file opened when it is read. It takes no
+/// catalog: the tasks name the files, and storage holds them.
+#[derive(Debug)]
+pub(crate) struct ChangesExec {
+    pub changes: TableChanges,
+    pub storage: Storage,
+    /// The columns read, by place, if not all.
+    pub projection: Option<Vec<usize>>,
+    properties: Arc<PlanProperties>,
+}
+
+impl ChangesExec {
+    pub(crate) fn new(
+        changes: TableChanges,
+        storage: Storage,
+        projection: Option<Vec<usize>>,
+    ) -> Result<Self, DataFusionError> {
+        let schema = match &projection {
+            Some(columns) => Arc::new(changes.schema().project(columns)?),
+            None => changes.schema().clone(),
+        };
+        let properties = PlanProperties::new(
+            EquivalenceProperties::new(schema),
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        );
+        Ok(Self {
+            changes,
+            storage,
+            projection,
+            properties: Arc::new(properties),
+        })
+    }
+}
+
+impl DisplayAs for ChangesExec {
+    fn fmt_as(&self, _: DisplayFormatType, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (name, files) = (self.changes.table().name(), self.changes.tasks().len());
+        write!(f, "ChangesExec: {name}, {files} files")
+    }
+}
+
+impl ExecutionPlan for ChangesExec {
+    fn name(&self) -> &'static str {
+        "ChangesExec"
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        Vec::new()
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        _: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+        Ok(self)
+    }
+
+    /// It holds no expressions.
+    fn apply_expressions(
+        &self,
+        _: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion, DataFusionError>,
+    ) -> Result<TreeNodeRecursion, DataFusionError> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn execute(&self, _: usize, _: Arc<TaskContext>) -> Result<SendableRecordBatchStream, DataFusionError> {
+        let projection = self.projection.clone();
+        let rows = self.changes.read(&self.storage).map(move |batch| {
+            let batch = batch.map_err(|e| DataFusionError::External(Box::new(e)))?;
+            match &projection {
+                Some(columns) => Ok(batch.project(columns)?),
+                None => Ok(batch),
+            }
+        });
+        Ok(Box::pin(RecordBatchStreamAdapter::new(self.schema(), rows)))
+    }
+}
+
+/// The range as a table.
 pub(crate) fn provider(changes: TableChanges, storage: Storage) -> Result<Arc<dyn TableProvider>, DataFusionError> {
-    let schema = changes.schema().clone();
-    let partition = Arc::new(Partition { changes, storage });
-    Ok(Arc::new(StreamingTable::try_new(schema, vec![partition])?))
+    Ok(Arc::new(ChangesTable { changes, storage }))
 }
 
 /// A call of `table_changes` in a statement: the table it names, by MetaLake's rule, and its range.
