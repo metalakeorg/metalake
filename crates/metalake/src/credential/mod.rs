@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use metalake_pg::tls::SslMode;
 use metalake_pg::{Credential, ErrorKind};
 
 #[cfg(feature = "s3")]
@@ -81,6 +82,48 @@ impl Auth {
             Self::AzureEntra => Err(unbuilt("Azure").into()),
         }
     }
+
+    /// The connection string a pool connects by, and its credential, as the rules of a cloud's token hold them. A token
+    /// is a bearer's: whoever reads it signs in, for minutes. So it goes only to a server whose certificate is checked,
+    /// `verify-full` when the string names no mode and no less than `verify-ca` when it names one, and it is the only
+    /// password: a string that names one is refused rather than either being chosen.
+    pub fn prepared(self, postgres: &str) -> crate::Result<(String, Option<Arc<dyn Credential>>)> {
+        if self == Self::Password {
+            return Ok((postgres.to_string(), None));
+        }
+        let name = self.name();
+        if crate::environment::has_password(postgres) {
+            return Err(error(format!(
+                "auth `{name}` signs in with a token: the connection string names a password"
+            ))
+            .into());
+        }
+        let (_, tls) = metalake_pg::tls::split(postgres)?;
+        let postgres = match (tls.named, tls.mode) {
+            (false, _) => with_mode(postgres, "verify-full"),
+            (true, mode) if mode >= SslMode::VerifyCa => postgres.to_string(),
+            (true, _) => {
+                return Err(error(format!(
+                    "auth `{name}` sends a token, which goes only to a server whose certificate is checked: \
+                     sslmode verify-full or verify-ca, with sslrootcert naming the server's CA (RDS's bundle, \
+                     a Cloud SQL instance's) unless the system's roots hold it"
+                ))
+                .into());
+            }
+        };
+        let credential = self.credential(&postgres)?;
+        Ok((postgres, credential))
+    }
+}
+
+/// `postgres` with `sslmode=mode` added.
+fn with_mode(postgres: &str, mode: &str) -> String {
+    if crate::environment::is_url(postgres) {
+        let joiner = if postgres.contains('?') { '&' } else { '?' };
+        format!("{postgres}{joiner}sslmode={mode}")
+    } else {
+        format!("{postgres} sslmode={mode}")
+    }
 }
 
 pub(crate) fn error(message: impl Into<String>) -> metalake_pg::Error {
@@ -102,5 +145,40 @@ mod tests {
             "{refused}"
         );
         assert!(Auth::Password.credential("host=h user=u").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_token_only_to_a_checked_server() {
+        let (kept, none) = Auth::Password.prepared("host=h user=u sslmode=disable").unwrap();
+        assert_eq!((kept.as_str(), none.is_none()), ("host=h user=u sslmode=disable", true));
+
+        for auth in [Auth::AwsIam, Auth::GcpIam, Auth::AzureEntra] {
+            for refused in [
+                "host=h user=u sslmode=require",
+                "postgresql://u@h/db?sslmode=prefer",
+                "host=h user=u password=p sslmode=verify-full",
+                "postgresql://u:p@h/db",
+            ] {
+                let error = auth.prepared(refused).expect_err(refused).to_string();
+                assert!(error.contains(&format!("auth `{}`", auth.name())), "{error}");
+            }
+        }
+    }
+
+    #[cfg(all(feature = "s3", feature = "gcs", feature = "azure"))]
+    #[test]
+    fn verify_full_unless_named() {
+        let (postgres, credential) = Auth::GcpIam.prepared("postgresql://u@h/db").unwrap();
+        assert_eq!(postgres, "postgresql://u@h/db?sslmode=verify-full");
+        assert!(credential.is_some());
+        let (postgres, _) = Auth::AzureEntra.prepared("host=h user=u sslmode=verify-ca").unwrap();
+        assert_eq!(postgres, "host=h user=u sslmode=verify-ca");
+        let (postgres, _) = Auth::AwsIam
+            .prepared("host=db.x.eu-west-1.rds.amazonaws.com user=u")
+            .unwrap();
+        assert_eq!(
+            postgres,
+            "host=db.x.eu-west-1.rds.amazonaws.com user=u sslmode=verify-full"
+        );
     }
 }

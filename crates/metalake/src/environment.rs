@@ -8,6 +8,8 @@ use url::Url;
 
 /// A connection string of the catalog's Postgres, as libpq's `key=value` pairs or a URL.
 pub const POSTGRES: &str = "METALAKE_POSTGRES";
+/// How a client signs in to that catalog, by name (`aws-iam`, `gcp-iam`, `azure-entra`): the password when unset.
+pub const POSTGRES_AUTH: &str = "METALAKE_POSTGRES_AUTH";
 /// The catalog's schema, when one Postgres database holds more than one lake.
 pub const SCHEMA: &str = "METALAKE_SCHEMA";
 /// A Ballista scheduler of the lake's (`df://host:port`), where a session's router may send a statement.

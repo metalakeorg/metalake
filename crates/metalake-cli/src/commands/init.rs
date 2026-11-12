@@ -8,12 +8,14 @@ use metalake_client::Error;
 use metalake_client::Lake;
 
 pub async fn run(init: &Init, dir: Option<&Path>, out: &Out) -> Result<(), Error> {
-    let lake = Lake::create(
+    let auth = metalake_client::Auth::parse(init.auth.as_deref().unwrap_or("password")).map_err(Error::from)?;
+    let lake = Lake::create_with(
         &init.catalog,
         init.warehouse.as_deref(),
         init.schema.as_deref(),
         dir,
         Lake::ONE_COMMAND,
+        auth,
     )
     .await?;
     out.value(&lake.status().await?)

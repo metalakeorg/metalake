@@ -442,4 +442,10 @@ pub struct Init {
     /// The Postgres schema of the catalog, for more than one lake in a database.
     #[arg(long)]
     pub schema: Option<String>,
+
+    /// How a client signs in to an existing Postgres: `aws-iam`, `gcp-iam` or `azure-entra`, a token of the client's own
+    /// cloud identity, which the lake's file keeps; `PGPASSWORD` when not given. A token goes only to a server whose
+    /// certificate is checked: `sslmode=verify-full` unless the connection string names `verify-ca`.
+    #[arg(long, value_name = "AUTH", value_parser = ["password", "aws-iam", "gcp-iam", "azure-entra"])]
+    pub auth: Option<String>,
 }

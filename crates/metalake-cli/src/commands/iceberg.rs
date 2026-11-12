@@ -33,7 +33,7 @@ pub async fn run(verb: &IcebergVerb, lake: &Lake, out: &Out) -> Result<(), Error
 /// a request to `POST /metalake/shutdown` that bears it. With a runtime file, it says there where it listens once it
 /// does, and removes it as it stops.
 async fn serve(args: &IcebergServe, lake: &Lake) -> Result<(), Error> {
-    let mut state = State::connect(&lake.catalog_postgres()?, lake.schema()).await?;
+    let mut state = State::connect_with(&lake.catalog_postgres()?, lake.schema(), lake.catalog_auth()?).await?;
     if args.materialize == Switch::On {
         state = state.materializing();
     }
