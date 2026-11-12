@@ -14,7 +14,7 @@ use datafusion::catalog::Session;
 use datafusion::common::DFSchema;
 use datafusion::datasource::sink::DataSink;
 use datafusion::error::Result;
-use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::execution::{SendableRecordBatchStream, SessionState, SessionStateBuilder, TaskContext};
 use datafusion::logical_expr::Expr;
 use datafusion::logical_expr::utils::conjunction;
 use datafusion::physical_expr::PhysicalExpr;
@@ -133,6 +133,16 @@ impl Selection {
         });
         Ok(batches.boxed())
     }
+}
+
+/// A session of `context`'s configuration and runtime, with DataFusion's own functions and rules: where a process that
+/// runs a statement makes its expressions and plans as the planning process's session made them.
+pub(crate) fn session(context: &TaskContext) -> SessionState {
+    SessionStateBuilder::new()
+        .with_config(context.session_config().clone())
+        .with_runtime_env(context.runtime_env())
+        .with_default_features()
+        .build()
 }
 
 /// Marks the rows of `batch` to delete.

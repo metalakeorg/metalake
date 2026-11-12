@@ -209,14 +209,29 @@ async fn ballista_delete_update() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// A merge does not cross processes yet (its sink is the next step's): it fails, and does not hang.
+/// A merge runs on the cluster: the executor plans the join of the source and the table (each row with its file and
+/// position) from the statement it was sent, and commits what its clauses did, once, with the session's author.
 #[tokio::test(flavor = "multi_thread")]
-async fn ballista_merge_fails() -> Result<(), Box<dyn std::error::Error>> {
-    let (_, cluster, _, _) = sessions().await?;
-    let sql = "merge into main.db.t t using main.db.u u on t.k = u.k when matched then delete";
-    let merge = async { cluster.sql(sql).await?.collect().await };
-    let done = tokio::time::timeout(Duration::from_secs(60), merge).await;
-    assert!(matches!(done, Ok(Err(_))), "a merge fails, and does not hang: {done:?}");
+async fn ballista_merge() -> Result<(), Box<dyn std::error::Error>> {
+    let (local, cluster, _, main) = sessions().await?;
+    cluster.sql("set metalake.author = 'cai'").await?.collect().await?;
+    let merge = "merge into main.db.t t using (select k, s from main.db.u where k < 12) u on t.k = u.k
+                 when matched and u.k = 9 then delete
+                 when matched then update set label = concat(u.s, '*')
+                 when not matched then insert (k, label) values (u.k, u.s)";
+    let affected = rows(&cluster, merge).await?;
+    // Keys 5..12 of u: 5, 6, 7, 8 and 9 match t (9 is deleted), 10 and 11 are new.
+    assert!(affected.contains("| 7     |"), "{affected}");
+    assert_eq!(main.history(1).await?[0].author.as_deref(), Some("cai"));
+
+    let sql = "select k, label from main.db.t order by k";
+    let (here, there) = (rows(&local, sql).await?, rows(&cluster, sql).await?);
+    assert_eq!(here, there);
+    assert!(
+        here.contains("| 5  | s5*   |") && here.contains("| 11 | s11   |"),
+        "{here}"
+    );
+    assert!(!here.contains("| 9  |") && !here.contains("| 3  |"), "{here}");
     Ok(())
 }
 

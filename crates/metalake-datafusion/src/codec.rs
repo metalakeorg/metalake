@@ -11,14 +11,15 @@ use std::sync::{Arc, Mutex, Weak};
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::TableProvider;
-use datafusion::common::{DataFusionError, Result, Statistics, TableReference};
+use datafusion::common::{DFSchema, DataFusionError, Result, Statistics, TableReference};
 use datafusion::datasource::file_format::FileFormatFactory;
 use datafusion::datasource::physical_plan::parquet::ParquetRowSelection;
 use datafusion::datasource::physical_plan::{FileGroup, FileScanConfig, FileScanConfigBuilder, ParquetSource};
 use datafusion::datasource::sink::{DataSink, DataSinkExec};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::object_store::ObjectStoreUrl;
-use datafusion::execution::{SessionState, SessionStateBuilder, TaskContext};
+use datafusion::execution::{SessionState, TaskContext};
+use datafusion::logical_expr::dml::{MergeIntoAction, MergeIntoClause, MergeIntoClauseKind};
 use datafusion::logical_expr::{AggregateUDF, Expr, Extension, HigherOrderUDF, LogicalPlan, ScalarUDF, WindowUDF};
 use datafusion::parquet::arrow::arrow_reader::{RowSelection, RowSelector};
 use datafusion::physical_expr::PhysicalExpr;
@@ -30,7 +31,9 @@ use datafusion_proto::bytes::{
 };
 use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::{PhysicalExtensionCodec, PhysicalProtoConverterExtension};
+use datafusion_proto::protobuf::DfSchema;
 use metalake::{Catalog, Evolve, Ref, RefValue, ScanTask, Storage, Table, TaskVector};
+use prost::Message;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
@@ -38,9 +41,10 @@ use uuid::Uuid;
 
 use crate::adapter::ByFieldId;
 use crate::exec::MetaScanExec;
+use crate::merge::Merge;
 use crate::point::StatementPoint;
 use crate::read::TaskReaders;
-use crate::sink::{Delete, Insert, Selection, Update};
+use crate::sink::{Delete, Insert, Selection, Update, session};
 use crate::table::MetaTable;
 
 /// What every MetaLake encoding starts with.
@@ -57,6 +61,7 @@ enum Kind {
     Insert = 3,
     Delete = 4,
     Update = 5,
+    Merge = 6,
 }
 
 /// `value` as MetaLake's bytes of `kind`, appended to `buf`.
@@ -300,6 +305,102 @@ struct UpdateBytes {
     assignments: Vec<(String, Vec<u8>)>,
 }
 
+/// A `merge into` as it travels: its statement, from which the process that runs it plans the join and makes its
+/// clauses, as the one that planned it did. The source is a plan, in this codec's encoding, so that MetaLake's scans in it
+/// keep their tasks; the combined schema is DataFusion's protobuf; expressions are logical, in DataFusion's encoding.
+#[derive(Serialize, Deserialize)]
+struct MergeBytes {
+    on: RefValue,
+    table: Table,
+    source: Vec<u8>,
+    combined: Vec<u8>,
+    join_on: Vec<u8>,
+    clauses: Vec<ClauseBytes>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ClauseBytes {
+    kind: ClauseKind,
+    predicate: Option<Vec<u8>>,
+    action: ActionBytes,
+}
+
+#[derive(Serialize, Deserialize)]
+enum ClauseKind {
+    Matched,
+    NotMatched,
+    NotMatchedByTarget,
+    NotMatchedBySource,
+}
+
+#[derive(Serialize, Deserialize)]
+enum ActionBytes {
+    Update(Vec<(String, Vec<u8>)>),
+    Insert { columns: Vec<String>, values: Vec<Vec<u8>> },
+    Delete,
+}
+
+fn expr_bytes(expr: &Expr) -> Result<Vec<u8>> {
+    Ok(expr.to_bytes()?.to_vec())
+}
+
+impl ClauseBytes {
+    fn of(clause: &MergeIntoClause) -> Result<Self> {
+        let kind = match clause.kind {
+            MergeIntoClauseKind::Matched => ClauseKind::Matched,
+            MergeIntoClauseKind::NotMatched => ClauseKind::NotMatched,
+            MergeIntoClauseKind::NotMatchedByTarget => ClauseKind::NotMatchedByTarget,
+            MergeIntoClauseKind::NotMatchedBySource => ClauseKind::NotMatchedBySource,
+        };
+        let action = match &clause.action {
+            MergeIntoAction::Update(assignments) => ActionBytes::Update(
+                assignments
+                    .iter()
+                    .map(|(column, value)| Ok((column.clone(), expr_bytes(value)?)))
+                    .collect::<Result<_>>()?,
+            ),
+            MergeIntoAction::Insert { columns, values } => ActionBytes::Insert {
+                columns: columns.clone(),
+                values: values.iter().map(expr_bytes).collect::<Result<_>>()?,
+            },
+            MergeIntoAction::Delete => ActionBytes::Delete,
+        };
+        Ok(Self {
+            kind,
+            predicate: clause.predicate.as_ref().map(expr_bytes).transpose()?,
+            action,
+        })
+    }
+
+    fn clause(&self, ctx: &TaskContext) -> Result<MergeIntoClause> {
+        let expr = |bytes: &Vec<u8>| Expr::from_bytes_with_ctx(bytes, ctx);
+        let kind = match self.kind {
+            ClauseKind::Matched => MergeIntoClauseKind::Matched,
+            ClauseKind::NotMatched => MergeIntoClauseKind::NotMatched,
+            ClauseKind::NotMatchedByTarget => MergeIntoClauseKind::NotMatchedByTarget,
+            ClauseKind::NotMatchedBySource => MergeIntoClauseKind::NotMatchedBySource,
+        };
+        let action = match &self.action {
+            ActionBytes::Update(assignments) => MergeIntoAction::Update(
+                assignments
+                    .iter()
+                    .map(|(column, value)| Ok((column.clone(), expr(value)?)))
+                    .collect::<Result<_>>()?,
+            ),
+            ActionBytes::Insert { columns, values } => MergeIntoAction::Insert {
+                columns: columns.clone(),
+                values: values.iter().map(expr).collect::<Result<_>>()?,
+            },
+            ActionBytes::Delete => MergeIntoAction::Delete,
+        };
+        Ok(MergeIntoClause {
+            kind,
+            predicate: self.predicate.as_ref().map(expr).transpose()?,
+            action,
+        })
+    }
+}
+
 /// What DataFusion's encoding drops of a file: its task, and the rows its vector leaves.
 #[derive(Serialize, Deserialize)]
 struct FileBytes {
@@ -503,6 +604,38 @@ impl MetaLakePhysicalCodec {
         Self::sink_over(inputs, Arc::new(Update::new(rows, assignments, &state)?))
     }
 
+    fn encode_merge(&self, merge: &Merge, buf: &mut Vec<u8>) -> Result<()> {
+        let combined = DfSchema::try_from(merge.combined.as_ref())
+            .map_err(|e| DataFusionError::Internal(format!("a merge's schema: {e}")))?;
+        let bytes = MergeBytes {
+            on: merge.table.on.value(),
+            table: merge.table.table.clone(),
+            source: physical_plan_to_bytes_with_extension_codec(Arc::clone(&merge.source), self)?.to_vec(),
+            combined: combined.encode_to_vec(),
+            join_on: expr_bytes(&merge.on)?,
+            clauses: merge.statement.iter().map(ClauseBytes::of).collect::<Result<_>>()?,
+        };
+        encode(Kind::Merge, &bytes, buf)
+    }
+
+    fn decode_merge(
+        &self,
+        bytes: MergeBytes,
+        inputs: &[Arc<dyn ExecutionPlan>],
+        ctx: &TaskContext,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let table = rebuilt(self.writer()?, &self.storage, bytes.on, bytes.table, None);
+        let source = physical_plan_from_bytes_with_extension_codec(&bytes.source, ctx, self)?;
+        let combined = DfSchema::decode(bytes.combined.as_slice())
+            .map_err(|e| DataFusionError::Internal(format!("a merge's schema: {e}")))?;
+        let combined =
+            DFSchema::try_from(&combined).map_err(|e| DataFusionError::Internal(format!("a merge's schema: {e}")))?;
+        let on = Expr::from_bytes_with_ctx(&bytes.join_on, ctx)?;
+        let clauses = bytes.clauses.iter().map(|c| c.clause(ctx)).collect::<Result<_>>()?;
+        let merge = Merge::new(table, source, Arc::new(combined), on, clauses, &session(ctx))?;
+        Self::sink_over(inputs, Arc::new(merge))
+    }
+
     fn encode_scan(&self, scan: &MetaScanExec, buf: &mut Vec<u8>) -> Result<()> {
         if scan.positions() {
             return Err(DataFusionError::NotImplemented(
@@ -617,17 +750,6 @@ impl MetaLakePhysicalCodec {
     }
 }
 
-/// A session of `ctx`'s configuration and runtime, with DataFusion's own functions and rules: where a process that
-/// runs a statement makes its expressions as the planning process's session made them (coercion, rewrites,
-/// simplification).
-fn session(ctx: &TaskContext) -> SessionState {
-    SessionStateBuilder::new()
-        .with_config(ctx.session_config().clone())
-        .with_runtime_env(ctx.runtime_env())
-        .with_default_features()
-        .build()
-}
-
 /// The file scan a `DataSourceExec` of MetaLake's reads.
 fn file_scan(source: &DataSourceExec) -> Result<&FileScanConfig> {
     source
@@ -652,6 +774,10 @@ impl PhysicalExtensionCodec for MetaLakePhysicalCodec {
             Some(k) if k == Kind::Delete as u8 => {
                 let bytes = decode::<RowsBytes>(Kind::Delete, buf).expect("MetaLake's bytes")?;
                 self.decode_delete(bytes, inputs, ctx)
+            }
+            Some(k) if k == Kind::Merge as u8 => {
+                let bytes = decode::<MergeBytes>(Kind::Merge, buf).expect("MetaLake's bytes")?;
+                self.decode_merge(bytes, inputs, ctx)
             }
             Some(k) if k == Kind::Update as u8 => {
                 let bytes = decode::<UpdateBytes>(Kind::Update, buf).expect("MetaLake's bytes")?;
@@ -683,6 +809,9 @@ impl PhysicalExtensionCodec for MetaLakePhysicalCodec {
             }
             if let Some(update) = sink.downcast_ref::<Update>() {
                 return self.encode_update(update, buf);
+            }
+            if let Some(merge) = sink.downcast_ref::<Merge>() {
+                return self.encode_merge(merge, buf);
             }
         }
         self.inner.try_encode(node, buf, proto_converter)
