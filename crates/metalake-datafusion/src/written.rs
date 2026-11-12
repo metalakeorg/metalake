@@ -19,7 +19,7 @@ use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::dml::WriteOp;
 use datafusion::logical_expr::{DmlStatement, LogicalPlan};
 use datafusion::optimizer::AnalyzerRule;
-use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
+use datafusion::physical_expr::{Distribution, EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use futures_util::StreamExt;
@@ -125,6 +125,16 @@ impl ExecutionPlan for MetaWriteExec {
         Ok(Arc::new(Self::new(children.swap_remove(0))))
     }
 
+    /// The sink, one partition, right under it: a repartition between them would run the sink with the slot of one
+    /// partition and send its count out of another, whose slot is empty.
+    fn required_input_distribution(&self) -> Vec<Distribution> {
+        vec![Distribution::SinglePartition]
+    }
+
+    fn benefits_from_input_partitioning(&self) -> Vec<bool> {
+        vec![false]
+    }
+
     /// It holds no expressions.
     fn apply_expressions(
         &self,
@@ -199,4 +209,61 @@ fn writes_metalake(dml: &DmlStatement) -> Result<bool> {
         WriteOp::Insert(_) | WriteOp::Delete | WriteOp::Update | WriteOp::MergeInto(_)
     );
     Ok(write && source_as_provider(&dml.target)?.downcast_ref::<MetaTable>().is_some())
+}
+
+#[cfg(test)]
+mod tests {
+    use async_trait::async_trait;
+    use datafusion::datasource::sink::{DataSink, DataSinkExec};
+    use datafusion::execution::SessionStateBuilder;
+    use datafusion::physical_plan::empty::EmptyExec;
+    use datafusion::physical_plan::{collect, displayable};
+    use datafusion::prelude::SessionConfig;
+
+    use super::*;
+
+    /// A sink that answers three rows, and says a merge inserted one and updated two, in its execution's slot.
+    #[derive(Debug)]
+    struct Counted(SchemaRef);
+
+    impl DisplayAs for Counted {
+        fn fmt_as(&self, _: DisplayFormatType, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "Counted")
+        }
+    }
+
+    #[async_trait]
+    impl DataSink for Counted {
+        fn schema(&self) -> &SchemaRef {
+            &self.0
+        }
+
+        async fn write_all(&self, _: SendableRecordBatchStream, context: &Arc<TaskContext>) -> Result<u64> {
+            crate::details::merged(context, 1, 2);
+            Ok(3)
+        }
+    }
+
+    /// Optimized in a session of many partitions, the sink stays right under the write's row, and the row says what its
+    /// slot holds: a repartition between them would send the count out of a partition whose slot is empty.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn slot_reaches_the_row_in_many_partitions() -> Result<()> {
+        let schema = Arc::new(Schema::empty());
+        let sink = DataSinkExec::new(Arc::new(EmptyExec::new(schema.clone())), Arc::new(Counted(schema)), None);
+        let mut plan: Arc<dyn ExecutionPlan> = Arc::new(MetaWriteExec::new(Arc::new(sink)));
+        let config = SessionConfig::new().with_target_partitions(16);
+        let state = SessionStateBuilder::new().with_config(config).with_default_features().build();
+        for rule in state.physical_optimizers() {
+            plan = rule.optimize(plan, state.config_options())?;
+        }
+        let shown = displayable(plan.as_ref()).indent(true).to_string();
+        assert_eq!(plan.children()[0].name(), "DataSinkExec", "{shown}");
+        for _ in 0..20 {
+            let batches = collect(plan.clone(), Arc::new(TaskContext::from(&state))).await?;
+            let batch = batches.iter().find(|b| b.num_rows() > 0).expect("a row");
+            let row = WrittenRow::of(batch)?;
+            assert_eq!((row.count, row.inserted, row.updated), (3, 1, 2), "{shown}");
+        }
+        Ok(())
+    }
 }

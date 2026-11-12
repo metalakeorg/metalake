@@ -250,6 +250,7 @@ async fn encode_writes() -> Result<(), Box<dyn std::error::Error>> {
     let reader = MetaLakePhysicalCodec::new(lakes.storage.clone(), Arc::new(DefaultPhysicalExtensionCodec {}));
     let writer = lakes.there.physical_codec(Arc::new(DefaultPhysicalExtensionCodec {}));
     let task = SessionContext::new().task_ctx();
+    context.sql("set datafusion.execution.target_partitions = 16").await?.collect().await?;
     for sql in [
         "insert into main.db.t select k, s from main.db.u",
         "delete from main.db.t where k = 4",
@@ -257,6 +258,8 @@ async fn encode_writes() -> Result<(), Box<dyn std::error::Error>> {
         "merge into main.db.t t using main.db.u u on t.k = u.k when matched then delete",
     ] {
         let plan = context.sql(sql).await?.create_physical_plan().await?;
+        // The sink right under the write's row, however many partitions: no repartition between them.
+        assert_eq!(plan.children()[0].name(), "DataSinkExec", "{sql}");
         let bytes = physical_plan_to_bytes_with_extension_codec(plan, &codec)?;
         let refused = physical_plan_from_bytes_with_extension_codec(&bytes, &task, &reader).unwrap_err();
         assert!(refused.to_string().contains("no catalog"), "{sql}: {refused}");
