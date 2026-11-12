@@ -20,7 +20,7 @@ use datafusion::prelude::SessionContext;
 use futures_util::TryStreamExt;
 use metalake::vectors::Deletes;
 use metalake::{Catalog, CatalogConfig, Error, NewTable, Ref, Scan, Storage, Table, TableWriter, WriteOptions};
-use metalake_datafusion::MetaLake;
+use metalake_datafusion::{MetaLake, measure};
 use metalake_pg::{Commit, Pool, Protocol};
 use serde_json::{Value, json};
 
@@ -350,5 +350,59 @@ async fn filter_pushdown_and_dynamic_join_filter() -> Result<(), Box<dyn std::er
     let without = store.take();
     println!("join: {with} requests with a dynamic filter, {without} without");
     assert!(with < without, "{with} requests with it, {without} without");
+    Ok(())
+}
+
+/// What a plan reads, measured before it runs: the bytes and rows of the files its scan reads after pruning, and
+/// whether it shuffles. Six files of fifty rows; a range on the cluster key keeps one.
+#[tokio::test]
+async fn measure_after_pruning() -> Result<(), Box<dyn std::error::Error>> {
+    let (catalog, main, storage, _) = lake(Arc::new(Counting::default())).await?;
+    let shape = simple(0..1).schema();
+    let (tx, _) = main.transaction().create_namespace(&["db"]).create_table(new_table(
+        "big",
+        &shape,
+        vec![("inline.max-bytes", "0")],
+    ))?;
+    tx.commit().await?;
+    let (tx, _) = main
+        .transaction()
+        .create_table(new_table("small", &shape, vec![("inline.max-bytes", "0")]))?;
+    tx.commit().await?;
+    let big = main.table(&["db"], "big").await?;
+    for at in 0..6 {
+        let keys = at * 100..at * 100 + 50;
+        write(&catalog, &main, &storage, &big, simple(keys), WriteOptions::default()).await?;
+    }
+    let small = main.table(&["db"], "small").await?;
+    write(&catalog, &main, &storage, &small, simple(210..212), WriteOptions::default()).await?;
+    let context = MetaLake::new(catalog, storage).await?.context()?;
+    for set in [
+        "set datafusion.execution.target_partitions = 4",
+        // Joins by hash on both sides, whatever the size of the small one.
+        "set datafusion.optimizer.hash_join_single_partition_threshold = 0",
+        "set datafusion.optimizer.hash_join_single_partition_threshold_rows = 0",
+    ] {
+        context.sql(set).await?.collect().await?;
+    }
+    let measured = |sql: &'static str| {
+        let context = context.clone();
+        async move {
+            let plan = context.sql(sql).await?.create_physical_plan().await?;
+            Ok::<_, Box<dyn std::error::Error>>(measure(&plan))
+        }
+    };
+
+    let all = measured("select s from main.db.big").await?;
+    assert_eq!((all.scans, all.rows, all.shuffle), (1, Some(300), false));
+    assert!(all.bytes > 0);
+    let one = measured("select s from main.db.big where k >= 210 and k < 220").await?;
+    assert_eq!((one.rows, one.shuffle), (Some(50), false));
+    assert!(one.bytes * 4 < all.bytes, "{one:?} of {all:?}");
+
+    let grouped = measured("select k % 3, count(*) from main.db.big group by 1").await?;
+    assert!(grouped.shuffle, "{grouped:?}");
+    let joined = measured("select b.s from main.db.big b join main.db.small s on b.k = s.k").await?;
+    assert_eq!((joined.scans, joined.rows, joined.shuffle), (2, Some(302), true));
     Ok(())
 }

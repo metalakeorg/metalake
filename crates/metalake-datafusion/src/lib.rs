@@ -23,6 +23,7 @@ mod ddl;
 mod details;
 mod exec;
 mod filters;
+mod measure;
 mod merge;
 mod options;
 mod point;
@@ -35,6 +36,7 @@ mod written;
 pub use catalog::{MetaLake, Source};
 #[cfg(feature = "proto")]
 pub use codec::{MetaLakeLogicalCodec, MetaLakePhysicalCodec};
+pub use measure::{Measure, measure};
 pub use options::{Engine, MetaLakeOptions};
 pub use written::{WrittenRow, written_schema};
 pub use table::MetaTable;
