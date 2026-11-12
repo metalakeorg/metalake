@@ -3,10 +3,8 @@
 
 use std::time::Duration;
 
+use crate::{Error, ErrorKind, Result, tls};
 use deadpool_postgres::{Manager, ManagerConfig, RecyclingMethod, Runtime};
-use tokio_postgres::NoTls;
-
-use crate::{Error, ErrorKind, Result};
 
 /// How long a caller waits for a connection when all are taken.
 const WAIT: Duration = Duration::from_secs(60);
@@ -33,12 +31,14 @@ impl Pool {
 
     /// The same, with callers waiting `wait` for a connection, and then refused: nothing was sent, so it is a plain failure.
     pub fn waiting(url: &str, size: usize, wait: Duration) -> Result<Self> {
-        let config: tokio_postgres::Config = url
+        let (rest, tls) = tls::split(url)?;
+        let config: tokio_postgres::Config = tls
+            .driver_string(&rest)
             .parse()
             .map_err(|e: tokio_postgres::Error| Error::new(ErrorKind::Postgres, e.to_string()))?;
         let manager = Manager::from_config(
             config,
-            NoTls,
+            tls.connector()?,
             ManagerConfig {
                 recycling_method: RecyclingMethod::Fast,
             },

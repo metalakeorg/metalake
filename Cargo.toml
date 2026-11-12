@@ -15,6 +15,9 @@ metalake = { path = "crates/metalake" }
 metalake-pg = { path = "crates/metalake-pg" }
 thiserror = "2"
 deadpool-postgres = "0.14"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-native-certs = "0.8"
+tokio-postgres-rustls = { version = "0.14", features = ["ring"] }
 futures-util = "0.3"
 arrow-schema = ">=58.4, <60"
 arrow-array = ">=58.4, <60"

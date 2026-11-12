@@ -102,6 +102,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tls_kept_with_and_without_password() {
+        for given in [
+            "postgresql://u:secret@h/db?sslmode=verify-full&sslrootcert=%2Fcerts%2Frds%20ca.pem",
+            "host=h user=u password=secret sslmode=verify-full sslrootcert=/certs/rds.pem",
+        ] {
+            for string in [
+                without_password(given),
+                with_password(&without_password(given), Some("p")),
+            ] {
+                let (_, tls) = metalake_pg::tls::split(&string).unwrap();
+                assert_eq!(tls.mode, metalake_pg::tls::SslMode::VerifyFull, "{string}");
+                assert!(
+                    matches!(tls.roots, metalake_pg::tls::Roots::File(ref p) if p.to_string_lossy().starts_with("/certs/rds")),
+                    "{string}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn detect_password() {
         for with in [
             "postgresql://u:secret@h/db",

@@ -14,6 +14,7 @@ mod pool;
 pub mod records;
 mod session;
 mod sources;
+pub mod tls;
 mod version;
 
 pub use calls::{BATCH, Commit, CreateRef, INTERFACE, Merge, Protocol, Prune, Retention, Sweep};
