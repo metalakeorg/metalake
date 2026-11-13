@@ -51,8 +51,8 @@ FACES = {
 # What belongs to a terminal, or to the process of a command, and has no meaning in a program.
 TERMINAL = {"help", "version", "lake", "format", "yes"}
 # A command that is a process in the foreground, which a program asks for otherwise: `lake.iceberg.uri` starts the
-# lake's server.
-FOREGROUND = {("iceberg", "serve")}
+# lake's server. `ui` serves a person at a browser until Ctrl-C: a program has no use for it.
+FOREGROUND = {("iceberg", "serve"), ("ui",)}
 # A flag of a command that Python says some other way, by what says it there.
 ELSEWHERE = {
     ("retain", "grace"): Lake.grace,
