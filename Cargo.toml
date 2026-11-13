@@ -40,3 +40,11 @@ uuid = { version = "1", features = ["v4", "serde"] }
 [profile.release]
 strip = true
 lto = "thin"
+
+# Disk: full debuginfo made target/ reach 70-80 GB per build (2026-11).
+# Line tables keep backtraces usable; dependencies carry no debuginfo.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
