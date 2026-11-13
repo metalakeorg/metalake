@@ -17,6 +17,15 @@ export function NotebookPage() {
     retry: false,
     staleTime: Number.POSITIVE_INFINITY,
   });
+  // JupyterLab, once it serves: the whole page, on the UI's origin, opened with its token once (ADR 0008 §5).
+  const open = started.data?.open;
+  if (open) {
+    return (
+      <section aria-label="Notebook" className="h-full">
+        <iframe title="JupyterLab" src={open} className="h-full w-full border-0" />
+      </section>
+    );
+  }
   return (
     <section aria-label="Notebook" className="max-w-2xl p-6">
       <h1 className="font-semibold text-lg">Notebook</h1>

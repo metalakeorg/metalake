@@ -104,11 +104,22 @@ pub(crate) async fn origin(State(access): State<Arc<Access>>, request: Request, 
     }
 }
 
+/// Whether `path` is JupyterLab's, which answers with its own headers: its own policy, a frame of its own origin
+/// allowed, and the sandbox of what a user's notebook renders (ADR 0008 §5). The UI's would break it, or replace its.
+pub(crate) fn under_jupyter(path: &str) -> bool {
+    path == "/jupyter" || path.starts_with(crate::notebook::PREFIX)
+}
+
 /// The headers every answer carries: no frame may hold the UI, no script but its own runs in it, and nothing it
-/// answers is read as another type, sent as a referrer, or opened by another site. Styles alone may be inline: the SQL
+/// answers is read as another type, sent as a referrer, or opened by another site. JupyterLab's answers keep its own. Styles alone may be inline: the SQL
 /// editor (CodeMirror) writes its own style sheet and places its cursor and gutters by `style` attributes. A style runs
 /// no code, and a script, which could write one, is held to the UI's own.
-pub(crate) async fn secured(mut response: Response) -> Response {
+pub(crate) async fn secured(request: Request, next: Next) -> Response {
+    let jupyter = under_jupyter(request.uri().path());
+    let mut response = next.run(request).await;
+    if jupyter {
+        return response;
+    }
     let headers = response.headers_mut();
     for (name, value) in [
         (

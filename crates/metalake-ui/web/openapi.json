@@ -526,6 +526,13 @@
             "type": "boolean",
             "description": "Whether that Python imports JupyterLab and the kernel."
           },
+          "open": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the page opens it while it runs: its path, with its token once."
+          },
           "python": {
             "type": "boolean",
             "description": "Whether it runs in a Python: a `metalake` pip installed does, one built alone does not."

@@ -12,6 +12,7 @@ mod guard;
 #[cfg(feature = "lake")]
 mod lake;
 pub mod notebook;
+mod proxy;
 #[cfg(test)]
 mod tests;
 pub mod token;
@@ -104,12 +105,22 @@ pub(crate) fn router_with(
 ) -> Router {
     let access = Arc::new(access);
     Router::new()
-        .nest("/api", api::router(backend, notebook))
+        .nest("/api", api::router(backend, notebook.clone()))
+        .merge(jupyter_router(notebook))
         .merge(frontend_router(files))
         .layer(axum::middleware::from_fn_with_state(access.clone(), guard::origin))
         .layer(axum::middleware::from_fn_with_state(access.clone(), guard::bearer))
         .layer(axum::middleware::from_fn_with_state(access, guard::host))
-        .layer(axum::middleware::map_response(guard::secured))
+        .layer(axum::middleware::from_fn(guard::secured))
+}
+
+/// JupyterLab, on the UI's origin: every path under its prefix goes to the Notebook's own (ADR 0008 §5).
+fn jupyter_router(notebook: Arc<Notebook>) -> Router {
+    use axum::routing::any;
+    Router::new()
+        .route("/jupyter", any(proxy::forward))
+        .route("/jupyter/{*rest}", any(proxy::forward))
+        .with_state(notebook)
 }
 
 /// The frontend alone, unguarded: every path the API does not have.

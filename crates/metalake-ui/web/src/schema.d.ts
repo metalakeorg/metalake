@@ -201,6 +201,8 @@ export interface components {
             install: string;
             /** @description Whether that Python imports JupyterLab and the kernel. */
             jupyterlab: boolean;
+            /** @description Where the page opens it while it runs: its path, with its token once. */
+            open?: string | null;
             /** @description Whether it runs in a Python: a `metalake` pip installed does, one built alone does not. */
             python: boolean;
             /** @description Whether the UI's JupyterLab runs now. */

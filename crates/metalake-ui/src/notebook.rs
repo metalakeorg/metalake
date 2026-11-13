@@ -81,6 +81,8 @@ pub struct Notebook {
     watched: Option<u32>,
     #[cfg(test)]
     found: Option<bool>,
+    #[cfg(test)]
+    reaching: Option<u16>,
 }
 
 /// A JupyterLab this UI started.
@@ -204,10 +206,27 @@ impl Notebook {
     }
 
     /// The port and token of its JupyterLab, while it runs.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn reach(&self) -> Option<(u16, String)> {
+        #[cfg(test)]
+        if let Some(port) = self.reaching {
+            return Some((port, "test".to_owned()));
+        }
         let running = self.running.lock().await;
         running.as_ref().map(|j| (j.port, j.token.as_str().to_owned()))
+    }
+
+    /// Where the page opens JupyterLab while it runs: its own path, with its token once, which Jupyter turns into its
+    /// login cookie.
+    pub async fn open(&self) -> Option<String> {
+        let (_, token) = self.reach().await?;
+        Some(format!("{PREFIX}lab?token={token}"))
+    }
+
+    /// For a test: a JupyterLab taken to serve at `port`, a server of the test's.
+    #[cfg(test)]
+    pub(crate) fn reaching(mut self, port: u16) -> Self {
+        self.reaching = Some(port);
+        self
     }
 
     /// For a test: JupyterLab's life tied to the process `pid`, which the test ends as `metalake ui` would die.
@@ -242,6 +261,14 @@ impl Jupyter {
             std::fs::create_dir_all(dir.join(sub)).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
         std::fs::create_dir_all(root).map_err(|e| format!("{}: {e}", root.display()))?;
+        // Jupyter's news never fetched, and never asked about: answered in the run's own settings.
+        let notification = dir.join("settings").join("@jupyterlab").join("apputils-extension");
+        std::fs::create_dir_all(&notification).map_err(|e| e.to_string())?;
+        std::fs::write(
+            notification.join("notification.jupyterlab-settings"),
+            r#"{"fetchNews": "false"}"#,
+        )
+        .map_err(|e| e.to_string())?;
         let log = std::fs::File::create(dir.join("jupyter.log")).map_err(|e| e.to_string())?;
         let child = Command::new(python)
             .arg("-c")
@@ -252,6 +279,7 @@ impl Jupyter {
             .arg(format!("--ServerApp.base_url={PREFIX}"))
             .arg(format!("--ServerApp.root_dir={}", root.display()))
             .arg("--ServerApp.terminals_enabled=False")
+            .arg("--LabApp.extension_manager=readonly")
             .arg("--LabApp.news_url=None")
             .arg("--LabApp.check_for_updates_class=jupyterlab.NeverCheckForUpdate")
             .env("METALAKE_UI_PID", watched.to_string())

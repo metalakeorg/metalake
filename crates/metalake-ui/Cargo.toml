@@ -26,6 +26,9 @@ metalake-client = { path = "../metalake-client", optional = true }
 datafusion = { version = "55.2", default-features = false, optional = true }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 futures-util.workspace = true
+# JupyterLab proxied on the UI's origin: a connection of its own per request, and a websocket's upgrade tunneled.
+hyper = { version = "1", default-features = false, features = ["client", "http1"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 serde.workspace = true
 serde_json.workspace = true
 # The API's OpenAPI spec, from the handlers and the types they answer, which the frontend's types are generated from.
