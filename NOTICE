@@ -2,3 +2,7 @@ MetaLake
 Copyright 2026 The MetaLake Authors
 
 This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The UI's frontend, embedded in the `metalake` binary, bundles third-party code under permissive licenses. Their
+names, versions and license texts are in `metalake/licenses/ui.txt` of the Python package, and at `/licenses.txt` of
+a running `metalake ui`.

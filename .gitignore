@@ -11,6 +11,7 @@ __pycache__/
 # What a wheel is built from and into.
 /dist/
 /crates/metalake-py/python/metalake/postgres/
+/crates/metalake-py/python/metalake/licenses/
 /crates/metalake-py/python/metalake/_metalake.*
 !/crates/metalake-py/python/metalake/_metalake.pyi
 
