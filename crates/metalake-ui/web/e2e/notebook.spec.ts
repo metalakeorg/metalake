@@ -35,6 +35,10 @@ test("JupyterLab opens in the page, on the UI's origin, and MetaLake's kernel re
   await expect(notebooks).toHaveCount(1, { timeout: 60_000 });
   await expect(notebooks).toContainText("MetaLake");
   await notebooks.click();
+  // Its start imports metalake and reaches the lake: a cell run before it is ready is not run.
+  await expect(frame.locator('.jp-StatusBar-TextItem[title^="Change kernel"]')).toHaveText("MetaLake | Idle", {
+    timeout: 90_000,
+  });
   const cell = frame.locator(".jp-Cell .cm-content").first();
   await cell.click();
   await page.keyboard.type('lake.ref, lake.sql("select 1 as one").columns');
