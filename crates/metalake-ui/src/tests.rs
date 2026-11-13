@@ -687,18 +687,72 @@ mod api {
     use axum::http::{Method, StatusCode, header};
 
     use super::{Answer, HOST, Memory, send};
-    use crate::api::{self, Backend, Detached, Fault, Kind, Named, Status};
+    use crate::api::{self, Backend, Detached, Fault, Kind, Mark, Marks, Named, Ref, Status, Table};
     use crate::guard::Access;
     use crate::{Token, router_with};
 
     const SECRET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef";
 
-    /// A lake that answers what it is given.
+    /// A lake that answers what it is given: its status, or a fault for every path; on `main`, two tables; its marks.
     struct Given(Result<Status, Fault>);
+
+    impl Given {
+        fn lake() -> Self {
+            Given(Ok(status()))
+        }
+
+        fn or<T>(&self, value: T) -> Result<T, Fault> {
+            self.0.as_ref().map(|_| value).map_err(Fault::clone)
+        }
+    }
 
     impl Backend for Given {
         fn status(&self) -> api::Answer<'_, Status> {
             let answer = self.0.clone();
+            Box::pin(async move { answer })
+        }
+
+        fn refs(&self) -> api::Answer<'_, Vec<Ref>> {
+            let main = Ref {
+                name: "main".into(),
+                kind: "branch".into(),
+                parent: None,
+                fork_seq: None,
+                created_seq: 1,
+                protected: true,
+            };
+            let dev = Ref {
+                name: "dev/1".into(),
+                kind: "branch".into(),
+                parent: Some("main".into()),
+                fork_seq: Some(4),
+                created_seq: 5,
+                protected: false,
+            };
+            let answer = self.or(vec![main, dev]);
+            Box::pin(async move { answer })
+        }
+
+        fn tables<'a>(&'a self, on: &'a str) -> api::Answer<'a, Vec<Table>> {
+            let table = |namespace: &str, name: &str| Table {
+                namespace: vec![namespace.into()],
+                name: name.into(),
+            };
+            let answer = match on {
+                "main" => self.or(vec![table("sales", "orders"), table("default", "t")]),
+                "dev/1" => self.or(vec![table("default", "t")]),
+                _ => Err(Fault::new(Kind::Usage, format!("no ref {on}"))),
+            };
+            Box::pin(async move { answer })
+        }
+
+        fn watch(&self) -> api::Answer<'_, Marks> {
+            let marks = vec![
+                Ok(Mark { seq: 7, deleted: 0 }),
+                Ok(Mark { seq: 9, deleted: 0 }),
+                Err(Fault::new(Kind::Unknown, "the connection was lost")),
+            ];
+            let answer = self.or(Box::pin(futures_util::stream::iter(marks)) as Marks);
             Box::pin(async move { answer })
         }
     }
@@ -739,7 +793,7 @@ mod api {
 
     #[tokio::test]
     async fn status_answers_lake() {
-        let answer = ask(over(Given(Ok(status()))), "/api/v1/status").await;
+        let answer = ask(over(Given::lake()), "/api/v1/status").await;
         assert_eq!(answer.status, StatusCode::OK);
         assert_eq!(answer.header(header::CACHE_CONTROL), Some("no-store"));
         let body = json(&answer);
@@ -777,9 +831,63 @@ mod api {
 
     #[tokio::test]
     async fn detached_says_no_lake() {
-        let answer = ask(over(Detached), "/api/v1/status").await;
-        assert_eq!(answer.status, StatusCode::BAD_REQUEST);
-        assert!(json(&answer)["message"].as_str().unwrap().contains("without a lake"));
+        for path in [
+            "/api/v1/status",
+            "/api/v1/refs",
+            "/api/v1/refs/main/tables",
+            "/api/v1/events",
+        ] {
+            let answer = ask(over(Detached), path).await;
+            assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{path}");
+            assert!(
+                json(&answer)["message"].as_str().unwrap().contains("without a lake"),
+                "{path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn refs_answers_branches_and_tags() {
+        let answer = ask(over(Given::lake()), "/api/v1/refs").await;
+        assert_eq!(answer.status, StatusCode::OK);
+        let body = json(&answer);
+        assert_eq!(body[0]["name"], "main");
+        assert_eq!(body[0]["parent"], serde_json::Value::Null);
+        assert_eq!(body[1]["parent"], "main");
+        assert_eq!(body[1]["fork_seq"], 4);
+    }
+
+    /// A ref by its name, percent-encoded as a path's segment: one with a slash is one segment.
+    #[tokio::test]
+    async fn tables_of_ref() {
+        let main = json(&ask(over(Given::lake()), "/api/v1/refs/main/tables").await);
+        assert_eq!(main[0]["namespace"], serde_json::json!(["sales"]));
+        assert_eq!(main[0]["name"], "orders");
+        let dev = ask(over(Given::lake()), "/api/v1/refs/dev%2F1/tables").await;
+        assert_eq!(dev.status, StatusCode::OK);
+        assert_eq!(json(&dev).as_array().unwrap().len(), 1);
+        let none = ask(over(Given::lake()), "/api/v1/refs/nope/tables").await;
+        assert_eq!(none.status, StatusCode::BAD_REQUEST);
+        assert_eq!(json(&none)["message"], "no ref nope");
+    }
+
+    /// The marks as server-sent events, each a `mark`; a fault is the last event.
+    #[tokio::test]
+    async fn events_stream_marks() {
+        let answer = ask(over(Given::lake()), "/api/v1/events").await;
+        assert_eq!(answer.status, StatusCode::OK);
+        assert_eq!(answer.header(header::CONTENT_TYPE), Some("text/event-stream"));
+        assert_eq!(answer.header(header::CACHE_CONTROL), Some("no-store"));
+        let body = String::from_utf8(answer.body).unwrap();
+        let events: Vec<&str> = body.split("\n\n").filter(|e| !e.is_empty()).collect();
+        assert_eq!(
+            events,
+            [
+                "event: mark\ndata: {\"seq\":7,\"deleted\":0}",
+                "event: mark\ndata: {\"seq\":9,\"deleted\":0}",
+                "event: fault\ndata: {\"kind\":\"unknown\",\"message\":\"the connection was lost\",\"retryable\":false}",
+            ]
+        );
     }
 
     /// Every path of the spec is behind the token: the spec and the router are walked together, so that a path added
@@ -788,16 +896,13 @@ mod api {
     async fn every_spec_path_behind_token() {
         let spec: serde_json::Value = serde_json::from_str(&api::openapi()).unwrap();
         let paths = spec["paths"].as_object().unwrap();
-        assert!(paths.len() >= 2, "{paths:?}");
+        assert!(paths.len() >= 5, "{paths:?}");
         for (path, _) in paths {
             assert!(path.starts_with("/api/v1/"), "{path}");
-            let without = send(over(Given(Ok(status()))), Method::GET, path, &[(header::HOST, HOST)]).await;
+            let path = &path.replace("{ref}", "main");
+            let without = send(over(Given::lake()), Method::GET, path, &[(header::HOST, HOST)]).await;
             assert_eq!(without.status, StatusCode::UNAUTHORIZED, "{path}");
-            assert_eq!(
-                ask(over(Given(Ok(status()))), path).await.status,
-                StatusCode::OK,
-                "{path}"
-            );
+            assert_eq!(ask(over(Given::lake()), path).await.status, StatusCode::OK, "{path}");
         }
     }
 

@@ -1,15 +1,19 @@
 //! The UI served as `metalake ui` serves it, without the command line, which links the whole of MetaLake: how to try
-//! the router, the redirect file and Ctrl-C in seconds. No lake is behind it: its API says so (`api::Detached`).
+//! the router, the redirect file and Ctrl-C in seconds. No lake is behind it: its API says so (`api::Detached`); with
+//! `--sample`, a lake in memory answers instead, of two branches and a few tables, where a table is added every 15 s so
+//! that the page is seen to follow it.
 //!
 //! ```text
-//! cargo run -p metalake-ui --no-default-features --example serve -- [--no-browser] [--port N]
+//! cargo run -p metalake-ui --no-default-features --example serve -- [--no-browser] [--port N] [--sample]
 //! ```
 //!
 //! The frontend's end-to-end tests run against it where the command line is not built (`METALAKE_UI_COMMAND`).
 
 use std::net::Ipv4Addr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use metalake_ui::api::{Answer, Backend, Detached, Fault, Kind, Mark, Marks, Ref, Status, Table};
 use metalake_ui::browser::{self, Redirect};
 use tokio::net::TcpListener;
 
@@ -23,6 +27,11 @@ async fn main() -> std::io::Result<()> {
         .and_then(|at| args.get(at + 1))
         .and_then(|port| port.parse::<u16>().ok())
         .unwrap_or(0);
+    let backend: Arc<dyn Backend> = if args.iter().any(|arg| arg == "--sample") {
+        Arc::new(Sample::default())
+    } else {
+        Arc::new(Detached)
+    };
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
     let token = metalake_ui::Token::from_environment()?;
     let url = metalake_ui::url(listener.local_addr()?, &token);
@@ -36,7 +45,7 @@ async fn main() -> std::io::Result<()> {
         Some(redirect)
     };
     eprintln!("built: {}; Ctrl-C stops it", metalake_ui::built());
-    metalake_ui::serve(listener, Arc::new(metalake_ui::api::Detached), token, async {
+    metalake_ui::serve(listener, backend, token, async {
         let _ = tokio::signal::ctrl_c().await;
     })
     .await?;
@@ -46,4 +55,105 @@ async fn main() -> std::io::Result<()> {
         eprintln!("redirect file removed: {}", !path.exists());
     }
     Ok(())
+}
+
+/// A lake in memory: `main` and `dev`, each with its tables; `main` gains one every 15 s.
+#[derive(Clone)]
+struct Sample(Arc<Mutex<Vec<(&'static str, Table)>>>);
+
+impl Default for Sample {
+    fn default() -> Self {
+        let table = |on, namespace: &str, name: &str| {
+            (
+                on,
+                Table {
+                    namespace: vec![namespace.into()],
+                    name: name.into(),
+                },
+            )
+        };
+        Sample(Arc::new(Mutex::new(vec![
+            table("main", "sales", "orders"),
+            table("main", "sales", "customers"),
+            table("main", "default", "events"),
+            table("dev", "sales", "orders"),
+            table("dev", "sales", "customers"),
+            table("dev", "default", "events"),
+            table("dev", "staging", "orders_v2"),
+        ])))
+    }
+}
+
+impl Sample {
+    fn mark(&self) -> Mark {
+        Mark {
+            seq: self.0.lock().unwrap().len() as i64,
+            deleted: 0,
+        }
+    }
+}
+
+impl Backend for Sample {
+    fn status(&self) -> Answer<'_, Status> {
+        Box::pin(async { Err(Fault::new(Kind::Usage, "a sample lake has no status")) })
+    }
+
+    fn refs(&self) -> Answer<'_, Vec<Ref>> {
+        let one = |name: &str, parent: Option<&str>| Ref {
+            name: name.into(),
+            kind: "branch".into(),
+            parent: parent.map(Into::into),
+            fork_seq: parent.map(|_| 3),
+            created_seq: if parent.is_some() { 4 } else { 1 },
+            protected: parent.is_none(),
+        };
+        Box::pin(async move { Ok(vec![one("main", None), one("dev", Some("main"))]) })
+    }
+
+    fn tables<'a>(&'a self, on: &'a str) -> Answer<'a, Vec<Table>> {
+        let tables: Vec<Table> = self
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(r, _)| *r == on)
+            .map(|(_, t)| t.clone())
+            .collect();
+        let known = on == "main" || on == "dev";
+        Box::pin(async move {
+            if known {
+                Ok(tables)
+            } else {
+                Err(Fault::new(Kind::Usage, format!("no ref {on}")))
+            }
+        })
+    }
+
+    fn watch(&self) -> Answer<'_, Marks> {
+        let sample = self.clone();
+        Box::pin(async move {
+            let first = sample.mark();
+            let later = futures_util::stream::unfold(sample, |sample| async move {
+                tokio::time::sleep(Duration::from_secs(15)).await;
+                let mark = {
+                    let mut tables = sample.0.lock().unwrap();
+                    let name = format!("arrived_{}", tables.len());
+                    tables.push((
+                        "main",
+                        Table {
+                            namespace: vec!["default".into()],
+                            name,
+                        },
+                    ));
+                    Mark {
+                        seq: tables.len() as i64,
+                        deleted: 0,
+                    }
+                };
+                Some((Ok(mark), sample))
+            });
+            let marks = futures_util::StreamExt::chain(futures_util::stream::iter([Ok(first)]), later);
+            Ok(Box::pin(marks) as Marks)
+        })
+    }
 }

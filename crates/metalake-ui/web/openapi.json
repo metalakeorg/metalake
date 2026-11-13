@@ -10,6 +10,156 @@
     "version": "1"
   },
   "paths": {
+    "/api/v1/events": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "The lake's marks as it changes, as server-sent events: a `mark` now, then one each time the lake's differs, for as\nlong as the request is open. A `fault` ends them; the frontend asks again.",
+        "operationId": "events",
+        "responses": {
+          "200": {
+            "description": "Events `mark`, and a last `fault` if one comes",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/Mark"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Without the run's token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The lake could not be watched",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/refs": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Every branch and tag.",
+        "operationId": "refs",
+        "responses": {
+          "200": {
+            "description": "Every branch and tag",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Ref"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Without the run's token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The lake could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/refs/{ref}/tables": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "The tables a ref sees at its head.",
+        "operationId": "tables",
+        "parameters": [
+          {
+            "name": "ref",
+            "in": "path",
+            "description": "The branch or tag, percent-encoded",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Its tables",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Table"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No such ref",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Without the run's token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The lake could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/status": {
       "get": {
         "tags": [
@@ -140,6 +290,26 @@
           "unknown"
         ]
       },
+      "Mark": {
+        "type": "object",
+        "description": "The lake's state, as far as telling that it changed needs: when either moves, what is shown of it is read again.",
+        "required": [
+          "seq",
+          "deleted"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many refs were deleted."
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Its latest commit's sequence: a commit, a merge and a new ref each move it."
+          }
+        }
+      },
       "Named": {
         "type": "object",
         "description": "A ref, by its name and its kind.",
@@ -154,6 +324,49 @@
           },
           "name": {
             "type": "string"
+          }
+        }
+      },
+      "Ref": {
+        "type": "object",
+        "description": "A branch or a tag.",
+        "required": [
+          "name",
+          "kind",
+          "created_seq",
+          "protected"
+        ],
+        "properties": {
+          "created_seq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The sequence it was made at."
+          },
+          "fork_seq": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The sequence of its parent it was made at."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`branch` or `tag`."
+          },
+          "name": {
+            "type": "string"
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The ref it was made from, if any: `main` has none."
+          },
+          "protected": {
+            "type": "boolean",
+            "description": "Whether it may be deleted."
           }
         }
       },
@@ -210,6 +423,25 @@
           },
           "writer_version": {
             "type": "string"
+          }
+        }
+      },
+      "Table": {
+        "type": "object",
+        "description": "A table of the catalog, by its namespace's parts and its name.",
+        "required": [
+          "namespace",
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },

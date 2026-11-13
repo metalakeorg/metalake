@@ -23,6 +23,7 @@ lake = ["dep:metalake-client"]
 [dependencies]
 metalake-client = { path = "../metalake-client", optional = true }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # The API's OpenAPI spec, from the handlers and the types they answer, which the frontend's types are generated from.

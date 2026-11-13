@@ -639,6 +639,20 @@ impl Protocol {
         })
     }
 
+    /// What changes when the catalog does: its latest commit's sequence, which a commit, a merge and a new ref each
+    /// take, and how many refs were deleted, which takes none. Read from the tables, by their keys, so that it costs
+    /// the same however large the catalog grows.
+    pub async fn mark(&self, s: &impl Session) -> Result<(i64, i64)> {
+        let statement = s
+            .statement(&format!(
+                "select (select coalesce(max(commit_seq), 0) from {0}.commit),                         (select count(*) from {0}.ref where deleted)",
+                self.schema
+            ))
+            .await?;
+        let row = s.client().query_one(&statement, &[]).await?;
+        Ok((row.get(0), row.get(1)))
+    }
+
     pub async fn stream_point(&self, s: &impl Session) -> Result<StreamPoint> {
         let statement = s
             .statement(&format!(

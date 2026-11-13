@@ -18,17 +18,22 @@ export function byNamespace(tables: readonly Table[]): [string, string[]][] {
     .map(([namespace, names]) => [namespace, names.sort((a, b) => a.localeCompare(b))]);
 }
 
-/** The panel: the branch, and the tables on it, by namespace. `tables` is `null` while they are not known. */
+/**
+ * The panel: the branch, and the tables on it, by namespace. `tables` is absent while they are read, and `failure`
+ * says why they could not be.
+ */
 export function Assets({
   branches,
   branch,
   onBranch,
   tables,
+  failure,
 }: {
   branches: readonly string[];
   branch: string;
   onBranch: (branch: string) => void;
-  tables: readonly Table[] | null;
+  tables: readonly Table[] | undefined;
+  failure?: Error | null;
 }) {
   return (
     <aside aria-label="Assets" className="flex w-60 shrink-0 flex-col border-zinc-200 border-r dark:border-zinc-800">
@@ -52,15 +57,22 @@ export function Assets({
         <h2 className="px-1 pb-1 font-medium text-xs text-zinc-500 uppercase tracking-wide dark:text-zinc-400">
           Tables
         </h2>
-        <Tables tables={tables} />
+        <Tables tables={tables} failure={failure ?? null} />
       </div>
     </aside>
   );
 }
 
-function Tables({ tables }: { tables: readonly Table[] | null }) {
-  if (tables === null) {
-    return <p className="px-1 text-xs text-zinc-500">The catalog is not wired yet: its tables will be listed here.</p>;
+function Tables({ tables, failure }: { tables: readonly Table[] | undefined; failure: Error | null }) {
+  if (failure) {
+    return (
+      <p role="alert" className="px-1 text-red-700 text-xs dark:text-red-400">
+        metalake: {failure.message}
+      </p>
+    );
+  }
+  if (tables === undefined) {
+    return <p className="px-1 text-xs text-zinc-500">Reading the catalog…</p>;
   }
   if (tables.length === 0) {
     return <p className="px-1 text-xs text-zinc-500">No tables on this branch.</p>;

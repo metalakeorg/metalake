@@ -3,13 +3,17 @@
 
 import { createRootRoute, createRoute, createRouter, Link, Outlet } from "@tanstack/react-router";
 import { Frame, Notice } from "./Frame";
+import { useLive } from "./live";
 import { PAGES } from "./pages";
 import { QueryPage } from "./Query";
 import { useServer } from "./server";
 
 function Shell() {
+  const server = useServer();
+  // The catalog shown is kept as the lake is, once the server is known to answer this page.
+  useLive(server.state === "ready");
   return (
-    <Frame server={useServer()} nav={<Nav />}>
+    <Frame server={server} nav={<Nav />}>
       <Outlet />
     </Frame>
   );

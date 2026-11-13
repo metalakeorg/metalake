@@ -27,7 +27,7 @@ pub use ingest::{Mode, Writer, WriterOptions, Wrote};
 pub use lake::Lake;
 pub use maintain::{Done, MaintainRequest, MaintainRun, Task};
 pub use merge::{MergeOutcome, MergeRequest};
-pub use metalake::{Auth, CommitEntry, Retention, SnapshotEntry};
+pub use metalake::{Auth, CommitEntry, Mark, Retention, SnapshotEntry, TableName, Watch};
 pub use pipeline::{
     ARROYO, ARROYO_IMAGE, Names, Pipeline, PipelineOptions, PipelineState, Verb, names_of, rows as pipeline_rows,
     state_name, verb_of,

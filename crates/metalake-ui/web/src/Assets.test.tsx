@@ -35,8 +35,14 @@ describe("Assets", () => {
     expect(screen.getByRole("complementary", { name: "Assets" })).toHaveTextContent("No tables on this branch");
   });
 
-  it("says the catalog is not wired while its tables are not known", () => {
-    render(<Assets branches={["main"]} branch="main" onBranch={() => {}} tables={null} />);
-    expect(screen.getByRole("complementary", { name: "Assets" })).toHaveTextContent("not wired yet");
+  it("says it reads the catalog while the tables are not known", () => {
+    render(<Assets branches={["main"]} branch="main" onBranch={() => {}} tables={undefined} />);
+    expect(screen.getByRole("complementary", { name: "Assets" })).toHaveTextContent("Reading the catalog");
+  });
+
+  it("says why the tables could not be read", () => {
+    const failure = new Error("no ref gone");
+    render(<Assets branches={["main"]} branch="gone" onBranch={() => {}} tables={undefined} failure={failure} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("metalake: no ref gone");
   });
 });

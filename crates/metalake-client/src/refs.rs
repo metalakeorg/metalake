@@ -1,6 +1,8 @@
 //! The life of a ref, one operation of two kinds. Reading and writing one is a statement, since a ref is a catalog.
 
-use metalake::{Ref, RefRow, Table};
+use std::time::Duration;
+
+use metalake::{Ref, RefRow, Table, TableName, Watch};
 use serde::Serialize;
 
 use crate::{Error, Lake, Result};
@@ -53,6 +55,19 @@ impl Lake {
             refs.retain(|r| r.kind == kind.name());
         }
         Ok(refs)
+    }
+
+    /// The tables `on` sees at its head, each by its namespace and name.
+    pub async fn tables(&self, on: &str) -> Result<Vec<TableName>> {
+        let found = self.catalog.refs().await?.into_iter().find(|r| r.name() == on);
+        let named = found.ok_or_else(|| Error::usage(format!("no ref {on}")))?;
+        Ok(named.tables().await?)
+    }
+
+    /// The lake's marks as they move: the first now, then each that differs, as the catalog notifies a change or as
+    /// it is read again `every` so long (ADR 0007: what the UI shows of the catalog is kept as it is).
+    pub async fn watch(&self, every: Duration) -> Result<Watch> {
+        Ok(self.catalog.watch(every).await?)
     }
 
     /// A ref by its name, which must exist.

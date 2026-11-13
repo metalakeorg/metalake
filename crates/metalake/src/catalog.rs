@@ -275,6 +275,11 @@ impl Catalog {
         &self.inner.protocol
     }
 
+    /// The catalog's pool.
+    pub(crate) fn pool(&self) -> &Pool {
+        &self.inner.pool
+    }
+
     /// A pool of its own, connecting as this catalog's does.
     pub(crate) fn own_pool(&self, wait: Duration) -> Result<Pool> {
         self.inner.reach.pool(1, wait)

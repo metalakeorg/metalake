@@ -1,23 +1,44 @@
-import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { Assets } from "./Assets";
+import { refs, tables } from "./client";
 import { Editor } from "./Editor";
+import { CATALOG } from "./live";
 
 /** The keys that run a statement, as this machine names them. */
 const RUN_KEYS = /Mac|iPhone|iPad/.test(globalThis.navigator?.platform ?? "") ? "⌘ Enter" : "Ctrl Enter";
 
+/** The branch every lake has, which the page opens on. */
+const MAIN = "main";
+
 /**
- * The Query page, where the UI opens: the assets of a branch beside it, an SQL editor above, and the rows of what it
- * ran below. A shell for now: neither the branches, the tables nor running reach the lake yet, and each says so.
+ * The Query page, where the UI opens: the assets of a branch beside it, read from the lake and kept as it is; an SQL
+ * editor above, and the rows of what it ran below. Running does not reach the lake yet, and says so.
  */
 export function QueryPage() {
   const [text, setText] = useState("");
   const [ran, setRan] = useState<string | null>(null);
-  const [branch, setBranch] = useState("main");
+  const [branch, setBranch] = useState(MAIN);
   const run = (statement: string) => setRan(statement.trim());
+
+  const known = useQuery({ queryKey: [...CATALOG, "refs"], queryFn: () => refs() });
+  const branches = known.data?.filter((r) => r.kind === "branch").map((r) => r.name) ?? [MAIN];
+  const listed = useQuery({ queryKey: [...CATALOG, "tables", branch], queryFn: () => tables(branch) });
+  // A branch deleted while it was picked: back to the one every lake has.
+  const gone = known.data !== undefined && !branches.includes(branch);
+  useEffect(() => {
+    if (gone) setBranch(MAIN);
+  }, [gone]);
 
   return (
     <div className="flex h-full">
-      <Assets branches={["main"]} branch={branch} onBranch={setBranch} tables={null} />
+      <Assets
+        branches={branches}
+        branch={branch}
+        onBranch={setBranch}
+        tables={listed.data}
+        failure={listed.error ?? known.error}
+      />
       <Editing text={text} setText={setText} run={run} ran={ran} />
     </div>
   );

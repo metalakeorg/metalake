@@ -47,3 +47,21 @@ export async function status(api: Client = client()): Promise<Status> {
   if (error) throw new Failure(error);
   return data;
 }
+
+export type Ref = components["schemas"]["Ref"];
+export type Table = components["schemas"]["Table"];
+export type Mark = components["schemas"]["Mark"];
+
+/** Every branch and tag. */
+export async function refs(api: Client = client()): Promise<Ref[]> {
+  const { data, error } = await api.GET("/api/v1/refs");
+  if (error) throw new Failure(error);
+  return data;
+}
+
+/** The tables `on` sees at its head. */
+export async function tables(on: string, api: Client = client()): Promise<Table[]> {
+  const { data, error } = await api.GET("/api/v1/refs/{ref}/tables", { params: { path: { ref: on } } });
+  if (error) throw new Failure(error);
+  return data;
+}
