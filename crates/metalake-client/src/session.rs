@@ -144,6 +144,13 @@ impl Session {
         state.config_mut().options_mut().catalog.default_catalog = name.to_string();
     }
 
+    /// The ref names that say none read and write on: `main`, unless [`on_ref`](Self::on_ref) said another.
+    pub fn current_ref(&self) -> String {
+        let state = self.context.state_ref();
+        let state = state.read();
+        state.config().options().catalog.default_catalog.clone()
+    }
+
     /// The statements of a text, in order. A text with none is a wrong use.
     pub fn parse(text: &str) -> Result<Vec<Statement>> {
         let statements = DFParser::parse_sql(text)?;

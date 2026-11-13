@@ -70,6 +70,11 @@ impl Lake {
         Ok(self.catalog.watch(every).await?)
     }
 
+    /// Whether a ref of this name exists.
+    pub async fn has_ref(&self, name: &str) -> Result<bool> {
+        Ok(self.catalog.refs().await?.iter().any(|r| r.name() == name))
+    }
+
     /// A ref by its name, which must exist.
     pub async fn find_ref(&self, name: &str) -> Result<Ref> {
         let refs = self.catalog.refs().await?;

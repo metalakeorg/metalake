@@ -96,3 +96,37 @@ def test_create_branch_invalid_name_or_start(lake):
         lake.branch("main")
     with pytest.raises(metalake.MetaLakeError, match="no ref nobody"):
         lake.branch("orphan", start="nobody")
+
+
+def test_on_ref_names_without_ref(lake):
+    """`lake.on`: names that say no ref read and write on it; one that says its ref keeps it (ADR 0008 §2)."""
+    lake.branch("worked")
+    assert lake.ref == "main"
+    lake.on("worked")
+    assert lake.ref == "worked"
+    assert 'ref="worked"' in repr(lake)
+    lake.table("t").append(pl.DataFrame({"k": [7]}))
+    lake.sql("insert into t values (8)")
+    assert keys(lake, "t") == [1, 7, 8]
+    assert keys(lake, "main.default.t") == [1]
+    assert lake.table("t").name == "worked.default.t"
+    assert lake.log()[0].seq > lake.log("main")[0].seq
+    lake.on("main")
+    assert keys(lake, "t") == [1]
+    assert lake.table("t").name == "main.default.t"
+
+
+def test_on_tag_reads_as_tagged(lake):
+    lake.tag("then")
+    lake.sql("insert into t values (9)")
+    lake.on("then")
+    assert 9 not in keys(lake, "t")
+    with pytest.raises(metalake.MetaLakeError):
+        lake.sql("insert into t values (10)")
+    lake.on("main")
+
+
+def test_on_missing_ref_refused(lake):
+    with pytest.raises(metalake.UsageError, match="no ref nowhere"):
+        lake.on("nowhere")
+    assert lake.ref == "main"

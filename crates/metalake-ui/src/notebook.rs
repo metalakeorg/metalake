@@ -8,6 +8,10 @@
 //! the user's `~/.jupyter` nor a past run applies. Its life is the UI's: it watches the process of `metalake ui`, and
 //! ends once it has, however it ended; its kernels end with it. Not by its standard input: on Windows a thread blocked
 //! reading it blocks every other use of it, and JupyterLab, which asks of it as it starts, never starts (tried).
+//!
+//! Its one kernel is MetaLake's (§2): IPython, in the same Python, which starts with `lake` bound to the lake the UI
+//! serves, as `metalake.connect` reaches it, on `main` until `lake.on` says another ref. Its spec and its startup file
+//! are the run's own, so that no kernel the user installed is offered, nor any IPython profile of theirs applies.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -29,6 +33,44 @@ pub const EXTRA: &str = r#""metalake[notebook]""#;
 
 /// Where JupyterLab is served, on the UI's origin; the page itself is `/notebook`.
 pub const PREFIX: &str = "/jupyter/";
+
+/// The name of MetaLake's kernel, the only one offered, and what Jupyter shows of it.
+pub const KERNEL: &str = "metalake";
+const KERNEL_SHOWN: &str = "MetaLake";
+
+/// The variable that tells the kernel where the lake is: the directory of its `metalake.toml`. Unset, `connect` finds
+/// it as it would anywhere, from the environment the kernel inherits from `metalake ui`.
+pub const LAKE: &str = "METALAKE_NOTEBOOK_LAKE";
+
+/// What the kernel runs as it starts: `lake`, reached. A lake it cannot reach, or a Python without metalake, leaves
+/// `lake` saying why at its first use, rather than a kernel that fails to start and says nothing in the notebook.
+pub(crate) const STARTUP: &str = r#"# MetaLake's kernel: `lake` is the lake `metalake ui` serves, on `main` until `lake.on("ref")`.
+def _metalake_lake():
+    import os
+
+    class Unreachable:
+        def __init__(self, why):
+            self._why = why
+
+        def __getattr__(self, name):
+            raise RuntimeError(f"no lake: {self._why}")
+
+        def __repr__(self):
+            return f"<no lake: {self._why}>"
+
+    try:
+        import metalake
+    except ImportError as e:
+        return Unreachable(f"metalake is not installed in this Python ({e})")
+    try:
+        return metalake.connect(os.environ.get("METALAKE_NOTEBOOK_LAKE") or None)
+    except Exception as e:
+        return Unreachable(f"the lake could not be reached ({e})")
+
+
+lake = _metalake_lake()
+del _metalake_lake
+"#;
 
 /// The JupyterLabs this process started, which each run's directory is named by.
 static RUNS: AtomicU32 = AtomicU32::new(0);
@@ -76,6 +118,8 @@ pub struct Notebook {
     python: Option<PathBuf>,
     /// Where notebooks are kept: Jupyter's root.
     root: Option<PathBuf>,
+    /// The directory of the lake's `metalake.toml`, which its kernel connects to.
+    lake: Option<PathBuf>,
     running: Mutex<Option<Jupyter>>,
     /// Set once the UI ends: a start in progress gives up, rather than hold the end for as long as JupyterLab takes.
     ending: AtomicBool,
@@ -114,6 +158,12 @@ impl Notebook {
     /// Keeps notebooks in `root`.
     pub fn keeping(mut self, root: PathBuf) -> Self {
         self.root = Some(root);
+        self
+    }
+
+    /// Its kernel's `lake` is the one whose `metalake.toml` is in `directory`.
+    pub fn on_lake(mut self, directory: PathBuf) -> Self {
+        self.lake = Some(directory);
         self
     }
 
@@ -194,7 +244,8 @@ impl Notebook {
         }
         if running.is_none() {
             let watched = self.watched.unwrap_or_else(std::process::id);
-            *running = Some(Jupyter::start(&python, &self.root(), watched, &self.ending).await?);
+            let lake = self.lake.as_deref();
+            *running = Some(Jupyter::start(&python, &self.root(), lake, watched, &self.ending).await?);
         }
         Ok(())
     }
@@ -252,7 +303,13 @@ impl Notebook {
 }
 
 impl Jupyter {
-    async fn start(python: &Path, root: &Path, watched: u32, ending: &AtomicBool) -> Result<Self, String> {
+    async fn start(
+        python: &Path,
+        root: &Path,
+        lake: Option<&Path>,
+        watched: u32,
+        ending: &AtomicBool,
+    ) -> Result<Self, String> {
         let token = Token::generate().map_err(|e| e.to_string())?;
         let dir = crate::browser::directory().map_err(|e| e.to_string())?.join(format!(
             "jupyter-{}-{}",
@@ -273,6 +330,7 @@ impl Jupyter {
             r#"{"fetchNews": "false"}"#,
         )
         .map_err(|e| e.to_string())?;
+        kernel(&dir, python, lake).map_err(|e| format!("{}: {e}", dir.display()))?;
         let log = std::fs::File::create(dir.join("jupyter.log")).map_err(|e| e.to_string())?;
         let child = Command::new(python)
             .arg("-c")
@@ -286,12 +344,15 @@ impl Jupyter {
             .arg("--LabApp.extension_manager=readonly")
             .arg("--LabApp.news_url=None")
             .arg("--LabApp.check_for_updates_class=jupyterlab.NeverCheckForUpdate")
+            .arg(format!("--KernelSpecManager.allowed_kernelspecs={KERNEL}"))
+            .arg(format!("--MultiKernelManager.default_kernel_name={KERNEL}"))
             .env("METALAKE_UI_PID", watched.to_string())
             .env("JUPYTER_TOKEN", token.as_str())
             .env("JUPYTER_RUNTIME_DIR", dir.join("runtime"))
             .env("JUPYTER_CONFIG_DIR", dir.join("config"))
             .env("JUPYTERLAB_SETTINGS_DIR", dir.join("settings"))
             .env("JUPYTERLAB_WORKSPACES_DIR", dir.join("workspaces"))
+            .env("JUPYTER_PATH", dir.join("data"))
             .stdin(Stdio::null())
             .stdout(log.try_clone().map_err(|e| e.to_string())?)
             .stderr(log)
@@ -384,6 +445,30 @@ impl Jupyter {
     }
 }
 
+/// MetaLake's kernel, in the run's directory: its spec, under `data`, which `JUPYTER_PATH` names, and its IPython's
+/// own directory, whose startup file binds `lake`.
+pub(crate) fn kernel(dir: &Path, python: &Path, lake: Option<&Path>) -> std::io::Result<()> {
+    let ipython = dir.join("ipython");
+    let startup = ipython.join("profile_default").join("startup");
+    std::fs::create_dir_all(&startup)?;
+    std::fs::write(startup.join("00-metalake.py"), STARTUP)?;
+    let mut env = serde_json::Map::new();
+    env.insert("IPYTHONDIR".into(), ipython.display().to_string().into());
+    if let Some(lake) = lake {
+        env.insert(LAKE.into(), lake.display().to_string().into());
+    }
+    let spec = serde_json::json!({
+        "argv": [python.display().to_string(), "-m", "ipykernel_launcher", "-f", "{connection_file}"],
+        "display_name": KERNEL_SHOWN,
+        "language": "python",
+        "env": env,
+        "metadata": {"debugger": true},
+    });
+    let specs = dir.join("data").join("kernels").join(KERNEL);
+    std::fs::create_dir_all(&specs)?;
+    std::fs::write(specs.join("kernel.json"), serde_json::to_vec_pretty(&spec)?)
+}
+
 /// The run's directory, readable by its user alone: Jupyter writes its token in the files it keeps there (its runtime
 /// file, its page that opens the browser), which any other user of the machine could otherwise read. On Windows a
 /// directory under the user's home is theirs alone already.
@@ -400,6 +485,13 @@ fn private(dir: &Path) -> std::io::Result<()> {
 
 /// One request to the JupyterLab at `port`, with its token: its status code, or none if it does not answer.
 pub(crate) async fn asked(port: u16, method: &str, path: &str, token: &str) -> Option<u16> {
+    fetched(port, method, path, token, false)
+        .await
+        .map(|(status, _)| status)
+}
+
+/// One request, and with `whole`, its whole answer, head and body, as text.
+pub(crate) async fn fetched(port: u16, method: &str, path: &str, token: &str, whole: bool) -> Option<(u16, String)> {
     let ask = async {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).await.ok()?;
         let request = format!(
@@ -407,10 +499,17 @@ pub(crate) async fn asked(port: u16, method: &str, path: &str, token: &str) -> O
              Content-Length: 0\r\nConnection: close\r\n\r\n"
         );
         stream.write_all(request.as_bytes()).await.ok()?;
-        let mut head = [0u8; 16];
-        let read = stream.read(&mut head).await.ok()?;
-        let line = std::str::from_utf8(&head[..read]).ok()?;
-        line.split_whitespace().nth(1)?.parse().ok()
+        let mut answer = Vec::new();
+        if whole {
+            stream.read_to_end(&mut answer).await.ok()?;
+        } else {
+            let mut head = [0u8; 16];
+            let read = stream.read(&mut head).await.ok()?;
+            answer.extend_from_slice(&head[..read]);
+        }
+        let text = String::from_utf8_lossy(&answer).into_owned();
+        let status = text.split_whitespace().nth(1)?.parse().ok()?;
+        Some((status, text))
     };
     tokio::time::timeout(Duration::from_secs(5), ask).await.ok().flatten()
 }

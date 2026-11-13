@@ -115,7 +115,7 @@ jobs:
   e2e:
     needs: web
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     env:
       # Line tables are enough for a backtrace, and keep the link of the whole of MetaLake light.
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
@@ -147,6 +147,11 @@ jobs:
           mkdir "$RUNNER_TEMP/lake"
           (cd "$RUNNER_TEMP/lake" && "$GITHUB_WORKSPACE/target/debug/metalake" init "$DATABASE_URL" data --schema ui)
           echo "METALAKE=$GITHUB_WORKSPACE/target/debug/metalake --lake $RUNNER_TEMP/lake" >> "$GITHUB_ENV"
+      # The Notebook's kernel imports metalake: this branch's, built in the debug profile into the same Python.
+      - name: metalake in the Notebook's Python
+        run: |
+          "$RUNNER_TEMP/jupyter/bin/python" -m pip install --quiet "maturin>=1.9,<2"
+          VIRTUAL_ENV="$RUNNER_TEMP/jupyter" "$RUNNER_TEMP/jupyter/bin/maturin" develop -m crates/metalake-py/Cargo.toml
       - name: "`metalake ui` on a lake: C19"
         run: cargo test --locked -p metalake-cli --test c19_ui
       - name: "`metalake ui`: serves, refuses who may not use it, then stops on SIGINT with nothing left"
@@ -190,8 +195,8 @@ jobs:
           pnpm exec playwright install --with-deps chromium
       - name: Playwright against `metalake ui`
         working-directory: crates/metalake-ui/web
-        # The Python with JupyterLab made above: the Notebook starts it in the page, and a cell runs. (The page without
-        # it is Vitest's.)
+        # The Python with JupyterLab and metalake made above: the Notebook starts it in the page, and a cell of its
+        # kernel reads the lake. (The page without it is Vitest's.)
         run: METALAKE_E2E_JUPYTER=1 METALAKE_PYTHON="$METALAKE_TEST_JUPYTER_PYTHON" METALAKE_UI_COMMAND="$METALAKE ui --no-browser" pnpm e2e
       - uses: actions/upload-artifact@v4
         if: failure()

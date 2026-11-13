@@ -1121,7 +1121,7 @@ mod jupyter {
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
-    use crate::notebook::{Notebook, asked};
+    use crate::notebook::{Notebook, asked, fetched};
 
     fn python() -> Option<PathBuf> {
         std::env::var_os("METALAKE_TEST_JUPYTER_PYTHON").map(PathBuf::from)
@@ -1161,6 +1161,49 @@ mod jupyter {
         notebook.stop().await;
         assert!(!notebook.running().await);
         assert!(gone(port, Duration::from_secs(15)).await, "it ended");
+    }
+
+    /// MetaLake's kernel is the one offered, and the one a notebook starts with; none the user installed is.
+    #[tokio::test]
+    async fn offers_metalake_kernel_alone() {
+        let Some(python) = python() else { return };
+        let notebook = notebook(python);
+        notebook.start().await.unwrap();
+        let (port, token) = notebook.reach().await.unwrap();
+        let (status, answer) = fetched(port, "GET", "api/kernelspecs", &token, true).await.unwrap();
+        notebook.stop().await;
+        assert_eq!(status, 200, "{answer}");
+        let body = &answer[answer.find("\r\n\r\n").unwrap() + 4..];
+        let body = &body[body.find('{').unwrap()..=body.rfind('}').unwrap()];
+        let specs: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(specs["default"], "metalake", "{specs}");
+        let names: Vec<_> = specs["kernelspecs"].as_object().unwrap().keys().cloned().collect();
+        assert_eq!(names, ["metalake"]);
+        assert_eq!(specs["kernelspecs"]["metalake"]["spec"]["display_name"], "MetaLake");
+    }
+
+    /// The kernel's startup binds `lake`: the lake reached, or, where it cannot be, a `lake` that says why when used.
+    #[test]
+    fn startup_binds_lake() {
+        let Some(python) = python() else { return };
+        let dir = std::env::temp_dir().join(format!("metalake-kernel-{}", std::process::id()));
+        crate::notebook::kernel(&dir, &python, Some(&dir.join("nowhere"))).unwrap();
+        let startup = dir
+            .join("ipython")
+            .join("profile_default")
+            .join("startup")
+            .join("00-metalake.py");
+        let ran = std::process::Command::new(&python)
+            .arg("-c")
+            .arg("import sys; exec(open(sys.argv[1]).read()); print(repr(lake))")
+            .arg(&startup)
+            .env(crate::notebook::LAKE, dir.join("nowhere"))
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let said = String::from_utf8_lossy(&ran.stdout);
+        assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+        assert!(said.starts_with("<no lake: ") || said.starts_with("Lake("), "{said}");
     }
 
     /// When `metalake ui` dies, nothing asks JupyterLab to end: it sees that process end, and ends by itself. A process

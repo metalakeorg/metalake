@@ -91,7 +91,7 @@ pub struct PyTable {
 impl PyTable {
     /// The table named, which must exist.
     pub fn open(py: Python<'_>, owner: Owner, lake: Arc<Lake>, session: Arc<Session>, name: &str) -> PyResult<Self> {
-        let path = TablePath::parse(name).map_err(|e| to_python(py, e.into()))?;
+        let path = TablePath::parse_on(name, &session.current_ref()).map_err(|e| to_python(py, e.into()))?;
         let (reached, wanted) = (lake.clone(), path.clone());
         wait(py, async move { reached.table(&wanted).await.map(|_| ()) })?.map_err(|e| to_python(py, e))?;
         Ok(Self {

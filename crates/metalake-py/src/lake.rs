@@ -179,6 +179,28 @@ impl PyLake {
             .collect())
     }
 
+    /// Names that say no ref read and write on `ref` from now: `default.t` is `ref.default.t`, as it is
+    /// `main.default.t` until this is called; a name that says its ref keeps it. On a tag, reads see the lake as it was
+    /// when tagged, and writes are refused. A ref that does not exist is refused, and nothing changes.
+    #[pyo3(name = "on")]
+    fn on_ref(&self, py: Python<'_>, r#ref: String) -> PyResult<()> {
+        self.owner.check(py, "Lake")?;
+        let (lake, name) = (self.lake.clone(), r#ref.clone());
+        let exists = wait(py, async move { lake.has_ref(&name).await })?.map_err(|e| to_python(py, e))?;
+        if !exists {
+            return Err(to_python(py, Error::usage(format!("no ref {}", r#ref))));
+        }
+        self.session.on_ref(&r#ref);
+        Ok(())
+    }
+
+    /// The ref names that say none read and write on.
+    #[getter]
+    #[pyo3(name = "ref")]
+    fn current_ref(&self) -> String {
+        self.session.current_ref()
+    }
+
     /// Every branch and tag.
     fn refs(&self, py: Python<'_>) -> PyResult<Vec<PyRef>> {
         self.owner.check(py, "Lake")?;
@@ -319,10 +341,12 @@ impl PyLake {
         merged.map(PyMerged::from).map_err(|e| to_python(py, e))
     }
 
-    /// The commits of a ref, the latest first, or, with `table`, `namespace.table`, the snapshots of that table.
-    #[pyo3(signature = (on="main".to_string(), *, limit=20, table=None))]
-    fn log(&self, py: Python<'_>, on: String, limit: i64, table: Option<String>) -> PyResult<History> {
+    /// The commits of a ref, the latest first, or, with `table`, `namespace.table`, the snapshots of that table. The
+    /// ref is the one `lake.on` said, `main` until it says another, unless `on` names one.
+    #[pyo3(signature = (on=None, *, limit=20, table=None))]
+    fn log(&self, py: Python<'_>, on: Option<String>, limit: i64, table: Option<String>) -> PyResult<History> {
         self.owner.check(py, "Lake")?;
+        let on = on.unwrap_or_else(|| self.session.current_ref());
         let lake = self.lake.clone();
         let history = wait(py, async move {
             Ok(match table {
@@ -337,10 +361,11 @@ impl PyLake {
     }
 
     fn __repr__(&self) -> String {
+        let on = self.session.current_ref();
         match (self.lake.postgres(), self.lake.local()) {
-            (Some(postgres), _) => format!("Lake(postgres={postgres:?})"),
-            (None, Some(local)) => format!("Lake(local={:?})", local.display().to_string()),
-            (None, None) => "Lake()".to_string(),
+            (Some(postgres), _) => format!("Lake(postgres={postgres:?}, ref={on:?})"),
+            (None, Some(local)) => format!("Lake(local={:?}, ref={on:?})", local.display().to_string()),
+            (None, None) => format!("Lake(ref={on:?})"),
         }
     }
 }
