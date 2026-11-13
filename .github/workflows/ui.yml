@@ -1,0 +1,64 @@
+# The UI's frontend (ADR 0007 §5): Biome, the type check, Vitest and the build, with the Node and pnpm it pins. Its build
+# is what `metalake-ui` embeds.
+name: ui
+
+on:
+  push:
+    branches: [main]
+    paths: ["crates/metalake-ui/web/**", ".github/workflows/ui.yml"]
+  pull_request:
+    paths: ["crates/metalake-ui/web/**", ".github/workflows/ui.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ui-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: crates/metalake-ui/web
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      # The version `packageManager` pins, checked against its hash.
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: crates/metalake-ui/web/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: crates/metalake-ui/web/.nvmrc
+          cache: pnpm
+          cache-dependency-path: crates/metalake-ui/web/pnpm-lock.yaml
+      - name: Install, as the lockfile says
+        run: pnpm install --frozen-lockfile
+      - name: Biome
+        run: pnpm check
+      - name: Types
+        run: pnpm typecheck
+      - name: Vitest
+        run: pnpm test
+      - name: Build
+        run: pnpm build
+      - name: Sizes
+        run: |
+          {
+            echo "### The frontend's build"
+            echo '| File | Bytes | Brotli |'
+            echo '|---|---:|---:|'
+            find dist -type f ! -name '*.br' ! -name '*.gz' | sort | while read -r f; do
+              br=$( [ -f "$f.br" ] && stat -c %s "$f.br" || echo '' )
+              echo "| ${f#dist/} | $(stat -c %s "$f") | $br |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist
+          path: crates/metalake-ui/web/dist
+          if-no-files-found: error
