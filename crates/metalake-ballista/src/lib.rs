@@ -8,6 +8,7 @@
 //!
 //! See ADR 0006.
 
+mod address;
 mod client;
 mod executor;
 mod router;

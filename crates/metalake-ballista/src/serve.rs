@@ -19,7 +19,7 @@ use metalake::environment::{self, storage_options, with_password};
 use metalake::{Catalog, CatalogConfig, Storage};
 use metalake_datafusion::MetaLake;
 
-use crate::{executor, scheduler};
+use crate::{address, executor, scheduler};
 
 /// Where the scheduler listens, unless `METALAKE_SCHEDULER_BIND` says.
 const DEFAULT_SCHEDULER_BIND: &str = "0.0.0.0:50050";
@@ -108,7 +108,7 @@ impl ExecutorSettings {
         };
         let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
         Ok(Self {
-            scheduler: host_port(&scheduler)?,
+            scheduler: address::host_port(&scheduler)?,
             warehouse,
             catalog,
             bind_host: var(EXECUTOR_BIND_HOST).unwrap_or_else(|| DEFAULT_EXECUTOR_BIND.into()),
@@ -189,16 +189,6 @@ fn storage(warehouse: &str) -> Result<Storage> {
     Storage::new(warehouse, storage_options(env::vars_os())).map_err(external)
 }
 
-/// `df://host:port` (or `host:port`) as its host and port; Ballista's port when it names none.
-fn host_port(url: &str) -> Result<(String, u16)> {
-    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
-    let authority = rest.split('/').next().unwrap_or(rest);
-    match authority.rsplit_once(':') {
-        Some((host, port)) => Ok((host.to_string(), parsed(SCHEDULER, port)?)),
-        None => Ok((authority.to_string(), 50050)),
-    }
-}
-
 fn var(name: &str) -> Option<String> {
     env::var(name).ok().filter(|v| !v.is_empty())
 }
@@ -218,17 +208,4 @@ fn missing(name: &str, why: &str) -> DataFusionError {
 
 fn external(e: impl std::error::Error + Send + Sync + 'static) -> DataFusionError {
     DataFusionError::External(Box::new(e))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn scheduler_address() {
-        assert_eq!(host_port("df://scheduler:50060").unwrap(), ("scheduler".into(), 50060));
-        assert_eq!(host_port("df://scheduler").unwrap(), ("scheduler".into(), 50050));
-        assert_eq!(host_port("10.0.0.5:7000").unwrap(), ("10.0.0.5".into(), 7000));
-        assert!(host_port("df://scheduler:port").is_err());
-    }
 }
