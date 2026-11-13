@@ -58,7 +58,12 @@ fn built_router() -> Router {
 
 /// The router a run serves, with the files this crate embedded, on port 4173.
 fn embedded() -> Router {
-    router(Arc::new(Detached), Token::given("t".repeat(32)).unwrap(), 4173)
+    router(
+        Arc::new(Detached),
+        Arc::default(),
+        Token::given("t".repeat(32)).unwrap(),
+        4173,
+    )
 }
 
 /// The `Host` a browser sends to it.
@@ -953,7 +958,13 @@ mod api {
                     (header::AUTHORIZATION, bearer.as_str()),
                 ];
                 let answered = send_body(over(Given::lake()), method.clone(), path, &with, body).await;
-                assert_eq!(answered.status, StatusCode::OK, "{method} {path}");
+                // Past the token and the origin: what the path answers is its own test's (a Notebook without Python
+                // cannot start).
+                assert!(
+                    ![StatusCode::UNAUTHORIZED, StatusCode::FORBIDDEN].contains(&answered.status),
+                    "{method} {path}: {}",
+                    answered.status
+                );
             }
         }
     }
@@ -1100,5 +1111,82 @@ mod notebook {
         let gone = Notebook::with_python(Some("no-such-python-of-metalake".into()));
         assert!(gone.python().is_some());
         assert!(!gone.jupyterlab().await);
+    }
+}
+
+// The Notebook's JupyterLab (ADR 0008, N2), started for real where `METALAKE_TEST_JUPYTER_PYTHON` names a Python that has
+// it, as CI does; skipped elsewhere.
+
+mod jupyter {
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant};
+
+    use crate::notebook::{Notebook, asked};
+
+    fn python() -> Option<PathBuf> {
+        std::env::var_os("METALAKE_TEST_JUPYTER_PYTHON").map(PathBuf::from)
+    }
+
+    fn notebook(python: PathBuf) -> Notebook {
+        let root = std::env::temp_dir().join(format!("metalake-notebooks-{}", std::process::id()));
+        Notebook::with_python(Some(python)).keeping(root)
+    }
+
+    /// Waits for the JupyterLab at `port` to stop answering.
+    async fn gone(port: u16, within: Duration) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < within {
+            if asked(port, "GET", "api/status", "").await.is_none() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn starts_once_serves_and_stops() {
+        let Some(python) = python() else { return };
+        let notebook = notebook(python);
+        assert!(notebook.jupyterlab().await);
+        assert!(!notebook.running().await);
+        notebook.start().await.unwrap();
+        notebook.start().await.unwrap();
+        assert!(notebook.running().await);
+        let (port, token) = notebook.reach().await.unwrap();
+        assert_eq!(asked(port, "GET", "api/status", &token).await, Some(200));
+        // Not without its token.
+        assert_eq!(asked(port, "GET", "api/status", "wrong").await, Some(403));
+        assert!(notebook.root().join("").is_dir(), "the notebooks' directory is made");
+        notebook.stop().await;
+        assert!(!notebook.running().await);
+        assert!(gone(port, Duration::from_secs(15)).await, "it ended");
+    }
+
+    /// When `metalake ui` dies, nothing asks JupyterLab to end: it sees that process end, and ends by itself. A process
+    /// of the test's stands for the UI, killed as a crash would end it.
+    #[tokio::test]
+    async fn ends_when_ui_dies() {
+        let Some(python) = python() else { return };
+        let mut ui = std::process::Command::new(&python)
+            .args(["-c", "import time; time.sleep(600)"])
+            .spawn()
+            .unwrap();
+        let notebook = notebook(python).watching(ui.id());
+        notebook.start().await.unwrap();
+        let port = notebook.abandon().await.unwrap();
+        assert!(
+            !gone(port, Duration::from_secs(2)).await,
+            "it ends with its UI, not before"
+        );
+        ui.kill().unwrap();
+        ui.wait().unwrap();
+        assert!(gone(port, Duration::from_secs(20)).await, "it outlived the UI");
+    }
+
+    #[tokio::test]
+    async fn without_python_said() {
+        let notebook = Notebook::default();
+        assert!(notebook.start().await.unwrap_err().contains("without Python"));
     }
 }

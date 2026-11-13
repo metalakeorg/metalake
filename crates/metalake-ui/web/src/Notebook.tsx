@@ -1,21 +1,61 @@
 // The Notebook (ADR 0008): JupyterLab, run by the Python metalake was installed in, embedded in the UI. This page says
 // whether this `metalake` can give one, and how to make it able: without Python there is none; without JupyterLab, the
-// line that installs it.
+// line that installs it. With it, the page starts it, the first time it is opened, and says so until it serves.
 
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { type NotebookState, notebook } from "./client";
+import { type NotebookState, notebook, startNotebook } from "./client";
 import { Failed } from "./Failed";
 
 export function NotebookPage() {
   const state = useQuery({ queryKey: ["notebook"], queryFn: () => notebook() });
+  // Started once JupyterLab is known to be there; once, as a start that failed is said, not tried again unasked.
+  const started = useQuery({
+    queryKey: ["notebook", "start"],
+    queryFn: () => startNotebook(),
+    enabled: state.data?.jupyterlab === true,
+    retry: false,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
   return (
     <section aria-label="Notebook" className="max-w-2xl p-6">
       <h1 className="font-semibold text-lg">Notebook</h1>
       {state.error && <Failed title="Whether JupyterLab is here could not be told" error={state.error} />}
       {state.isPending && <p className="mt-4 text-sm text-zinc-500 dark:text-zinc-400">Looking for JupyterLab…</p>}
-      {state.data && <Said state={state.data} again={() => state.refetch()} looking={state.isFetching} />}
+      {state.data && !state.data.jupyterlab && (
+        <Said state={state.data} again={() => state.refetch()} looking={state.isFetching} />
+      )}
+      {state.data?.jupyterlab && (
+        <Starting running={started.data?.running === true} failure={started.error} again={() => started.refetch()} />
+      )}
     </section>
+  );
+}
+
+/** JupyterLab starting, serving, or failed to start, with why. */
+export function Starting({ running, failure, again }: { running: boolean; failure: Error | null; again: () => void }) {
+  if (failure) {
+    return (
+      <div className="mt-4">
+        <Failed title="JupyterLab did not start" error={failure} />
+        <button
+          type="button"
+          onClick={again}
+          className="mt-2 rounded border border-zinc-300 px-3 py-1 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div role="status" className="mt-4">
+      {running ? (
+        <p className="font-medium">JupyterLab is running</p>
+      ) : (
+        <p className="text-sm text-zinc-600 dark:text-zinc-400">Starting JupyterLab…</p>
+      )}
+    </div>
   );
 }
 

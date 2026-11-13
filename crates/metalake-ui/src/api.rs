@@ -195,6 +195,8 @@ pub struct NotebookState {
     pub python: bool,
     /// Whether that Python imports JupyterLab and the kernel.
     pub jupyterlab: bool,
+    /// Whether the UI's JupyterLab runs now.
+    pub running: bool,
     /// The line that installs what the Notebook needs into that Python.
     pub install: String,
 }
@@ -253,6 +255,7 @@ impl Fault {
 pub(crate) fn router(backend: Arc<dyn Backend>, notebook: Arc<Notebook>) -> Router {
     let notebooks = Router::new()
         .route("/v1/notebook", get(notebook_state))
+        .route("/v1/notebook/start", post(notebook_start))
         .with_state(notebook);
     Router::new()
         .route("/v1/version", get(version))
@@ -391,11 +394,30 @@ fn to_json(value: &impl Serialize) -> String {
     (status = 401, description = "Without the run's token", body = Fault),
 ))]
 async fn notebook_state(State(notebook): State<Arc<Notebook>>) -> Response {
-    answer(Ok(NotebookState {
+    answer(Ok(said(&notebook).await))
+}
+
+/// Starts the UI's JupyterLab, unless it runs already, and answers once it serves; what the Notebook can do then.
+#[utoipa::path(post, path = "/api/v1/notebook/start", tag = "notebook", responses(
+    (status = 200, description = "JupyterLab serves", body = NotebookState),
+    (status = 401, description = "Without the run's token", body = Fault),
+    (status = 403, description = "From another origin than the UI's own", body = Fault),
+    (status = 500, description = "JupyterLab did not start, with why", body = Fault),
+))]
+async fn notebook_start(State(notebook): State<Arc<Notebook>>) -> Response {
+    match notebook.start().await {
+        Ok(()) => answer(Ok(said(&notebook).await)),
+        Err(why) => answer::<()>(Err(Fault::new(Kind::Failed, why))),
+    }
+}
+
+async fn said(notebook: &Notebook) -> NotebookState {
+    NotebookState {
         python: notebook.python().is_some(),
         jupyterlab: notebook.jupyterlab().await,
+        running: notebook.running().await,
         install: notebook.install(),
-    }))
+    }
 }
 
 async fn no_route() -> Response {
@@ -410,7 +432,7 @@ async fn no_route() -> Response {
 #[derive(OpenApi)]
 #[openapi(
     info(title = "MetaLake UI", version = "1", description = "The API of `metalake ui` (ADR 0007 §4.1)"),
-    paths(version, status, refs, tables, events, sql, notebook_state),
+    paths(version, status, refs, tables, events, sql, notebook_state, notebook_start),
     modifiers(&Token),
     security(("token" = []))
 )]

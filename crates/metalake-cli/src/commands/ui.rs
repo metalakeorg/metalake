@@ -26,7 +26,12 @@ pub async fn run(args: &Ui, lake: Lake) -> Result<(), Error> {
     // Kept until the UI stops, then removed, however it stops.
     let _redirect = if args.no_browser { None } else { opened(&url) };
     eprintln!("serving MetaLake's UI: Ctrl-C stops it");
-    metalake_ui::serve(listener, Arc::new(lake), token, stopped()).await?;
+    // Notebooks beside the lake's file, or where the UI was started for a lake its environment names alone.
+    let mut notebook = metalake_ui::Notebook::from_environment();
+    if let Some(directory) = lake.directory() {
+        notebook = notebook.keeping(directory.join("notebooks"));
+    }
+    metalake_ui::serve(listener, Arc::new(lake), Arc::new(notebook), token, stopped()).await?;
     Ok(())
 }
 

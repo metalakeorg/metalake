@@ -79,6 +79,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The Notebook's JupyterLab (ADR 0008), started for real by the crate's tests: the extra's versions.
+      - name: A Python with JupyterLab
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/jupyter"
+          bin="$RUNNER_TEMP/jupyter/bin"; [ -d "$bin" ] || bin="$RUNNER_TEMP/jupyter/Scripts"
+          "$bin/python" -m pip install --quiet "jupyterlab>=4.6,<5" "jupyter-server>=2.21" "ipykernel>=6.29"
+          echo "METALAKE_TEST_JUPYTER_PYTHON=$(ls "$bin"/python* | head -1)" >> "$GITHUB_ENV"
       - name: Format
         if: runner.os == 'Linux'
         run: cargo fmt -p metalake-ui --check
@@ -124,6 +135,11 @@ jobs:
         run: |
           docker run -d --name pg -p 55433:5432 -e POSTGRES_HOST_AUTH_METHOD=trust             postgres:17@sha256:3b0cda93be7c8dba2ed484d19393d93845dc3dafb88973e248ba8e6d99d784e1             -c track_commit_timestamp=on -c fsync=off
           until docker exec pg pg_isready -q -U postgres; do sleep 1; done; sleep 2
+      - name: A Python with JupyterLab, for the Notebook's life
+        run: |
+          python3 -m venv "$RUNNER_TEMP/jupyter"
+          "$RUNNER_TEMP/jupyter/bin/python" -m pip install --quiet "jupyterlab>=4.6,<5" "jupyter-server>=2.21" "ipykernel>=6.29"
+          echo "METALAKE_TEST_JUPYTER_PYTHON=$RUNNER_TEMP/jupyter/bin/python" >> "$GITHUB_ENV"
       - name: Build `metalake`
         run: cargo build --locked -p metalake-cli
       - name: A lake

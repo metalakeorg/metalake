@@ -43,7 +43,8 @@ async fn main() -> std::io::Result<()> {
         Some(redirect)
     };
     eprintln!("built: {}; Ctrl-C stops it", metalake_ui::built());
-    metalake_ui::serve(listener, backend, token, async {
+    let notebook = std::sync::Arc::new(metalake_ui::Notebook::from_environment());
+    metalake_ui::serve(listener, backend, notebook, token, async {
         let _ = tokio::signal::ctrl_c().await;
     })
     .await?;

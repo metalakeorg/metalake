@@ -92,3 +92,10 @@ export async function notebook(api: Client = client()): Promise<NotebookState> {
   if (error) throw new Failure(error);
   return data;
 }
+
+/** Starts the UI's JupyterLab, unless it runs already, once it serves: what the Notebook can do then. */
+export async function startNotebook(api: Client = client()): Promise<NotebookState> {
+  const { data, error } = await api.POST("/api/v1/notebook/start");
+  if (error) throw new Failure(error);
+  return data;
+}
