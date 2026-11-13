@@ -146,23 +146,33 @@ export class RefSelector extends Widget {
   /** The user chose a ref: the notebook keeps it, and `lake` goes on it. */
   private async choose(ref: string): Promise<void> {
     this.keep(ref);
-    await this.apply(ref);
+    await this.apply(ref, true);
   }
 
   /** `lake` goes on `ref`. A ref that no longer exists is said, and the selector shows the ref `lake` is on. */
-  async apply(ref: string): Promise<void> {
+  async apply(ref: string, chosen = false): Promise<void> {
     const kernel = this.kernel;
     if (!kernel) {
       return;
     }
-    const answer = await ask(kernel, `lake.on(${JSON.stringify(ref)})`, true);
+    // Applied once sent, not once answered: the kernel runs what it is sent in order, and its being idle again before
+    // the answer comes would send it a second time, after a cell that may have moved `lake` itself.
+    this.fresh = false;
+    // Chosen, it is applied. Applied to a new kernel, only while `lake` is still where a new kernel's is: across a
+    // restart, a cell may reach the new kernel before it, and a `lake.on` of that cell is not undone (tried on Windows).
+    const on = `lake.on(${JSON.stringify(ref)})`;
+    const code = chosen ? on : `${on} if lake.ref == ${JSON.stringify(MAIN)} else None`;
+    const answer = await ask(kernel, code, true);
     if ("state" in answer) {
-      this.fresh = false;
       this.shown(answer.state);
       return;
     }
+    if (answer.error.name === "KernelGone") {
+      // Never reached the kernel, or the kernel ended first: the next one is sent it again.
+      this.fresh = true;
+      return;
+    }
     if (answer.error.name === "UsageError") {
-      this.fresh = false;
       // The notebook's ref is gone, or never was: its cells run where `lake` is, which the selector shows, flagged.
       // The notebook keeps the ref it names until the user chooses another, or a cell moves `lake`.
       // It stays chosen, so that choosing any ref, the one `lake` is on included, is a change that replaces it.
