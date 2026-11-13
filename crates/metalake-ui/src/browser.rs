@@ -86,3 +86,52 @@ fn file_url(path: &Path) -> String {
     }
     url
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("metalake-ui-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn redirect_written_and_removed() {
+        let dir = scratch("redirect");
+        let redirect = Redirect::write(&dir, "http://127.0.0.1:1/#token=a&b\"").unwrap();
+        let path = redirect.path().to_owned();
+        let page = fs::read_to_string(&path).unwrap();
+        assert!(
+            page.contains(r#"content="0;url=http://127.0.0.1:1/#token=a&amp;b&quot;""#),
+            "{page}"
+        );
+        assert!(
+            page.contains(r#"<a href="http://127.0.0.1:1/#token=a&amp;b&quot;">"#),
+            "{page}"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "readable by its user alone");
+        }
+        drop(redirect);
+        assert!(!path.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_url_of_paths() {
+        assert_eq!(
+            file_url(Path::new(r"\\?\C:\Users\PC\.metalake\ui\open-1.html")),
+            "file:///C:/Users/PC/.metalake/ui/open-1.html"
+        );
+        assert_eq!(file_url(Path::new(r"C:\a b\ñ.html")), "file:///C:/a%20b/%C3%B1.html");
+        assert_eq!(
+            file_url(Path::new("/home/a b/open-1.html")),
+            "file:///home/a%20b/open-1.html"
+        );
+    }
+}

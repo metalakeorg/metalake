@@ -20,6 +20,8 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    // The end-to-end tests are Playwright's, under e2e/.
+    include: ["src/**/*.test.{ts,tsx}"],
     setupFiles: ["src/test/setup.ts"],
   },
 });

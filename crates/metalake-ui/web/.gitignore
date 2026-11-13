@@ -2,3 +2,6 @@ node_modules/
 # What `pnpm build` writes, but the file that keeps the folder `rust-embed` reads.
 dist/*
 !dist/.gitkeep
+# What Playwright leaves.
+test-results/
+playwright-report/

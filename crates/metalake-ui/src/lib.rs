@@ -36,14 +36,15 @@ pub fn built() -> bool {
 
 /// Serves [`router`] on `listener` until `stop` resolves, then lets requests in flight finish for at most [`GRACE`].
 pub async fn serve(listener: TcpListener, stop: impl Future<Output = ()> + Send + 'static) -> std::io::Result<()> {
-    serve_router(listener, router(), stop).await
+    serve_router(listener, router(), stop, GRACE).await
 }
 
-/// As [`serve`], over `router`, which a test gives.
+/// As [`serve`], over `router` and with `grace`, which a test gives.
 pub(crate) async fn serve_router(
     listener: TcpListener,
     router: Router,
     stop: impl Future<Output = ()> + Send + 'static,
+    grace: Duration,
 ) -> std::io::Result<()> {
     let (stopping, stopped) = oneshot::channel::<()>();
     let stop = async move {
@@ -54,7 +55,7 @@ pub(crate) async fn serve_router(
     // The grace starts once `stop` resolves; a sender dropped unsent means the server ended first, which `served` says.
     let grace = async {
         if stopped.await.is_ok() {
-            tokio::time::sleep(GRACE).await;
+            tokio::time::sleep(grace).await;
         } else {
             std::future::pending::<()>().await;
         }

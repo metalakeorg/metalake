@@ -2,8 +2,10 @@
 //! the router, the redirect file and Ctrl-C in seconds.
 //!
 //! ```text
-//! cargo run -p metalake-ui --example serve -- [--no-browser]
+//! cargo run -p metalake-ui --example serve -- [--no-browser] [--port N]
 //! ```
+//!
+//! The frontend's end-to-end tests run against it where the command line is not built (`METALAKE_UI_COMMAND`).
 
 use std::net::Ipv4Addr;
 
@@ -12,8 +14,15 @@ use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let no_browser = std::env::args().any(|arg| arg == "--no-browser");
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let args: Vec<String> = std::env::args().collect();
+    let no_browser = args.iter().any(|arg| arg == "--no-browser");
+    let port = args
+        .iter()
+        .position(|arg| arg == "--port")
+        .and_then(|at| args.get(at + 1))
+        .and_then(|port| port.parse::<u16>().ok())
+        .unwrap_or(0);
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
     let url = format!("http://{}/", listener.local_addr()?);
     println!("{url}");
     let redirect = if no_browser {

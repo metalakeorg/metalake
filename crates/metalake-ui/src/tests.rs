@@ -389,3 +389,83 @@ fn if_none_match_weak_comparison() {
     assert!(matches("*", "\"a\""));
     assert!(!matches("\"b\"", "\"a\""));
 }
+
+// The server's life (milestone 3).
+
+mod life {
+    use std::time::{Duration, Instant};
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::oneshot;
+
+    use super::built_router;
+    use crate::{GRACE, serve_router};
+
+    /// A server of `built_router` with `grace`, its address, and what stops it.
+    async fn started(
+        grace: Duration,
+    ) -> (
+        std::net::SocketAddr,
+        oneshot::Sender<()>,
+        tokio::task::JoinHandle<std::io::Result<()>>,
+    ) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stop, stopped) = oneshot::channel::<()>();
+        let served = tokio::spawn(serve_router(
+            listener,
+            built_router(),
+            async move {
+                let _ = stopped.await;
+            },
+            grace,
+        ));
+        (address, stop, served)
+    }
+
+    #[tokio::test]
+    async fn stop_ends_serving_and_frees_port() {
+        let (address, stop, served) = started(GRACE).await;
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut answer = String::new();
+        stream.read_to_string(&mut answer).await.unwrap();
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+
+        stop.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), served)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(TcpStream::connect(address).await.is_err(), "the port is free");
+    }
+
+    /// A browser's connection that never finishes its request holds the process no longer than the grace.
+    #[tokio::test]
+    async fn grace_bounds_open_connection() {
+        let grace = Duration::from_millis(300);
+        let (address, stop, served) = started(grace).await;
+        let mut held = TcpStream::connect(address).await.unwrap();
+        held.write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let stopping = Instant::now();
+        stop.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), served)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            stopping.elapsed() < grace + Duration::from_secs(1),
+            "{:?}",
+            stopping.elapsed()
+        );
+        drop(held);
+    }
+}
