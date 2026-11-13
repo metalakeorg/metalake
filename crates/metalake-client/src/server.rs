@@ -94,8 +94,17 @@ pub const PORTS: std::ops::Range<u16> = 18100..19000;
 /// The port a lake's server tries first: the same each time it starts, so that a profile written out, Trino's catalog
 /// file or Spark's defaults, still reaches it after a restart. If another holds it, the server takes a free one.
 pub fn preferred_port(identity: &str, schema: &str) -> u16 {
-    let count = u64::from(PORTS.end - PORTS.start);
-    PORTS.start + (fnv(&format!("{identity}\0{schema}")) % count) as u16
+    port_in(PORTS, identity, schema)
+}
+
+/// The ports a lake's UI tries first, apart from its server's, so that the two may run at once for one lake (ADR 0007
+/// §6.2).
+pub const UI_PORTS: std::ops::Range<u16> = 19100..20000;
+
+/// The port of `ports` a lake tries first, by what names it.
+pub(crate) fn port_in(ports: std::ops::Range<u16>, identity: &str, schema: &str) -> u16 {
+    let count = u64::from(ports.end - ports.start);
+    ports.start + (fnv(&format!("{identity}\0{schema}")) % count) as u16
 }
 
 /// The files of a lake's server in this user's directory: where it says it runs, the lock callers take turns by, and its
@@ -571,6 +580,9 @@ mod tests {
             .map(|i| preferred_port(&format!("local:/lake{i}"), "metalake"))
             .collect();
         assert!(ports.len() > 40, "lakes spread over the range: {}", ports.len());
+        // The lake's UI, in a range of its own, so that it never takes its server's port.
+        let ui = port_in(UI_PORTS, "local:/home/a/lake", "metalake");
+        assert!(UI_PORTS.contains(&ui) && !PORTS.contains(&ui), "{ui}");
     }
 
     #[test]

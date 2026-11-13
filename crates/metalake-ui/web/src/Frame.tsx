@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
 import type { Server } from "./server";
 
-/** The frame every page sits in: a header naming the product and the server's state, and the page below it, or what
- * keeps the page from showing. */
-export function Frame({ server, children }: { server?: Server; children?: ReactNode }) {
+/** The frame every page sits in: a header naming the product and the server's state; the sidebar beside the page; or,
+ * in place of both, what keeps the page from showing. */
+export function Frame({ server, nav, children }: { server?: Server; nav?: ReactNode; children?: ReactNode }) {
+  const ready = server === undefined || server.state === "ready";
   return (
     <div className="flex h-full flex-col">
       <header className="flex h-12 shrink-0 items-center gap-2 border-zinc-200 border-b px-4 dark:border-zinc-800">
@@ -13,16 +14,19 @@ export function Frame({ server, children }: { server?: Server; children?: ReactN
           <span className="ml-auto text-xs text-zinc-500 dark:text-zinc-400">API {server.api}</span>
         )}
       </header>
-      <main className="min-h-0 flex-1 overflow-auto">
-        {server === undefined || server.state === "ready" ? children : <Blocked server={server} />}
-      </main>
+      <div className="flex min-h-0 flex-1">
+        {ready && nav}
+        <main className="min-h-0 flex-1 overflow-auto">{ready ? children : <Blocked server={server} />}</main>
+      </div>
     </div>
   );
 }
 
 /** What the page says when it cannot show. */
-function Blocked({ server }: { server: Exclude<Server, { state: "ready" }> }) {
-  switch (server.state) {
+function Blocked({ server }: { server: Server | undefined }) {
+  switch (server?.state) {
+    case undefined:
+    case "ready":
     case "asking":
       return null;
     case "unauthorized":
@@ -47,7 +51,7 @@ function Blocked({ server }: { server: Exclude<Server, { state: "ready" }> }) {
   }
 }
 
-function Notice({ title, children }: { title: string; children: ReactNode }) {
+export function Notice({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section role="alert" className="mx-auto mt-16 max-w-lg px-4">
       <h1 className="font-semibold text-lg">{title}</h1>

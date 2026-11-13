@@ -1,13 +1,14 @@
 //! The UI served as `metalake ui` serves it, without the command line, which links the whole of MetaLake: how to try
-//! the router, the redirect file and Ctrl-C in seconds.
+//! the router, the redirect file and Ctrl-C in seconds. No lake is behind it: its API says so (`api::Detached`).
 //!
 //! ```text
-//! cargo run -p metalake-ui --example serve -- [--no-browser] [--port N]
+//! cargo run -p metalake-ui --no-default-features --example serve -- [--no-browser] [--port N]
 //! ```
 //!
 //! The frontend's end-to-end tests run against it where the command line is not built (`METALAKE_UI_COMMAND`).
 
 use std::net::Ipv4Addr;
+use std::sync::Arc;
 
 use metalake_ui::browser::{self, Redirect};
 use tokio::net::TcpListener;
@@ -35,7 +36,7 @@ async fn main() -> std::io::Result<()> {
         Some(redirect)
     };
     eprintln!("built: {}; Ctrl-C stops it", metalake_ui::built());
-    metalake_ui::serve(listener, token, async {
+    metalake_ui::serve(listener, Arc::new(metalake_ui::api::Detached), token, async {
         let _ = tokio::signal::ctrl_c().await;
     })
     .await?;

@@ -59,6 +59,11 @@ export function adopt(at: Place = place()): string | null {
 /** The token of this page: the one `adopt` found. */
 let remembered: string | null = null;
 
+/** The token every request to the API bears, if the page has one. */
+export function token(): string | null {
+  return remembered;
+}
+
 /** Calls the UI's API with the run's token; refuses with `Unauthorized` when the server does. */
 export async function api(path: string, init: RequestInit = {}, call: typeof fetch = fetch): Promise<Response> {
   const headers = new Headers(init.headers);
