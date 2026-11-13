@@ -78,6 +78,10 @@ export class RefSelector extends Widget {
   private readonly select: HTMLSelectElement;
   /** Set once its kernel starts again, so that the notebook's ref is applied once it is idle. */
   private fresh = false;
+  /** Set once its kernel restarts, until the notebook's ref is applied to the new one: what is applied then is applied
+   * only while `lake` is on `main`, where a new kernel's is, since a cell may reach the new kernel first. A kernel the
+   * notebook opens on, or changes to, may be another notebook's, on another ref: the notebook's ref is applied to it. */
+  private renewed = false;
   /** The missing ref last said, so that a notebook opened, whose ref is applied as it opens and as its kernel is
    * ready, says it once. */
   private warned = "";
@@ -146,11 +150,11 @@ export class RefSelector extends Widget {
   /** The user chose a ref: the notebook keeps it, and `lake` goes on it. */
   private async choose(ref: string): Promise<void> {
     this.keep(ref);
-    await this.apply(ref, true);
+    await this.apply(ref);
   }
 
   /** `lake` goes on `ref`. A ref that no longer exists is said, and the selector shows the ref `lake` is on. */
-  async apply(ref: string, chosen = false): Promise<void> {
+  async apply(ref: string, guarded = false): Promise<void> {
     const kernel = this.kernel;
     if (!kernel) {
       return;
@@ -158,12 +162,13 @@ export class RefSelector extends Widget {
     // Applied once sent, not once answered: the kernel runs what it is sent in order, and its being idle again before
     // the answer comes would send it a second time, after a cell that may have moved `lake` itself.
     this.fresh = false;
-    // Chosen, it is applied. Applied to a new kernel, only while `lake` is still where a new kernel's is: across a
-    // restart, a cell may reach the new kernel before it, and a `lake.on` of that cell is not undone (tried on Windows).
+    // Guarded, after a restart, only while `lake` is still where a new kernel's is: across a restart, a cell may reach
+    // the new kernel before it, and a `lake.on` of that cell is not undone (tried on Windows).
     const on = `lake.on(${JSON.stringify(ref)})`;
-    const code = chosen ? on : `${on} if lake.ref == ${JSON.stringify(MAIN)} else None`;
+    const code = guarded ? `${on} if lake.ref == ${JSON.stringify(MAIN)} else None` : on;
     const answer = await ask(kernel, code, true);
     if ("state" in answer) {
+      this.renewed = false;
       this.shown(answer.state);
       return;
     }
@@ -173,6 +178,7 @@ export class RefSelector extends Widget {
       return;
     }
     if (answer.error.name === "UsageError") {
+      this.renewed = false;
       // The notebook's ref is gone, or never was: its cells run where `lake` is, which the selector shows, flagged.
       // The notebook keeps the ref it names until the user chooses another, or a cell moves `lake`.
       // It stays chosen, so that choosing any ref, the one `lake` is on included, is a change that replaces it.
@@ -281,12 +287,15 @@ export class RefSelector extends Widget {
       this.fresh = true;
       this.on = MAIN;
     }
+    if (status === "restarting" || status === "autorestarting") {
+      this.renewed = true;
+    }
     if (status === "autorestarting" || (status === "starting" && this.fresh)) {
       // Asked at once, so that it waits in the new kernel ahead of any cell run after the restart: a kernel restarted
       // after it died may never be said idle (JupyterLab 4.6 shows it "Starting" until a cell runs, tried on Windows).
-      void this.apply(this.stored());
+      void this.apply(this.stored(), this.renewed);
     } else if (status === "idle" && this.fresh) {
-      void this.apply(this.stored());
+      void this.apply(this.stored(), this.renewed);
     }
   }
 
@@ -295,7 +304,7 @@ export class RefSelector extends Widget {
    * restart would otherwise find `lake` on `main` (tried on Windows). */
   private scheduled(_: unknown, ran: { notebook: unknown }): void {
     if (ran.notebook === this.panel.content && this.fresh) {
-      void this.apply(this.stored());
+      void this.apply(this.stored(), this.renewed);
     }
   }
 
