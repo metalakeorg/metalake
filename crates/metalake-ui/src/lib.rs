@@ -6,6 +6,8 @@
 
 mod assets;
 mod frontend;
+#[cfg(test)]
+mod tests;
 
 use std::sync::Arc;
 

@@ -19,3 +19,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 # `debug-embed`: a debug build embeds as a release one does, so that both serve the same files; `mime-guess`: each
 # file's type; `include-exclude`: the `.gitkeep` that keeps `web/dist/` is not served.
 rust-embed = { version = "8.9", features = ["debug-embed", "mime-guess", "include-exclude"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+tower = { version = "0.5", default-features = false, features = ["util"] }

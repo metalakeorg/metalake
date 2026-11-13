@@ -1,13 +1,13 @@
-# The UI's frontend (ADR 0007 §5): Biome, the type check, Vitest and the build, with the Node and pnpm it pins. Its build
-# is what `metalake-ui` embeds.
+# The UI (ADR 0007): the frontend, checked and built with the Node and pnpm it pins; then `metalake-ui`, the crate that
+# embeds it, linted and tested without the frontend and with the one just built.
 name: ui
 
 on:
   push:
     branches: [main]
-    paths: ["crates/metalake-ui/web/**", ".github/workflows/ui.yml"]
+    paths: ["crates/metalake-ui/**", "Cargo.lock", ".github/workflows/ui.yml"]
   pull_request:
-    paths: ["crates/metalake-ui/web/**", ".github/workflows/ui.yml"]
+    paths: ["crates/metalake-ui/**", "Cargo.lock", ".github/workflows/ui.yml"]
   workflow_dispatch:
 
 permissions:
@@ -17,14 +17,13 @@ concurrency:
   group: ui-${{ github.ref }}
   cancel-in-progress: true
 
-defaults:
-  run:
-    working-directory: crates/metalake-ui/web
-
 jobs:
   web:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: crates/metalake-ui/web
     steps:
       - uses: actions/checkout@v4
       # The version `packageManager` pins, checked against its hash.
@@ -62,3 +61,26 @@ jobs:
           name: ui-dist
           path: crates/metalake-ui/web/dist
           if-no-files-found: error
+
+  crate:
+    needs: web
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Format
+        run: cargo fmt -p metalake-ui --check
+      - name: Lints
+        run: cargo clippy --locked -p metalake-ui --all-targets -- -D warnings
+      # A checkout has no frontend built: the crate compiles and serves the page that says how to build it.
+      - name: Tests, the frontend not built
+        run: cargo test --locked -p metalake-ui
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: crates/metalake-ui/web/dist
+      - name: Tests, the frontend embedded
+        run: cargo test --locked -p metalake-ui
