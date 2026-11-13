@@ -9,13 +9,16 @@ import { Failed } from "./Failed";
 
 export function NotebookPage() {
   const state = useQuery({ queryKey: ["notebook"], queryFn: () => notebook() });
-  // Started once JupyterLab is known to be there; once, as a start that failed is said, not tried again unasked.
+  // Started once JupyterLab is known to be there, and asked again each time the page opens: a start of one that runs
+  // answers at once, and one that ended since is started again, rather than shown as running. A start that failed is
+  // said, not tried again until asked.
   const started = useQuery({
     queryKey: ["notebook", "start"],
     queryFn: () => startNotebook(),
     enabled: state.data?.jupyterlab === true,
     retry: false,
-    staleTime: Number.POSITIVE_INFINITY,
+    staleTime: 0,
+    refetchOnMount: "always",
   });
   // JupyterLab, once it serves: the whole page, on the UI's origin, opened with its token once (ADR 0008 §5).
   const open = started.data?.open;

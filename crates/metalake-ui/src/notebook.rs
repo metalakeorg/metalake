@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -77,6 +77,8 @@ pub struct Notebook {
     /// Where notebooks are kept: Jupyter's root.
     root: Option<PathBuf>,
     running: Mutex<Option<Jupyter>>,
+    /// Set once the UI ends: a start in progress gives up, rather than hold the end for as long as JupyterLab takes.
+    ending: AtomicBool,
     /// The process JupyterLab's life is tied to: this one, unless a test gives another to end.
     watched: Option<u32>,
     #[cfg(test)]
@@ -192,13 +194,14 @@ impl Notebook {
         }
         if running.is_none() {
             let watched = self.watched.unwrap_or_else(std::process::id);
-            *running = Some(Jupyter::start(&python, &self.root(), watched).await?);
+            *running = Some(Jupyter::start(&python, &self.root(), watched, &self.ending).await?);
         }
         Ok(())
     }
 
     /// Ends its JupyterLab, if it runs: asked to shut down, its input closed, and, if it has not ended, killed.
     pub async fn stop(&self) {
+        self.ending.store(true, Ordering::Relaxed);
         let jupyter = self.running.lock().await.take();
         if let Some(jupyter) = jupyter {
             jupyter.stop().await;
@@ -249,7 +252,7 @@ impl Notebook {
 }
 
 impl Jupyter {
-    async fn start(python: &Path, root: &Path, watched: u32) -> Result<Self, String> {
+    async fn start(python: &Path, root: &Path, watched: u32, ending: &AtomicBool) -> Result<Self, String> {
         let token = Token::generate().map_err(|e| e.to_string())?;
         let dir = crate::browser::directory().map_err(|e| e.to_string())?.join(format!(
             "jupyter-{}-{}",
@@ -257,6 +260,7 @@ impl Jupyter {
             RUNS.fetch_add(1, Ordering::Relaxed)
         ));
         let _ = std::fs::remove_dir_all(&dir);
+        private(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         for sub in ["runtime", "config", "settings", "workspaces"] {
             std::fs::create_dir_all(dir.join(sub)).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
@@ -300,7 +304,7 @@ impl Jupyter {
             token,
             dir,
         };
-        match jupyter.ready().await {
+        match jupyter.ready(ending).await {
             Ok(port) => {
                 jupyter.port = port;
                 Ok(jupyter)
@@ -320,9 +324,12 @@ impl Jupyter {
 
     /// The port it serves at, once its status answers: the port from the runtime file it writes, in a directory of
     /// the run's own, so that no past run's file is read.
-    async fn ready(&mut self) -> Result<u16, String> {
+    async fn ready(&mut self, ending: &AtomicBool) -> Result<u16, String> {
         let start = Instant::now();
         while start.elapsed() < START {
+            if ending.load(Ordering::Relaxed) {
+                return Err("the UI is ending".to_owned());
+            }
             if let Ok(Some(status)) = self.child.try_wait() {
                 return Err(format!("it ended ({status})"));
             }
@@ -375,6 +382,20 @@ impl Jupyter {
     fn forget(self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// The run's directory, readable by its user alone: Jupyter writes its token in the files it keeps there (its runtime
+/// file, its page that opens the browser), which any other user of the machine could otherwise read. On Windows a
+/// directory under the user's home is theirs alone already.
+fn private(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir)?;
+    #[cfg(unix)]
+    std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
+    Ok(())
 }
 
 /// One request to the JupyterLab at `port`, with its token: its status code, or none if it does not answer.

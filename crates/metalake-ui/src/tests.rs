@@ -1184,6 +1184,45 @@ mod jupyter {
         assert!(gone(port, Duration::from_secs(20)).await, "it outlived the UI");
     }
 
+    /// The UI ending while JupyterLab starts: the start gives up at once, rather than hold the end.
+    #[tokio::test]
+    async fn stop_during_start_does_not_wait() {
+        let Some(python) = python() else { return };
+        let notebook = std::sync::Arc::new(notebook(python));
+        let starting = tokio::spawn({
+            let notebook = notebook.clone();
+            async move { notebook.start().await }
+        });
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let stopping = Instant::now();
+        notebook.stop().await;
+        let started = starting.await.unwrap();
+        assert!(stopping.elapsed() < Duration::from_secs(15), "{:?}", stopping.elapsed());
+        assert!(started.is_err() || !notebook.running().await);
+    }
+
+    /// Its directory is its user's alone: Jupyter keeps its token in files there.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_directory_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(python) = python() else { return };
+        let notebook = notebook(python);
+        notebook.start().await.unwrap();
+        let runs = crate::browser::directory().unwrap();
+        let mine = std::fs::read_dir(runs)
+            .unwrap()
+            .flatten()
+            .find(|d| {
+                d.file_name()
+                    .to_string_lossy()
+                    .starts_with(&format!("jupyter-{}-", std::process::id()))
+            })
+            .unwrap();
+        assert_eq!(mine.metadata().unwrap().permissions().mode() & 0o777, 0o700);
+        notebook.stop().await;
+    }
+
     #[tokio::test]
     async fn without_python_said() {
         let notebook = Notebook::default();
