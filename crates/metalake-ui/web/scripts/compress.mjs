@@ -3,9 +3,10 @@
 
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { extname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { brotliCompressSync, constants, gzipSync } from "node:zlib";
 
-const DIST = new URL("../dist/", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
+const DIST = fileURLToPath(new URL("../dist/", import.meta.url));
 const TEXT = new Set([".html", ".js", ".mjs", ".css", ".svg", ".json", ".txt", ".map", ".wasm"]);
 /** Below this, the headers weigh more than what compression saves. */
 const MIN = 1024;
