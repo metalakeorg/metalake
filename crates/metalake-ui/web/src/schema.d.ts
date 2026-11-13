@@ -180,9 +180,9 @@ export interface components {
         };
         /** @description Whether this `metalake` can give a Notebook (ADR 0008). */
         Notebook: {
-            /** @description The line that installs what the Notebook needs. */
+            /** @description The line that installs what the Notebook needs into that Python. */
             install: string;
-            /** @description Whether JupyterLab can be imported by that Python. */
+            /** @description Whether that Python imports JupyterLab and the kernel. */
             jupyterlab: boolean;
             /** @description Whether it runs in a Python: a `metalake` pip installed does, one built alone does not. */
             python: boolean;

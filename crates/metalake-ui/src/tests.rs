@@ -1036,7 +1036,7 @@ mod notebook {
     use super::{HOST, Memory, send};
     use crate::api::Detached;
     use crate::guard::Access;
-    use crate::notebook::{INSTALL, Notebook};
+    use crate::notebook::Notebook;
     use crate::{Token, router_with};
 
     const SECRET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -1070,8 +1070,28 @@ mod notebook {
             let said = state(notebook).await;
             assert_eq!(said["python"], python, "{said}");
             assert_eq!(said["jupyterlab"], jupyterlab, "{said}");
-            assert_eq!(said["install"], INSTALL, "{said}");
+            assert_eq!(said["install"], notebook_install(python), "{said}");
         }
+    }
+
+    /// The line a test's notebook says, with or without its Python.
+    fn notebook_install(python: bool) -> &'static str {
+        if python {
+            r#""python" -m pip install "metalake[notebook]""#
+        } else {
+            r#"pip install "metalake[notebook]""#
+        }
+    }
+
+    /// The line installs into the Python the Notebook runs in, not into whichever `pip` comes first on the PATH.
+    #[test]
+    fn install_into_own_python() {
+        let own = Notebook::with_python(Some("C:/envs/data/python.exe".into()));
+        assert_eq!(
+            own.install(),
+            r#""C:/envs/data/python.exe" -m pip install "metalake[notebook]""#
+        );
+        assert_eq!(Notebook::default().install(), r#"pip install "metalake[notebook]""#);
     }
 
     /// A Python that cannot be run has no JupyterLab: it is said, not failed.

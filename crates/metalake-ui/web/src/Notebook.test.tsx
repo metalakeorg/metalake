@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { Said } from "./Notebook";
 
-const INSTALL = 'pip install "metalake[notebook]"';
+const INSTALL = '"/envs/data/bin/python" -m pip install "metalake[notebook]"';
 
 describe("the Notebook page", () => {
   it("says a metalake without Python has none", () => {

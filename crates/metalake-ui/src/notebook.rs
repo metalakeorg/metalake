@@ -12,10 +12,10 @@ use tokio::process::Command;
 /// The variable that names the Python the UI's Notebook runs in.
 pub const PYTHON: &str = "METALAKE_PYTHON";
 
-/// The line that installs what the Notebook needs.
-pub const INSTALL: &str = r#"pip install "metalake[notebook]""#;
+/// What the Notebook needs, as pip installs it: the extra of metalake that brings JupyterLab and the kernel.
+pub const EXTRA: &str = r#""metalake[notebook]""#;
 
-/// How long a look for JupyterLab may take: a Python's start, an import's search.
+/// How long a look for JupyterLab may take: a Python's start, and importing what the Notebook runs.
 const LOOK: Duration = Duration::from_secs(20);
 
 /// The Python a Notebook would run in, and how to tell whether JupyterLab is there.
@@ -54,8 +54,18 @@ impl Notebook {
         self.python.as_ref()
     }
 
-    /// Whether JupyterLab can be imported by the Python, as the Notebook would start it; not if there is none, or it
-    /// cannot be run.
+    /// The line that installs what the Notebook needs into its own Python, not into whichever `pip` a shell finds
+    /// first; with no Python known, the plain line.
+    pub fn install(&self) -> String {
+        match &self.python {
+            Some(python) => format!(r#""{}" -m pip install {EXTRA}"#, python.display()),
+            None => format!("pip install {EXTRA}"),
+        }
+    }
+
+    /// Whether the Python imports what the Notebook runs, JupyterLab and the kernel: imported, not only found, so that
+    /// an installation missing one of their dependencies is not taken for one that works. Not if there is no Python, or
+    /// it cannot be run.
     pub async fn jupyterlab(&self) -> bool {
         #[cfg(test)]
         if let Some(found) = self.found {
@@ -65,10 +75,7 @@ impl Notebook {
             return false;
         };
         let look = Command::new(python)
-            .args([
-                "-c",
-                "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('jupyterlab') else 3)",
-            ])
+            .args(["-c", "import jupyterlab, jupyter_server, ipykernel"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

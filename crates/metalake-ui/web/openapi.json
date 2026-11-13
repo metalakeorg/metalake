@@ -468,11 +468,11 @@
         "properties": {
           "install": {
             "type": "string",
-            "description": "The line that installs what the Notebook needs."
+            "description": "The line that installs what the Notebook needs into that Python."
           },
           "jupyterlab": {
             "type": "boolean",
-            "description": "Whether JupyterLab can be imported by that Python."
+            "description": "Whether that Python imports JupyterLab and the kernel."
           },
           "python": {
             "type": "boolean",

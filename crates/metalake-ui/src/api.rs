@@ -193,9 +193,9 @@ pub struct Rows {
 pub struct NotebookState {
     /// Whether it runs in a Python: a `metalake` pip installed does, one built alone does not.
     pub python: bool,
-    /// Whether JupyterLab can be imported by that Python.
+    /// Whether that Python imports JupyterLab and the kernel.
     pub jupyterlab: bool,
-    /// The line that installs what the Notebook needs.
+    /// The line that installs what the Notebook needs into that Python.
     pub install: String,
 }
 
@@ -394,7 +394,7 @@ async fn notebook_state(State(notebook): State<Arc<Notebook>>) -> Response {
     answer(Ok(NotebookState {
         python: notebook.python().is_some(),
         jupyterlab: notebook.jupyterlab().await,
-        install: crate::notebook::INSTALL.to_string(),
+        install: notebook.install(),
     }))
 }
 
