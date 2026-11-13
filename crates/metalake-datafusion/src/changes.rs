@@ -157,13 +157,14 @@ pub(crate) struct Call {
     pub until: Option<i64>,
 }
 
-/// The calls of `table_changes` a statement makes, in the order a visit meets them.
-pub(crate) fn calls(statement: &Statement) -> Result<Vec<Call>, DataFusionError> {
-    struct Found(Vec<Call>);
-    impl Visitor for Found {
+/// The calls of `table_changes` a statement makes, in the order a visit meets them; a table that names no ref is on
+/// `on`, the session's default ref, as the statement's other names are.
+pub(crate) fn calls(statement: &Statement, on: &str) -> Result<Vec<Call>, DataFusionError> {
+    struct Found<'a>(Vec<Call>, &'a str);
+    impl Visitor for Found<'_> {
         type Break = DataFusionError;
         fn pre_visit_table_factor(&mut self, factor: &TableFactor) -> ControlFlow<Self::Break> {
-            match call_of(factor) {
+            match call_of(factor, self.1) {
                 Ok(Some(call)) => self.0.push(call),
                 Ok(None) => {}
                 Err(e) => return ControlFlow::Break(e),
@@ -171,7 +172,7 @@ pub(crate) fn calls(statement: &Statement) -> Result<Vec<Call>, DataFusionError>
             ControlFlow::Continue(())
         }
     }
-    let mut found = Found(Vec::new());
+    let mut found = Found(Vec::new(), on);
     match statement.visit(&mut found) {
         ControlFlow::Break(e) => Err(e),
         ControlFlow::Continue(()) => Ok(found.0),
@@ -274,7 +275,7 @@ fn is_call(name: &ObjectName) -> bool {
 }
 
 /// A table factor's call of `table_changes`, if it is one: `('t', after)` or `('t', after, until)`, all literals.
-fn call_of(factor: &TableFactor) -> Result<Option<Call>, DataFusionError> {
+fn call_of(factor: &TableFactor, on: &str) -> Result<Option<Call>, DataFusionError> {
     let TableFactor::Table {
         name, args: Some(args), ..
     } = factor
@@ -309,7 +310,7 @@ fn call_of(factor: &TableFactor) -> Result<Option<Call>, DataFusionError> {
     let Value::SingleQuotedString(table) = table else {
         return Err(usage("the table is named as a string, as 'db.t'"));
     };
-    let path = TablePath::parse(table).map_err(|e| usage(&e.to_string()))?;
+    let path = TablePath::parse_on(table, on).map_err(|e| usage(&e.to_string()))?;
     if until.is_some_and(|until| until < after) {
         return Err(usage("the end comes before the start"));
     }
@@ -336,15 +337,24 @@ mod tests {
             "select * from TABLE_CHANGES('db.t', 1)",
             r#"select * from "table_changes"('db.t', 1)"#,
         ] {
-            assert_eq!(calls(&statement(sql)).unwrap().len(), 1, "{sql}");
+            assert_eq!(calls(&statement(sql), "main").unwrap().len(), 1, "{sql}");
         }
         for sql in [
             r#"select * from "TABLE_CHANGES"('db.t', 1)"#,
             "select * from main.table_changes",
             "select * from db.table_changes('db.t', 1)",
         ] {
-            assert!(calls(&statement(sql)).unwrap().is_empty(), "{sql}");
+            assert!(calls(&statement(sql), "main").unwrap().is_empty(), "{sql}");
         }
+    }
+
+    /// A session on another ref: a table that names none is on it; one that names its ref keeps it.
+    #[test]
+    fn calls_on_session_ref() {
+        let sql = "select * from table_changes('t', 1) a, table_changes('r.n.t', 1) b";
+        let found = calls(&statement(sql), "dev").unwrap();
+        let on: Vec<_> = found.iter().map(|c| c.path.on.as_str()).collect();
+        assert_eq!(on, ["dev", "r"]);
     }
 
     #[test]

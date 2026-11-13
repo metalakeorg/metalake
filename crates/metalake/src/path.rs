@@ -35,13 +35,18 @@ impl TablePath {
     /// A name as text, its parts split at dots: past the ref and before the table's name, every part is a level of the
     /// namespace (`r.a.b.t`).
     pub fn parse(text: &str) -> Result<Self, InvalidPath> {
+        Self::parse_on(text, MAIN)
+    }
+
+    /// A name as text, on `on` when it names no ref: a session's, which reads and writes on another ref than `main`.
+    pub fn parse_on(text: &str, on: &str) -> Result<Self, InvalidPath> {
         let parts: Vec<&str> = text.split(NAMESPACE_SEPARATOR).collect();
         if parts.iter().any(|part| part.is_empty()) {
             return Err(InvalidPath(text.to_string()));
         }
         let (on, namespace, name) = match parts.as_slice() {
-            [name] => (MAIN, vec![DEFAULT_NAMESPACE], *name),
-            [namespace, name] => (MAIN, vec![*namespace], *name),
+            [name] => (on, vec![DEFAULT_NAMESPACE], *name),
+            [namespace, name] => (on, vec![*namespace], *name),
             [on, namespace @ .., name] => (*on, namespace.to_vec(), *name),
             [] => unreachable!("a split has a part"),
         };
@@ -113,6 +118,14 @@ mod tests {
         assert_eq!(TablePath::parse("r.n.t").unwrap(), name("r", &["n"], "t"));
         assert_eq!(TablePath::parse("r.a.b.t").unwrap(), name("r", &["a", "b"], "t"));
         assert_eq!(TablePath::parse("r.a.b.t").unwrap().to_string(), "r.a.b.t");
+    }
+
+    /// A session on another ref: names without one are on it; a name that says its ref keeps it.
+    #[test]
+    fn parse_on_another_ref() {
+        assert_eq!(TablePath::parse_on("t", "dev").unwrap(), name("dev", &["default"], "t"));
+        assert_eq!(TablePath::parse_on("n.t", "dev").unwrap(), name("dev", &["n"], "t"));
+        assert_eq!(TablePath::parse_on("r.n.t", "dev").unwrap(), name("r", &["n"], "t"));
     }
 
     #[test]
