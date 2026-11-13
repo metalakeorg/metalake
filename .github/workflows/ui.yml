@@ -40,6 +40,9 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Biome
         run: pnpm check
+      # The API's types are the spec's, which a test of the crate compares with the router's.
+      - name: Types generated from the API's spec
+        run: pnpm types && git diff --exit-code src/schema.d.ts
       - name: Types
         run: pnpm typecheck
       - name: Vitest
