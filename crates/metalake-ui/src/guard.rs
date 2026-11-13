@@ -105,13 +105,15 @@ pub(crate) async fn origin(State(access): State<Arc<Access>>, request: Request, 
 }
 
 /// The headers every answer carries: no frame may hold the UI, no script but its own runs in it, and nothing it
-/// answers is read as another type, sent as a referrer, or opened by another site.
+/// answers is read as another type, sent as a referrer, or opened by another site. Styles alone may be inline: the SQL
+/// editor (CodeMirror) writes its own style sheet and places its cursor and gutters by `style` attributes. A style runs
+/// no code, and a script, which could write one, is held to the UI's own.
 pub(crate) async fn secured(mut response: Response) -> Response {
     let headers = response.headers_mut();
     for (name, value) in [
         (
             header::CONTENT_SECURITY_POLICY,
-            "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+            "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
         ),
         (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         (header::REFERRER_POLICY, "no-referrer"),

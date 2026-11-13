@@ -11,9 +11,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use deadpool_postgres::{Connect, Manager, ManagerConfig, RecyclingMethod, Runtime};
+use futures_util::StreamExt;
 use futures_util::future::BoxFuture;
-use tokio::sync::Mutex;
-use tokio_postgres::Client;
+use tokio::sync::{Mutex, mpsc};
+use tokio_postgres::{AsyncMessage, Client};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 use crate::{Error, ErrorKind, Result, tls};
@@ -133,9 +134,15 @@ impl Target {
     }
 }
 
+/// How a connection of one's own opens: as the pool's do.
+struct Opener {
+    config: tokio_postgres::Config,
+    tls: MakeRustlsConnect,
+}
+
 /// A pool of connections to one Postgres database.
 #[derive(Clone)]
-pub struct Pool(deadpool_postgres::Pool, Duration, Option<Arc<Fresh>>);
+pub struct Pool(deadpool_postgres::Pool, Duration, Option<Arc<Fresh>>, Arc<Opener>);
 
 impl fmt::Debug for Pool {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -171,6 +178,10 @@ impl Pool {
                 current: Mutex::new(None),
             })
         });
+        let opener = Arc::new(Opener {
+            config: config.clone(),
+            tls: tls.connector()?,
+        });
         let manager = match &fresh {
             None => Manager::from_config(config, tls.connector()?, settings),
             Some(fresh) => {
@@ -187,7 +198,41 @@ impl Pool {
             .wait_timeout(Some(wait))
             .build()
             .map_err(|e| Error::new(ErrorKind::Postgres, e.to_string()))?;
-        Ok(Self(pool, wait, fresh))
+        Ok(Self(pool, wait, fresh, opener))
+    }
+
+    /// A connection of its own, outside the pool, listening on `channel`: each notification's payload as it comes. A
+    /// pooled connection cannot listen, since the pool drops what its connections receive besides answers.
+    pub async fn listen(&self, channel: &str) -> Result<Listener> {
+        let mut config = self.3.config.clone();
+        if let Some(fresh) = &self.2 {
+            config.password(
+                fresh
+                    .password()
+                    .await
+                    .map_err(|e| e.context("the catalog's credential"))?,
+            );
+        }
+        let (client, mut connection) = config.connect(self.3.tls.clone()).await?;
+        let (send, receive) = mpsc::unbounded_channel();
+        // The connection is driven here, so that its notifications are read: they come between answers.
+        tokio::spawn(async move {
+            let mut messages = futures_util::stream::poll_fn(move |cx| connection.poll_message(cx));
+            while let Some(Ok(message)) = messages.next().await {
+                if let AsyncMessage::Notification(n) = message
+                    && send.send(n.payload().to_string()).is_err()
+                {
+                    break;
+                }
+            }
+        });
+        client
+            .batch_execute(&format!("listen {}", crate::quote_ident(channel)))
+            .await?;
+        Ok(Listener {
+            _client: client,
+            receive,
+        })
     }
 
     /// Closes the idle connections, and those in use as they come back. The pool opens no more.
@@ -223,5 +268,24 @@ impl Pool {
             }
             e => Error::new(ErrorKind::Unknown, e.to_string()),
         }
+    }
+}
+
+/// A connection listening on a channel ([`Pool::listen`]). Dropped, it closes.
+pub struct Listener {
+    _client: Client,
+    receive: mpsc::UnboundedReceiver<String>,
+}
+
+impl fmt::Debug for Listener {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Listener").finish_non_exhaustive()
+    }
+}
+
+impl Listener {
+    /// The next notification's payload; none once the connection is lost.
+    pub async fn next(&mut self) -> Option<String> {
+        self.receive.recv().await
     }
 }

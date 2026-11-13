@@ -141,18 +141,25 @@ impl MetaLake {
     pub async fn execute(&self, context: &SessionContext, mut statement: Statement) -> DataFusionResult<DataFrame> {
         // The ranges it reads live as sources until its plan holds them.
         let _ranges = self.table_changes(&mut statement).await?;
-        let plan = context.state().statement_to_plan(statement).await?;
+        let state = context.state();
+        let plan = state.statement_to_plan(statement).await?;
+        // A name that says no ref is the session's default ref's, as a read's and a write's are: `main` unless the
+        // session says another.
+        let defaults = &state.config().options().catalog;
         match plan {
             LogicalPlan::Ddl(DdlStatement::CreateCatalogSchema(create)) => {
                 let (on, namespace) = match create.schema_name.split_once(NAMESPACE_SEPARATOR) {
                     Some((on, namespace)) => (on, namespace),
-                    None => (MAIN, create.schema_name.as_str()),
+                    None => (defaults.default_catalog.as_str(), create.schema_name.as_str()),
                 };
                 let on = self.shared.named(on).await?;
                 ddl::create_schema(&on, &[namespace], create.if_not_exists).await?;
             }
             LogicalPlan::Ddl(DdlStatement::CreateMemoryTable(create)) => {
-                let name = create.name.clone().resolve(MAIN, DEFAULT_NAMESPACE);
+                let name = create
+                    .name
+                    .clone()
+                    .resolve(&defaults.default_catalog, &defaults.default_schema);
                 let path = TablePath::from_parts(Some(&name.catalog), Some(&name.schema), &name.table);
                 let on = self.shared.named(&path.on).await?;
                 let namespace: Vec<&str> = path.namespace.iter().map(String::as_str).collect();

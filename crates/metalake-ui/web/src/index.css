@@ -11,3 +11,39 @@
     @apply bg-white text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100;
   }
 }
+
+/* The SQL editor's colours (Editor.tsx): its tokens are classes, coloured here in light and dark. */
+@layer components {
+  :root {
+    --gutter: var(--color-zinc-400);
+    --active-line: color-mix(in oklab, var(--color-zinc-100) 60%, transparent);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --gutter: var(--color-zinc-600);
+      --active-line: color-mix(in oklab, var(--color-zinc-800) 50%, transparent);
+    }
+  }
+  .tok-keyword {
+    @apply text-violet-700 dark:text-violet-400;
+  }
+  .tok-string,
+  .tok-string2 {
+    @apply text-emerald-700 dark:text-emerald-400;
+  }
+  .tok-number,
+  .tok-bool,
+  .tok-atom {
+    @apply text-amber-700 dark:text-amber-400;
+  }
+  .tok-comment {
+    @apply text-zinc-400 italic dark:text-zinc-500;
+  }
+  .tok-typeName {
+    @apply text-sky-700 dark:text-sky-400;
+  }
+  .tok-operator,
+  .tok-punctuation {
+    @apply text-zinc-500 dark:text-zinc-400;
+  }
+}

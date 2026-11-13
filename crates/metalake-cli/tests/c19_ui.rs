@@ -1,6 +1,7 @@
-//! C19: `metalake ui` on a lake (ADR 0007, milestone 6). It opens the lake as every verb does and serves at the lake's
-//! own port, the same each run; its API says what the lake is, to the run's token alone; and a lake that cannot be
-//! opened is said as every verb says it, before anything listens.
+//! C19: `metalake ui` on a lake (ADR 0007). It opens the lake as every verb does and serves at the lake's own port, the
+//! same each run; its API says what the lake is, its refs and a ref's tables, to the run's token alone, and its events
+//! say the lake changed: at once for a commit, which notifies, and within the interval for a ref deleted, which does
+//! not. A lake that cannot be opened is said as every verb says it, before anything listens.
 
 mod common;
 
@@ -8,8 +9,11 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
 use std::process::{Child, Stdio};
+use std::time::{Duration, Instant};
 
-use common::{directory, lake, metalake, text};
+use common::{directory, lake, metalake, ok, sql, text};
+use datafusion::arrow::array::Int64Array;
+use datafusion::arrow::ipc::reader::StreamReader;
 use metalake_client::server::UI_PORTS;
 
 const TOKEN: &str = "c19c19c19c19c19c19c19c19c19c19c19c19c19c";
@@ -95,4 +99,198 @@ fn no_lake_said_before_listening() {
         "{}",
         text(&output.stderr)
     );
+}
+
+#[test]
+fn refs_and_tables_of_branch() {
+    let (dir, _) = lake();
+    sql(
+        &dir,
+        "create schema main.sales; create table main.sales.orders (k bigint);",
+        "csv",
+    );
+    ok(&dir, &["branch", "create", "dev"]);
+    sql(&dir, "create table dev.default.only_dev (k bigint);", "csv");
+    let (mut ui, port) = started(&dir);
+
+    let (code, body) = get(port, "/api/v1/refs", Some(TOKEN));
+    assert_eq!(code, 200, "{body}");
+    let refs: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let dev = refs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == "dev")
+        .expect(&body);
+    assert_eq!(dev["parent"], "main", "{body}");
+
+    let names = |on: &str| {
+        let (code, body) = get(port, &format!("/api/v1/refs/{on}/tables"), Some(TOKEN));
+        assert_eq!(code, 200, "{body}");
+        let tables: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap();
+        let mut names: Vec<String> = tables
+            .iter()
+            .map(|t| {
+                format!(
+                    "{}.{}",
+                    t["namespace"][0].as_str().unwrap(),
+                    t["name"].as_str().unwrap()
+                )
+            })
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(names("main"), ["sales.orders"]);
+    assert_eq!(names("dev"), ["default.only_dev", "sales.orders"]);
+    assert_eq!(get(port, "/api/v1/refs/nope/tables", Some(TOKEN)).0, 400);
+    ui.kill().unwrap();
+    ui.wait().unwrap();
+}
+
+/// The events of a run, read as they come over one connection.
+struct Events(BufReader<TcpStream>);
+
+impl Events {
+    fn open(port: u16) -> Self {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let request =
+            format!("GET /api/v1/events HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {TOKEN}\r\n\r\n");
+        stream.write_all(request.as_bytes()).unwrap();
+        stream.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+        Self(BufReader::new(stream))
+    }
+
+    /// The next event's data, as JSON, within `within`.
+    fn next(&mut self, within: Duration) -> Option<serde_json::Value> {
+        let start = Instant::now();
+        let mut line = String::new();
+        while start.elapsed() < within {
+            line.clear();
+            match self.0.read_line(&mut line) {
+                Ok(0) => return None,
+                Ok(_) => {
+                    if let Some(data) = line.trim_end().strip_prefix("data: ") {
+                        return Some(serde_json::from_str(data).unwrap());
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+        None
+    }
+}
+
+#[test]
+fn events_say_lake_changed() {
+    let (dir, _) = lake();
+    let (mut ui, port) = started(&dir);
+    let mut events = Events::open(port);
+    let first = events.next(Duration::from_secs(10)).expect("the mark now");
+
+    // A commit notifies: its mark comes before the interval of 5 s would have read it.
+    let committed = Instant::now();
+    sql(&dir, "create table main.default.t (k bigint);", "csv");
+    let after = events.next(Duration::from_secs(10)).expect("the commit's mark");
+    assert!(after["seq"].as_i64() > first["seq"].as_i64(), "{first} {after}");
+    assert!(
+        committed.elapsed() < Duration::from_secs(4),
+        "notified, not polled: {:?}",
+        committed.elapsed()
+    );
+
+    // A ref made, then deleted, which notifies nothing: the interval reads it, though another lake of the same
+    // Postgres notifies the channel all the while, more often than the interval.
+    ok(&dir, &["branch", "create", "gone"]);
+    let made = events.next(Duration::from_secs(10)).expect("the new ref's mark");
+    let (other, _) = lake();
+    let busy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let noisy = {
+        let busy = busy.clone();
+        std::thread::spawn(move || {
+            sql(&other, "create table main.default.n (k bigint);", "csv");
+            while busy.load(std::sync::atomic::Ordering::Relaxed) {
+                sql(&other, "insert into main.default.n values (1);", "csv");
+            }
+        })
+    };
+    ok(&dir, &["branch", "delete", "gone", "--yes"]);
+    let deleted = events.next(Duration::from_secs(15)).expect("the deleted ref's mark");
+    busy.store(false, std::sync::atomic::Ordering::Relaxed);
+    noisy.join().unwrap();
+    assert_eq!(
+        deleted["deleted"].as_i64(),
+        made["deleted"].as_i64().map(|d| d + 1),
+        "{made} {deleted}"
+    );
+    ui.kill().unwrap();
+    ui.wait().unwrap();
+}
+
+/// One `POST /api/v1/sql` from the UI's own origin: its status, its headers and its body.
+fn run(port: u16, body: &str) -> (u16, String, Vec<u8>) {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let request = format!(
+        "POST /api/v1/sql HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\n\
+         Authorization: Bearer {TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+         Connection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut answer = Vec::new();
+    stream.read_to_end(&mut answer).unwrap();
+    let end = answer.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    let head = String::from_utf8_lossy(&answer[..end]).into_owned();
+    let status = head.split_whitespace().nth(1).unwrap().parse().unwrap();
+    (status, head.to_lowercase(), answer[end + 4..].to_vec())
+}
+
+#[test]
+fn sql_on_branch_writes_and_reads() {
+    let (dir, _) = lake();
+    ok(&dir, &["branch", "create", "dev"]);
+    let (mut ui, port) = started(&dir);
+
+    // Names that say no ref are the branch's: the table is made and filled on `dev`.
+    let made =
+        r#"{"sql":"create table default.t (k bigint); insert into default.t values (3), (1), (2)","branch":"dev"}"#;
+    let (code, _, body) = run(port, made);
+    assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
+
+    let (code, head, body) = run(
+        port,
+        r#"{"sql":"select k from default.t order by k","branch":"dev","limit":2}"#,
+    );
+    assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
+    assert!(
+        head.contains("content-type: application/vnd.apache.arrow.stream"),
+        "{head}"
+    );
+    assert!(
+        head.contains("metalake-rows: 2") && head.contains("metalake-truncated: true"),
+        "{head}"
+    );
+    let reader = StreamReader::try_new(std::io::Cursor::new(body), None).unwrap();
+    let mut values = Vec::new();
+    for batch in reader {
+        let batch = batch.unwrap();
+        let column = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+        values.extend(column.iter().map(Option::unwrap));
+    }
+    assert_eq!(values, [1, 2]);
+
+    // All of it, within the limit, is not truncated.
+    let (_, head, _) = run(port, r#"{"sql":"select k from dev.default.t"}"#);
+    assert!(
+        head.contains("metalake-rows: 3") && head.contains("metalake-truncated: false"),
+        "{head}"
+    );
+
+    // `main` has no such table: said as the command line says it.
+    let (code, _, body) = run(port, r#"{"sql":"select k from default.t"}"#);
+    assert!(code >= 400, "{code}");
+    let fault: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(fault["message"].as_str().unwrap().contains("t"), "{fault}");
+    ui.kill().unwrap();
+    ui.wait().unwrap();
 }

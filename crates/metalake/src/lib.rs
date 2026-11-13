@@ -31,6 +31,7 @@ mod storage;
 mod stream;
 mod table;
 pub mod vectors;
+mod watch;
 mod write;
 
 /// The table property that says when a table's Iceberg metadata is written (REST-9): `on-load`, when a client loads the
@@ -55,4 +56,5 @@ pub use stream::{
     TableStream, TaskRows,
 };
 pub use table::{Field, Table};
+pub use watch::{Mark, Watch};
 pub use write::{Merge, MergeReport, NewTable, Outcome, RowLocation, TableWriter, Transaction, WriteOptions};

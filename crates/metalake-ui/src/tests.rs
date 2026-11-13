@@ -81,11 +81,24 @@ impl Answer {
 }
 
 async fn send(router: Router, method: Method, path: &str, headers: &[(header::HeaderName, &str)]) -> Answer {
+    send_body(router, method, path, headers, "").await
+}
+
+async fn send_body(
+    router: Router,
+    method: Method,
+    path: &str,
+    headers: &[(header::HeaderName, &str)],
+    body: &str,
+) -> Answer {
     let mut request = Request::builder().method(method).uri(path);
     for (name, value) in headers {
         request = request.header(name, *value);
     }
-    let response = router.oneshot(request.body(Body::empty()).unwrap()).await.unwrap();
+    let response = router
+        .oneshot(request.body(Body::from(body.to_owned())).unwrap())
+        .await
+        .unwrap();
     let status = response.status();
     let headers = response.headers().clone();
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap().to_vec();
@@ -596,12 +609,12 @@ mod access {
     /// and 404 with it; never the frontend's page.
     #[tokio::test]
     async fn every_api_path_behind_token() {
-        for path in ["/api", "/api/", "/api/v1", "/api/v1/sql", "/api/v2/version"] {
+        for path in ["/api", "/api/", "/api/v1", "/api/v1/nowhere", "/api/v2/version"] {
             let without = ask(Method::GET, path, &[(header::HOST, HOST)]).await;
             assert_eq!(without.status, StatusCode::UNAUTHORIZED, "{path}");
         }
         let bearer = bearer();
-        for path in ["/api/v1/sql", "/api/v2/version"] {
+        for path in ["/api/v1/nowhere", "/api/v2/version"] {
             let headers = [(header::HOST, HOST), (header::AUTHORIZATION, bearer.as_str())];
             let with = ask(Method::GET, path, &headers).await;
             assert_eq!(with.status, StatusCode::NOT_FOUND, "{path}");
@@ -658,6 +671,12 @@ mod access {
             let policy = answer.header(header::CONTENT_SECURITY_POLICY).unwrap_or_default();
             assert!(policy.starts_with("default-src 'self'"), "{path} {host}: {policy}");
             assert!(policy.contains("frame-ancestors 'none'"), "{path} {host}: {policy}");
+            // Inline styles, for the SQL editor; never an inline script, which `default-src 'self'` refuses.
+            assert!(
+                policy.contains("style-src 'self' 'unsafe-inline';"),
+                "{path} {host}: {policy}"
+            );
+            assert!(!policy.contains("script-src"), "{path} {host}: {policy}");
             assert_eq!(
                 answer.header(header::X_CONTENT_TYPE_OPTIONS),
                 Some("nosniff"),
@@ -680,19 +699,96 @@ mod api {
     use axum::Router;
     use axum::http::{Method, StatusCode, header};
 
-    use super::{Answer, HOST, Memory, send};
-    use crate::api::{self, Backend, Detached, Fault, Kind, Named, Status};
+    use super::{Answer, HOST, Memory, send, send_body};
+    use crate::api::{self, Backend, Detached, Fault, Kind, Mark, Marks, Named, Ref, Rows, Statement, Status, Table};
     use crate::guard::Access;
     use crate::{Token, router_with};
 
     const SECRET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef";
 
-    /// A lake that answers what it is given.
+    /// A lake that answers what it is given: its status, or a fault for every path; on `main`, two tables; its marks.
     struct Given(Result<Status, Fault>);
+
+    impl Given {
+        fn lake() -> Self {
+            Given(Ok(status()))
+        }
+
+        fn or<T>(&self, value: T) -> Result<T, Fault> {
+            self.0.as_ref().map(|_| value).map_err(Fault::clone)
+        }
+    }
 
     impl Backend for Given {
         fn status(&self) -> api::Answer<'_, Status> {
             let answer = self.0.clone();
+            Box::pin(async move { answer })
+        }
+
+        fn refs(&self) -> api::Answer<'_, Vec<Ref>> {
+            let main = Ref {
+                name: "main".into(),
+                kind: "branch".into(),
+                parent: None,
+                fork_seq: None,
+                created_seq: 1,
+                protected: true,
+            };
+            let dev = Ref {
+                name: "dev/1".into(),
+                kind: "branch".into(),
+                parent: Some("main".into()),
+                fork_seq: Some(4),
+                created_seq: 5,
+                protected: false,
+            };
+            let answer = self.or(vec![main, dev]);
+            Box::pin(async move { answer })
+        }
+
+        fn tables<'a>(&'a self, on: &'a str) -> api::Answer<'a, Vec<Table>> {
+            let table = |namespace: &str, name: &str| Table {
+                namespace: vec![namespace.into()],
+                name: name.into(),
+            };
+            let answer = match on {
+                "main" => self.or(vec![table("sales", "orders"), table("default", "t")]),
+                "dev/1" => self.or(vec![table("default", "t")]),
+                _ => Err(Fault::new(Kind::Usage, format!("no ref {on}"))),
+            };
+            Box::pin(async move { answer })
+        }
+
+        /// The statement's text, branch and limit, said back as the rows' bytes; `fail` fails as the lake would.
+        fn sql(&self, statement: Statement) -> api::Answer<'_, Rows> {
+            let answer = if statement.sql == "fail" {
+                Err(Fault::new(Kind::Conflict, "a write conflicts with another"))
+            } else {
+                let said = format!("{}|{:?}|{}", statement.sql, statement.branch, statement.limit());
+                self.or(Rows {
+                    arrow: said.into_bytes(),
+                    rows: 2,
+                    truncated: true,
+                })
+            };
+            Box::pin(async move { answer })
+        }
+
+        fn watch(&self) -> api::Answer<'_, Marks> {
+            let marks = vec![
+                Ok(Mark {
+                    seq: 7,
+                    recent: 7,
+                    deleted: 0,
+                }),
+                Ok(Mark {
+                    seq: 9,
+                    recent: 9,
+                    deleted: 0,
+                }),
+                Err(Fault::new(Kind::Unknown, "the connection was lost")),
+            ];
+            let answer = self.or(Box::pin(futures_util::stream::iter(marks)) as Marks);
             Box::pin(async move { answer })
         }
     }
@@ -733,7 +829,7 @@ mod api {
 
     #[tokio::test]
     async fn status_answers_lake() {
-        let answer = ask(over(Given(Ok(status()))), "/api/v1/status").await;
+        let answer = ask(over(Given::lake()), "/api/v1/status").await;
         assert_eq!(answer.status, StatusCode::OK);
         assert_eq!(answer.header(header::CACHE_CONTROL), Some("no-store"));
         let body = json(&answer);
@@ -771,9 +867,63 @@ mod api {
 
     #[tokio::test]
     async fn detached_says_no_lake() {
-        let answer = ask(over(Detached), "/api/v1/status").await;
-        assert_eq!(answer.status, StatusCode::BAD_REQUEST);
-        assert!(json(&answer)["message"].as_str().unwrap().contains("without a lake"));
+        for path in [
+            "/api/v1/status",
+            "/api/v1/refs",
+            "/api/v1/refs/main/tables",
+            "/api/v1/events",
+        ] {
+            let answer = ask(over(Detached), path).await;
+            assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{path}");
+            assert!(
+                json(&answer)["message"].as_str().unwrap().contains("without a lake"),
+                "{path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn refs_answers_branches_and_tags() {
+        let answer = ask(over(Given::lake()), "/api/v1/refs").await;
+        assert_eq!(answer.status, StatusCode::OK);
+        let body = json(&answer);
+        assert_eq!(body[0]["name"], "main");
+        assert_eq!(body[0]["parent"], serde_json::Value::Null);
+        assert_eq!(body[1]["parent"], "main");
+        assert_eq!(body[1]["fork_seq"], 4);
+    }
+
+    /// A ref by its name, percent-encoded as a path's segment: one with a slash is one segment.
+    #[tokio::test]
+    async fn tables_of_ref() {
+        let main = json(&ask(over(Given::lake()), "/api/v1/refs/main/tables").await);
+        assert_eq!(main[0]["namespace"], serde_json::json!(["sales"]));
+        assert_eq!(main[0]["name"], "orders");
+        let dev = ask(over(Given::lake()), "/api/v1/refs/dev%2F1/tables").await;
+        assert_eq!(dev.status, StatusCode::OK);
+        assert_eq!(json(&dev).as_array().unwrap().len(), 1);
+        let none = ask(over(Given::lake()), "/api/v1/refs/nope/tables").await;
+        assert_eq!(none.status, StatusCode::BAD_REQUEST);
+        assert_eq!(json(&none)["message"], "no ref nope");
+    }
+
+    /// The marks as server-sent events, each a `mark`; a fault is the last event.
+    #[tokio::test]
+    async fn events_stream_marks() {
+        let answer = ask(over(Given::lake()), "/api/v1/events").await;
+        assert_eq!(answer.status, StatusCode::OK);
+        assert_eq!(answer.header(header::CONTENT_TYPE), Some("text/event-stream"));
+        assert_eq!(answer.header(header::CACHE_CONTROL), Some("no-store"));
+        let body = String::from_utf8(answer.body).unwrap();
+        let events: Vec<&str> = body.split("\n\n").filter(|e| !e.is_empty()).collect();
+        assert_eq!(
+            events,
+            [
+                "event: mark\ndata: {\"seq\":7,\"recent\":7,\"deleted\":0}",
+                "event: mark\ndata: {\"seq\":9,\"recent\":9,\"deleted\":0}",
+                "event: fault\ndata: {\"kind\":\"unknown\",\"message\":\"the connection was lost\",\"retryable\":false}",
+            ]
+        );
     }
 
     /// Every path of the spec is behind the token: the spec and the router are walked together, so that a path added
@@ -782,16 +932,85 @@ mod api {
     async fn every_spec_path_behind_token() {
         let spec: serde_json::Value = serde_json::from_str(&api::openapi()).unwrap();
         let paths = spec["paths"].as_object().unwrap();
-        assert!(paths.len() >= 2, "{paths:?}");
-        for (path, _) in paths {
+        assert!(paths.len() >= 6, "{paths:?}");
+        let bearer = format!("Bearer {SECRET}");
+        for (path, methods) in paths {
             assert!(path.starts_with("/api/v1/"), "{path}");
-            let without = send(over(Given(Ok(status()))), Method::GET, path, &[(header::HOST, HOST)]).await;
-            assert_eq!(without.status, StatusCode::UNAUTHORIZED, "{path}");
-            assert_eq!(
-                ask(over(Given(Ok(status()))), path).await.status,
-                StatusCode::OK,
-                "{path}"
-            );
+            let path = &path.replace("{ref}", "main");
+            for method in methods.as_object().unwrap().keys() {
+                let method = Method::from_bytes(method.to_uppercase().as_bytes()).unwrap();
+                let body = if method == Method::POST {
+                    r#"{"sql":"select 1"}"#
+                } else {
+                    ""
+                };
+                let without = [(header::HOST, HOST), (header::ORIGIN, ORIGIN)];
+                let refused = send_body(over(Given::lake()), method.clone(), path, &without, body).await;
+                assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{method} {path}");
+                let with = [
+                    (header::HOST, HOST),
+                    (header::ORIGIN, ORIGIN),
+                    (header::AUTHORIZATION, bearer.as_str()),
+                ];
+                let answered = send_body(over(Given::lake()), method.clone(), path, &with, body).await;
+                assert_eq!(answered.status, StatusCode::OK, "{method} {path}");
+            }
+        }
+    }
+
+    /// The UI's own origin, which a write must come from.
+    const ORIGIN: &str = "http://127.0.0.1:4173";
+
+    async fn run(body: &str, origin: Option<&str>) -> Answer {
+        let bearer = format!("Bearer {SECRET}");
+        let mut headers = vec![(header::HOST, HOST), (header::AUTHORIZATION, bearer.as_str())];
+        headers.extend(origin.map(|origin| (header::ORIGIN, origin)));
+        send_body(over(Given::lake()), Method::POST, "/api/v1/sql", &headers, body).await
+    }
+
+    #[tokio::test]
+    async fn sql_answers_rows_as_arrow() {
+        let answer = run(r#"{"sql":"select 1","branch":"dev"}"#, Some(ORIGIN)).await;
+        assert_eq!(answer.status, StatusCode::OK);
+        assert_eq!(
+            answer.header(header::CONTENT_TYPE),
+            Some("application/vnd.apache.arrow.stream")
+        );
+        assert_eq!(answer.header(header::CACHE_CONTROL), Some("no-store"));
+        assert_eq!(answer.header("metalake-rows".parse().unwrap()), Some("2"));
+        assert_eq!(answer.header("metalake-truncated".parse().unwrap()), Some("true"));
+        assert_eq!(answer.body, br#"select 1|Some("dev")|10000"#);
+    }
+
+    /// The rows asked for, within the bounds: at least one, at most [`api::MOST`].
+    #[tokio::test]
+    async fn sql_limit_within_bounds() {
+        for (asked, given) in [("0", "1"), ("50", "50"), ("1000000", "100000")] {
+            let answer = run(&format!(r#"{{"sql":"s","limit":{asked}}}"#), Some(ORIGIN)).await;
+            assert!(answer.body.ends_with(given.as_bytes()), "{asked}: {:?}", answer.body);
+        }
+    }
+
+    #[tokio::test]
+    async fn sql_refuses_what_it_cannot_run() {
+        let cases = [
+            ("not json", StatusCode::BAD_REQUEST, "is JSON"),
+            (r#"{"sql":"  "}"#, StatusCode::BAD_REQUEST, "no statement"),
+            (r#"{"sql":"fail"}"#, StatusCode::CONFLICT, "conflicts"),
+        ];
+        for (body, code, said) in cases {
+            let answer = run(body, Some(ORIGIN)).await;
+            assert_eq!(answer.status, code, "{body}");
+            assert!(json(&answer)["message"].as_str().unwrap().contains(said), "{body}");
+        }
+    }
+
+    /// A statement may write: it comes from the UI's own pages alone.
+    #[tokio::test]
+    async fn sql_from_other_origin_forbidden() {
+        for origin in [None, Some("http://evil.example")] {
+            let answer = run(r#"{"sql":"select 1"}"#, origin).await;
+            assert_eq!(answer.status, StatusCode::FORBIDDEN, "{origin:?}");
         }
     }
 

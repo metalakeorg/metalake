@@ -4,6 +4,82 @@
  */
 
 export interface paths {
+    "/api/v1/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The lake's marks as it changes, as server-sent events: a `mark` now, then one each time the lake's differs, for as
+         *     long as the request is open. A `fault` ends them; the frontend asks again.
+         */
+        get: operations["events"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/refs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every branch and tag. */
+        get: operations["refs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/refs/{ref}/tables": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The tables a ref sees at its head. */
+        get: operations["tables"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sql": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Runs statements on the lake, as `metalake sql` and Python's `lake.sql` do, through the same session: a read at the
+         *     point it is run, a write committed. The rows of the last statement come as an Arrow IPC stream, so that each value
+         *     keeps its type, and at most as many as asked: a statement that answered more says so. A request the browser drops
+         *     drops the statement, which stops reading.
+         */
+        post: operations["sql"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/status": {
         parameters: {
             query?: never;
@@ -58,11 +134,60 @@ export interface components {
          * @enum {string}
          */
         Kind: "usage" | "failed" | "conflict" | "unknown";
+        /** @description The lake's state, as far as telling that it changed needs: when either moves, what is shown of it is read again. */
+        Mark: {
+            /**
+             * Format: int64
+             * @description How many refs were deleted.
+             */
+            deleted: number;
+            /**
+             * Format: int64
+             * @description How many commits it has among its latest sequences: one that lands after a later one moves it.
+             */
+            recent: number;
+            /**
+             * Format: int64
+             * @description Its latest commit's sequence: a commit, a merge and a new ref each move it.
+             */
+            seq: number;
+        };
         /** @description A ref, by its name and its kind. */
         Named: {
             /** @description `branch` or `tag`. */
             kind: string;
             name: string;
+        };
+        /** @description A branch or a tag. */
+        Ref: {
+            /**
+             * Format: int64
+             * @description The sequence it was made at.
+             */
+            created_seq: number;
+            /**
+             * Format: int64
+             * @description The sequence of its parent it was made at.
+             */
+            fork_seq?: number | null;
+            /** @description `branch` or `tag`. */
+            kind: string;
+            name: string;
+            /** @description The ref it was made from, if any: `main` has none. */
+            parent?: string | null;
+            /** @description Whether it may be deleted. */
+            protected: boolean;
+        };
+        /** @description What to run: a text of statements, in order, each committed before the next, as `metalake sql` runs one. */
+        Statement: {
+            /**
+             * @description The branch a name that says no ref reads and writes on: `default.t` is `dev.default.t` on `dev`. By default,
+             *     `main`.
+             */
+            branch?: string | null;
+            /** @description How many rows of the last statement to answer, at most [`MOST`]; by default [`LIMIT`]. */
+            limit?: number | null;
+            sql: string;
         };
         /** @description What the lake is, as `metalake status` says it. */
         Status: {
@@ -79,6 +204,11 @@ export interface components {
             /** @description Where the lake's files are. */
             warehouse?: string | null;
             writer_version: string;
+        };
+        /** @description A table of the catalog, by its namespace's parts and its name. */
+        Table: {
+            name: string;
+            namespace: string[];
         };
         /** @description The API's version. */
         Version: {
@@ -97,6 +227,205 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    events: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Events `mark`, and a last `fault` if one comes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["Mark"];
+                };
+            };
+            /** @description Without the run's token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description The lake could not be watched */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+        };
+    };
+    refs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every branch and tag */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Ref"][];
+                };
+            };
+            /** @description Without the run's token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description The lake could not be read */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+        };
+    };
+    tables: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The branch or tag, percent-encoded */
+                ref: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Its tables */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Table"][];
+                };
+            };
+            /** @description No such ref */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description Without the run's token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description The lake could not be read */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+        };
+    };
+    sql: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Statement"];
+            };
+        };
+        responses: {
+            /** @description The first rows of the last statement */
+            200: {
+                headers: {
+                    /** @description How many rows it holds */
+                    "metalake-rows"?: number;
+                    /** @description Whether the statement answered more */
+                    "metalake-truncated"?: boolean;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/vnd.apache.arrow.stream": unknown;
+                };
+            };
+            /** @description A statement that is wrong, or refused */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description Without the run's token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description From another origin than the UI's own */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description A write that conflicts with another; nothing changed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description The statement failed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+        };
+    };
     status: {
         parameters: {
             query?: never;

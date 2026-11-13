@@ -135,6 +135,11 @@ impl Sweep<'_> {
 /// The default batch of `expire` and of the change feed.
 pub const BATCH: i32 = 1000;
 
+/// How far below the latest sequence a commit still in flight may have taken its own (`Protocol::mark`): commits are
+/// counted there, so that one that lands after a later one is told. A sequence is drawn as a commit starts, so only as
+/// many sequences as commits running at once lie between it and the latest.
+pub const RECENT: i64 = 1024;
+
 impl Protocol {
     /// The protocol of the catalog in `schema`.
     pub fn new(schema: &str) -> Self {
@@ -637,6 +642,25 @@ impl Protocol {
             seq: row.get("seq"),
             horizon: row.get::<_, i64>("horizon") as u64,
         })
+    }
+
+    /// What changes when the catalog does: its latest commit's sequence, which a commit, a merge and a new ref each
+    /// take; how many commits it has among the last [`RECENT`] sequences, which grows when one that took an earlier
+    /// sequence commits after a later one; and how many refs were deleted, which takes none. Read by the tables' keys,
+    /// so that it costs the same however large the catalog grows.
+    pub async fn mark(&self, s: &impl Session) -> Result<(i64, i64, i64)> {
+        let statement = s
+            .statement(&format!(
+                "with latest as (select coalesce(max(commit_seq), 0) as seq from {0}.commit) \
+                 select latest.seq, \
+                        (select count(*) from {0}.commit where commit_seq > latest.seq - {RECENT}), \
+                        (select count(*) from {0}.ref where deleted) \
+                   from latest",
+                self.schema
+            ))
+            .await?;
+        let row = s.client().query_one(&statement, &[]).await?;
+        Ok((row.get(0), row.get(1), row.get(2)))
     }
 
     pub async fn stream_point(&self, s: &impl Session) -> Result<StreamPoint> {
