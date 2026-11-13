@@ -104,6 +104,8 @@ struct Inner {
     /// Where the pool connects, for a connection of one's own (`Catalog::lead`).
     reach: Reach,
     protocol: Protocol,
+    /// The schema's name, as the protocol's notifications say it (CMT-10).
+    schema: String,
     versions: Versions,
     warehouse: Option<String>,
 }
@@ -125,6 +127,7 @@ impl Catalog {
                 pool,
                 reach,
                 protocol: Protocol::new(&config.schema),
+                schema: config.schema.clone(),
                 versions,
                 warehouse,
             }),
@@ -278,6 +281,11 @@ impl Catalog {
     /// The catalog's pool.
     pub(crate) fn pool(&self) -> &Pool {
         &self.inner.pool
+    }
+
+    /// The catalog's schema, by its name.
+    pub(crate) fn schema_name(&self) -> &str {
+        &self.inner.schema
     }
 
     /// A pool of its own, connecting as this catalog's does.

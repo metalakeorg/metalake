@@ -149,6 +149,8 @@ pub struct Table {
 pub struct Mark {
     /// Its latest commit's sequence: a commit, a merge and a new ref each move it.
     pub seq: i64,
+    /// How many commits it has among its latest sequences: one that lands after a later one moves it.
+    pub recent: i64,
     /// How many refs were deleted.
     pub deleted: i64,
 }

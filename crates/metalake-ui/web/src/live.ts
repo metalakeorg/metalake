@@ -71,7 +71,7 @@ export async function marks(
 
 /** Whether two marks are the same state of the lake. */
 export function same(a: Mark | null, b: Mark): boolean {
-  return a !== null && a.seq === b.seq && a.deleted === b.deleted;
+  return a !== null && a.seq === b.seq && a.recent === b.recent && a.deleted === b.deleted;
 }
 
 /** Keeps `queries`' catalog as it is, for as long as `live` holds; reads the events again when they end. */

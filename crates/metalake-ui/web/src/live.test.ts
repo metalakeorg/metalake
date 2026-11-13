@@ -6,8 +6,8 @@ describe("Parser", () => {
   it("splits events however the text is cut, and skips comments", () => {
     const parser = new Parser();
     expect(parser.push('event: mark\ndata: {"seq":1,')).toEqual([]);
-    expect(parser.push('"deleted":0}\n\n:keep-alive\n\nevent: mark\r\ndata: {}\r\n\r\n')).toEqual([
-      { event: "mark", data: '{"seq":1,"deleted":0}' },
+    expect(parser.push('"recent":1,"deleted":0}\n\n:keep-alive\n\nevent: mark\r\ndata: {}\r\n\r\n')).toEqual([
+      { event: "mark", data: '{"seq":1,"recent":1,"deleted":0}' },
       { event: "mark", data: "{}" },
     ]);
   });
@@ -23,7 +23,7 @@ describe("marks", () => {
   it("says each mark, and fails on a fault", async () => {
     const seen: number[] = [];
     const text =
-      'event: mark\ndata: {"seq":1,"deleted":0}\n\nevent: mark\ndata: {"seq":2,"deleted":0}\n\n' +
+      'event: mark\ndata: {"seq":1,"recent":1,"deleted":0}\n\nevent: mark\ndata: {"seq":2,"recent":1,"deleted":0}\n\n' +
       'event: fault\ndata: {"kind":"unknown","message":"lost","retryable":false}\n\n';
     await expect(marks((m) => seen.push(m.seq), new AbortController().signal, serving(text))).rejects.toThrow("lost");
     expect(seen).toEqual([1, 2]);
@@ -35,7 +35,8 @@ describe("follow", () => {
     const queries = new QueryClient();
     const invalidate = vi.spyOn(queries, "invalidateQueries");
     const stop = new AbortController();
-    const text = 'event: mark\ndata: {"seq":1,"deleted":0}\n\nevent: mark\ndata: {"seq":1,"deleted":1}\n\n';
+    const text =
+      'event: mark\ndata: {"seq":1,"recent":1,"deleted":0}\n\nevent: mark\ndata: {"seq":1,"recent":1,"deleted":1}\n\n';
     const call = vi.fn(async () => {
       stop.abort();
       return serving(text)();
@@ -53,9 +54,11 @@ describe("follow", () => {
 });
 
 describe("same", () => {
-  it("compares both parts", () => {
-    expect(same(null, { seq: 1, deleted: 0 })).toBe(false);
-    expect(same({ seq: 1, deleted: 0 }, { seq: 1, deleted: 0 })).toBe(true);
-    expect(same({ seq: 1, deleted: 0 }, { seq: 1, deleted: 1 })).toBe(false);
+  it("compares every part", () => {
+    expect(same(null, { seq: 1, recent: 1, deleted: 0 })).toBe(false);
+    expect(same({ seq: 1, recent: 1, deleted: 0 }, { seq: 1, recent: 1, deleted: 0 })).toBe(true);
+    expect(same({ seq: 1, recent: 1, deleted: 0 }, { seq: 1, recent: 1, deleted: 1 })).toBe(false);
+    // A commit that landed after a later one: the latest sequence is the same, the count of recent ones is not.
+    expect(same({ seq: 2, recent: 1, deleted: 0 }, { seq: 2, recent: 2, deleted: 0 })).toBe(false);
   });
 });

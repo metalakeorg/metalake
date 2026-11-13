@@ -1,12 +1,14 @@
 //! When the catalog changes, for a face that shows it as it is (ADR 0007, the UI's live catalog). The protocol notifies
-//! on its channel `metalake` at each commit and merge (CMT-10); a new ref commits, and so is noticed, but a deleted one
-//! notifies nothing, and a notification may be lost while a connection is. So the catalog's [`Mark`] is read again at
-//! each notification and at an interval: what is said is that the mark moved, never a notification alone.
+//! on its channel `metalake` at each commit and merge (CMT-10), saying its schema; a new ref commits, and so is
+//! noticed, but a deleted one notifies nothing, and a notification may be lost while a connection is. So the catalog's
+//! [`Mark`] is read again at each notification of its own schema and at an interval that no notification moves: what
+//! is said is that the mark moved, never a notification alone.
 
 use std::time::Duration;
 
 use futures_util::future::Either;
 use metalake_pg::Listener;
+use tokio::time::Instant;
 
 use crate::{Catalog, Result};
 
@@ -14,10 +16,12 @@ use crate::{Catalog, Result};
 const CHANNEL: &str = "metalake";
 
 /// The catalog's state, as far as telling that it changed needs: its latest commit's sequence, which a commit, a merge
-/// and a new ref each move, and how many refs were deleted, which no sequence counts.
+/// and a new ref each move; how many commits it has among its latest sequences, which a commit that lands after a
+/// later one moves; and how many refs were deleted, which no sequence counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Mark {
     pub seq: i64,
+    pub recent: i64,
     pub deleted: i64,
 }
 
@@ -27,14 +31,16 @@ pub struct Watch {
     catalog: Catalog,
     listener: Option<Listener>,
     every: Duration,
+    /// When the mark is read again if nothing of this catalog notified first.
+    due: Instant,
     last: Option<Mark>,
 }
 
 impl Catalog {
     /// The catalog's mark now.
     pub async fn mark(&self) -> Result<Mark> {
-        let (seq, deleted) = self.protocol().mark(&self.session().await?).await?;
-        Ok(Mark { seq, deleted })
+        let (seq, recent, deleted) = self.protocol().mark(&self.session().await?).await?;
+        Ok(Mark { seq, recent, deleted })
     }
 
     /// Its marks as they move: listening on the protocol's channel, on a connection of its own, and reading the mark
@@ -45,6 +51,7 @@ impl Catalog {
             catalog: self.clone(),
             listener,
             every,
+            due: Instant::now() + every,
             last: None,
         })
     }
@@ -74,28 +81,42 @@ impl Watch {
         self.listener.is_some()
     }
 
-    /// Until a notification comes, or the interval passes. A connection lost is opened again at the next interval.
+    /// Until this catalog notifies, or the interval is due. Another catalog's notifications on the same Postgres are
+    /// passed over, and none of them puts the interval off: a deleted ref, which notifies nothing, is still read in
+    /// time. A connection lost is opened again when the interval is due.
     async fn wait(&mut self) {
-        // Whether a notification came, and the connection is still alive; none when the interval passed first.
-        let notified = {
-            let notified = async {
-                match &mut self.listener {
-                    Some(listener) => listener.next().await.is_some(),
-                    None => std::future::pending().await,
+        let own = format!("{}:", self.catalog.schema_name());
+        loop {
+            // A notification's payload, or none when the connection was lost; nothing when the interval came first.
+            let heard = {
+                let heard = async {
+                    match &mut self.listener {
+                        Some(listener) => listener.next().await,
+                        None => std::future::pending().await,
+                    }
+                };
+                let due = tokio::time::sleep_until(self.due);
+                futures_util::pin_mut!(heard, due);
+                match futures_util::future::select(heard, due).await {
+                    Either::Left((heard, _)) => Some(heard),
+                    Either::Right(_) => None,
                 }
             };
-            let interval = tokio::time::sleep(self.every);
-            futures_util::pin_mut!(notified, interval);
-            match futures_util::future::select(notified, interval).await {
-                Either::Left((alive, _)) => Some(alive),
-                Either::Right(_) => None,
+            match heard {
+                Some(Some(payload)) if payload.starts_with(&own) => return,
+                Some(Some(_)) => continue,
+                Some(None) => {
+                    self.listener = None;
+                    continue;
+                }
+                None => {
+                    self.due = Instant::now() + self.every;
+                    if self.listener.is_none() {
+                        self.listener = self.catalog.listen().await;
+                    }
+                    return;
+                }
             }
-        };
-        match notified {
-            Some(true) => {}
-            Some(false) => self.listener = None,
-            None if self.listener.is_none() => self.listener = self.catalog.listen().await,
-            None => {}
         }
     }
 }

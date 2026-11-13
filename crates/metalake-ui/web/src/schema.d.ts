@@ -143,6 +143,11 @@ export interface components {
             deleted: number;
             /**
              * Format: int64
+             * @description How many commits it has among its latest sequences: one that lands after a later one moves it.
+             */
+            recent: number;
+            /**
+             * Format: int64
              * @description Its latest commit's sequence: a commit, a merge and a new ref each move it.
              */
             seq: number;

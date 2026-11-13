@@ -388,6 +388,7 @@
         "description": "The lake's state, as far as telling that it changed needs: when either moves, what is shown of it is read again.",
         "required": [
           "seq",
+          "recent",
           "deleted"
         ],
         "properties": {
@@ -395,6 +396,11 @@
             "type": "integer",
             "format": "int64",
             "description": "How many refs were deleted."
+          },
+          "recent": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many commits it has among its latest sequences: one that lands after a later one moves it."
           },
           "seq": {
             "type": "integer",

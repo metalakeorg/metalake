@@ -78,6 +78,7 @@ impl Backend for Lake {
                     Ok(mark) => Some((
                         Ok(Mark {
                             seq: mark.seq,
+                            recent: mark.recent,
                             deleted: mark.deleted,
                         }),
                         Some(watch),

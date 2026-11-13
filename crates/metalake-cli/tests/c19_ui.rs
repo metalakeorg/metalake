@@ -199,11 +199,25 @@ fn events_say_lake_changed() {
         committed.elapsed()
     );
 
-    // A ref made, then deleted, which notifies nothing: the interval reads it.
+    // A ref made, then deleted, which notifies nothing: the interval reads it, though another lake of the same
+    // Postgres notifies the channel all the while, more often than the interval.
     ok(&dir, &["branch", "create", "gone"]);
     let made = events.next(Duration::from_secs(10)).expect("the new ref's mark");
+    let (other, _) = lake();
+    let busy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let noisy = {
+        let busy = busy.clone();
+        std::thread::spawn(move || {
+            sql(&other, "create table main.default.n (k bigint);", "csv");
+            while busy.load(std::sync::atomic::Ordering::Relaxed) {
+                sql(&other, "insert into main.default.n values (1);", "csv");
+            }
+        })
+    };
     ok(&dir, &["branch", "delete", "gone", "--yes"]);
-    let deleted = events.next(Duration::from_secs(10)).expect("the deleted ref's mark");
+    let deleted = events.next(Duration::from_secs(15)).expect("the deleted ref's mark");
+    busy.store(false, std::sync::atomic::Ordering::Relaxed);
+    noisy.join().unwrap();
     assert_eq!(
         deleted["deleted"].as_i64(),
         made["deleted"].as_i64().map(|d| d + 1),

@@ -776,8 +776,16 @@ mod api {
 
         fn watch(&self) -> api::Answer<'_, Marks> {
             let marks = vec![
-                Ok(Mark { seq: 7, deleted: 0 }),
-                Ok(Mark { seq: 9, deleted: 0 }),
+                Ok(Mark {
+                    seq: 7,
+                    recent: 7,
+                    deleted: 0,
+                }),
+                Ok(Mark {
+                    seq: 9,
+                    recent: 9,
+                    deleted: 0,
+                }),
                 Err(Fault::new(Kind::Unknown, "the connection was lost")),
             ];
             let answer = self.or(Box::pin(futures_util::stream::iter(marks)) as Marks);
@@ -911,8 +919,8 @@ mod api {
         assert_eq!(
             events,
             [
-                "event: mark\ndata: {\"seq\":7,\"deleted\":0}",
-                "event: mark\ndata: {\"seq\":9,\"deleted\":0}",
+                "event: mark\ndata: {\"seq\":7,\"recent\":7,\"deleted\":0}",
+                "event: mark\ndata: {\"seq\":9,\"recent\":9,\"deleted\":0}",
                 "event: fault\ndata: {\"kind\":\"unknown\",\"message\":\"the connection was lost\",\"retryable\":false}",
             ]
         );

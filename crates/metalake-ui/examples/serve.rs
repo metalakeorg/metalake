@@ -127,7 +127,11 @@ impl Backend for Sample {
 
     fn watch(&self) -> Answer<'_, Marks> {
         Box::pin(async {
-            let now = futures_util::stream::iter([Ok(Mark { seq: 7, deleted: 0 })]);
+            let now = futures_util::stream::iter([Ok(Mark {
+                seq: 7,
+                recent: 7,
+                deleted: 0,
+            })]);
             let marks = futures_util::StreamExt::chain(now, futures_util::stream::pending());
             Ok(Box::pin(marks) as Marks)
         })
