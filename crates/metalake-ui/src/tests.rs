@@ -1345,7 +1345,7 @@ mod proxy {
     }
 
     #[tokio::test]
-    async fn other_host_refused_one_name_kept() {
+    async fn other_host_refused_own_name_kept() {
         let (port, _) = jupyter(OK).await;
         let notebook = Notebook::default().reaching(port);
         let evil = [(header::HOST, "evil.example:4173")];
@@ -1355,6 +1355,8 @@ mod proxy {
                 .status,
             StatusCode::FORBIDDEN
         );
+        // `localhost` is kept, as the page's name: the frame then shares its origin, and Jupyter its checks.
+        let (port, heard) = jupyter(OK).await;
         let named = [(header::HOST, "localhost:4173")];
         let answer = send(
             guarded(Notebook::default().reaching(port), 4173),
@@ -1363,11 +1365,8 @@ mod proxy {
             &named,
         )
         .await;
-        assert_eq!(answer.status, StatusCode::TEMPORARY_REDIRECT);
-        assert_eq!(
-            answer.header(header::LOCATION),
-            Some("http://127.0.0.1:4173/jupyter/lab?x=1")
-        );
+        assert_eq!(answer.status, StatusCode::OK);
+        assert!(heard.await.unwrap().contains("host: localhost:4173"));
     }
 
     /// The UI's own pages keep the UI's headers.
@@ -1482,6 +1481,13 @@ mod jupyter_proxied {
             "{}",
             String::from_utf8_lossy(&status.body)
         );
+        // On `localhost`, as a page opened by that name sends it: Jupyter answers it as well.
+        let named = [
+            (header::HOST, "localhost:4173"),
+            (header::AUTHORIZATION, jupyter_token.as_str()),
+        ];
+        let local = send(router.clone(), Method::GET, "/jupyter/api/status", &named).await;
+        assert_eq!(local.status, StatusCode::OK, "{}", String::from_utf8_lossy(&local.body));
         // Without its token, Jupyter refuses: the proxy decides nothing for it.
         let refused = send(
             router.clone(),

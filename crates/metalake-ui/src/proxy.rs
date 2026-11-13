@@ -1,6 +1,7 @@
 //! JupyterLab on the UI's origin, under [`PREFIX`] (ADR 0008 §5). Every request there goes to the Notebook's own
 //! JupyterLab, never to a host or port a request names; with the browser's `Host` and its path kept, which Jupyter's
-//! origin and cookie checks need (tried: rewriting `Host` is refused). A websocket's upgrade is tunneled as bytes once
+//! origin and cookie checks need (tried: rewriting `Host` is refused). The page and the frame so share their name,
+//! `127.0.0.1` or `localhost`: Jupyter refuses a mix of the two, and a frame on another name than its page's. A websocket's upgrade is tunneled as bytes once
 //! Jupyter has switched protocols, so that its subprotocol, frames and pings pass untouched. The UI's bearer never
 //! reaches Jupyter; Jupyter's own `token` scheme does, and Jupyter decides who it answers.
 
@@ -17,16 +18,6 @@ use crate::notebook::{Notebook, PREFIX};
 
 /// One request under [`PREFIX`], answered by the Notebook's JupyterLab.
 pub(crate) async fn forward(State(notebook): State<Arc<Notebook>>, mut request: Request) -> Response {
-    // One host name: Jupyter's websocket breaks when the page is on `localhost` and its checks see `127.0.0.1`.
-    if let Some(port) = request
-        .headers()
-        .get(header::HOST)
-        .and_then(|host| host.to_str().ok())
-        .and_then(|host| host.strip_prefix("localhost:"))
-    {
-        let path = request.uri().path_and_query().map_or("/", |p| p.as_str());
-        return redirect(&format!("http://127.0.0.1:{port}{path}"));
-    }
     let Some((port, _)) = notebook.reach().await else {
         return refused(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -74,15 +65,6 @@ pub(crate) async fn forward(State(notebook): State<Arc<Notebook>>, mut request: 
         });
     }
     response.map(Body::new)
-}
-
-fn redirect(to: &str) -> Response {
-    let mut response = Response::new(Body::empty());
-    *response.status_mut() = StatusCode::TEMPORARY_REDIRECT;
-    if let Ok(location) = HeaderValue::from_str(to) {
-        response.headers_mut().insert(header::LOCATION, location);
-    }
-    response
 }
 
 fn refused(status: StatusCode, message: &str) -> Response {
