@@ -294,3 +294,83 @@ fn sql_on_branch_writes_and_reads() {
     ui.kill().unwrap();
     ui.wait().unwrap();
 }
+
+/// The port a run of the UI's JupyterLab serves at, from the runtime file it writes in the run's own directory.
+fn jupyter_port(ui: u32) -> Option<u16> {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    let runs = std::path::PathBuf::from(home).join(".metalake").join("ui");
+    for run in std::fs::read_dir(runs).ok()?.flatten() {
+        if !run.file_name().to_string_lossy().starts_with(&format!("jupyter-{ui}-")) {
+            continue;
+        }
+        for file in std::fs::read_dir(run.path().join("runtime")).ok()?.flatten() {
+            let name = file.file_name().to_string_lossy().into_owned();
+            if name.starts_with("jpserver-") && name.ends_with(".json") {
+                let written: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(file.path()).ok()?).ok()?;
+                return written["port"].as_u64().and_then(|p| u16::try_from(p).ok());
+            }
+        }
+    }
+    None
+}
+
+/// The Notebook's JupyterLab (ADR 0008, N2): started on the page's ask, its notebooks beside the lake's file, and ended
+/// when `metalake ui` is killed, which asks it nothing. Where `METALAKE_TEST_JUPYTER_PYTHON` names a Python with
+/// JupyterLab, as CI does.
+#[test]
+fn notebook_ends_with_ui() {
+    let Some(python) = std::env::var_os("METALAKE_TEST_JUPYTER_PYTHON") else {
+        return;
+    };
+    let (dir, _) = lake();
+    let mut ui = metalake(&dir)
+        .args(["ui", "--no-browser"])
+        .env("METALAKE_UI_TOKEN", TOKEN)
+        .env("METALAKE_PYTHON", &python)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut url = String::new();
+    BufReader::new(ui.stdout.take().unwrap()).read_line(&mut url).unwrap();
+    let port: u16 = url.trim()["http://127.0.0.1:".len()..]
+        .split('/')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let (code, body) = post(port, "/api/v1/notebook/start");
+    assert_eq!(code, 200, "{body}");
+    assert!(body.contains(r#""running":true"#), "{body}");
+    assert!(dir.join("notebooks").is_dir(), "notebooks beside the lake's file");
+    let jupyter = jupyter_port(ui.id()).expect("its runtime file");
+    assert!(TcpStream::connect(("127.0.0.1", jupyter)).is_ok());
+
+    ui.kill().unwrap();
+    ui.wait().unwrap();
+    let start = Instant::now();
+    while TcpStream::connect(("127.0.0.1", jupyter)).is_ok() {
+        assert!(start.elapsed() < Duration::from_secs(20), "JupyterLab outlived the UI");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// A `POST` with no body from the UI's own origin: its status and its body.
+fn post(port: u16, path: &str) -> (u16, String) {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\n\
+         Authorization: Bearer {TOKEN}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).unwrap();
+    let status = answer.split_whitespace().nth(1).unwrap().parse().unwrap();
+    let body = answer
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b.to_string())
+        .unwrap_or_default();
+    (status, body)
+}

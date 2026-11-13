@@ -38,6 +38,9 @@ struct Location {
     /// How a client signs in to `postgres`: a cloud's token for its identity, by name, or its password when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     auth: Option<String>,
+    /// The directory of the file that named the lake, if a file did: where the lake's own things beside it go.
+    #[serde(skip)]
+    directory: Option<PathBuf>,
 }
 
 impl Location {
@@ -134,6 +137,7 @@ impl Location {
                 schema,
                 scheduler: None,
                 auth: Self::auth_of_env(),
+                directory: None,
             });
         }
         let here = env::current_dir()?;
@@ -156,6 +160,7 @@ impl Location {
                 schema: None,
                 scheduler: None,
                 auth: Self::auth_of_env(),
+                directory: None,
             },
             Some(directory) => {
                 let directory = std::path::absolute(directory)?;
@@ -167,6 +172,7 @@ impl Location {
                         schema: None,
                         scheduler: None,
                         auth: None,
+                        directory: None,
                     },
                     _ => {
                         return Err(Error::failed(format!(
@@ -187,6 +193,7 @@ impl Location {
             toml::from_str(&text).map_err(|e| Error::failed(format!("{}: {e}", file.display())))?;
         let directory = file.parent().unwrap_or(Path::new("."));
         location.local = location.local.map(|local| within(directory, &local));
+        location.directory = Some(std::path::absolute(directory)?);
         Ok(location)
     }
 }
@@ -339,6 +346,7 @@ impl Lake {
             schema: schema.filter(|s| *s != SCHEMA).map(str::to_string),
             scheduler: None,
             auth: (auth != Auth::Password).then(|| auth.name().to_string()),
+            directory: None,
         };
         // A lake's own Postgres is refused a cloud's auth before anything is written.
         location.auth()?;
@@ -390,6 +398,11 @@ impl Lake {
 
     pub fn schema(&self) -> &str {
         self.location.schema()
+    }
+
+    /// The directory of the `metalake.toml` that named the lake; none for a lake its environment names alone.
+    pub fn directory(&self) -> Option<&Path> {
+        self.location.directory.as_deref()
     }
 
     /// The port the lake's UI tries first: the same each run, so that a browser keeps what it stored for the lake, by
@@ -507,6 +520,7 @@ mod tests {
             schema: None,
             scheduler: None,
             auth: None,
+            directory: None,
         };
         assert_eq!(
             toml::to_string(&plain).unwrap(),
@@ -518,6 +532,7 @@ mod tests {
             schema: Some("other".into()),
             scheduler: None,
             auth: Some("aws-iam".into()),
+            directory: None,
         };
         let own = Location {
             postgres: None,
@@ -525,6 +540,7 @@ mod tests {
             schema: None,
             scheduler: None,
             auth: None,
+            directory: None,
         };
         assert!(toml::to_string(&named).unwrap().contains("auth = \"aws-iam\"\n"));
         assert_eq!(named.auth().unwrap(), Auth::AwsIam);

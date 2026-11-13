@@ -27,6 +27,7 @@ use tokio::sync::oneshot;
 pub use api::Backend;
 use assets::{Dist, Files};
 use guard::Access;
+pub use notebook::Notebook;
 pub use token::Token;
 
 /// How long requests in flight have to finish once the UI is told to stop. A browser keeps idle connections open, and
@@ -35,8 +36,7 @@ pub const GRACE: Duration = Duration::from_secs(5);
 
 /// The UI's router on `port`, which only the run's `token` opens (ADR 0007 §4.2): the frontend, and its API under
 /// `/api` over `backend`.
-pub fn router(backend: Arc<dyn Backend>, token: Token, port: u16) -> Router {
-    let notebook = Arc::new(notebook::Notebook::from_environment());
+pub fn router(backend: Arc<dyn Backend>, notebook: Arc<Notebook>, token: Token, port: u16) -> Router {
     router_with(Arc::new(Dist), backend, notebook, Access { token, port })
 }
 
@@ -51,16 +51,19 @@ pub fn built() -> bool {
     Dist.built()
 }
 
-/// Serves [`router`] over `backend` on `listener`, to the bearers of `token`, until `stop` resolves; then lets requests
-/// in flight finish for at most [`GRACE`].
+/// Serves [`router`] over `backend` and `notebook` on `listener`, to the bearers of `token`, until `stop` resolves;
+/// then lets requests in flight finish for at most [`GRACE`], and ends the Notebook's JupyterLab if it started one.
 pub async fn serve(
     listener: TcpListener,
     backend: Arc<dyn Backend>,
+    notebook: Arc<Notebook>,
     token: Token,
     stop: impl Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
     let port = listener.local_addr()?.port();
-    serve_router(listener, router(backend, token, port), stop, GRACE).await
+    let served = serve_router(listener, router(backend, notebook.clone(), token, port), stop, GRACE).await;
+    notebook.stop().await;
+    served
 }
 
 /// As [`serve`], over `router` and with `grace`, which a test gives.
@@ -96,7 +99,7 @@ pub(crate) async fn serve_router(
 pub(crate) fn router_with(
     files: Arc<dyn Files>,
     backend: Arc<dyn Backend>,
-    notebook: Arc<notebook::Notebook>,
+    notebook: Arc<Notebook>,
     access: Access,
 ) -> Router {
     let access = Arc::new(access);

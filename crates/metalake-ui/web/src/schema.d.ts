@@ -44,6 +44,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/notebook/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Starts the UI's JupyterLab, unless it runs already, and answers once it serves; what the Notebook can do then. */
+        post: operations["notebook_start"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/refs": {
         parameters: {
             query?: never;
@@ -186,6 +203,8 @@ export interface components {
             jupyterlab: boolean;
             /** @description Whether it runs in a Python: a `metalake` pip installed does, one built alone does not. */
             python: boolean;
+            /** @description Whether the UI's JupyterLab runs now. */
+            running: boolean;
         };
         /** @description A branch or a tag. */
         Ref: {
@@ -314,6 +333,53 @@ export interface operations {
             };
             /** @description Without the run's token */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+        };
+    };
+    notebook_start: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description JupyterLab serves */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Notebook"];
+                };
+            };
+            /** @description Without the run's token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description From another origin than the UI's own */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description JupyterLab did not start, with why */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
