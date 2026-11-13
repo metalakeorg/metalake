@@ -86,7 +86,8 @@ test("the notebook's ref: chosen in it, where its cells write, and applied again
     .locator('[data-command="kernelmenu:restart"], [data-command="notebook:restart-kernel"]')
     .first()
     .click();
-  await frame.locator(".jp-Dialog").getByRole("button", { name: "Restart", exact: true }).click();
+  // The dialog's accept button: its accessible name is its own label's, not its text.
+  await frame.locator(".jp-Dialog .jp-Dialog-button.jp-mod-accept").click();
   await expect(kernel).toHaveText("MetaLake | Idle", { timeout: 90_000 });
   await expect(await run("lake.ref")).toHaveText(`'${branch}'`, { timeout: 60_000 });
 
