@@ -54,8 +54,9 @@ use crate::written::MetaWriteExec;
 
 /// What every MetaLake encoding starts with.
 const MAGIC: &[u8; 3] = b"MLK";
-/// The version of the encoding this build writes and reads.
-const VERSION: u8 = 1;
+/// The version of the encoding this build writes and reads: a client and a cluster must share it.
+pub const PLAN_VERSION: u8 = 1;
+const VERSION: u8 = PLAN_VERSION;
 
 /// What a MetaLake encoding holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

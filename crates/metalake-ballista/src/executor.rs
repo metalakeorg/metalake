@@ -13,6 +13,8 @@ use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use metalake::{Catalog, Storage};
 use metalake_datafusion::{MetaLakeOptions, MetaLakePhysicalCodec};
 
+use crate::version;
+
 /// What a Ballista executor is made of for a lake: its sessions' configuration, a runtime with the lake's store, and
 /// the codec that decodes MetaLake's scans. As `ExecutorProcessConfig`'s `override_config_producer`,
 /// `override_runtime_producer` and `override_physical_codec` take them, or a standalone executor.
@@ -29,7 +31,9 @@ pub struct ExecutorParts {
 pub fn executor(storage: Storage, catalog: Option<Catalog>) -> Result<ExecutorParts> {
     let url = ObjectStoreUrl::parse(storage.base())?;
     let store = storage.store().clone();
-    let runtime_producer: RuntimeProducer = Arc::new(move |_| {
+    let runtime_producer: RuntimeProducer = Arc::new(move |config| {
+        // A task of a job whose client speaks other plans, refused before its plan is read.
+        version::check(config)?;
         let runtime = RuntimeEnvBuilder::new().build()?;
         runtime.register_object_store(url.as_ref(), store.clone());
         Ok(Arc::new(runtime))

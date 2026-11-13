@@ -35,7 +35,7 @@ mod written;
 
 pub use catalog::{MetaLake, Source};
 #[cfg(feature = "proto")]
-pub use codec::{MetaLakeLogicalCodec, MetaLakePhysicalCodec};
+pub use codec::{MetaLakeLogicalCodec, MetaLakePhysicalCodec, PLAN_VERSION};
 pub use measure::{Measure, measure};
 pub use options::{Engine, MetaLakeOptions};
 pub use written::{WrittenRow, written_schema};

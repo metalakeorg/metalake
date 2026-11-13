@@ -230,6 +230,24 @@ async fn shown(context: &SessionContext, sql: &str) -> Result<String, Box<dyn st
     Ok(displayable(plan.as_ref()).indent(true).to_string())
 }
 
+/// A client that speaks another version of MetaLake's plans is refused by the cluster, which names both versions; the
+/// same session, back to its own, is heard.
+#[tokio::test(flavor = "multi_thread")]
+async fn ballista_refuses_another_plan_version() -> Result<(), Box<dyn std::error::Error>> {
+    let (local, cluster, _, _, _) = sessions().await?;
+    let sql = "select k from main.db.u where k > 7 order by k";
+    cluster.sql("set metalake.plan_version = 99").await?.collect().await?;
+    let refused = rows(&cluster, sql).await.unwrap_err().to_string();
+    assert!(refused.contains("version 99") && refused.contains("matching versions"), "{refused}");
+    cluster
+        .sql(&format!("set metalake.plan_version = {}", metalake_datafusion::PLAN_VERSION))
+        .await?
+        .collect()
+        .await?;
+    assert_eq!(rows(&cluster, sql).await?, rows(&local, sql).await?);
+    Ok(())
+}
+
 /// An insert runs on the cluster: its rows read there, written and committed by the executor, with what the session's
 /// options ask of the commit; again with the same writer's key and version, it applies once. What came of each commit
 /// comes back from the executor as the write's row.

@@ -12,6 +12,7 @@ use datafusion::prelude::SessionContext;
 use metalake_datafusion::MetaLake;
 
 use crate::router::Router;
+use crate::version;
 
 /// A session of `lake` that reaches the Ballista scheduler at `scheduler` (`df://host:port`): its statements run there,
 /// or where the session is, as `metalake.engine` says.
@@ -30,9 +31,8 @@ pub async fn session(lake: &MetaLake, scheduler: &str) -> Result<SessionContext>
 pub(crate) fn with_codecs(lake: &MetaLake, state: SessionState) -> SessionState {
     let logical = lake.logical_codec(Arc::new(BallistaLogicalExtensionCodec::default()));
     let physical = lake.physical_codec(Arc::new(BallistaPhysicalExtensionCodec::default()));
-    let config = state
-        .config()
-        .clone()
+    // The version of MetaLake's plans it speaks, which the cluster checks.
+    let config = version::said(state.config().clone())
         .with_ballista_logical_extension_codec(Arc::new(logical))
         .with_ballista_physical_extension_codec(Arc::new(physical));
     SessionStateBuilder::new_from_existing(state)

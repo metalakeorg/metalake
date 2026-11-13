@@ -14,6 +14,7 @@ mod router;
 mod scheduler;
 pub mod serve;
 mod standalone;
+mod version;
 
 pub use client::session;
 pub use executor::{ExecutorParts, executor};

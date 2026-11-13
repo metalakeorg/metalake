@@ -15,6 +15,8 @@ use datafusion_proto::logical_plan::LogicalExtensionCodec;
 use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use metalake_datafusion::MetaLake;
 
+use crate::version;
+
 /// What a Ballista scheduler is made of for a lake: a session per job with the lake's catalogs, its sessions'
 /// configuration, and the codecs of MetaLake's plans. As `SchedulerConfig`'s `override_session_builder`,
 /// `override_config_producer`, `override_logical_codec` and `override_physical_codec` take them, or a standalone
@@ -34,6 +36,8 @@ pub fn scheduler(lake: MetaLake) -> Result<SchedulerParts> {
     let base = lake.context()?.state();
     let config = base.config().clone().upgrade_for_ballista();
     let session_builder: SessionBuilder = Arc::new(move |config: SessionConfig| {
+        // A job of a client that speaks other plans is refused before anything of it is read.
+        version::check(&config)?;
         // The catalogs are the lake's refs, whatever configuration the client sent.
         let config = config.with_create_default_catalog_and_schema(false);
         Ok(SessionStateBuilder::new_from_existing(base.clone())

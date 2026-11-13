@@ -70,6 +70,9 @@ pub struct MetaLakeOptions {
     pub engine_threshold: Option<u64>,
     /// The same, for a statement that shuffles (a hash join or aggregation).
     pub engine_shuffle_threshold: Option<u64>,
+    /// The version of MetaLake's plan encoding the client speaks, which a cluster checks against its own. Ballista checks
+    /// its own versions, and DataFusion's with them; this is what they cannot see.
+    pub plan_version: Option<u8>,
 }
 
 impl ConfigExtension for MetaLakeOptions {
@@ -105,6 +108,12 @@ impl ExtensionOptions for MetaLakeOptions {
             "engine" => self.engine = Some(value.parse()?),
             "engine.threshold" => self.engine_threshold = Some(bytes(key, value)?),
             "engine.shuffle_threshold" => self.engine_shuffle_threshold = Some(bytes(key, value)?),
+            "plan_version" => {
+                let version = value
+                    .parse()
+                    .map_err(|e| DataFusionError::Configuration(format!("metalake.plan_version {value}: {e}")))?;
+                self.plan_version = Some(version);
+            }
             _ => {
                 return Err(DataFusionError::Configuration(format!(
                     "metalake.{key}: no such option"
@@ -147,6 +156,11 @@ impl ExtensionOptions for MetaLakeOptions {
                 "engine.shuffle_threshold",
                 self.engine_shuffle_threshold.map(|v| v.to_string()),
                 "The same, for a statement that shuffles.",
+            ),
+            entry(
+                "plan_version",
+                self.plan_version.map(|v| v.to_string()),
+                "The version of MetaLake's plan encoding the client speaks.",
             ),
         ]
     }
@@ -202,6 +216,7 @@ mod tests {
             engine: Some(Engine::Auto),
             engine_threshold: Some(1 << 20),
             engine_shuffle_threshold: Some(0),
+            plan_version: Some(3),
         };
         let mut here = MetaLakeOptions::register(SessionConfig::new());
         here.options_mut().extensions.insert(sent.clone());
