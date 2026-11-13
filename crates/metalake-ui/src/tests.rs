@@ -658,6 +658,12 @@ mod access {
             let policy = answer.header(header::CONTENT_SECURITY_POLICY).unwrap_or_default();
             assert!(policy.starts_with("default-src 'self'"), "{path} {host}: {policy}");
             assert!(policy.contains("frame-ancestors 'none'"), "{path} {host}: {policy}");
+            // Inline styles, for the SQL editor; never an inline script, which `default-src 'self'` refuses.
+            assert!(
+                policy.contains("style-src 'self' 'unsafe-inline';"),
+                "{path} {host}: {policy}"
+            );
+            assert!(!policy.contains("script-src"), "{path} {host}: {policy}");
             assert_eq!(
                 answer.header(header::X_CONTENT_TYPE_OPTIONS),
                 Some("nosniff"),
