@@ -17,6 +17,8 @@ use datafusion::execution::context::QueryPlanner;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::ExecutionPlan;
 use metalake_datafusion::{Engine, MetaLakeOptions, Measure, measure};
+
+use crate::address;
 use tokio::net::TcpStream;
 
 /// Bytes read, after pruning, from which a statement that does not shuffle goes to the cluster: where the cluster's
@@ -132,12 +134,11 @@ struct Scheduler {
 
 impl Scheduler {
     fn new(url: &str) -> Self {
-        // `df://host:port/…` → `host:port`, Ballista's port when it names none.
-        let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
-        let authority = rest.split('/').next().unwrap_or(rest);
-        let address = match authority.rsplit_once(':') {
-            Some((_, port)) if port.parse::<u16>().is_ok() => authority.to_string(),
-            _ => format!("{authority}:50050"),
+        // `df://host:port/…` → `host:port`, an IPv6 host in brackets; an address that is none is kept as given, and
+        // does not answer.
+        let address = match address::host_port(url) {
+            Ok((host, port)) => format!("{host}:{port}"),
+            Err(_) => url.to_string(),
         };
         Self {
             address,
@@ -225,5 +226,6 @@ mod tests {
     fn scheduler_address() {
         assert_eq!(Scheduler::new("df://localhost:50051").address, "localhost:50051");
         assert_eq!(Scheduler::new("df://scheduler").address, "scheduler:50050");
+        assert_eq!(Scheduler::new("df://[::1]").address, "[::1]:50050");
     }
 }

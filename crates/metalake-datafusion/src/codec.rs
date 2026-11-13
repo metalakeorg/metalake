@@ -44,7 +44,7 @@ use uuid::Uuid;
 
 use crate::adapter::ByFieldId;
 use crate::changes::{ChangesExec, ChangesTable};
-use crate::exec::MetaScanExec;
+use crate::source::{self, MetaLakeSource};
 use crate::merge::Merge;
 use crate::point::StatementPoint;
 use crate::read::TaskReaders;
@@ -288,7 +288,8 @@ impl LogicalExtensionCodec for MetaLakeLogicalCodec {
     }
 }
 
-/// A `MetaScanExec` as it travels: DataFusion's own encoding of the scan inside, and what that encoding drops.
+/// A MetaLake scan as it travels: DataFusion's own encoding of it over the Parquet source inside, and what that
+/// encoding drops.
 #[derive(Serialize, Deserialize)]
 struct ScanBytes {
     /// The `DataSourceExec`, as DataFusion encodes it: groups and ranges, predicate, projection, limit, statistics.
@@ -543,8 +544,8 @@ impl TaskBytes {
     }
 }
 
-/// MetaLake's scans in a physical plan: a `MetaScanExec` travels with each file's task and vector, and is rebuilt with
-/// this process's storage, MetaLake's reader and the columns by field id. It needs no catalog: an executor reads
+/// MetaLake's scans in a physical plan: a `DataSourceExec` over a `MetaLakeSource` travels with each file's task and
+/// vector, and is rebuilt with this process's storage, MetaLake's reader and the columns by field id. It needs no catalog: an executor reads
 /// without Postgres. Everything else is the inner codec's.
 pub struct MetaLakePhysicalCodec {
     storage: Storage,
@@ -716,13 +717,12 @@ impl MetaLakePhysicalCodec {
         Self::sink_over(inputs, Arc::new(merge))
     }
 
-    fn encode_scan(&self, scan: &MetaScanExec, buf: &mut Vec<u8>) -> Result<()> {
+    fn encode_scan(&self, config: &FileScanConfig, scan: &MetaLakeSource, buf: &mut Vec<u8>) -> Result<()> {
         if scan.positions() {
             return Err(DataFusionError::NotImplemented(
                 "a scan whose rows say their file and position does not cross processes yet".into(),
             ));
         }
-        let config = file_scan(scan.source())?;
         let mut seen = HashSet::new();
         let mut files = Vec::new();
         for file in config.file_groups.iter().flat_map(FileGroup::iter) {
@@ -742,7 +742,11 @@ impl MetaLakePhysicalCodec {
                 selection,
             });
         }
-        let standard = physical_plan_to_bytes_with_extension_codec(Arc::clone(scan.inner()), self.inner.as_ref())?;
+        // DataFusion's own encoding of the scan, over the Parquet source inside: groups and ranges, predicate,
+        // projection, limit, statistics.
+        let parquet = FileScanConfigBuilder::from(config.clone()).with_source(Arc::clone(scan.parquet())).build();
+        let parquet: Arc<dyn ExecutionPlan> = DataSourceExec::from_data_source(parquet);
+        let standard = physical_plan_to_bytes_with_extension_codec(parquet, self.inner.as_ref())?;
         let bytes = ScanBytes {
             standard: standard.to_vec(),
             table: scan.table().as_ref().clone(),
@@ -817,16 +821,13 @@ impl MetaLakePhysicalCodec {
             })
             .collect::<Result<Vec<_>>>()?;
         let evolve = Arc::new(Evolve::new(&table));
+        let source = MetaLakeSource::new(Arc::new(parquet), Arc::new(table), false);
         let config = FileScanConfigBuilder::from(config)
-            .with_source(Arc::new(parquet))
+            .with_source(Arc::new(source))
             .with_file_groups(groups)
             .with_expr_adapter(Some(Arc::new(ByFieldId { evolve })))
             .build();
-        Ok(Arc::new(MetaScanExec::new(
-            DataSourceExec::from_data_source(config),
-            Arc::new(table),
-            false,
-        )))
+        Ok(DataSourceExec::from_data_source(config))
     }
 }
 
@@ -889,8 +890,11 @@ impl PhysicalExtensionCodec for MetaLakePhysicalCodec {
         buf: &mut Vec<u8>,
         proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<()> {
-        if let Some(scan) = node.downcast_ref::<MetaScanExec>() {
-            return self.encode_scan(scan, buf);
+        if let Some(exec) = node.downcast_ref::<DataSourceExec>()
+            && let Ok(config) = file_scan(exec)
+            && let Some(scan) = source::of(config)
+        {
+            return self.encode_scan(config, scan, buf);
         }
         if node.downcast_ref::<MetaWriteExec>().is_some() {
             return encode(Kind::Written, &(), buf);
@@ -1003,7 +1007,7 @@ mod tests {
     }
 
     /// A scan whose rows say their file and position, for a statement that goes on to write.
-    fn positioned_scan() -> MetaScanExec {
+    fn positioned_scan() -> FileScanConfig {
         use datafusion::datasource::table_schema::TableSchema;
         use datafusion::execution::object_store::ObjectStoreUrl;
 
@@ -1014,15 +1018,17 @@ mod tests {
         });
         let described = serde_json::json!({"ref_id": 1, "seq": 1, "definition": definition.to_string()});
         let table: Table = serde_json::from_value(described).unwrap();
-        let source = ParquetSource::new(TableSchema::builder(table.schema().clone()).build());
-        let config = FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), Arc::new(source)).build();
-        MetaScanExec::new(DataSourceExec::from_data_source(config), Arc::new(table), true)
+        let parquet = ParquetSource::new(TableSchema::builder(table.schema().clone()).build());
+        let source = MetaLakeSource::new(Arc::new(parquet), Arc::new(table), true);
+        FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), Arc::new(source)).build()
     }
 
     #[test]
     fn encode_scan_with_positions_refused() {
         let codec = MetaLakePhysicalCodec::new(Storage::in_memory(), Arc::new(DefaultPhysicalExtensionCodec {}));
-        let refused = codec.encode_scan(&positioned_scan(), &mut Vec::new()).unwrap_err();
+        let config = positioned_scan();
+        let scan = source::of(&config).expect("a MetaLake source");
+        let refused = codec.encode_scan(&config, scan, &mut Vec::new()).unwrap_err();
         assert!(matches!(refused, DataFusionError::NotImplemented(_)), "{refused}");
     }
 

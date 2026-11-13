@@ -26,7 +26,7 @@ use metalake::{Catalog, Evolve, Ref, Scan, Storage, Table};
 
 use crate::adapter::ByFieldId;
 use crate::catalog::external;
-use crate::exec::MetaScanExec;
+use crate::source::MetaLakeSource;
 use crate::point::StatementPoint;
 use crate::read::{self, TaskReaders};
 use crate::sink::{Delete, Insert, Selection, Update};
@@ -124,6 +124,7 @@ impl MetaTable {
             .with_parquet_file_reader_factory(Arc::new(TaskReaders {
                 storage: storage.clone(),
             }));
+        let source = MetaLakeSource::new(Arc::new(source), Arc::new(table.clone()), positions.is_some());
         let config = FileScanConfigBuilder::new(ObjectStoreUrl::parse(storage.base())?, Arc::new(source))
             .with_file_groups(groups)
             .with_statistics(statistics)
@@ -133,11 +134,7 @@ impl MetaTable {
                 evolve: Arc::new(Evolve::new(table)),
             })))
             .build();
-        Ok(Arc::new(MetaScanExec::new(
-            DataSourceExec::from_data_source(config),
-            Arc::new(table.clone()),
-            positions.is_some(),
-        )))
+        Ok(DataSourceExec::from_data_source(config))
     }
 
     /// The files in `groups` groups, each a partition of the plan, with the statistics of each group: at least one

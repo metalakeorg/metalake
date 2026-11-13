@@ -2,7 +2,7 @@
 //! reads take, which the protocol planned, after pruning, exactly; and whether it shuffles, which moves rows between
 //! the processes of a cluster. A fact about a plan, for a rule to decide on: this decides nothing.
 //!
-//! A read is a `MetaScanExec` in the plan, or the scan a `delete`, an `update` or a `merge` holds in its sink, outside
+//! A read is a scan of a MetaLake table in the plan (a `DataSourceExec` over a `MetaLakeSource`), or the scan a `delete`, an `update` or a `merge` holds in its sink, outside
 //! the plan's children: DataFusion gives those statements no input. Those are planned here, as their sink will.
 
 use std::sync::Arc;
@@ -10,6 +10,7 @@ use std::sync::Arc;
 use datafusion::common::stats::Precision;
 use datafusion::datasource::physical_plan::FileScanConfig;
 use datafusion::datasource::sink::DataSinkExec;
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::error::Result;
 use datafusion::physical_expr::Partitioning;
 use datafusion::physical_plan::ExecutionPlan;
@@ -18,7 +19,7 @@ use futures_util::TryStreamExt;
 use metalake::{Scan, ScanTask};
 
 use crate::catalog::external;
-use crate::exec::MetaScanExec;
+use crate::source;
 use crate::merge::Merge;
 use crate::sink::{Delete, Selection, Update};
 
@@ -81,8 +82,12 @@ enum Held<'a> {
 
 /// Adds what `plan` reads to `measure`, and the scans its writes hold, to plan, to `held`.
 fn visit<'a>(plan: &'a Arc<dyn ExecutionPlan>, measure: &mut Measure, held: &mut Vec<Held<'a>>) {
-    if let Some(scan) = plan.downcast_ref::<MetaScanExec>() {
-        read(scan, measure);
+    if let Some(config) = plan
+        .downcast_ref::<DataSourceExec>()
+        .and_then(|exec| exec.data_source().downcast_ref::<FileScanConfig>())
+        && source::of(config).is_some()
+    {
+        read(config, measure);
     }
     if let Some(repartition) = plan.downcast_ref::<RepartitionExec>()
         && matches!(repartition.partitioning(), Partitioning::Hash(..))
@@ -109,12 +114,8 @@ fn visit<'a>(plan: &'a Arc<dyn ExecutionPlan>, measure: &mut Measure, held: &mut
 }
 
 /// Adds what `scan` reads to `measure`.
-fn read(scan: &MetaScanExec, measure: &mut Measure) {
+fn read(config: &FileScanConfig, measure: &mut Measure) {
     measure.scans += 1;
-    let Some(config) = scan.source().data_source().downcast_ref::<FileScanConfig>() else {
-        measure.rows = None;
-        return;
-    };
     for group in &config.file_groups {
         for file in group.iter() {
             measure.bytes += match &file.range {

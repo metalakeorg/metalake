@@ -161,7 +161,7 @@ async fn ballista_engine_forced() -> Result<(), Box<dyn std::error::Error>> {
     assert!(shown(&cluster, sql).await?.contains("DistributedQueryExec"));
     cluster.sql("set metalake.engine = 'local'").await?.collect().await?;
     let here = shown(&cluster, sql).await?;
-    assert!(!here.contains("DistributedQueryExec") && here.contains("MetaScanExec"), "{here}");
+    assert!(!here.contains("DistributedQueryExec") && here.contains("metalake="), "{here}");
     assert_eq!(rows(&cluster, sql).await?, rows(&local, sql).await?);
     cluster.sql("set metalake.engine = 'cluster'").await?.collect().await?;
     assert!(shown(&cluster, sql).await?.contains("DistributedQueryExec"));
@@ -177,7 +177,7 @@ async fn ballista_engine_auto() -> Result<(), Box<dyn std::error::Error>> {
     let sql = "select u.k % 3 as g, count(*) as c from main.db.u group by 1 order by 1";
     cluster.sql("set metalake.engine = 'auto'").await?.collect().await?;
     let small = shown(&cluster, sql).await?;
-    assert!(!small.contains("DistributedQueryExec") && small.contains("MetaScanExec"), "{small}");
+    assert!(!small.contains("DistributedQueryExec") && small.contains("metalake="), "{small}");
     let here = rows(&cluster, sql).await?;
     for set in [
         "set metalake.engine.threshold = 0",
