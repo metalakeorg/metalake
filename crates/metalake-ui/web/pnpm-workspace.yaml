@@ -1,0 +1,5 @@
+# One package; this file holds pnpm's settings for it.
+
+# A release is taken once it is two weeks old (in minutes): one withdrawn for being malicious is gone by then
+# (research/ui.md part 3).
+minimumReleaseAge: 20160
