@@ -12,6 +12,8 @@ pub mod migrate;
 pub mod pipeline;
 pub mod refs;
 pub mod retain;
+pub mod signal;
 pub mod sql;
 pub mod status;
 pub mod stop;
+pub mod ui;

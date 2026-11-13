@@ -15,8 +15,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The UI's frontend, built once for every wheel: `metalake-ui` embeds it when the wheel's binary compiles (ADR 0007
+  # §5.3).
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: crates/metalake-ui/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: crates/metalake-ui/web/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: crates/metalake-ui/web/.nvmrc
+          cache: pnpm
+          cache-dependency-path: crates/metalake-ui/web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist
+          path: crates/metalake-ui/web/dist
+          if-no-files-found: error
+
   wheel:
     name: ${{ matrix.target }}
+    needs: frontend
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     strategy:
@@ -43,6 +70,14 @@ jobs:
         run: |
           objdump -T crates/metalake-py/python/metalake/postgres/bin/postgres \
             | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: crates/metalake-ui/web/dist
+      # A wheel without it would serve only the page that says how to build it.
+      - name: The UI's frontend is there to embed
+        shell: bash
+        run: test -f crates/metalake-ui/web/dist/index.html
       - name: Build the wheel
         uses: PyO3/maturin-action@v1
         with:

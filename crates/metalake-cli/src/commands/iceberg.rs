@@ -65,7 +65,7 @@ async fn serve(args: &IcebergServe, lake: &Lake) -> Result<(), Error> {
     }
     // Once its file says so: a caller that reads this line finds the file.
     println!("listening on {address}");
-    let served = metalake_iceberg::serve_with(listener, state, stopped(), token.as_deref()).await;
+    let served = metalake_iceberg::serve_with(listener, state, super::signal::stopped(), token.as_deref()).await;
     if let Some(path) = &args.runtime_file {
         server::remove_if_mine(path, pid);
     }
@@ -87,21 +87,6 @@ async fn connect(args: &IcebergConnect, lake: &Lake, out: &Out) -> Result<(), Er
 pub async fn stop(dir: Option<&Path>, out: &Out) -> Result<(), Error> {
     let stopped = Lake::stop_server(dir)?;
     out.records(&["stopped"], &[json!({"stopped": stopped})]).await
-}
-
-/// Ctrl-C, or, where there is one, the signal a service manager stops a process with.
-async fn stopped() {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-        let mut terminate = signal(SignalKind::terminate()).expect("a signal handler installs");
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
-            _ = terminate.recv() => {}
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = tokio::signal::ctrl_c().await;
 }
 
 fn names(args: &IcebergTables) -> Vec<&str> {
