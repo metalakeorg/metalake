@@ -1,0 +1,21 @@
+[package]
+name = "metalake-ui"
+version = "0.0.0"
+description = "MetaLake's UI: an axum router that serves the frontend embedded in it (ADR 0007)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+# The frontend's source and its tooling are not the crate's: only what `pnpm build` writes is.
+include = ["src/**", "web/dist/**", "build.rs", "Cargo.toml"]
+
+[lib]
+name = "metalake_ui"
+path = "src/lib.rs"
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+# `debug-embed`: a debug build embeds as a release one does, so that both serve the same files; `mime-guess`: each
+# file's type; `include-exclude`: the `.gitkeep` that keeps `web/dist/` is not served.
+rust-embed = { version = "8.9", features = ["debug-embed", "mime-guess", "include-exclude"] }

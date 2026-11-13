@@ -1,2 +1,4 @@
 node_modules/
-dist/
+# What `pnpm build` writes, but the file that keeps the folder `rust-embed` reads.
+dist/*
+!dist/.gitkeep

@@ -1,7 +1,6 @@
 [workspace]
 members = ["crates/*"]
-# `crates/metalake-ui` holds its frontend alone until its crate is built (ADR 0007, milestone 2).
-exclude = ["bench/impl", "ci/arrow-58", "crates/metalake-arroyo", "crates/metalake-ui"]
+exclude = ["bench/impl", "ci/arrow-58", "crates/metalake-arroyo"]
 resolver = "2"
 
 [workspace.package]
