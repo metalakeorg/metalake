@@ -100,6 +100,8 @@ def test_create_branch_invalid_name_or_start(lake):
 
 def test_on_ref_names_without_ref(lake):
     """`lake.on`: names that say no ref read and write on it; one that says its ref keeps it (ADR 0008 §2)."""
+    # The module's lake is shared: `main` holds what the tests before this one wrote.
+    main = keys(lake, "t")
     lake.branch("worked")
     assert lake.ref == "main"
     lake.on("worked")
@@ -107,14 +109,14 @@ def test_on_ref_names_without_ref(lake):
     assert 'ref="worked"' in repr(lake)
     lake.table("t").append(pl.DataFrame({"k": [7]}))
     lake.sql("insert into t values (8)")
-    assert keys(lake, "t") == [1, 7, 8]
-    assert keys(lake, "main.default.t") == [1]
+    assert keys(lake, "t") == sorted([*main, 7, 8])
+    assert keys(lake, "main.default.t") == main
     assert lake.table("t").name == "worked.default.t"
     assert lake.log()[0].seq > lake.log("main")[0].seq
     assert 7 in keys(lake, "table_changes('t', 0)")
     assert 7 not in keys(lake, "table_changes('main.default.t', 0)")
     lake.on("main")
-    assert keys(lake, "t") == [1]
+    assert keys(lake, "t") == main
     assert lake.table("t").name == "main.default.t"
 
 
