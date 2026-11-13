@@ -22,9 +22,9 @@ test("a table made on the lake is listed at once, and a branch made is in the se
   const assets = page.getByRole("complementary", { name: "Assets" });
   await expect(assets.getByRole("combobox", { name: "Branch" })).toHaveValue("main");
   const name = `live_${Date.now()}`;
-  execSync(`${lake} sql "create schema if not exists main.live; create table main.live.${name} (k bigint)"`);
+  execSync(`${lake} sql "create schema main.${name}; create table main.${name}.t (k bigint)"`);
   // No reload: the lake's event makes the page read its catalog again.
-  await expect(assets.getByRole("list", { name: "live" })).toContainText(name);
+  await expect(assets.getByRole("list", { name })).toContainText("t");
   execSync(`${lake} branch create ${name}`);
   await expect(assets.getByRole("option", { name })).toBeAttached({ timeout: 15_000 });
 });
