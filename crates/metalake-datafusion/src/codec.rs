@@ -288,7 +288,8 @@ impl LogicalExtensionCodec for MetaLakeLogicalCodec {
     }
 }
 
-/// A `MetaScanExec` as it travels: DataFusion's own encoding of the scan inside, and what that encoding drops.
+/// A MetaLake scan as it travels: DataFusion's own encoding of it over the Parquet source inside, and what that
+/// encoding drops.
 #[derive(Serialize, Deserialize)]
 struct ScanBytes {
     /// The `DataSourceExec`, as DataFusion encodes it: groups and ranges, predicate, projection, limit, statistics.
@@ -543,8 +544,8 @@ impl TaskBytes {
     }
 }
 
-/// MetaLake's scans in a physical plan: a `MetaScanExec` travels with each file's task and vector, and is rebuilt with
-/// this process's storage, MetaLake's reader and the columns by field id. It needs no catalog: an executor reads
+/// MetaLake's scans in a physical plan: a `DataSourceExec` over a `MetaLakeSource` travels with each file's task and
+/// vector, and is rebuilt with this process's storage, MetaLake's reader and the columns by field id. It needs no catalog: an executor reads
 /// without Postgres. Everything else is the inner codec's.
 pub struct MetaLakePhysicalCodec {
     storage: Storage,

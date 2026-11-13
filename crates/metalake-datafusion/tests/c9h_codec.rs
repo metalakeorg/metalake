@@ -172,7 +172,8 @@ fn scan_statistics(plan: &Arc<dyn ExecutionPlan>) -> Vec<Statistics> {
     let mut found = Vec::new();
     let mut nodes = vec![Arc::clone(plan)];
     while let Some(node) = nodes.pop() {
-        if node.name() == "MetaScanExec" {
+        // A MetaLake scan: a DataSourceExec whose source names the table it reads.
+        if node.name() == "DataSourceExec" && displayable(node.as_ref()).one_line().to_string().contains("metalake=") {
             for partition in 0..node.properties().partitioning.partition_count() {
                 let args = StatisticsArgs::new().with_partition(Some(partition));
                 let statistics = StatisticsContext::new().compute(node.as_ref(), &args).unwrap();

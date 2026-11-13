@@ -127,8 +127,12 @@ impl FileSource for MetaLakeSource {
         self.parquet.file_type()
     }
 
+    /// The table it reads, then what Parquet shows: `metalake=<table>` marks a MetaLake scan in a plan.
     fn fmt_extra(&self, t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, ", metalake={}", self.table.name())?;
+        match t {
+            DisplayFormatType::TreeRender => writeln!(f, "metalake={}", self.table.name())?,
+            DisplayFormatType::Default | DisplayFormatType::Verbose => write!(f, ", metalake={}", self.table.name())?,
+        }
         self.parquet.fmt_extra(t, f)
     }
 
