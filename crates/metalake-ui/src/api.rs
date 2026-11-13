@@ -197,6 +197,8 @@ pub struct NotebookState {
     pub jupyterlab: bool,
     /// Whether the UI's JupyterLab runs now.
     pub running: bool,
+    /// Where the page opens it while it runs: its path, with its token once.
+    pub open: Option<String>,
     /// The line that installs what the Notebook needs into that Python.
     pub install: String,
 }
@@ -416,6 +418,7 @@ async fn said(notebook: &Notebook) -> NotebookState {
         python: notebook.python().is_some(),
         jupyterlab: notebook.jupyterlab().await,
         running: notebook.running().await,
+        open: notebook.open().await,
         install: notebook.install(),
     }
 }

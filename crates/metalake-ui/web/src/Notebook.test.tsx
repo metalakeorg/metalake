@@ -8,7 +8,7 @@ describe("the Notebook page", () => {
   it("says a metalake without Python has none", () => {
     render(
       <Said
-        state={{ python: false, jupyterlab: false, running: false, install: INSTALL }}
+        state={{ python: false, jupyterlab: false, running: false, open: null, install: INSTALL }}
         again={() => {}}
         looking={false}
       />,
@@ -21,7 +21,7 @@ describe("the Notebook page", () => {
     const again = vi.fn();
     render(
       <Said
-        state={{ python: true, jupyterlab: false, running: false, install: INSTALL }}
+        state={{ python: true, jupyterlab: false, running: false, open: null, install: INSTALL }}
         again={again}
         looking={false}
       />,
@@ -35,7 +35,7 @@ describe("the Notebook page", () => {
   it("says JupyterLab is there", () => {
     render(
       <Said
-        state={{ python: true, jupyterlab: true, running: false, install: INSTALL }}
+        state={{ python: true, jupyterlab: true, running: false, open: null, install: INSTALL }}
         again={() => {}}
         looking={false}
       />,

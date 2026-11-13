@@ -9,14 +9,27 @@ import { Failed } from "./Failed";
 
 export function NotebookPage() {
   const state = useQuery({ queryKey: ["notebook"], queryFn: () => notebook() });
-  // Started once JupyterLab is known to be there; once, as a start that failed is said, not tried again unasked.
+  // Started once JupyterLab is known to be there, and asked again each time the page opens: a start of one that runs
+  // answers at once, and one that ended since is started again, rather than shown as running. A start that failed is
+  // said, not tried again until asked.
   const started = useQuery({
     queryKey: ["notebook", "start"],
     queryFn: () => startNotebook(),
     enabled: state.data?.jupyterlab === true,
     retry: false,
-    staleTime: Number.POSITIVE_INFINITY,
+    staleTime: 0,
+    refetchOnMount: "always",
   });
+  // JupyterLab, once it serves: the whole page, on the UI's origin, opened with its token once (ADR 0008 §5).
+  // Only what the start answers now: while it asks again, or after it failed, a past answer's frame would be dead.
+  const open = started.isFetching || started.error ? undefined : started.data?.open;
+  if (open) {
+    return (
+      <section aria-label="Notebook" className="h-full">
+        <iframe title="JupyterLab" src={open} className="h-full w-full border-0" />
+      </section>
+    );
+  }
   return (
     <section aria-label="Notebook" className="max-w-2xl p-6">
       <h1 className="font-semibold text-lg">Notebook</h1>
@@ -26,7 +39,11 @@ export function NotebookPage() {
         <Said state={state.data} again={() => state.refetch()} looking={state.isFetching} />
       )}
       {state.data?.jupyterlab && (
-        <Starting running={started.data?.running === true} failure={started.error} again={() => started.refetch()} />
+        <Starting
+          running={!started.isFetching && started.data?.running === true}
+          failure={started.error}
+          again={() => started.refetch()}
+        />
       )}
     </section>
   );

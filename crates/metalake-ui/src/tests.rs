@@ -1184,9 +1184,323 @@ mod jupyter {
         assert!(gone(port, Duration::from_secs(20)).await, "it outlived the UI");
     }
 
+    /// The UI ending while JupyterLab starts: the start gives up at once, rather than hold the end.
+    #[tokio::test]
+    async fn stop_during_start_does_not_wait() {
+        let Some(python) = python() else { return };
+        let notebook = std::sync::Arc::new(notebook(python));
+        let starting = tokio::spawn({
+            let notebook = notebook.clone();
+            async move { notebook.start().await }
+        });
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let stopping = Instant::now();
+        notebook.stop().await;
+        let started = starting.await.unwrap();
+        assert!(stopping.elapsed() < Duration::from_secs(15), "{:?}", stopping.elapsed());
+        assert!(started.is_err() || !notebook.running().await);
+    }
+
+    /// Its directory is its user's alone: Jupyter keeps its token in files there.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_directory_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(python) = python() else { return };
+        let notebook = notebook(python);
+        notebook.start().await.unwrap();
+        let runs = crate::browser::directory().unwrap();
+        let mine = std::fs::read_dir(runs)
+            .unwrap()
+            .flatten()
+            .find(|d| {
+                d.file_name()
+                    .to_string_lossy()
+                    .starts_with(&format!("jupyter-{}-", std::process::id()))
+            })
+            .unwrap();
+        assert_eq!(mine.metadata().unwrap().permissions().mode() & 0o777, 0o700);
+        notebook.stop().await;
+    }
+
     #[tokio::test]
     async fn without_python_said() {
         let notebook = Notebook::default();
         assert!(notebook.start().await.unwrap_err().contains("without Python"));
+    }
+}
+
+// JupyterLab on the UI's origin (ADR 0008, N3), against a server of the test's in its place.
+
+mod proxy {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use axum::http::{Method, StatusCode, header};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::oneshot;
+
+    use super::{HOST, Memory, send};
+    use crate::api::Detached;
+    use crate::guard::Access;
+    use crate::notebook::Notebook;
+    use crate::{GRACE, Token, router_with, serve_router};
+
+    const SECRET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    /// A JupyterLab of the test's: it answers one request with `answer`, then echoes what follows, and says the
+    /// request's head it was sent.
+    async fn jupyter(answer: &'static str) -> (u16, oneshot::Receiver<String>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (said, heard) = oneshot::channel();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).await.unwrap();
+                head.push(byte[0]);
+            }
+            let _ = said.send(String::from_utf8_lossy(&head).to_lowercase());
+            stream.write_all(answer.as_bytes()).await.unwrap();
+            let mut echo = [0u8; 64];
+            while let Ok(read) = stream.read(&mut echo).await {
+                if read == 0 || stream.write_all(&echo[..read]).await.is_err() {
+                    break;
+                }
+            }
+        });
+        (port, heard)
+    }
+
+    fn guarded(notebook: Notebook, port: u16) -> axum::Router {
+        let access = Access {
+            token: Token::given(SECRET.to_owned()).unwrap(),
+            port,
+        };
+        router_with(
+            Arc::new(Memory::new(&[])),
+            Arc::new(Detached),
+            Arc::new(notebook),
+            access,
+        )
+    }
+
+    const OK: &str =
+        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Security-Policy: frame-ancestors 'self'\r\n\r\nhello";
+
+    #[tokio::test]
+    async fn forwards_to_its_own_jupyter_with_host_and_path() {
+        let (port, heard) = jupyter(OK).await;
+        let bearer = format!("Bearer {SECRET}");
+        let headers = [(header::HOST, HOST), (header::AUTHORIZATION, bearer.as_str())];
+        let answer = send(
+            guarded(Notebook::default().reaching(port), 4173),
+            Method::GET,
+            "/jupyter/api/contents?type=notebook",
+            &headers,
+        )
+        .await;
+        assert_eq!(answer.status, StatusCode::OK);
+        assert_eq!(answer.body, b"hello");
+        // Jupyter's own policy, not the UI's: JupyterLab in a frame of its origin.
+        assert_eq!(
+            answer.header(header::CONTENT_SECURITY_POLICY),
+            Some("frame-ancestors 'self'")
+        );
+        let head = heard.await.unwrap();
+        assert!(
+            head.starts_with("get /jupyter/api/contents?type=notebook http/1.1"),
+            "{head}"
+        );
+        assert!(head.contains("host: 127.0.0.1:4173"), "the browser's host: {head}");
+        assert!(
+            !head.contains("authorization"),
+            "the UI's bearer reached Jupyter: {head}"
+        );
+    }
+
+    #[tokio::test]
+    async fn jupyters_own_token_passes() {
+        let (port, heard) = jupyter(OK).await;
+        let headers = [(header::HOST, HOST), (header::AUTHORIZATION, "token abc")];
+        let notebook = Notebook::default().reaching(port);
+        send(guarded(notebook, 4173), Method::GET, "/jupyter/api/status", &headers).await;
+        assert!(heard.await.unwrap().contains("authorization: token abc"));
+    }
+
+    #[tokio::test]
+    async fn without_jupyter_unavailable() {
+        let answer = send(
+            guarded(Notebook::default(), 4173),
+            Method::GET,
+            "/jupyter/lab",
+            &[(header::HOST, HOST)],
+        )
+        .await;
+        assert_eq!(answer.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(String::from_utf8_lossy(&answer.body).contains("not running"));
+    }
+
+    #[tokio::test]
+    async fn other_host_refused_own_name_kept() {
+        let (port, _) = jupyter(OK).await;
+        let notebook = Notebook::default().reaching(port);
+        let evil = [(header::HOST, "evil.example:4173")];
+        assert_eq!(
+            send(guarded(notebook, 4173), Method::GET, "/jupyter/lab", &evil)
+                .await
+                .status,
+            StatusCode::FORBIDDEN
+        );
+        // `localhost` is kept, as the page's name: the frame then shares its origin, and Jupyter its checks.
+        let (port, heard) = jupyter(OK).await;
+        let named = [(header::HOST, "localhost:4173")];
+        let answer = send(
+            guarded(Notebook::default().reaching(port), 4173),
+            Method::GET,
+            "/jupyter/lab?x=1",
+            &named,
+        )
+        .await;
+        assert_eq!(answer.status, StatusCode::OK);
+        assert!(heard.await.unwrap().contains("host: localhost:4173"));
+    }
+
+    /// The UI's own pages keep the UI's headers.
+    #[tokio::test]
+    async fn ui_pages_keep_ui_headers() {
+        let answer = send(
+            guarded(Notebook::default(), 4173),
+            Method::GET,
+            "/notebook",
+            &[(header::HOST, HOST)],
+        )
+        .await;
+        assert!(
+            answer
+                .header(header::CONTENT_SECURITY_POLICY)
+                .unwrap()
+                .contains("frame-ancestors 'none'")
+        );
+    }
+
+    /// A websocket: once Jupyter has switched protocols, the bytes pass both ways, as they come.
+    #[tokio::test]
+    async fn websocket_tunneled() {
+        let (jupyter_port, heard) = jupyter(
+            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+             Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n",
+        )
+        .await;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (stop, stopped) = oneshot::channel::<()>();
+        let router = guarded(Notebook::default().reaching(jupyter_port), port);
+        tokio::spawn(serve_router(
+            listener,
+            router,
+            async {
+                let _ = stopped.await;
+            },
+            GRACE,
+        ));
+
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let request = format!(
+            "GET /jupyter/api/kernels/k/channels HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\n\
+             Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+             Sec-WebSocket-Protocol: v1.kernel.websocket.jupyter.org\r\n\r\n"
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).await.unwrap();
+            head.push(byte[0]);
+        }
+        assert!(
+            String::from_utf8_lossy(&head).starts_with("HTTP/1.1 101"),
+            "{}",
+            String::from_utf8_lossy(&head)
+        );
+        let asked = heard.await.unwrap();
+        assert!(
+            asked.contains("sec-websocket-protocol: v1.kernel.websocket.jupyter.org"),
+            "{asked}"
+        );
+        stream.write_all(b"frames").await.unwrap();
+        let mut echoed = [0u8; 6];
+        tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut echoed))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&echoed, b"frames");
+        let _ = stop.send(());
+    }
+}
+
+// The real JupyterLab through the proxy (ADR 0008, N3), where `METALAKE_TEST_JUPYTER_PYTHON` names a Python that has it.
+
+mod jupyter_proxied {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use axum::http::{Method, StatusCode, header};
+
+    use super::{HOST, Memory, send};
+    use crate::api::Detached;
+    use crate::guard::Access;
+    use crate::notebook::Notebook;
+    use crate::{Token, router_with};
+
+    #[tokio::test]
+    async fn status_and_lab_through_proxy() {
+        let Some(python) = std::env::var_os("METALAKE_TEST_JUPYTER_PYTHON").map(PathBuf::from) else {
+            return;
+        };
+        let root = std::env::temp_dir().join(format!("metalake-notebooks-proxied-{}", std::process::id()));
+        let notebook = Arc::new(Notebook::with_python(Some(python)).keeping(root));
+        notebook.start().await.unwrap();
+        let open = notebook.open().await.unwrap();
+        let token = open.split("token=").nth(1).unwrap().to_owned();
+        let access = Access {
+            token: Token::given("0123456789abcdef0123456789abcdef".to_owned()).unwrap(),
+            port: 4173,
+        };
+        let router = router_with(Arc::new(Memory::new(&[])), Arc::new(Detached), notebook.clone(), access);
+
+        let jupyter_token = format!("token {token}");
+        let headers = [(header::HOST, HOST), (header::AUTHORIZATION, jupyter_token.as_str())];
+        let status = send(router.clone(), Method::GET, "/jupyter/api/status", &headers).await;
+        assert_eq!(
+            status.status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&status.body)
+        );
+        // On `localhost`, as a page opened by that name sends it: Jupyter answers it as well.
+        let named = [
+            (header::HOST, "localhost:4173"),
+            (header::AUTHORIZATION, jupyter_token.as_str()),
+        ];
+        let local = send(router.clone(), Method::GET, "/jupyter/api/status", &named).await;
+        assert_eq!(local.status, StatusCode::OK, "{}", String::from_utf8_lossy(&local.body));
+        // Without its token, Jupyter refuses: the proxy decides nothing for it.
+        let refused = send(
+            router.clone(),
+            Method::GET,
+            "/jupyter/api/status",
+            &[(header::HOST, HOST)],
+        )
+        .await;
+        assert_eq!(refused.status, StatusCode::FORBIDDEN);
+        // The page the iframe opens: JupyterLab, with its token once.
+        let lab = send(router, Method::GET, &open, &[(header::HOST, HOST)]).await;
+        assert_eq!(lab.status, StatusCode::OK);
+        assert!(String::from_utf8_lossy(&lab.body).contains("jupyter-config-data"));
+        notebook.stop().await;
     }
 }
