@@ -3247,6 +3247,7 @@ name = "metalake-ui"
 version = "0.0.0"
 dependencies = [
  "axum",
+ "futures-util",
  "getrandom 0.3.4",
  "metalake-client",
  "rust-embed",
