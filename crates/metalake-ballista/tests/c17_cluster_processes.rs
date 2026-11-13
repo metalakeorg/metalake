@@ -104,7 +104,7 @@ async fn binaries_answer_as_a_local_session() -> Result<(), Box<dyn std::error::
             .env("METALAKE_SCHEMA", &schema)
             .env("METALAKE_SCHEDULER_BIND", format!("127.0.0.1:{scheduler}"))
             .env("METALAKE_SCHEDULER_HOST", "127.0.0.1")
-            .env("RUST_LOG", "warn")
+            .env("RUST_LOG", std::env::var("C17_LOG").unwrap_or("warn".into()))
             .spawn()?,
     );
     listening(scheduler, "the scheduler");
@@ -121,7 +121,7 @@ async fn binaries_answer_as_a_local_session() -> Result<(), Box<dyn std::error::
                 .env("METALAKE_EXECUTOR_GRPC_PORT", grpc.to_string())
                 .env("METALAKE_EXECUTOR_SLOTS", "2")
                 .env("METALAKE_EXECUTOR_WORK_DIR", dir.join(format!("work-{flight}")))
-                .env("RUST_LOG", "warn")
+                .env("RUST_LOG", std::env::var("C17_LOG").unwrap_or("warn".into()))
                 .spawn()?,
         );
         flights.push(flight);
