@@ -18,7 +18,8 @@ use datafusion::sql::parser::Statement;
 use metalake::path::{DEFAULT_NAMESPACE, MAIN, NAMESPACE_SEPARATOR};
 use metalake::{Catalog, Error, Ref, Result, Storage, TablePath};
 
-use crate::details::CommitOptions;
+use crate::options::MetaLakeOptions;
+use crate::written::Written;
 use crate::point::{self, OnePoint};
 use crate::table::MetaTable;
 use crate::{changes, ddl};
@@ -124,10 +125,12 @@ impl MetaLake {
             .with_create_default_catalog_and_schema(false);
         // `varchar` is a table's string, which has no view.
         config.options_mut().sql_parser.map_string_types_to_utf8view = false;
-        let config = CommitOptions::register(config);
+        let config = MetaLakeOptions::register(config);
         let context = SessionContext::new_with_config(config);
         context.register_catalog_list(Arc::new(self.clone()));
         context.add_analyzer_rule(Arc::new(OnePoint));
+        // A write on a table answers its row, what came of its commit with its count.
+        context.add_analyzer_rule(Arc::new(Written));
         let url = ObjectStoreUrl::parse(self.shared.storage.base())?;
         context.register_object_store(url.as_ref(), self.shared.storage.store().clone());
         Ok(context)

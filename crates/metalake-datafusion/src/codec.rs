@@ -12,7 +12,7 @@ use std::time::SystemTime;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::TableProvider;
-use datafusion::common::{DFSchema, DataFusionError, Result, Statistics, TableReference};
+use datafusion::common::{DFSchema, DataFusionError, Result, Statistics, TableReference, internal_err};
 use datafusion::datasource::file_format::FileFormatFactory;
 use datafusion::datasource::physical_plan::parquet::ParquetRowSelection;
 use datafusion::datasource::physical_plan::{FileGroup, FileScanConfig, FileScanConfigBuilder, ParquetSource};
@@ -50,6 +50,7 @@ use crate::point::StatementPoint;
 use crate::read::TaskReaders;
 use crate::sink::{Delete, Insert, Selection, Update, session};
 use crate::table::MetaTable;
+use crate::written::MetaWriteExec;
 
 /// What every MetaLake encoding starts with.
 const MAGIC: &[u8; 3] = b"MLK";
@@ -68,6 +69,8 @@ enum Kind {
     Merge = 6,
     Changes = 7,
     ChangesScan = 8,
+    /// A write's row around its sink, which is encoded as its child.
+    Written = 9,
 }
 
 /// `value` as MetaLake's bytes of `kind`, appended to `buf`.
@@ -861,6 +864,13 @@ impl PhysicalExtensionCodec for MetaLakePhysicalCodec {
                 let bytes = decode::<MergeBytes>(Kind::Merge, buf).expect("MetaLake's bytes")?;
                 self.decode_merge(bytes, inputs, ctx)
             }
+            Some(k) if k == Kind::Written as u8 => {
+                decode::<()>(Kind::Written, buf).expect("MetaLake's bytes")?;
+                let [sink] = inputs else {
+                    return internal_err!("a write's row wraps one sink, not {}", inputs.len());
+                };
+                Ok(Arc::new(MetaWriteExec::new(Arc::clone(sink))))
+            }
             Some(k) if k == Kind::Update as u8 => {
                 let bytes = decode::<UpdateBytes>(Kind::Update, buf).expect("MetaLake's bytes")?;
                 self.decode_update(bytes, inputs, ctx)
@@ -881,6 +891,9 @@ impl PhysicalExtensionCodec for MetaLakePhysicalCodec {
     ) -> Result<()> {
         if let Some(scan) = node.downcast_ref::<MetaScanExec>() {
             return self.encode_scan(scan, buf);
+        }
+        if node.downcast_ref::<MetaWriteExec>().is_some() {
+            return encode(Kind::Written, &(), buf);
         }
         if let Some(changes) = node.downcast_ref::<ChangesExec>() {
             let bytes = ChangesScanBytes {

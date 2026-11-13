@@ -12,6 +12,10 @@ publish.workspace = true
 name = "_metalake"
 crate-type = ["cdylib"]
 
+[features]
+# Sessions that reach a Ballista scheduler, when a lake names one.
+distributed = ["metalake-client/distributed"]
+
 [dependencies]
 metalake-cli = { path = "../metalake-cli" }
 metalake-client = { path = "../metalake-client" }

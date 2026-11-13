@@ -16,6 +16,10 @@ path = "src/lib.rs"
 name = "metalake"
 path = "src/main.rs"
 
+[features]
+# Sessions that reach a Ballista scheduler, when a lake names one.
+distributed = ["metalake-client/distributed"]
+
 [dependencies]
 metalake-client = { path = "../metalake-client" }
 metalake-iceberg = { path = "../metalake-iceberg" }

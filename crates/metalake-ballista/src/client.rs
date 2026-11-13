@@ -11,9 +11,19 @@ use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::prelude::SessionContext;
 use metalake_datafusion::MetaLake;
 
-/// A session of `lake` whose statements run on the Ballista scheduler at `scheduler` (`df://host:port`).
+use crate::router::Router;
+
+/// A session of `lake` that reaches the Ballista scheduler at `scheduler` (`df://host:port`): its statements run there,
+/// or where the session is, as `metalake.engine` says.
 pub async fn session(lake: &MetaLake, scheduler: &str) -> Result<SessionContext> {
-    SessionContext::remote_with_state(scheduler, with_codecs(lake, lake.context()?.state())).await
+    let state = with_codecs(lake, lake.context()?.state());
+    let local = state.query_planner().clone();
+    let remote = SessionContext::remote_with_state(scheduler, state).await?.state();
+    let router = Router::new(local, remote.query_planner().clone(), scheduler);
+    let state = SessionStateBuilder::new_from_existing(remote)
+        .with_query_planner(Arc::new(router))
+        .build();
+    Ok(SessionContext::new_with_state(state))
 }
 
 /// `state` with MetaLake's codecs, each over Ballista's own.

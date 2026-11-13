@@ -9,6 +9,8 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+async-trait = "0.1"
+log = "0.4"
 metalake.workspace = true
 metalake-datafusion = { path = "../metalake-datafusion", features = ["proto"] }
 # Ballista 55 is on DataFusion 55 and Arrow 59, as the adapter is. Its scheduler and executor without their binaries,
@@ -24,7 +26,6 @@ tokio = { workspace = true, features = ["net", "time"] }
 [dev-dependencies]
 arrow-array.workspace = true
 arrow-schema.workspace = true
-async-trait = "0.1"
 futures-util.workspace = true
 metalake-pg.workspace = true
 object_store.workspace = true

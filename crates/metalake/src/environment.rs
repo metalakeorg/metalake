@@ -10,6 +10,8 @@ use url::Url;
 pub const POSTGRES: &str = "METALAKE_POSTGRES";
 /// The catalog's schema, when one Postgres database holds more than one lake.
 pub const SCHEMA: &str = "METALAKE_SCHEMA";
+/// A Ballista scheduler of the lake's (`df://host:port`), where a session's router may send a statement.
+pub const SCHEDULER: &str = "METALAKE_SCHEDULER";
 /// The catalog's password, which the driver does not read by itself.
 pub const PASSWORD: &str = "PGPASSWORD";
 /// The catalog's schema, unless one is named.

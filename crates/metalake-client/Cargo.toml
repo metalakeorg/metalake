@@ -13,6 +13,8 @@ metalake = { workspace = true, features = ["s3", "gcs", "azure"] }
 metalake-pg.workspace = true
 metalake-datafusion = { path = "../metalake-datafusion" }
 metalake-local = { path = "../metalake-local" }
+# A lake's sessions reach a Ballista cluster through the router, with `distributed`.
+metalake-ballista = { path = "../metalake-ballista", optional = true }
 datafusion = { version = "55.2", default-features = false, features = [
     "datetime_expressions",
     "encoding_expressions",
@@ -31,6 +33,10 @@ tokio = { workspace = true, features = ["time"] }
 uuid.workspace = true
 toml = "1"
 url.workspace = true
+
+[features]
+# Sessions that reach a Ballista scheduler, when a lake names one (`METALAKE_SCHEDULER`, `scheduler` in its file).
+distributed = ["dep:metalake-ballista"]
 
 [target.'cfg(windows)'.dependencies]
 # To start a lake's server holding none of this process's own handles (§ server::start).

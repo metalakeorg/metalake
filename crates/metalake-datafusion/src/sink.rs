@@ -3,7 +3,7 @@
 //! until the commit; a refused commit leaves orphans, which their intents name.
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use datafusion::arrow::array::{Array, ArrayRef, AsArray, RecordBatch};
@@ -22,7 +22,7 @@ use datafusion::physical_plan::{DisplayAs, DisplayFormatType};
 use futures_util::stream::{self, BoxStream};
 use futures_util::{StreamExt, TryStreamExt};
 use metalake::vectors::{Deletes, FILE_ID, POSITION};
-use metalake::{Scan, TableWriter, WriteOptions};
+use metalake::{Scan, ScanTask, TableWriter, WriteOptions};
 
 use crate::catalog::external;
 use crate::table::MetaTable;
@@ -84,6 +84,9 @@ pub(crate) struct Selection {
     /// The statement's filters, which the scan and the filter are made of: what a process that runs it gets.
     #[cfg_attr(not(feature = "proto"), allow(dead_code))]
     pub filters: Vec<Expr>,
+    /// The scan's files, when something planned them before the rows are read (a router measuring the statement): the
+    /// scan is of one version of the table, so they are the files reading would plan. Taken by the first read.
+    planned: Mutex<Option<Vec<ScanTask>>>,
 }
 
 impl Selection {
@@ -102,21 +105,36 @@ impl Selection {
             scan,
             filter,
             filters,
+            planned: Mutex::default(),
         })
+    }
+
+    /// The scan's files, planned in Postgres, and kept for reading the rows: what is measured is what is read, planned
+    /// once. Their sizes and rows, for a measure.
+    pub(crate) async fn measure(&self) -> Result<(u64, u64)> {
+        let tasks = self.plan().await?;
+        let (bytes, rows) = crate::measure::sizes(&tasks);
+        *self.planned.lock().expect("planned files are only replaced") = Some(tasks);
+        Ok((bytes, rows))
+    }
+
+    /// The scan's files: those already planned, else planned now.
+    async fn tasks(&self) -> Result<Vec<ScanTask>> {
+        if let Some(tasks) = self.planned.lock().expect("planned files are only replaced").take() {
+            return Ok(tasks);
+        }
+        self.plan().await
+    }
+
+    async fn plan(&self) -> Result<Vec<ScanTask>> {
+        self.scan.plan().await.map_err(external)?.try_collect().await.map_err(external)
     }
 
     /// The batches of the rows that match; a filter that is null for a row does not match it.
     async fn rows(&self) -> Result<BoxStream<'static, Result<RecordBatch>>> {
         // Taken whole: a stream of them keeps a connection, and what writes needs another while it reads them, so that as
         // many writers as the pool has connections would each hold one and wait for ever.
-        let tasks: Vec<_> = self
-            .scan
-            .plan()
-            .await
-            .map_err(external)?
-            .try_collect()
-            .await
-            .map_err(external)?;
+        let tasks = self.tasks().await?;
         let tasks = stream::iter(tasks.into_iter().map(Ok)).boxed();
         let filter = self.filter.clone();
         let batches = self.scan.read(tasks, &self.table.storage).map(move |batch| {

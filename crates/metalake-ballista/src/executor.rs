@@ -10,7 +10,7 @@ use datafusion::error::Result;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use metalake::{Catalog, Storage};
-use metalake_datafusion::{CommitOptions, MetaLakePhysicalCodec};
+use metalake_datafusion::{MetaLakeOptions, MetaLakePhysicalCodec};
 
 /// What a Ballista executor is made of for a lake: its sessions' configuration, a runtime with the lake's store, and
 /// the codec that decodes MetaLake's scans. As `ExecutorProcessConfig`'s `override_config_producer`,
@@ -36,8 +36,8 @@ pub fn executor(storage: Storage, catalog: Option<Catalog>) -> Result<ExecutorPa
         physical = physical.with_catalog(catalog);
     }
     Ok(ExecutorParts {
-        // MetaLake's commit options known, so that a job's are taken and not dropped.
-        config_producer: Arc::new(|| CommitOptions::register(default_config_producer())),
+        // MetaLake's options known, so that a job's are taken and not dropped.
+        config_producer: Arc::new(|| MetaLakeOptions::register(default_config_producer())),
         runtime_producer,
         codec: BallistaCodec::new(Arc::new(BallistaLogicalExtensionCodec::default()), Arc::new(physical)),
     })

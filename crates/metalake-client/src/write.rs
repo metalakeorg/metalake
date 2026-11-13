@@ -6,7 +6,6 @@ use datafusion::arrow::compute::{CastOptions, cast_with_options};
 use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef, TimeUnit};
 use futures_util::{Stream, TryStreamExt};
 use metalake::{FileAdd, Outcome, Ref, Table, TableWriter, Transaction, WriteOptions};
-use metalake_datafusion::CommitDetails;
 use serde::Serialize;
 
 use crate::merge::person;
@@ -53,8 +52,9 @@ pub struct Details {
 }
 
 impl Details {
-    pub(crate) fn into_commit(self) -> CommitDetails {
-        CommitDetails::new(person(self.author), self.message, self.idempotent)
+    /// What a statement's commit is asked: who, what it says, and a writer's key.
+    pub(crate) fn asked(self) -> (Option<String>, Option<String>, Option<(String, i64)>) {
+        (person(self.author), self.message, self.idempotent)
     }
 
     fn on(self, mut transaction: Transaction) -> Transaction {

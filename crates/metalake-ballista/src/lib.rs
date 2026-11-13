@@ -10,10 +10,12 @@
 
 mod client;
 mod executor;
+mod router;
 mod scheduler;
 mod standalone;
 
 pub use client::session;
 pub use executor::{ExecutorParts, executor};
+pub use router::{Route, Router, SHUFFLE_THRESHOLD, THRESHOLD, route};
 pub use scheduler::{SchedulerParts, scheduler};
 pub use standalone::{Standalone, standalone};

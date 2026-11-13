@@ -16,9 +16,9 @@ use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::physical_plan::displayable;
 use datafusion::prelude::SessionContext;
 use datafusion::sql::parser::DFParser;
-use metalake::{Catalog, CatalogConfig, NewTable, Ref, Storage, TableWriter, WriteOptions};
+use metalake::{Catalog, CatalogConfig, NewTable, Outcome, Ref, Storage, TableWriter, WriteOptions};
 use metalake_ballista::Standalone;
-use metalake_datafusion::MetaLake;
+use metalake_datafusion::{MetaLake, WrittenRow};
 use metalake_pg::{Commit, Pool, Protocol};
 use serde_json::json;
 
@@ -94,7 +94,15 @@ async fn sessions() -> Result<(SessionContext, Standalone, i64, Ref, MetaLake), 
     .await?;
     let writes = Catalog::connect(CatalogConfig::new(url(), &schema)).await?;
     let cluster = metalake_ballista::standalone(&client, scheduler, storage, Some(writes)).await?;
+    // On the cluster, whatever the router's rule would say of these small tables.
+    cluster.sql("set metalake.engine = 'cluster'").await?.collect().await?;
     Ok((local, cluster, before, main, client))
+}
+
+/// The row a write answers.
+async fn written(context: &SessionContext, sql: &str) -> Result<WrittenRow, Box<dyn std::error::Error>> {
+    let batches = context.sql(sql).await?.collect().await?;
+    Ok(WrittenRow::of(&batches[0])?)
 }
 
 async fn rows(context: &SessionContext, sql: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -144,8 +152,87 @@ async fn ballista_plan_distributed() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// `metalake.engine` says where a session's statements run: forced local, its plan runs in the client's process, with
+/// the same rows; forced back, on the cluster again. A value that is no engine is refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn ballista_engine_forced() -> Result<(), Box<dyn std::error::Error>> {
+    let (local, cluster, _, _, _) = sessions().await?;
+    let sql = "select k from main.db.u where k > 7 order by k";
+    assert!(shown(&cluster, sql).await?.contains("DistributedQueryExec"));
+    cluster.sql("set metalake.engine = 'local'").await?.collect().await?;
+    let here = shown(&cluster, sql).await?;
+    assert!(!here.contains("DistributedQueryExec") && here.contains("MetaScanExec"), "{here}");
+    assert_eq!(rows(&cluster, sql).await?, rows(&local, sql).await?);
+    cluster.sql("set metalake.engine = 'cluster'").await?.collect().await?;
+    assert!(shown(&cluster, sql).await?.contains("DistributedQueryExec"));
+    assert!(cluster.sql("set metalake.engine = 'mars'").await.is_err());
+    Ok(())
+}
+
+/// `auto` lets the rule choose: the tests' tables are far under its thresholds, so their statements run locally; with
+/// a threshold of none, on the cluster; the same rows either way.
+#[tokio::test(flavor = "multi_thread")]
+async fn ballista_engine_auto() -> Result<(), Box<dyn std::error::Error>> {
+    let (local, cluster, _, _, _) = sessions().await?;
+    let sql = "select u.k % 3 as g, count(*) as c from main.db.u group by 1 order by 1";
+    cluster.sql("set metalake.engine = 'auto'").await?.collect().await?;
+    let small = shown(&cluster, sql).await?;
+    assert!(!small.contains("DistributedQueryExec") && small.contains("MetaScanExec"), "{small}");
+    let here = rows(&cluster, sql).await?;
+    for set in [
+        "set metalake.engine.threshold = 0",
+        "set metalake.engine.shuffle_threshold = 0",
+    ] {
+        cluster.sql(set).await?.collect().await?;
+    }
+    assert!(shown(&cluster, sql).await?.contains("DistributedQueryExec"));
+    assert_eq!(rows(&cluster, sql).await?, here);
+    // Writes too, whose reads are in their sinks.
+    for write in [
+        "insert into main.db.t select k + 100, s from main.db.u",
+        "delete from main.db.t where k = 4",
+        "update main.db.t set label = 'x' where k = 5",
+        "merge into main.db.t t using main.db.u u on t.k = u.k when matched then delete",
+    ] {
+        assert!(shown(&cluster, write).await?.contains("DistributedQueryExec"), "{write}");
+    }
+    assert_eq!(here, rows(&local, sql).await?);
+    Ok(())
+}
+
+/// A cluster that does not answer: `auto` runs what the rule would send to it locally, and answers; forced to the
+/// cluster, the statement fails.
+#[tokio::test(flavor = "multi_thread")]
+async fn ballista_engine_auto_without_cluster() -> Result<(), Box<dyn std::error::Error>> {
+    let (local, _, _, _, client) = sessions().await?;
+    let nowhere = metalake_ballista::session(&client, &format!("df://127.0.0.1:{}", closed_port()?)).await?;
+    for set in ["set metalake.engine = 'auto'", "set metalake.engine.threshold = 0"] {
+        nowhere.sql(set).await?.collect().await?;
+    }
+    let sql = "select k from main.db.u where k > 7 order by k";
+    let shown_here = shown(&nowhere, sql).await?;
+    assert!(!shown_here.contains("DistributedQueryExec"), "{shown_here}");
+    assert_eq!(rows(&nowhere, sql).await?, rows(&local, sql).await?);
+    nowhere.sql("set metalake.engine = 'cluster'").await?.collect().await?;
+    assert!(rows(&nowhere, sql).await.is_err());
+    Ok(())
+}
+
+/// A port nothing listens on: one bound and let go.
+fn closed_port() -> std::io::Result<u16> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    listener.local_addr().map(|a| a.port())
+}
+
+/// The physical plan of `sql`, shown.
+async fn shown(context: &SessionContext, sql: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let plan = context.sql(sql).await?.create_physical_plan().await?;
+    Ok(displayable(plan.as_ref()).indent(true).to_string())
+}
+
 /// An insert runs on the cluster: its rows read there, written and committed by the executor, with what the session's
-/// options ask of the commit; again with the same writer's key and version, it applies once.
+/// options ask of the commit; again with the same writer's key and version, it applies once. What came of each commit
+/// comes back from the executor as the write's row.
 #[tokio::test(flavor = "multi_thread")]
 async fn ballista_insert() -> Result<(), Box<dyn std::error::Error>> {
     let (local, cluster, _, main, _) = sessions().await?;
@@ -158,16 +245,17 @@ async fn ballista_insert() -> Result<(), Box<dyn std::error::Error>> {
         cluster.sql(set).await?.collect().await?;
     }
     let insert = "insert into main.db.t select k + 100, s from main.db.u where k < 8";
-    let written = rows(&cluster, insert).await?;
-    assert!(written.contains("| 3     |"), "{written}");
+    let first = written(&cluster, insert).await?;
     let last = &main.history(1).await?[0];
     assert_eq!(
         (last.author.as_deref(), last.message.as_deref()),
         (Some("ana"), Some("from u"))
     );
+    assert_eq!((first.count, first.outcome), (3, Some(Outcome::Committed(last.commit_seq))));
 
-    // The same writer and version again: already applied, nothing written twice.
-    rows(&cluster, insert).await?;
+    // The same writer and version again: already applied, nothing written twice, and the row says which commit had.
+    let again = written(&cluster, insert).await?;
+    assert_eq!(again.outcome, Some(Outcome::AlreadyApplied(last.commit_seq)));
     let sql = "select k, label from main.db.t where k >= 100 order by k";
     let (here, there) = (rows(&local, sql).await?, rows(&cluster, sql).await?);
     assert_eq!(here, there);
@@ -220,9 +308,10 @@ async fn ballista_merge() -> Result<(), Box<dyn std::error::Error>> {
                  when matched and u.k = 9 then delete
                  when matched then update set label = concat(u.s, '*')
                  when not matched then insert (k, label) values (u.k, u.s)";
-    let affected = rows(&cluster, merge).await?;
+    let affected = written(&cluster, merge).await?;
     // Keys 5..12 of u: 5, 6, 7, 8 and 9 match t (9 is deleted), 10 and 11 are new.
-    assert!(affected.contains("| 7     |"), "{affected}");
+    assert_eq!((affected.count, affected.inserted, affected.updated), (7, 2, 5));
+    assert!(matches!(affected.outcome, Some(Outcome::Committed(_))));
     assert_eq!(main.history(1).await?[0].author.as_deref(), Some("cai"));
 
     let sql = "select k, label from main.db.t order by k";

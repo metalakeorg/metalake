@@ -30,6 +30,7 @@ use crate::exec::MetaScanExec;
 use crate::point::StatementPoint;
 use crate::read::{self, TaskReaders};
 use crate::sink::{Delete, Insert, Selection, Update};
+use crate::written::MetaWriteExec;
 use crate::{filters, merge};
 
 /// How many files' vectors are read at once while planning.
@@ -212,7 +213,7 @@ impl TableProvider for MetaTable {
             table: self.clone(),
             overwrite: insert_op == InsertOp::Overwrite,
         };
-        Ok(Arc::new(DataSinkExec::new(input, Arc::new(sink), None)))
+        Ok(Arc::new(MetaWriteExec::new(Arc::new(DataSinkExec::new(input, Arc::new(sink), None)))))
     }
 
     async fn delete_from(&self, state: &dyn Session, filters: Vec<Expr>) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
@@ -243,11 +244,8 @@ impl TableProvider for MetaTable {
     }
 }
 
-/// A plan of `sink` with nothing to feed it: only DataFusion's way of answering a count.
+/// A plan of `sink` with nothing to feed it: only DataFusion's way of answering a count, widened into a write's row.
 pub(crate) fn no_input(schema: SchemaRef, sink: impl DataSink + 'static) -> Arc<dyn ExecutionPlan> {
-    Arc::new(DataSinkExec::new(
-        Arc::new(EmptyExec::new(schema)),
-        Arc::new(sink),
-        None,
-    ))
+    let sink = DataSinkExec::new(Arc::new(EmptyExec::new(schema)), Arc::new(sink), None);
+    Arc::new(MetaWriteExec::new(Arc::new(sink)))
 }

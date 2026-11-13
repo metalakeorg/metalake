@@ -29,7 +29,7 @@ use datafusion_proto::bytes::{
 use datafusion_proto::logical_plan::DefaultLogicalExtensionCodec;
 use datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec;
 use metalake::{Catalog, CatalogConfig, NewTable, Storage, TableWriter, WriteOptions};
-use metalake_datafusion::{MetaLake, MetaLakePhysicalCodec};
+use metalake_datafusion::{MetaLake, MetaLakePhysicalCodec, written_schema};
 use metalake_pg::{Commit, Pool, Protocol};
 use serde_json::json;
 
@@ -250,6 +250,7 @@ async fn encode_writes() -> Result<(), Box<dyn std::error::Error>> {
     let reader = MetaLakePhysicalCodec::new(lakes.storage.clone(), Arc::new(DefaultPhysicalExtensionCodec {}));
     let writer = lakes.there.physical_codec(Arc::new(DefaultPhysicalExtensionCodec {}));
     let task = SessionContext::new().task_ctx();
+    context.sql("set datafusion.execution.target_partitions = 16").await?.collect().await?;
     for sql in [
         "insert into main.db.t select k, s from main.db.u",
         "delete from main.db.t where k = 4",
@@ -257,10 +258,14 @@ async fn encode_writes() -> Result<(), Box<dyn std::error::Error>> {
         "merge into main.db.t t using main.db.u u on t.k = u.k when matched then delete",
     ] {
         let plan = context.sql(sql).await?.create_physical_plan().await?;
+        // The sink right under the write's row, however many partitions: no repartition between them.
+        assert_eq!(plan.children()[0].name(), "DataSinkExec", "{sql}");
         let bytes = physical_plan_to_bytes_with_extension_codec(plan, &codec)?;
         let refused = physical_plan_from_bytes_with_extension_codec(&bytes, &task, &reader).unwrap_err();
         assert!(refused.to_string().contains("no catalog"), "{sql}: {refused}");
-        physical_plan_from_bytes_with_extension_codec(&bytes, &task, &writer)?;
+        // Around its sink, the write's row, which crosses with it.
+        let decoded = physical_plan_from_bytes_with_extension_codec(&bytes, &task, &writer)?;
+        assert_eq!((decoded.name(), decoded.schema()), ("MetaWriteExec", written_schema()), "{sql}");
     }
     Ok(())
 }
