@@ -21,7 +21,9 @@ ballista-executor = { version = "55.0.0", default-features = false, features = [
 ballista-scheduler = { version = "55.0.0", default-features = false }
 datafusion = { version = "55.2", default-features = false, features = ["parquet", "sql"] }
 datafusion-proto = { version = "55.2", default-features = false, features = ["parquet"] }
-tokio = { workspace = true, features = ["net", "time"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "time"] }
+# The binaries' log, as Ballista's, set by RUST_LOG.
+env_logger = "0.11"
 
 [dev-dependencies]
 arrow-array.workspace = true

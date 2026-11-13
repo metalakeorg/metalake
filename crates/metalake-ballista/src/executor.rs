@@ -9,6 +9,7 @@ use ballista_core::{ConfigProducer, RuntimeProducer};
 use datafusion::error::Result;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use metalake::{Catalog, Storage};
 use metalake_datafusion::{MetaLakeOptions, MetaLakePhysicalCodec};
 
@@ -19,6 +20,8 @@ pub struct ExecutorParts {
     pub config_producer: ConfigProducer,
     pub runtime_producer: RuntimeProducer,
     pub codec: BallistaCodec,
+    /// The physical codec of `codec`, as `ExecutorProcessConfig` takes it.
+    pub physical: Arc<dyn PhysicalExtensionCodec>,
 }
 
 /// The parts of an executor that reads the lake of `storage` and, with `catalog`, also writes it: a write's sink
@@ -31,14 +34,16 @@ pub fn executor(storage: Storage, catalog: Option<Catalog>) -> Result<ExecutorPa
         runtime.register_object_store(url.as_ref(), store.clone());
         Ok(Arc::new(runtime))
     });
-    let mut physical = MetaLakePhysicalCodec::new(storage, Arc::new(BallistaPhysicalExtensionCodec::default()));
+    let mut codec = MetaLakePhysicalCodec::new(storage, Arc::new(BallistaPhysicalExtensionCodec::default()));
     if let Some(catalog) = catalog {
-        physical = physical.with_catalog(catalog);
+        codec = codec.with_catalog(catalog);
     }
+    let physical: Arc<dyn PhysicalExtensionCodec> = Arc::new(codec);
     Ok(ExecutorParts {
         // MetaLake's options known, so that a job's are taken and not dropped.
         config_producer: Arc::new(|| MetaLakeOptions::register(default_config_producer())),
         runtime_producer,
-        codec: BallistaCodec::new(Arc::new(BallistaLogicalExtensionCodec::default()), Arc::new(physical)),
+        codec: BallistaCodec::new(Arc::new(BallistaLogicalExtensionCodec::default()), physical.clone()),
+        physical,
     })
 }
