@@ -1,5 +1,6 @@
-// Writes a `.br` and a `.gz` beside each file of `dist/` worth compressing, so that the router answers the one a
-// request accepts, compressed once at build and not per request (ADR 0007 §4.3).
+// After `vite build`: writes a `.br` and a `.gz` beside each file of `dist/` worth compressing, so that the router
+// answers the one a request accepts, compressed once at build and not per request (ADR 0007 §4.3); and puts back the
+// `.gitkeep` that keeps the folder.
 
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { extname, join } from "node:path";
@@ -36,3 +37,6 @@ for await (const path of files(DIST)) {
   count++;
 }
 console.log(`compressed ${count} files in dist/`);
+
+// `vite build` empties `dist/`; the file that keeps the folder in git, which `rust-embed` needs to compile, goes back.
+await writeFile(join(DIST, ".gitkeep"), "");
