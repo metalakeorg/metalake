@@ -86,7 +86,7 @@ test("the notebook's ref: chosen in it, where its cells write, and applied again
     .locator('[data-command="kernelmenu:restart"], [data-command="notebook:restart-kernel"]')
     .first()
     .click();
-  await frame.getByRole("button", { name: "Restart" }).click();
+  await frame.locator(".jp-Dialog").getByRole("button", { name: "Restart", exact: true }).click();
   await expect(kernel).toHaveText("MetaLake | Idle", { timeout: 90_000 });
   await expect(await run("lake.ref")).toHaveText(`'${branch}'`, { timeout: 60_000 });
 
