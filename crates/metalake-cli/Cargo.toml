@@ -23,6 +23,7 @@ distributed = ["metalake-client/distributed"]
 [dependencies]
 metalake-client = { path = "../metalake-client" }
 metalake-iceberg = { path = "../metalake-iceberg" }
+metalake-ui = { path = "../metalake-ui" }
 clap = { version = "4", features = ["derive"] }
 datafusion = { version = "55.2", default-features = false }
 futures-util.workspace = true

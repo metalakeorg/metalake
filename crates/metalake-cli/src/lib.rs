@@ -63,6 +63,7 @@ async fn run(cli: Cli) -> Result<(), Error> {
         Verb::Retain(retain) => commands::retain::run(retain, &Lake::open(dir).await?, &out).await,
         Verb::Maintain(maintain) => commands::maintain::run(maintain, &Lake::open(dir).await?, &out).await,
         Verb::Stop => commands::stop::run(dir, &out).await,
+        Verb::Ui(ui) => commands::ui::run(ui).await,
         Verb::Log(log) => commands::log::run(log, &Lake::open(dir).await?, &out).await,
         // Stopping a server reaches no catalog, as stopping the lake's Postgres does not.
         Verb::Iceberg {

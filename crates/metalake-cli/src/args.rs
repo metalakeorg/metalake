@@ -53,6 +53,8 @@ pub enum Verb {
     Maintain(Maintain),
     /// Stops a lake's own Postgres, which stays up otherwise: before moving or deleting the lake. The next command starts it.
     Stop,
+    /// Serves the lake's UI on this machine, on the loopback, and opens it in the browser, until Ctrl-C.
+    Ui(Ui),
     /// Lists a ref's own commits, the latest first; their sequences read the past as `"main@1234"`.
     Log(Log),
     /// When Iceberg clients find each table's metadata written: when one loads it, or after each commit.
@@ -448,4 +450,14 @@ pub struct Init {
     /// certificate is checked: `sslmode=verify-full` unless the connection string names `verify-ca`.
     #[arg(long, value_name = "AUTH", value_parser = ["password", "aws-iam", "gcp-iam", "azure-entra"])]
     pub auth: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct Ui {
+    /// The port to listen on; by default a free one. A port taken is refused.
+    #[arg(long)]
+    pub port: Option<u16>,
+    /// Prints the URL without opening a browser.
+    #[arg(long)]
+    pub no_browser: bool,
 }
