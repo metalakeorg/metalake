@@ -1,6 +1,6 @@
 [package]
 name = "metalake-client"
-version = "0.1.0"
+version = "0.2.0"
 description = "What MetaLake's faces share: reaching a lake, and every verb as a call that answers values"
 edition.workspace = true
 rust-version.workspace = true
