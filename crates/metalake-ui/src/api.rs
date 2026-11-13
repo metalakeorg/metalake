@@ -1,6 +1,6 @@
-//! The UI's API, under `/api` (ADR 0007 §4.1). The guard's token and origin layers wrap this whole router, its fallback
-//! included, so that no path under `/api`, of today or to come, answers without them; and a path that does not exist
-//! answers 401 to a request without the token, which so learns nothing of which paths do.
+//! The UI's API, under `/api` (ADR 0007 §4.1). The guard decides the token and the `Origin` by a path's prefix, over the
+//! whole router, so that no path under `/api`, of today or to come, answers without them, whichever route it reaches;
+//! and a path that does not exist answers 401 to a request without the token, which so learns nothing of which do.
 
 use axum::Router;
 use axum::body::Body;

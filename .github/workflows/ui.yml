@@ -113,13 +113,19 @@ jobs:
         run: cargo fmt -p metalake-cli --check
       - name: Build `metalake`
         run: cargo build --locked -p metalake-cli
-      - name: "`metalake ui`: serves, then stops on SIGINT with nothing left"
+      - name: "`metalake ui`: serves, refuses who may not use it, then stops on SIGINT with nothing left"
         run: |
-          ./target/debug/metalake ui --no-browser --port 4174 > ui.out 2> ui.err &
+          token=ci0ci0ci0ci0ci0ci0ci0ci0ci0ci0ci0ci0ci0
+          METALAKE_UI_TOKEN=$token ./target/debug/metalake ui --no-browser --port 4174 > ui.out 2> ui.err &
           pid=$!
           for _ in $(seq 100); do curl -sf -o /dev/null http://127.0.0.1:4174/ && break; sleep 0.1; done
-          test "$(head -1 ui.out)" = "http://127.0.0.1:4174/"
+          test "$(head -1 ui.out)" = "http://127.0.0.1:4174/#token=$token"
           curl -sf http://127.0.0.1:4174/ | grep -q '<div id="root">'
+          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          test "$(code http://127.0.0.1:4174/api/v1/version)" = 401
+          test "$(code -H "Authorization: Bearer $token" http://127.0.0.1:4174/api/v1/version)" = 200
+          test "$(code -H 'Host: evil.example:4174' http://127.0.0.1:4174/)" = 403
+          test "$(code -X POST -H "Authorization: Bearer $token" -H 'Origin: http://evil.example'             http://127.0.0.1:4174/api/v1/version)" = 403
           kill -INT "$pid"
           wait "$pid" || { echo "exit $?"; cat ui.err; exit 1; }
           if curl -s -o /dev/null http://127.0.0.1:4174/; then echo "still listening" && exit 1; fi

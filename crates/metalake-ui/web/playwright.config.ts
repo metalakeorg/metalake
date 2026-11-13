@@ -4,6 +4,8 @@ import { defineConfig, devices } from "@playwright/test";
 // checkout, never against Vite's dev server: the server shipped is the one tested (ADR 0007 §8). Where the command line
 // is not built, `METALAKE_UI_COMMAND` names another that serves the same, such as metalake-ui's `serve` example.
 const port = 4173;
+/** The run's token, given to the server so that a test can open the URL `metalake ui` would print. */
+export const TOKEN = "e2e0e2e0e2e0e2e0e2e0e2e0e2e0e2e0e2e0e2e0";
 const command = process.env.METALAKE_UI_COMMAND ?? "../../../target/debug/metalake ui --no-browser";
 
 export default defineConfig({
@@ -23,5 +25,6 @@ export default defineConfig({
     stdout: "pipe",
     stderr: "pipe",
     timeout: 30_000,
+    env: { METALAKE_UI_TOKEN: TOKEN },
   },
 });

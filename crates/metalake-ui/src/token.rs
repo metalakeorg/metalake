@@ -80,3 +80,39 @@ impl fmt::Debug for Token {
         f.write_str("Token(…)")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_is_64_hex_and_new_each_time() {
+        let (a, b) = (Token::generate().unwrap(), Token::generate().unwrap());
+        assert_eq!(a.as_str().len(), 64);
+        assert!(a.as_str().bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(a.as_str(), b.as_str());
+    }
+
+    #[test]
+    fn given_refused_short_or_unsafe() {
+        assert!(Token::given("a".repeat(MIN_LENGTH - 1)).is_err());
+        assert!(Token::given(format!("{}&b", "a".repeat(MIN_LENGTH))).is_err());
+        assert!(Token::given(format!("{} b", "a".repeat(MIN_LENGTH))).is_err());
+        assert!(Token::given(format!("{}-_9", "a".repeat(MIN_LENGTH))).is_ok());
+    }
+
+    #[test]
+    fn matches_itself_alone() {
+        let token = Token::given("a".repeat(40)).unwrap();
+        assert!(token.matches(&"a".repeat(40)));
+        assert!(!token.matches(&"a".repeat(39)));
+        assert!(!token.matches(&format!("{}b", "a".repeat(39))));
+        assert!(!token.matches(""));
+    }
+
+    #[test]
+    fn debug_hides_it() {
+        let token = Token::given("s".repeat(40)).unwrap();
+        assert_eq!(format!("{token:?}"), "Token(…)");
+    }
+}

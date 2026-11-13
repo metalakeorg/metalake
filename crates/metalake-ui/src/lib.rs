@@ -85,16 +85,15 @@ pub(crate) async fn serve_router(
 }
 
 /// The router over `files`, which a test gives in place of the embedded ones, guarded by `access`. Layers run from the
-/// last added: the headers wrap every answer, refusals included; then the `Host`; then, under `/api`, the token and the
-/// `Origin`, over the API's whole router, its fallback included.
+/// last added: the headers wrap every answer, refusals included; then the `Host`; then, for every path under `/api` by
+/// its prefix, whatever route it reaches, the token and the `Origin`.
 pub(crate) fn router_with(files: Arc<dyn Files>, access: Access) -> Router {
     let access = Arc::new(access);
-    let api = api::router()
-        .layer(axum::middleware::from_fn_with_state(access.clone(), guard::origin))
-        .layer(axum::middleware::from_fn_with_state(access.clone(), guard::bearer));
     Router::new()
-        .nest("/api", api)
+        .nest("/api", api::router())
         .merge(frontend_router(files))
+        .layer(axum::middleware::from_fn_with_state(access.clone(), guard::origin))
+        .layer(axum::middleware::from_fn_with_state(access.clone(), guard::bearer))
         .layer(axum::middleware::from_fn_with_state(access, guard::host))
         .layer(axum::middleware::map_response(guard::secured))
 }

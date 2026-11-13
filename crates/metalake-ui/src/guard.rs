@@ -61,9 +61,17 @@ pub(crate) async fn host(State(access): State<Arc<Access>>, request: Request, ne
     }
 }
 
+/// Whether `path` is the API's: `/api`, or anything under it. The token and the `Origin` are decided by this, over the
+/// whole router, and not by where axum routes a path: `/api/` matches no route of a router nested at `/api`, and falls
+/// to the frontend's; a guard that depended on routing would let it through.
+pub(crate) fn under_api(path: &str) -> bool {
+    path == "/api" || path.starts_with("/api/")
+}
+
 /// Under `/api`: a request without the run's token as its bearer is refused.
 pub(crate) async fn bearer(State(access): State<Arc<Access>>, request: Request, next: Next) -> Response {
-    if bearer_of(request.headers()).is_some_and(|given| access.token.matches(given)) {
+    if !under_api(request.uri().path()) || bearer_of(request.headers()).is_some_and(|given| access.token.matches(given))
+    {
         return next.run(request).await;
     }
     let mut response = refuse(
@@ -79,7 +87,8 @@ pub(crate) async fn bearer(State(access): State<Arc<Access>>, request: Request, 
 /// Under `/api`: a method that writes is refused unless it comes from the UI's own pages. A browser always sends
 /// `Origin` with one, so a request without it is not the UI's frontend.
 pub(crate) async fn origin(State(access): State<Arc<Access>>, request: Request, next: Next) -> Response {
-    let safe = matches!(*request.method(), Method::GET | Method::HEAD | Method::OPTIONS);
+    let safe =
+        !under_api(request.uri().path()) || matches!(*request.method(), Method::GET | Method::HEAD | Method::OPTIONS);
     let own = request
         .headers()
         .get(header::ORIGIN)
