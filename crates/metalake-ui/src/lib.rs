@@ -11,6 +11,7 @@ mod frontend;
 mod guard;
 #[cfg(feature = "lake")]
 mod lake;
+pub mod notebook;
 #[cfg(test)]
 mod tests;
 pub mod token;
@@ -35,7 +36,8 @@ pub const GRACE: Duration = Duration::from_secs(5);
 /// The UI's router on `port`, which only the run's `token` opens (ADR 0007 §4.2): the frontend, and its API under
 /// `/api` over `backend`.
 pub fn router(backend: Arc<dyn Backend>, token: Token, port: u16) -> Router {
-    router_with(Arc::new(Dist), backend, Access { token, port })
+    let notebook = Arc::new(notebook::Notebook::from_environment());
+    router_with(Arc::new(Dist), backend, notebook, Access { token, port })
 }
 
 /// The URL a run of the UI on `address` is opened at: its token in the fragment, which a browser never sends to a
@@ -91,10 +93,15 @@ pub(crate) async fn serve_router(
 /// The router over `files`, which a test gives in place of the embedded ones, and `backend`, guarded by `access`. Layers run from the
 /// last added: the headers wrap every answer, refusals included; then the `Host`; then, for every path under `/api` by
 /// its prefix, whatever route it reaches, the token and the `Origin`.
-pub(crate) fn router_with(files: Arc<dyn Files>, backend: Arc<dyn Backend>, access: Access) -> Router {
+pub(crate) fn router_with(
+    files: Arc<dyn Files>,
+    backend: Arc<dyn Backend>,
+    notebook: Arc<notebook::Notebook>,
+    access: Access,
+) -> Router {
     let access = Arc::new(access);
     Router::new()
-        .nest("/api", api::router(backend))
+        .nest("/api", api::router(backend, notebook))
         .merge(frontend_router(files))
         .layer(axum::middleware::from_fn_with_state(access.clone(), guard::origin))
         .layer(axum::middleware::from_fn_with_state(access.clone(), guard::bearer))

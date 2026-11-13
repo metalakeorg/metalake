@@ -27,6 +27,8 @@ duckdb = ["duckdb>=1.5"]
 # Within the minor version the Iceberg runtime that MetaLake names was built for.
 spark = ["pyspark>=3.5,<3.6"]
 flink = ["apache-flink>=1.20,<1.21"]
+# The UI's Notebook (ADR 0008): JupyterLab and the kernel, at versions that carry the 2026 security fixes.
+notebook = ["jupyterlab>=4.6,<5", "jupyter-server>=2.21", "ipykernel>=6.29"]
 
 [project.scripts]
 metalake = "metalake:_main"

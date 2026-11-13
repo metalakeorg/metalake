@@ -23,6 +23,8 @@ use serde::{Deserialize, Serialize};
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi, ToSchema};
 
+use crate::notebook::Notebook;
+
 /// The version of the API's contract, which a frontend of another build compares with its own.
 pub const VERSION: u32 = 1;
 
@@ -185,6 +187,18 @@ pub struct Rows {
     pub truncated: bool,
 }
 
+/// Whether this `metalake` can give a Notebook (ADR 0008).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[schema(as = Notebook)]
+pub struct NotebookState {
+    /// Whether it runs in a Python: a `metalake` pip installed does, one built alone does not.
+    pub python: bool,
+    /// Whether that Python imports JupyterLab and the kernel.
+    pub jupyterlab: bool,
+    /// The line that installs what the Notebook needs into that Python.
+    pub install: String,
+}
+
 /// What a failure means to whoever called, as the command line's exit codes and Python's exceptions say it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
@@ -235,8 +249,11 @@ impl Fault {
     }
 }
 
-/// The paths under `/api`, over `backend`.
-pub(crate) fn router(backend: Arc<dyn Backend>) -> Router {
+/// The paths under `/api`, over `backend`; and the Notebook's, over `notebook`.
+pub(crate) fn router(backend: Arc<dyn Backend>, notebook: Arc<Notebook>) -> Router {
+    let notebooks = Router::new()
+        .route("/v1/notebook", get(notebook_state))
+        .with_state(notebook);
     Router::new()
         .route("/v1/version", get(version))
         .route("/v1/status", get(status))
@@ -246,6 +263,7 @@ pub(crate) fn router(backend: Arc<dyn Backend>) -> Router {
         .route("/v1/sql", post(sql))
         .fallback(no_route)
         .with_state(backend)
+        .merge(notebooks)
 }
 
 /// The API's version.
@@ -366,6 +384,20 @@ fn to_json(value: &impl Serialize) -> String {
     serde_json::to_string(value).expect("the API's types are JSON")
 }
 
+/// Whether this `metalake` can give a Notebook: a Python, and JupyterLab in it; and the line that installs it. Looked
+/// at each time, so that an install while the UI runs is seen.
+#[utoipa::path(get, path = "/api/v1/notebook", tag = "notebook", responses(
+    (status = 200, description = "What the Notebook can do here", body = NotebookState),
+    (status = 401, description = "Without the run's token", body = Fault),
+))]
+async fn notebook_state(State(notebook): State<Arc<Notebook>>) -> Response {
+    answer(Ok(NotebookState {
+        python: notebook.python().is_some(),
+        jupyterlab: notebook.jupyterlab().await,
+        install: notebook.install(),
+    }))
+}
+
 async fn no_route() -> Response {
     let fault = Fault::new(Kind::Usage, "no such path in MetaLake's UI API");
     json(
@@ -378,7 +410,7 @@ async fn no_route() -> Response {
 #[derive(OpenApi)]
 #[openapi(
     info(title = "MetaLake UI", version = "1", description = "The API of `metalake ui` (ADR 0007 §4.1)"),
-    paths(version, status, refs, tables, events, sql),
+    paths(version, status, refs, tables, events, sql, notebook_state),
     modifiers(&Token),
     security(("token" = []))
 )]

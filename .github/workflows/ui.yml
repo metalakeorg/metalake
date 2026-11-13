@@ -174,7 +174,9 @@ jobs:
           pnpm exec playwright install --with-deps chromium
       - name: Playwright against `metalake ui`
         working-directory: crates/metalake-ui/web
-        run: METALAKE_UI_COMMAND="$METALAKE ui --no-browser" pnpm e2e
+        # A Python without JupyterLab, as the `metalake` command pip installs would name: the Notebook gives the line
+        # that installs it.
+        run: METALAKE_PYTHON=python3 METALAKE_UI_COMMAND="$METALAKE ui --no-browser" pnpm e2e
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

@@ -51,6 +51,37 @@
         }
       }
     },
+    "/api/v1/notebook": {
+      "get": {
+        "tags": [
+          "notebook"
+        ],
+        "summary": "Whether this `metalake` can give a Notebook: a Python, and JupyterLab in it; and the line that installs it. Looked\nat each time, so that an install while the UI runs is seen.",
+        "operationId": "notebook_state",
+        "responses": {
+          "200": {
+            "description": "What the Notebook can do here",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Notebook"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Without the run's token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/refs": {
       "get": {
         "tags": [
@@ -423,6 +454,29 @@
           },
           "name": {
             "type": "string"
+          }
+        }
+      },
+      "Notebook": {
+        "type": "object",
+        "description": "Whether this `metalake` can give a Notebook (ADR 0008).",
+        "required": [
+          "python",
+          "jupyterlab",
+          "install"
+        ],
+        "properties": {
+          "install": {
+            "type": "string",
+            "description": "The line that installs what the Notebook needs into that Python."
+          },
+          "jupyterlab": {
+            "type": "boolean",
+            "description": "Whether that Python imports JupyterLab and the kernel."
+          },
+          "python": {
+            "type": "boolean",
+            "description": "Whether it runs in a Python: a `metalake` pip installed does, one built alone does not."
           }
         }
       },

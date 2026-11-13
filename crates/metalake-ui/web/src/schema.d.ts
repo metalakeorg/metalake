@@ -24,6 +24,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/notebook": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Whether this `metalake` can give a Notebook: a Python, and JupyterLab in it; and the line that installs it. Looked
+         *     at each time, so that an install while the UI runs is seen.
+         */
+        get: operations["notebook_state"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/refs": {
         parameters: {
             query?: never;
@@ -158,6 +178,15 @@ export interface components {
             kind: string;
             name: string;
         };
+        /** @description Whether this `metalake` can give a Notebook (ADR 0008). */
+        Notebook: {
+            /** @description The line that installs what the Notebook needs into that Python. */
+            install: string;
+            /** @description Whether that Python imports JupyterLab and the kernel. */
+            jupyterlab: boolean;
+            /** @description Whether it runs in a Python: a `metalake` pip installed does, one built alone does not. */
+            python: boolean;
+        };
         /** @description A branch or a tag. */
         Ref: {
             /**
@@ -256,6 +285,35 @@ export interface operations {
             };
             /** @description The lake could not be watched */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+        };
+    };
+    notebook_state: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What the Notebook can do here */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Notebook"];
+                };
+            };
+            /** @description Without the run's token */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };
