@@ -11,7 +11,7 @@ use tower::ServiceExt;
 
 use crate::assets::{File, Files};
 use crate::frontend::{Coding, codings, matches};
-use crate::{built, router, router_with};
+use crate::{Token, built, frontend_router, router};
 
 const PAGE: &str = "<!doctype html><title>MetaLake</title>";
 const SCRIPT: &str = "console.log('the application')";
@@ -45,7 +45,7 @@ impl Files for Memory {
 
 /// A built frontend: its page, a script with both compressed copies, a style with none, and an icon.
 fn built_router() -> Router {
-    router_with(Arc::new(Memory::new(&[
+    frontend_router(Arc::new(Memory::new(&[
         ("index.html", "text/html", PAGE.as_bytes()),
         ("assets/app-1a2b.js", "text/javascript", SCRIPT.as_bytes()),
         ("assets/app-1a2b.js.br", "application/octet-stream", b"brotli bytes"),
@@ -55,8 +55,16 @@ fn built_router() -> Router {
     ])))
 }
 
+/// The router a run serves, with the files this crate embedded, on port 4173.
+fn embedded() -> Router {
+    router(Token::given("t".repeat(32)).unwrap(), 4173)
+}
+
+/// The `Host` a browser sends to it.
+const HOST: &str = "127.0.0.1:4173";
+
 fn unbuilt_router() -> Router {
-    router_with(Arc::new(Memory::new(&[])))
+    frontend_router(Arc::new(Memory::new(&[])))
 }
 
 struct Answer {
@@ -172,7 +180,7 @@ async fn unbuilt_route_says_how_to_build() {
 /// build it otherwise. CI runs both.
 #[tokio::test]
 async fn embedded_frontend_matches_built() {
-    let answer = send(router(), Method::GET, "/", &[]).await;
+    let answer = send(embedded(), Method::GET, "/", &[(header::HOST, HOST)]).await;
     if built() {
         assert_eq!(answer.status, StatusCode::OK);
         let page = String::from_utf8(answer.body).unwrap();
@@ -182,8 +190,14 @@ async fn embedded_frontend_matches_built() {
             .split('"')
             .find(|part| part.starts_with("/assets/") && part.ends_with(".js"))
             .expect("the page names its script");
-        let plain = send(router(), Method::GET, script, &[]).await;
-        let brotli = send(router(), Method::GET, script, &[(header::ACCEPT_ENCODING, "gzip, br")]).await;
+        let plain = send(embedded(), Method::GET, script, &[(header::HOST, HOST)]).await;
+        let brotli = send(
+            embedded(),
+            Method::GET,
+            script,
+            &[(header::HOST, HOST), (header::ACCEPT_ENCODING, "gzip, br")],
+        )
+        .await;
         assert_eq!(
             plain.header(header::CACHE_CONTROL),
             Some("public, max-age=31536000, immutable")
@@ -467,5 +481,191 @@ mod life {
             stopping.elapsed()
         );
         drop(held);
+    }
+}
+
+// Who may use the UI (milestone 4).
+
+mod access {
+    use std::sync::Arc;
+
+    use axum::Router;
+    use axum::http::{Method, StatusCode, header};
+
+    use super::{Answer, HOST, Memory, PAGE, send};
+    use crate::guard::Access;
+    use crate::{Token, router_with};
+
+    const SECRET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    /// The guarded router of a run on port 4173, whose token is `SECRET`.
+    fn guarded() -> Router {
+        let files = Memory::new(&[
+            ("index.html", "text/html", PAGE.as_bytes()),
+            ("favicon.svg", "image/svg+xml", b"<svg/>"),
+        ]);
+        let access = Access {
+            token: Token::given(SECRET.to_owned()).unwrap(),
+            port: 4173,
+        };
+        router_with(Arc::new(files), access)
+    }
+
+    fn bearer() -> String {
+        format!("Bearer {SECRET}")
+    }
+
+    async fn ask(method: Method, path: &str, headers: &[(header::HeaderName, &str)]) -> Answer {
+        super::send(guarded(), method, path, headers).await
+    }
+
+    #[tokio::test]
+    async fn other_host_forbidden_everywhere() {
+        let bearer = bearer();
+        for host in [
+            "evil.example:4173",
+            "127.0.0.1.evil.com:4173",
+            "127.0.0.1:9999",
+            "127.0.0.1",
+            "[::1]:4173",
+        ] {
+            for path in ["/", "/favicon.svg", "/api/v1/version"] {
+                let headers = [(header::HOST, host), (header::AUTHORIZATION, bearer.as_str())];
+                let answer = ask(Method::GET, path, &headers).await;
+                assert_eq!(answer.status, StatusCode::FORBIDDEN, "{host} {path}");
+            }
+        }
+        let none = send(guarded(), Method::GET, "/", &[]).await;
+        assert_eq!(none.status, StatusCode::FORBIDDEN, "no Host");
+    }
+
+    #[tokio::test]
+    async fn own_host_by_address_or_name() {
+        for host in [HOST, "localhost:4173", "LOCALHOST:4173"] {
+            let answer = ask(Method::GET, "/", &[(header::HOST, host)]).await;
+            assert_eq!(answer.status, StatusCode::OK, "{host}");
+        }
+    }
+
+    #[tokio::test]
+    async fn frontend_needs_no_token() {
+        let answer = ask(Method::GET, "/refs/main", &[(header::HOST, HOST)]).await;
+        assert_eq!(answer.status, StatusCode::OK);
+        assert_eq!(answer.body, PAGE.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn api_without_token_unauthorized() {
+        let wrong = format!("Bearer {}", SECRET.replace('0', "1"));
+        let basic = format!("Basic {SECRET}");
+        let cases = [
+            None,
+            Some("Bearer"),
+            Some(wrong.as_str()),
+            Some(basic.as_str()),
+            Some(SECRET),
+        ];
+        for authorization in cases {
+            let mut headers = vec![(header::HOST, HOST)];
+            headers.extend(authorization.map(|value| (header::AUTHORIZATION, value)));
+            let answer = ask(Method::GET, "/api/v1/version", &headers).await;
+            assert_eq!(answer.status, StatusCode::UNAUTHORIZED, "{authorization:?}");
+            assert_eq!(
+                answer.header(header::WWW_AUTHENTICATE),
+                Some("Bearer"),
+                "{authorization:?}"
+            );
+            assert!(answer.body.starts_with(br#"{"kind":"usage""#), "{authorization:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn api_with_token_answers() {
+        for scheme in ["Bearer", "bearer", "BEARER"] {
+            let authorization = format!("{scheme} {SECRET}");
+            let headers = [(header::HOST, HOST), (header::AUTHORIZATION, authorization.as_str())];
+            let answer = ask(Method::GET, "/api/v1/version", &headers).await;
+            assert_eq!(answer.status, StatusCode::OK, "{scheme}");
+            assert_eq!(answer.body, br#"{"api":1}"#, "{scheme}");
+        }
+    }
+
+    /// The token's layer wraps the API's whole router: a path that does not exist is 401 without it, telling nothing,
+    /// and 404 with it; never the frontend's page.
+    #[tokio::test]
+    async fn every_api_path_behind_token() {
+        for path in ["/api", "/api/", "/api/v1", "/api/v1/sql", "/api/v2/version"] {
+            let without = ask(Method::GET, path, &[(header::HOST, HOST)]).await;
+            assert_eq!(without.status, StatusCode::UNAUTHORIZED, "{path}");
+        }
+        let bearer = bearer();
+        for path in ["/api/v1/sql", "/api/v2/version"] {
+            let headers = [(header::HOST, HOST), (header::AUTHORIZATION, bearer.as_str())];
+            let with = ask(Method::GET, path, &headers).await;
+            assert_eq!(with.status, StatusCode::NOT_FOUND, "{path}");
+            assert_eq!(with.header(header::CONTENT_TYPE), Some("application/json"), "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn write_from_other_origin_forbidden() {
+        let bearer = bearer();
+        let origins = [
+            None,
+            Some("http://evil.example"),
+            Some("null"),
+            Some("http://127.0.0.1:9999"),
+            Some("https://127.0.0.1:4173"),
+        ];
+        for origin in origins {
+            let mut headers = vec![(header::HOST, HOST), (header::AUTHORIZATION, bearer.as_str())];
+            headers.extend(origin.map(|value| (header::ORIGIN, value)));
+            for method in [Method::POST, Method::PUT, Method::DELETE, Method::PATCH] {
+                let answer = ask(method.clone(), "/api/v1/version", &headers).await;
+                assert_eq!(answer.status, StatusCode::FORBIDDEN, "{method} {origin:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn write_from_own_origin_passes() {
+        let bearer = bearer();
+        for origin in ["http://127.0.0.1:4173", "http://localhost:4173"] {
+            let headers = [
+                (header::HOST, HOST),
+                (header::AUTHORIZATION, bearer.as_str()),
+                (header::ORIGIN, origin),
+            ];
+            let answer = ask(Method::POST, "/api/v1/version", &headers).await;
+            // Past the guard: the route itself answers, and takes GET alone.
+            assert_eq!(answer.status, StatusCode::METHOD_NOT_ALLOWED, "{origin}");
+        }
+    }
+
+    #[tokio::test]
+    async fn every_answer_secured() {
+        let requests = [
+            ("/", HOST),
+            ("/favicon.svg", HOST),
+            ("/", "evil.example"),
+            ("/api/v1/version", HOST),
+            ("/assets/gone.js", HOST),
+        ];
+        for (path, host) in requests {
+            let answer = ask(Method::GET, path, &[(header::HOST, host)]).await;
+            let policy = answer.header(header::CONTENT_SECURITY_POLICY).unwrap_or_default();
+            assert!(policy.starts_with("default-src 'self'"), "{path} {host}: {policy}");
+            assert!(policy.contains("frame-ancestors 'none'"), "{path} {host}: {policy}");
+            assert_eq!(
+                answer.header(header::X_CONTENT_TYPE_OPTIONS),
+                Some("nosniff"),
+                "{path} {host}"
+            );
+            assert_eq!(
+                answer.header(header::REFERRER_POLICY),
+                Some("no-referrer"),
+                "{path} {host}"
+            );
+        }
     }
 }

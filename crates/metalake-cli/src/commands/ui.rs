@@ -1,5 +1,5 @@
 //! `metalake ui`: the UI on this machine, in the foreground (ADR 0007 §6). It listens on the loopback, prints its URL,
-//! opens it in the browser through a redirect file, and serves until Ctrl-C.
+//! which carries the run's token, opens it in the browser through a redirect file, and serves until Ctrl-C.
 
 use std::io::ErrorKind;
 use std::net::Ipv4Addr;
@@ -21,7 +21,9 @@ pub async fn run(args: &Ui) -> Result<(), Error> {
         }
         bound => bound?,
     };
-    let url = format!("http://{}/", listener.local_addr()?);
+    // `METALAKE_UI_TOKEN` gives it, for a test or Vite's dev server; else a new one, which only this URL carries.
+    let token = metalake_ui::Token::from_environment().map_err(|e| Error::usage(e.to_string()))?;
+    let url = metalake_ui::url(listener.local_addr()?, &token);
     if !metalake_ui::built() {
         eprintln!("this metalake was compiled without its UI's frontend: the page says how to build it");
     }
@@ -30,7 +32,7 @@ pub async fn run(args: &Ui) -> Result<(), Error> {
     // Kept until the UI stops, then removed, however it stops.
     let _redirect = if args.no_browser { None } else { opened(&url) };
     eprintln!("serving MetaLake's UI: Ctrl-C stops it");
-    metalake_ui::serve(listener, stopped()).await?;
+    metalake_ui::serve(listener, token, stopped()).await?;
     Ok(())
 }
 
