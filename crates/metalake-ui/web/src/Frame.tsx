@@ -1,27 +1,15 @@
 import type { ReactNode } from "react";
-import type { Status } from "./client";
 import type { Server } from "./server";
 
-/** The frame every page sits in: a header naming the product, the lake it is on and the server's state; the pages'
- * navigation beside the page; or, in place of both, what keeps the page from showing. */
-export function Frame({
-  server,
-  lake,
-  nav,
-  children,
-}: {
-  server?: Server;
-  lake?: Status | undefined;
-  nav?: ReactNode;
-  children?: ReactNode;
-}) {
+/** The frame every page sits in: a header naming the product and the server's state; the sidebar beside the page; or,
+ * in place of both, what keeps the page from showing. */
+export function Frame({ server, nav, children }: { server?: Server; nav?: ReactNode; children?: ReactNode }) {
   const ready = server === undefined || server.state === "ready";
   return (
     <div className="flex h-full flex-col">
       <header className="flex h-12 shrink-0 items-center gap-2 border-zinc-200 border-b px-4 dark:border-zinc-800">
         <img src="/favicon.svg" alt="" className="size-6" />
         <span className="font-semibold tracking-tight">MetaLake</span>
-        {lake && <Named lake={lake} />}
         {server?.state === "ready" && (
           <span className="ml-auto text-xs text-zinc-500 dark:text-zinc-400">API {server.api}</span>
         )}
@@ -31,21 +19,6 @@ export function Frame({
         <main className="min-h-0 flex-1 overflow-auto">{ready ? children : <Blocked server={server} />}</main>
       </div>
     </div>
-  );
-}
-
-/** Which lake this is: its schema, and the Postgres its catalog is in, or its own. */
-export function where(lake: Status): string {
-  return lake.postgres ?? (lake.local ? `own Postgres, ${lake.local}` : "own Postgres");
-}
-
-function Named({ lake }: { lake: Status }) {
-  return (
-    <span className="ml-4 truncate text-sm text-zinc-600 dark:text-zinc-400" title={where(lake)}>
-      <span className="font-medium text-zinc-900 dark:text-zinc-100">{lake.schema}</span>
-      <span className="mx-1.5">·</span>
-      {where(lake)}
-    </span>
   );
 }
 
