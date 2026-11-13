@@ -5,3 +5,10 @@ minimumReleaseAge: 20160
 
 # JupyterLab's builder resolves the packages it shares with JupyterLab from a flat `node_modules`.
 nodeLinker: hoisted
+
+# Packages whose install scripts are not run: Font Awesome, which JupyterLab brings, needs none for its CSS and fonts.
+allowBuilds:
+  "@fortawesome/fontawesome-free": false
+# The same, as pnpm before 11 reads it.
+ignoredBuiltDependencies:
+  - "@fortawesome/fontawesome-free"

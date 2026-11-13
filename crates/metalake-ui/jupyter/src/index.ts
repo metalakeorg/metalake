@@ -73,6 +73,10 @@ export class RefSelector extends Widget {
   /** The missing ref last said, so that a notebook opened, whose ref is applied as it opens and as its kernel is
    * ready, says it once. */
   private warned = "";
+  /** The notebook's ref when it does not exist: shown, chosen, until the user chooses another or a cell moves `lake`. */
+  private missing: string | null = null;
+  /** The ref `lake` was last seen on, so that a cell that moved it is told from one that did not. */
+  private on = "";
   /** The refs last listed, kept so that a choice shows among them while the list is asked again. */
   private listed: [string, "branch" | "tag"][] = [[MAIN, "branch"]];
 
@@ -87,7 +91,7 @@ export class RefSelector extends Widget {
     this.select.setAttribute("aria-label", "Ref");
     label.append(this.select);
     this.node.append(label);
-    this.show_(this.stored(), false);
+    this.show_(this.stored());
     this.select.addEventListener("change", () => void this.choose(this.select.value));
     // The lake's refs, asked again each time the list is opened: branches come and go.
     this.select.addEventListener("focus", () => void this.look(true));
@@ -149,12 +153,15 @@ export class RefSelector extends Widget {
     if (answer.error.name === "UsageError") {
       // The notebook's ref is gone, or never was: its cells run where `lake` is, which the selector shows, flagged.
       // The notebook keeps the ref it names until the user chooses another, or a cell moves `lake`.
+      // It stays chosen, so that choosing any ref, the one `lake` is on included, is a change that replaces it.
+      this.missing = ref;
       const now = await ask(kernel, "", true);
       if ("state" in now) {
         this.shown(now.state, false);
+      } else {
+        this.show_(MAIN);
       }
       const on = "state" in now ? now.state.ref : MAIN;
-      this.select.classList.add("jp-mod-missing");
       this.select.title = `The notebook's ref ${ref} does not exist: its cells run on ${on}`;
       if (this.warned !== ref) {
         this.warned = ref;
@@ -175,8 +182,8 @@ export class RefSelector extends Widget {
     }
     const answer = await ask(kernel, "", all);
     if ("state" in answer) {
-      // Asked only for the list, a ref that is missing stays flagged; after a cell, what `lake` is on is the notebook's.
-      this.shown(answer.state, !all || !this.select.classList.contains("jp-mod-missing"));
+      // A missing ref stays the notebook's until a cell moves `lake`: a cell that did not leaves it as it was.
+      this.shown(answer.state, this.missing === null || answer.state.ref !== this.on);
     } else {
       this.unreachable(answer.error.value);
     }
@@ -185,16 +192,17 @@ export class RefSelector extends Widget {
   /** The state `lake` gave: the refs to choose from, and its ref, which, with `kept`, the notebook keeps as its own. */
   private shown(state: State, kept = true): void {
     this.select.disabled = false;
+    this.on = state.ref;
     if (state.refs) {
       this.listed = state.refs;
     }
     if (kept) {
-      this.select.classList.remove("jp-mod-missing");
+      this.missing = null;
       this.select.title = "";
       this.warned = "";
       this.keep(state.ref);
     }
-    this.show_(state.ref, true);
+    this.show_(state.ref);
   }
 
   /** `lake` is not there, or cannot be asked: the selector says why, and offers nothing. */
@@ -203,10 +211,17 @@ export class RefSelector extends Widget {
     this.select.title = why;
   }
 
-  /** The options, branches then tags, with `ref` chosen. */
-  private show_(ref: string, known: boolean): void {
+  /** The options, branches then tags, with `ref` chosen; or, first and chosen, the notebook's ref that is missing. */
+  private show_(ref: string): void {
     const refs = this.listed.some(([name]) => name === ref) ? this.listed : [...this.listed, [ref, "branch"] as const];
     this.select.replaceChildren();
+    this.select.classList.toggle("jp-mod-missing", this.missing !== null);
+    if (this.missing !== null) {
+      const option = document.createElement("option");
+      option.value = this.missing;
+      option.textContent = `${this.missing} (missing)`;
+      this.select.append(option);
+    }
     for (const [kind, title] of [
       ["branch", "Branches"],
       ["tag", "Tags"],
@@ -225,8 +240,7 @@ export class RefSelector extends Widget {
       }
       this.select.append(group);
     }
-    this.select.value = ref;
-    this.select.dataset.ref = known ? ref : "";
+    this.select.value = this.missing ?? ref;
   }
 
   /** A new kernel: its `lake` is on `main` until the notebook's ref is applied, once it is idle. */
