@@ -35,6 +35,18 @@ jobs:
           cache-dependency-path: crates/metalake-ui/web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      # The Notebook's ref selector (ADR 0008 §6), built into `dist/labextension/` after the UI's build: the binary
+      # embeds it with the UI's files, and gives it to each run of JupyterLab.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: The Notebook's ref selector
+        working-directory: crates/metalake-ui/jupyter
+        run: |
+          python -m pip install --quiet "jupyterlab>=4.6,<5"
+          pnpm install --frozen-lockfile
+          pnpm build
+          test -f ../web/dist/labextension/package.json
       - uses: actions/upload-artifact@v4
         with:
           name: ui-dist
