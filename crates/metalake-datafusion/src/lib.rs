@@ -21,7 +21,6 @@ mod changes;
 mod codec;
 mod ddl;
 mod details;
-mod exec;
 mod filters;
 mod measure;
 mod merge;
