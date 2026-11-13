@@ -23,7 +23,8 @@ async fn main() -> std::io::Result<()> {
         .and_then(|port| port.parse::<u16>().ok())
         .unwrap_or(0);
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
-    let url = format!("http://{}/", listener.local_addr()?);
+    let token = metalake_ui::Token::from_environment()?;
+    let url = metalake_ui::url(listener.local_addr()?, &token);
     println!("{url}");
     let redirect = if no_browser {
         None
@@ -34,7 +35,7 @@ async fn main() -> std::io::Result<()> {
         Some(redirect)
     };
     eprintln!("built: {}; Ctrl-C stops it", metalake_ui::built());
-    metalake_ui::serve(listener, async {
+    metalake_ui::serve(listener, token, async {
         let _ = tokio::signal::ctrl_c().await;
     })
     .await?;

@@ -11,7 +11,7 @@ use tower::ServiceExt;
 
 use crate::assets::{File, Files};
 use crate::frontend::{Coding, codings, matches};
-use crate::{built, router, router_with};
+use crate::{Token, built, frontend_router, router};
 
 const PAGE: &str = "<!doctype html><title>MetaLake</title>";
 const SCRIPT: &str = "console.log('the application')";
@@ -45,7 +45,7 @@ impl Files for Memory {
 
 /// A built frontend: its page, a script with both compressed copies, a style with none, and an icon.
 fn built_router() -> Router {
-    router_with(Arc::new(Memory::new(&[
+    frontend_router(Arc::new(Memory::new(&[
         ("index.html", "text/html", PAGE.as_bytes()),
         ("assets/app-1a2b.js", "text/javascript", SCRIPT.as_bytes()),
         ("assets/app-1a2b.js.br", "application/octet-stream", b"brotli bytes"),
@@ -55,8 +55,16 @@ fn built_router() -> Router {
     ])))
 }
 
+/// The router a run serves, with the files this crate embedded, on port 4173.
+fn embedded() -> Router {
+    router(Token::given("t".repeat(32)).unwrap(), 4173)
+}
+
+/// The `Host` a browser sends to it.
+const HOST: &str = "127.0.0.1:4173";
+
 fn unbuilt_router() -> Router {
-    router_with(Arc::new(Memory::new(&[])))
+    frontend_router(Arc::new(Memory::new(&[])))
 }
 
 struct Answer {
@@ -172,7 +180,7 @@ async fn unbuilt_route_says_how_to_build() {
 /// build it otherwise. CI runs both.
 #[tokio::test]
 async fn embedded_frontend_matches_built() {
-    let answer = send(router(), Method::GET, "/", &[]).await;
+    let answer = send(embedded(), Method::GET, "/", &[(header::HOST, HOST)]).await;
     if built() {
         assert_eq!(answer.status, StatusCode::OK);
         let page = String::from_utf8(answer.body).unwrap();
@@ -182,8 +190,14 @@ async fn embedded_frontend_matches_built() {
             .split('"')
             .find(|part| part.starts_with("/assets/") && part.ends_with(".js"))
             .expect("the page names its script");
-        let plain = send(router(), Method::GET, script, &[]).await;
-        let brotli = send(router(), Method::GET, script, &[(header::ACCEPT_ENCODING, "gzip, br")]).await;
+        let plain = send(embedded(), Method::GET, script, &[(header::HOST, HOST)]).await;
+        let brotli = send(
+            embedded(),
+            Method::GET,
+            script,
+            &[(header::HOST, HOST), (header::ACCEPT_ENCODING, "gzip, br")],
+        )
+        .await;
         assert_eq!(
             plain.header(header::CACHE_CONTROL),
             Some("public, max-age=31536000, immutable")

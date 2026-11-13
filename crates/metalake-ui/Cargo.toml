@@ -20,6 +20,8 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 # file's type; `include-exclude`: the `.gitkeep` that keeps `web/dist/` is not served.
 rust-embed = { version = "8.9", features = ["debug-embed", "mime-guess", "include-exclude"] }
 tokio = { workspace = true, features = ["net", "sync", "time"] }
+# The run's token, from the system's source of randomness.
+getrandom = "0.3"
 # Opens the redirect file in the user's default browser, on Windows, macOS and Linux.
 webbrowser = "1.2"
 

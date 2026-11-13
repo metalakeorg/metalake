@@ -3185,6 +3185,7 @@ name = "metalake-ui"
 version = "0.0.0"
 dependencies = [
  "axum",
+ "getrandom 0.3.4",
  "rust-embed",
  "tokio",
  "tower",
