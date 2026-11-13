@@ -24,6 +24,16 @@ test("the editor takes SQL, highlights it, and runs it on Ctrl-Enter", async ({ 
   expect(errors).toEqual([]);
 });
 
+test("beside the editor, the assets of a branch, picked above them", async ({ page }) => {
+  await page.goto(`/#token=${TOKEN}`);
+  const assets = page.getByRole("complementary", { name: "Assets" });
+  await expect(assets.getByRole("combobox", { name: "Branch" })).toHaveValue("main");
+  await expect(assets).toContainText("Tables");
+  const panel = await assets.boundingBox();
+  const editor = await page.getByRole("textbox", { name: "SQL" }).boundingBox();
+  expect(panel && editor && panel.x + panel.width <= editor.x).toBe(true);
+});
+
 test("Run with nothing written says so", async ({ page }) => {
   await page.goto(`/#token=${TOKEN}`);
   await page.getByRole("button", { name: "Run" }).click();
