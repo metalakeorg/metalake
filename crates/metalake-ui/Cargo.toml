@@ -33,7 +33,7 @@ utoipa = "6"
 # `debug-embed`: a debug build embeds as a release one does, so that both serve the same files; `mime-guess`: each
 # file's type; `include-exclude`: the `.gitkeep` that keeps `web/dist/` is not served.
 rust-embed = { version = "8.9", features = ["debug-embed", "mime-guess", "include-exclude"] }
-tokio = { workspace = true, features = ["net", "sync", "time"] }
+tokio = { workspace = true, features = ["net", "process", "sync", "time"] }
 # The run's token, from the system's source of randomness.
 getrandom = "0.3"
 # Opens the redirect file in the user's default browser, on Windows, macOS and Linux.

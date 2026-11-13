@@ -523,7 +523,7 @@ mod access {
             token: Token::given(SECRET.to_owned()).unwrap(),
             port: 4173,
         };
-        router_with(Arc::new(files), Arc::new(Detached), access)
+        router_with(Arc::new(files), Arc::new(Detached), Arc::default(), access)
     }
 
     fn bearer() -> String {
@@ -814,7 +814,7 @@ mod api {
             token: Token::given(SECRET.to_owned()).unwrap(),
             port: 4173,
         };
-        router_with(Arc::new(Memory::new(&[])), Arc::new(backend), access)
+        router_with(Arc::new(Memory::new(&[])), Arc::new(backend), Arc::default(), access)
     }
 
     async fn ask(router: Router, path: &str) -> Answer {
@@ -1023,5 +1023,62 @@ mod api {
             committed == api::openapi(),
             "web/openapi.json is not the router's: cargo run -p metalake-ui --no-default-features --example openapi"
         );
+    }
+}
+
+// Whether this `metalake` can give a Notebook (ADR 0008, N1).
+
+mod notebook {
+    use std::sync::Arc;
+
+    use axum::http::{Method, StatusCode, header};
+
+    use super::{HOST, Memory, send};
+    use crate::api::Detached;
+    use crate::guard::Access;
+    use crate::notebook::{INSTALL, Notebook};
+    use crate::{Token, router_with};
+
+    const SECRET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    async fn state(notebook: Notebook) -> serde_json::Value {
+        let access = Access {
+            token: Token::given(SECRET.to_owned()).unwrap(),
+            port: 4173,
+        };
+        let router = router_with(
+            Arc::new(Memory::new(&[])),
+            Arc::new(Detached),
+            Arc::new(notebook),
+            access,
+        );
+        let bearer = format!("Bearer {SECRET}");
+        let headers = [(header::HOST, HOST), (header::AUTHORIZATION, bearer.as_str())];
+        let answer = send(router, Method::GET, "/api/v1/notebook", &headers).await;
+        assert_eq!(answer.status, StatusCode::OK);
+        serde_json::from_slice(&answer.body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn each_case_said() {
+        let cases = [
+            (Notebook::default(), false, false),
+            (Notebook::answering(true, false), true, false),
+            (Notebook::answering(true, true), true, true),
+        ];
+        for (notebook, python, jupyterlab) in cases {
+            let said = state(notebook).await;
+            assert_eq!(said["python"], python, "{said}");
+            assert_eq!(said["jupyterlab"], jupyterlab, "{said}");
+            assert_eq!(said["install"], INSTALL, "{said}");
+        }
+    }
+
+    /// A Python that cannot be run has no JupyterLab: it is said, not failed.
+    #[tokio::test]
+    async fn python_missing_has_none() {
+        let gone = Notebook::with_python(Some("no-such-python-of-metalake".into()));
+        assert!(gone.python().is_some());
+        assert!(!gone.jupyterlab().await);
     }
 }

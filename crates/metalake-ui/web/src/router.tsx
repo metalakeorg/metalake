@@ -4,6 +4,7 @@
 import { createRootRoute, createRoute, createRouter, Link, Outlet } from "@tanstack/react-router";
 import { Frame, Notice } from "./Frame";
 import { useLive } from "./live";
+import { NotebookPage } from "./Notebook";
 import { PAGES } from "./pages";
 import { QueryPage } from "./Query";
 import { useServer } from "./server";
@@ -50,8 +51,9 @@ const root = createRootRoute({
 });
 
 const query = createRoute({ getParentRoute: () => root, path: "/", component: QueryPage });
+const notebook = createRoute({ getParentRoute: () => root, path: "/notebook", component: NotebookPage });
 
-export const router = createRouter({ routeTree: root.addChildren([query]) });
+export const router = createRouter({ routeTree: root.addChildren([query, notebook]) });
 
 declare module "@tanstack/react-router" {
   interface Register {

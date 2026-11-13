@@ -26,6 +26,7 @@ export default defineConfig({
     stdout: "pipe",
     stderr: "pipe",
     timeout: 30_000,
-    env: { METALAKE_UI_TOKEN: TOKEN },
+    // The Python the Notebook would run in, as the `metalake` command pip installs names it; none if unset.
+    env: { METALAKE_UI_TOKEN: TOKEN, METALAKE_PYTHON: process.env.METALAKE_PYTHON ?? "" },
   },
 });

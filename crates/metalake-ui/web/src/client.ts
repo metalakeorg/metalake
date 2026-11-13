@@ -83,3 +83,12 @@ export async function run(sql: string, branch: string, signal?: AbortSignal, api
   if (error) throw new Failure(error);
   return decode(data, response.headers.get("metalake-truncated") === "true");
 }
+
+export type NotebookState = components["schemas"]["Notebook"];
+
+/** Whether this `metalake` can give a Notebook: a Python, and JupyterLab in it. */
+export async function notebook(api: Client = client()): Promise<NotebookState> {
+  const { data, error } = await api.GET("/api/v1/notebook");
+  if (error) throw new Failure(error);
+  return data;
+}

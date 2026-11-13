@@ -73,4 +73,8 @@ def _main():
     """The `metalake` command."""
     # Python would only note an interrupt, and nothing looks at that note while Rust runs the command.
     signal.signal(signal.SIGINT, signal.SIG_DFL)
+    # The Python this command runs in, where `metalake ui` looks for JupyterLab and starts its Notebook (ADR 0008 §4);
+    # one given already, another environment's with the user's own packages, is kept.
+    if sys.executable:
+        os.environ.setdefault("METALAKE_PYTHON", sys.executable)
     sys.exit(_cli(["metalake", *sys.argv[1:]]))
