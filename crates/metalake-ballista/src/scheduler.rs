@@ -11,6 +11,8 @@ use ballista_scheduler::scheduler_server::SessionBuilder;
 use datafusion::error::Result;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionConfig;
+use datafusion_proto::logical_plan::LogicalExtensionCodec;
+use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use metalake_datafusion::MetaLake;
 
 /// What a Ballista scheduler is made of for a lake: a session per job with the lake's catalogs, its sessions'
@@ -21,6 +23,9 @@ pub struct SchedulerParts {
     pub session_builder: SessionBuilder,
     pub config_producer: ConfigProducer,
     pub codec: BallistaCodec,
+    /// The codecs of `codec`, as `SchedulerConfig` takes them.
+    pub logical: Arc<dyn LogicalExtensionCodec>,
+    pub physical: Arc<dyn PhysicalExtensionCodec>,
 }
 
 /// The parts of a scheduler that plans on `lake`.
@@ -35,11 +40,15 @@ pub fn scheduler(lake: MetaLake) -> Result<SchedulerParts> {
             .with_config(config)
             .build())
     });
-    let logical = lake.logical_codec(Arc::new(BallistaLogicalExtensionCodec::default()));
-    let physical = lake.physical_codec(Arc::new(BallistaPhysicalExtensionCodec::default()));
+    let logical: Arc<dyn LogicalExtensionCodec> =
+        Arc::new(lake.logical_codec(Arc::new(BallistaLogicalExtensionCodec::default())));
+    let physical: Arc<dyn PhysicalExtensionCodec> =
+        Arc::new(lake.physical_codec(Arc::new(BallistaPhysicalExtensionCodec::default())));
     Ok(SchedulerParts {
         session_builder,
         config_producer: Arc::new(move || config.clone()),
-        codec: BallistaCodec::new(Arc::new(logical), Arc::new(physical)),
+        codec: BallistaCodec::new(logical.clone(), physical.clone()),
+        logical,
+        physical,
     })
 }
