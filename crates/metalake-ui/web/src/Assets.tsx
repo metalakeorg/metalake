@@ -1,5 +1,7 @@
 // The Query page's assets: the meta tables of the catalog on one branch, which the branch selector above them picks.
 
+import type { ReactNode } from "react";
+
 /** A meta table of the catalog: its namespace's parts, and its name. */
 export interface Table {
   namespace: string[];
@@ -54,16 +56,38 @@ export function Assets({
         </label>
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-2 text-sm">
-        <h2 className="px-1 pb-1 font-medium text-xs text-zinc-500 uppercase tracking-wide dark:text-zinc-400">
-          Tables
-        </h2>
-        <Tables tables={tables} failure={failure ?? null} />
+        <Tables branch={branch} tables={tables} failure={failure ?? null} />
       </div>
     </aside>
   );
 }
 
-function Tables({ tables, failure }: { tables: readonly Table[] | undefined; failure: Error | null }) {
+/** A node of the tree that folds: its name, and what it holds below it, open at first. */
+function Node({ kind, name, children }: { kind: string; name: string; children: ReactNode }) {
+  return (
+    <details open className="group">
+      <summary className="flex cursor-pointer list-none items-center gap-1 rounded px-1 py-0.5 hover:bg-zinc-100 dark:hover:bg-zinc-800">
+        <span aria-hidden className="w-3 text-zinc-400 text-xs transition-transform group-open:rotate-90">
+          ▸
+        </span>
+        <span className="truncate font-mono">{name}</span>
+        <span className="ml-auto text-[10px] text-zinc-400 uppercase tracking-wide dark:text-zinc-500">{kind}</span>
+      </summary>
+      <div className="ml-2 border-zinc-200 border-l pl-2 dark:border-zinc-800">{children}</div>
+    </details>
+  );
+}
+
+/** The tree of what the branch holds: its catalog, which is the branch itself; its schemas; their tables. */
+function Tables({
+  branch,
+  tables,
+  failure,
+}: {
+  branch: string;
+  tables: readonly Table[] | undefined;
+  failure: Error | null;
+}) {
   if (failure) {
     return (
       <p role="alert" className="px-1 text-red-700 text-xs dark:text-red-400">
@@ -74,26 +98,23 @@ function Tables({ tables, failure }: { tables: readonly Table[] | undefined; fai
   if (tables === undefined) {
     return <p className="px-1 text-xs text-zinc-500">Reading the catalog…</p>;
   }
-  if (tables.length === 0) {
-    return <p className="px-1 text-xs text-zinc-500">No tables on this branch.</p>;
-  }
   return (
-    <ul aria-label="Tables" className="space-y-2">
+    <Node kind="catalog" name={branch}>
+      {tables.length === 0 && <p className="px-1 py-0.5 text-xs text-zinc-500">No tables on this branch.</p>}
       {byNamespace(tables).map(([namespace, names]) => (
-        <li key={namespace}>
-          <span className="px-1 font-mono text-xs text-zinc-500 dark:text-zinc-400">{namespace}</span>
+        <Node key={namespace} kind="schema" name={namespace}>
           <ul aria-label={namespace}>
             {names.map((name) => (
               <li
                 key={name}
-                className="truncate rounded px-1 py-0.5 pl-3 font-mono hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                className="truncate rounded px-1 py-0.5 pl-4 font-mono hover:bg-zinc-100 dark:hover:bg-zinc-800"
               >
                 {name}
               </li>
             ))}
           </ul>
-        </li>
+        </Node>
       ))}
-    </ul>
+    </Node>
   );
 }

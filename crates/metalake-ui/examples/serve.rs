@@ -1,7 +1,6 @@
 //! The UI served as `metalake ui` serves it, without the command line, which links the whole of MetaLake: how to try
 //! the router, the redirect file and Ctrl-C in seconds. No lake is behind it: its API says so (`api::Detached`); with
-//! `--sample`, a lake in memory answers instead, of two branches and a few tables, where a table is added every 15 s so
-//! that the page is seen to follow it.
+//! `--sample`, a lake in memory answers instead, of two branches and a few tables, which never change.
 //!
 //! ```text
 //! cargo run -p metalake-ui --no-default-features --example serve -- [--no-browser] [--port N] [--sample]
@@ -10,8 +9,7 @@
 //! The frontend's end-to-end tests run against it where the command line is not built (`METALAKE_UI_COMMAND`).
 
 use std::net::Ipv4Addr;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Arc;
 
 use metalake_ui::api::{Answer, Backend, Detached, Fault, Kind, Mark, Marks, Ref, Status, Table};
 use metalake_ui::browser::{self, Redirect};
@@ -57,9 +55,9 @@ async fn main() -> std::io::Result<()> {
     Ok(())
 }
 
-/// A lake in memory: `main` and `dev`, each with its tables; `main` gains one every 15 s.
-#[derive(Clone)]
-struct Sample(Arc<Mutex<Vec<(&'static str, Table)>>>);
+/// A lake in memory: `main` and `dev`, each with its tables. It never changes: its one mark is said, and its events stay
+/// open, as a lake's do while nothing is written.
+struct Sample(Vec<(&'static str, Table)>);
 
 impl Default for Sample {
     fn default() -> Self {
@@ -72,7 +70,7 @@ impl Default for Sample {
                 },
             )
         };
-        Sample(Arc::new(Mutex::new(vec![
+        Sample(vec![
             table("main", "sales", "orders"),
             table("main", "sales", "customers"),
             table("main", "default", "events"),
@@ -80,16 +78,7 @@ impl Default for Sample {
             table("dev", "sales", "customers"),
             table("dev", "default", "events"),
             table("dev", "staging", "orders_v2"),
-        ])))
-    }
-}
-
-impl Sample {
-    fn mark(&self) -> Mark {
-        Mark {
-            seq: self.0.lock().unwrap().len() as i64,
-            deleted: 0,
-        }
+        ])
     }
 }
 
@@ -113,8 +102,6 @@ impl Backend for Sample {
     fn tables<'a>(&'a self, on: &'a str) -> Answer<'a, Vec<Table>> {
         let tables: Vec<Table> = self
             .0
-            .lock()
-            .unwrap()
             .iter()
             .filter(|(r, _)| *r == on)
             .map(|(_, t)| t.clone())
@@ -130,29 +117,9 @@ impl Backend for Sample {
     }
 
     fn watch(&self) -> Answer<'_, Marks> {
-        let sample = self.clone();
-        Box::pin(async move {
-            let first = sample.mark();
-            let later = futures_util::stream::unfold(sample, |sample| async move {
-                tokio::time::sleep(Duration::from_secs(15)).await;
-                let mark = {
-                    let mut tables = sample.0.lock().unwrap();
-                    let name = format!("arrived_{}", tables.len());
-                    tables.push((
-                        "main",
-                        Table {
-                            namespace: vec!["default".into()],
-                            name,
-                        },
-                    ));
-                    Mark {
-                        seq: tables.len() as i64,
-                        deleted: 0,
-                    }
-                };
-                Some((Ok(mark), sample))
-            });
-            let marks = futures_util::StreamExt::chain(futures_util::stream::iter([Ok(first)]), later);
+        Box::pin(async {
+            let now = futures_util::stream::iter([Ok(Mark { seq: 7, deleted: 0 })]);
+            let marks = futures_util::StreamExt::chain(now, futures_util::stream::pending());
             Ok(Box::pin(marks) as Marks)
         })
     }
