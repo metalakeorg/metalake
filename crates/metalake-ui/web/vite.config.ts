@@ -45,6 +45,21 @@ export default defineConfig({
           });
         },
       },
+      // The Notebook's JupyterLab (ADR 0008 §5), and its kernels' websockets: as the UI's page, whose origin Jupyter
+      // compares with the host it is asked by.
+      "/jupyter": {
+        target: api,
+        ws: true,
+        changeOrigin: true,
+        configure: (proxy) => {
+          proxy.on("proxyReq", (request) => {
+            if (request.getHeader("origin")) request.setHeader("origin", api);
+          });
+          proxy.on("proxyReqWs", (request) => {
+            if (request.getHeader("origin")) request.setHeader("origin", api);
+          });
+        },
+      },
     },
   },
   test: {

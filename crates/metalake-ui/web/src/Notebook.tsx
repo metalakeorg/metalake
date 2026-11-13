@@ -21,7 +21,8 @@ export function NotebookPage() {
     refetchOnMount: "always",
   });
   // JupyterLab, once it serves: the whole page, on the UI's origin, opened with its token once (ADR 0008 §5).
-  const open = started.data?.open;
+  // Only what the start answers now: while it asks again, or after it failed, a past answer's frame would be dead.
+  const open = started.isFetching || started.error ? undefined : started.data?.open;
   if (open) {
     return (
       <section aria-label="Notebook" className="h-full">
@@ -38,7 +39,11 @@ export function NotebookPage() {
         <Said state={state.data} again={() => state.refetch()} looking={state.isFetching} />
       )}
       {state.data?.jupyterlab && (
-        <Starting running={started.data?.running === true} failure={started.error} again={() => started.refetch()} />
+        <Starting
+          running={!started.isFetching && started.data?.running === true}
+          failure={started.error}
+          again={() => started.refetch()}
+        />
       )}
     </section>
   );
