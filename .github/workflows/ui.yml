@@ -6,9 +6,9 @@ name: ui
 on:
   push:
     branches: [main]
-    paths: ["crates/metalake-ui/**", "crates/metalake-cli/**", "Cargo.lock", ".github/workflows/ui.yml"]
+    paths: ["crates/metalake-ui/**", "crates/metalake-cli/**", "packaging/e2e_ui.py", "Cargo.lock", ".github/workflows/ui.yml"]
   pull_request:
-    paths: ["crates/metalake-ui/**", "crates/metalake-cli/**", "Cargo.lock", ".github/workflows/ui.yml"]
+    paths: ["crates/metalake-ui/**", "crates/metalake-cli/**", "packaging/e2e_ui.py", "Cargo.lock", ".github/workflows/ui.yml"]
   workflow_dispatch:
 
 permissions:
@@ -134,6 +134,9 @@ jobs:
           if ./target/debug/metalake ui --no-browser --port 4174 2> taken.err; then echo "a taken port served" && exit 1; fi
           grep -q "port 4174 is taken" taken.err
           kill -INT "$first" && wait "$first"
+      # What every wheel's e2e.sh checks of the `metalake` it installs, here of the one built from this branch.
+      - name: "`metalake ui` as a wheel's is checked: the application, its API, its licenses"
+        run: python3 packaging/e2e_ui.py ./target/debug/metalake
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: crates/metalake-ui/web/package.json

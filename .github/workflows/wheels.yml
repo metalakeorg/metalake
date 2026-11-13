@@ -74,10 +74,13 @@ jobs:
         with:
           name: ui-dist
           path: crates/metalake-ui/web/dist
-      # A wheel without it would serve only the page that says how to build it.
-      - name: The UI's frontend is there to embed
+      # A wheel without it would serve only the page that says how to build it. Its third-party licenses go with it.
+      - name: The UI's frontend is there to embed, and its licenses in the package
         shell: bash
-        run: test -f crates/metalake-ui/web/dist/index.html
+        run: |
+          test -f crates/metalake-ui/web/dist/index.html
+          mkdir -p crates/metalake-py/python/metalake/licenses
+          cp crates/metalake-ui/web/dist/licenses.txt crates/metalake-py/python/metalake/licenses/ui.txt
       - name: Build the wheel
         uses: PyO3/maturin-action@v1
         with:

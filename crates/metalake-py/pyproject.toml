@@ -37,7 +37,11 @@ Repository = "https://github.com/metalakeorg/metalake"
 [tool.maturin]
 module-name = "metalake._metalake"
 python-source = "python"
-include = [{ path = "python/metalake/postgres/**/*", format = "wheel" }]
+include = [
+  { path = "python/metalake/postgres/**/*", format = "wheel" },
+  # The licenses of the third-party code the UI's frontend bundles, which wheels.yml copies from its build.
+  { path = "python/metalake/licenses/**/*", format = "wheel" },
+]
 
 [tool.mypy]
 ignore_missing_imports = true

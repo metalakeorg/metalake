@@ -21,6 +21,7 @@ bin="$work/venv/bin"
 "$bin/python" -m pip install --quiet "${source[@]}"
 
 checks=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e_process.py
+ui_checks=$(dirname "$checks")/e2e_ui.py
 export HOME="$work/home" USERPROFILE="$work/home" PATH="$bin:$PATH"
 unset METALAKE_POSTGRES METALAKE_SCHEMA METALAKE_POSTGRES_BIN PGPASSWORD
 mkdir -p "$HOME/demo"
@@ -40,6 +41,7 @@ metalake merge dev
 [ "$(metalake sql 'select count(*) as n from t' --format csv | tail -1)" = 200001 ]
 metalake maintain >/dev/null
 python "$checks"
+python "$ui_checks"
 metalake stop
 [ ! -e "$HOME/.metalake" ] || { echo "it fetched what the wheel should carry"; exit 1; }
 trap - EXIT
