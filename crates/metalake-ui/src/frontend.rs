@@ -152,10 +152,8 @@ const HTML: &str = "text/html; charset=utf-8";
 
 /// The file at `path`, in the coding the request accepts best of those it has, or 304 when the request holds it.
 fn found(files: &dyn Files, path: &str, file: File, cache: Cache, headers: &HeaderMap) -> Response {
-    let accepted = headers
-        .get(header::ACCEPT_ENCODING)
-        .and_then(|value| value.to_str().ok());
-    let (coding, sent) = codings(accepted)
+    let accepted = list(headers, header::ACCEPT_ENCODING);
+    let (coding, sent) = codings(accepted.as_deref())
         .into_iter()
         .find_map(|coding| match coding {
             Coding::Identity => Some((coding, file.clone())),
@@ -165,10 +163,7 @@ fn found(files: &dyn Files, path: &str, file: File, cache: Cache, headers: &Head
         })
         .unwrap_or((Coding::Identity, file.clone()));
     let tag = entity_tag(&sent.sha256);
-    let held = headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|given| matches(given, &tag));
+    let held = list(headers, header::IF_NONE_MATCH).is_some_and(|given| matches(&given, &tag));
 
     let mut response = if held {
         let mut response = Response::new(Body::empty());
@@ -188,6 +183,17 @@ fn found(files: &dyn Files, path: &str, file: File, cache: Cache, headers: &Head
         headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static(name));
     }
     response
+}
+
+/// Every field line of a list-valued header, joined by commas as one line, which a client may split them into
+/// (RFC 9110 §5.3); `None` when it has none. A line that is not text is left out.
+fn list(headers: &HeaderMap, name: header::HeaderName) -> Option<String> {
+    let lines: Vec<&str> = headers
+        .get_all(name)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect();
+    (!lines.is_empty()).then(|| lines.join(", "))
 }
 
 /// The codings `accept_encoding` accepts, the most preferred first (RFC 9110 §12.5.3). With no header, the file itself:

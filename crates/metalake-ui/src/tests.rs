@@ -334,6 +334,27 @@ async fn held_entity_not_modified() {
 }
 
 #[tokio::test]
+async fn list_header_across_field_lines() {
+    let split = send(
+        built_router(),
+        Method::GET,
+        "/assets/app-1a2b.js",
+        &[(header::ACCEPT_ENCODING, "br;q=0"), (header::ACCEPT_ENCODING, "gzip")],
+    )
+    .await;
+    assert_eq!(split.header(header::CONTENT_ENCODING), Some("gzip"));
+    let tag = get("/").await.header(header::ETAG).unwrap().to_owned();
+    let held = send(
+        built_router(),
+        Method::GET,
+        "/",
+        &[(header::IF_NONE_MATCH, "\"other\""), (header::IF_NONE_MATCH, &tag)],
+    )
+    .await;
+    assert_eq!(held.status, StatusCode::NOT_MODIFIED);
+}
+
+#[tokio::test]
 async fn head_without_body() {
     let answer = send(built_router(), Method::HEAD, "/assets/app-1a2b.js", &[]).await;
     assert_eq!(answer.status, StatusCode::OK);
