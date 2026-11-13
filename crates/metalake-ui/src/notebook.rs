@@ -38,6 +38,9 @@ pub const PREFIX: &str = "/jupyter/";
 pub const KERNEL: &str = "metalake";
 const KERNEL_SHOWN: &str = "MetaLake";
 
+/// The ref selector's package, as JupyterLab finds it among the run's extensions.
+pub const SELECTOR: &str = "@metalake/jupyterlab-ref";
+
 /// The variable that tells the kernel where the lake is: the directory of its `metalake.toml`. Unset, `connect` finds
 /// it as it would anywhere, from the environment the kernel inherits from `metalake ui`.
 pub const LAKE: &str = "METALAKE_NOTEBOOK_LAKE";
@@ -446,8 +449,15 @@ impl Jupyter {
 }
 
 /// MetaLake's kernel, in the run's directory: its spec, under `data`, which `JUPYTER_PATH` names, and its IPython's
-/// own directory, whose startup file binds `lake`.
+/// own directory, whose startup file binds `lake`; and the ref selector, among the run's extensions, if it was built.
 pub(crate) fn kernel(dir: &Path, python: &Path, lake: Option<&Path>) -> std::io::Result<()> {
+    let extension = dir.join("data").join("labextensions").join(SELECTOR);
+    for path in <crate::assets::Selector as rust_embed::RustEmbed>::iter() {
+        let file = <crate::assets::Selector as rust_embed::RustEmbed>::get(&path).expect("an embedded file");
+        let to = extension.join(path.as_ref());
+        std::fs::create_dir_all(to.parent().expect("a file's directory"))?;
+        std::fs::write(to, &file.data)?;
+    }
     let ipython = dir.join("ipython");
     let startup = ipython.join("profile_default").join("startup");
     std::fs::create_dir_all(&startup)?;

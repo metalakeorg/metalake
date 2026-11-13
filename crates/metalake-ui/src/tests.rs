@@ -1163,6 +1163,24 @@ mod jupyter {
         assert!(gone(port, Duration::from_secs(15)).await, "it ended");
     }
 
+    /// The ref selector, where it was built, is among the extensions JupyterLab loads: the run's own, written as it starts.
+    #[tokio::test]
+    async fn loads_ref_selector() {
+        let Some(python) = python() else { return };
+        let built = <crate::assets::Selector as rust_embed::RustEmbed>::get("package.json").is_some();
+        let notebook = notebook(python);
+        notebook.start().await.unwrap();
+        let (port, token) = notebook.reach().await.unwrap();
+        let (status, page) = fetched(port, "GET", "lab", &token, true).await.unwrap();
+        notebook.stop().await;
+        assert_eq!(status, 200);
+        assert_eq!(
+            page.contains(crate::notebook::SELECTOR),
+            built,
+            "the lab page's extensions"
+        );
+    }
+
     /// MetaLake's kernel is the one offered, and the one a notebook starts with; none the user installed is.
     #[tokio::test]
     async fn offers_metalake_kernel_alone() {

@@ -49,6 +49,19 @@ jobs:
         run: pnpm test
       - name: Build
         run: pnpm build
+      # The Notebook's ref selector (ADR 0008 §6): a JupyterLab extension, built by JupyterLab's builder into
+      # `dist/labextension/`, after the UI's build that empties `dist/`. The crate embeds it apart from the UI's files.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: The Notebook's ref selector
+        working-directory: crates/metalake-ui/jupyter
+        run: |
+          python -m pip install --quiet "jupyterlab>=4.6,<5"
+          pnpm install --frozen-lockfile
+          pnpm check
+          pnpm build
+          test -f ../web/dist/labextension/package.json
       - name: Sizes
         run: |
           {
