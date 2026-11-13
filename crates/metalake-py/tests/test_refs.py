@@ -111,6 +111,8 @@ def test_on_ref_names_without_ref(lake):
     assert keys(lake, "main.default.t") == [1]
     assert lake.table("t").name == "worked.default.t"
     assert lake.log()[0].seq > lake.log("main")[0].seq
+    assert 7 in keys(lake, "table_changes('t', 0)")
+    assert 7 not in keys(lake, "table_changes('main.default.t', 0)")
     lake.on("main")
     assert keys(lake, "t") == [1]
     assert lake.table("t").name == "main.default.t"

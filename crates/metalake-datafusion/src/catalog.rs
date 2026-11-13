@@ -19,9 +19,9 @@ use metalake::path::{DEFAULT_NAMESPACE, MAIN, NAMESPACE_SEPARATOR};
 use metalake::{Catalog, Error, Ref, Result, Storage, TablePath};
 
 use crate::options::MetaLakeOptions;
-use crate::written::Written;
 use crate::point::{self, OnePoint};
 use crate::table::MetaTable;
+use crate::written::Written;
 use crate::{changes, ddl};
 
 /// The catalog of what a statement brings with it, which cannot be a ref's name, since those have no leading dot.
@@ -140,8 +140,10 @@ impl MetaLake {
     /// a commit, which `context.sql` cannot do; and what reads `table_changes(…)`, which it does not know.
     pub async fn execute(&self, context: &SessionContext, mut statement: Statement) -> DataFusionResult<DataFrame> {
         // The ranges it reads live as sources until its plan holds them.
-        let _ranges = self.table_changes(&mut statement).await?;
         let state = context.state();
+        let _ranges = self
+            .table_changes(&mut statement, &state.config().options().catalog.default_catalog)
+            .await?;
         let plan = state.statement_to_plan(statement).await?;
         // A name that says no ref is the session's default ref's, as a read's and a write's are: `main` unless the
         // session says another.
@@ -174,11 +176,11 @@ impl MetaLake {
 
     /// Each `table_changes(…)` the statement reads, found in the catalog and put in its place as a source. A table
     /// function of DataFusion would have to know its columns without asking Postgres, which only answers when awaited.
-    async fn table_changes(&self, statement: &mut Statement) -> DataFusionResult<Vec<Source>> {
+    async fn table_changes(&self, statement: &mut Statement, on: &str) -> DataFusionResult<Vec<Source>> {
         let Statement::Statement(inner) = statement else {
             return Ok(Vec::new());
         };
-        let calls = changes::calls(inner)?;
+        let calls = changes::calls(inner, on)?;
         let mut sources = Vec::with_capacity(calls.len());
         for call in calls {
             let on = self.shared.named(&call.path.on).await?;
