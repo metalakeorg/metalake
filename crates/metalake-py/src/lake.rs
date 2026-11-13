@@ -388,12 +388,19 @@ pub fn stop(py: Python<'_>, lake: Option<PathBuf>) -> PyResult<PathBuf> {
 
 /// Makes a lake: in a directory, with a Postgres of its own and `metalake.toml` beside it, or on a Postgres that exists.
 #[pyfunction]
-#[pyo3(signature = (catalog, warehouse=None, *, schema=None))]
-pub fn init(py: Python<'_>, catalog: PathBuf, warehouse: Option<PathBuf>, schema: Option<String>) -> PyResult<PyLake> {
+#[pyo3(signature = (catalog, warehouse=None, *, schema=None, auth=None))]
+pub fn init(
+    py: Python<'_>,
+    catalog: PathBuf,
+    warehouse: Option<PathBuf>,
+    schema: Option<String>,
+    auth: Option<String>,
+) -> PyResult<PyLake> {
     let catalog = catalog.to_string_lossy().into_owned();
     let warehouse = text(warehouse);
     let made = wait(py, async move {
-        let lake = Lake::init(&catalog, warehouse.as_deref(), schema.as_deref()).await?;
+        let auth = metalake_client::Auth::parse(auth.as_deref().unwrap_or("password"))?;
+        let lake = Lake::init_with(&catalog, warehouse.as_deref(), schema.as_deref(), auth).await?;
         let session = Session::new(&lake).await?;
         Ok((lake, session))
     })?;

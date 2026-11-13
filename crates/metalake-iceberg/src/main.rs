@@ -13,6 +13,11 @@ struct Args {
     /// The catalog's Postgres: a libpq connection string or URL.
     #[arg(long, env = "METALAKE_POSTGRES", hide_env_values = true)]
     postgres: String,
+    /// How the server signs in to it: `aws-iam`, `gcp-iam` or `azure-entra`, a token of the server's own cloud
+    /// identity; the connection string's password otherwise.
+    #[arg(long, env = "METALAKE_POSTGRES_AUTH", default_value = "password",
+          value_parser = ["password", "aws-iam", "gcp-iam", "azure-entra"])]
+    auth: String,
     /// The catalog's schema in it.
     #[arg(long, default_value = "metalake")]
     schema: String,
@@ -50,7 +55,8 @@ async fn stopped() {
 async fn main() -> ExitCode {
     let args = Args::parse();
     let run = async {
-        let mut state = State::connect(&args.postgres, &args.schema).await?;
+        let auth = metalake::Auth::parse(&args.auth)?;
+        let mut state = State::connect_with(&args.postgres, &args.schema, auth).await?;
         if args.materialize == Switch::On {
             state = state.materializing();
         }

@@ -57,7 +57,7 @@ impl Catalog {
     /// it, and holds it while its [`Lead`] lives and its connection does. It takes a connection of its own, as the
     /// lock is a session's (Postgres's advisory lock).
     pub async fn lead(&self, name: &str) -> Result<Option<Lead>> {
-        let pool = Pool::waiting(self.postgres(), 1, CONNECT)?;
+        let pool = self.own_pool(CONNECT)?;
         let session = pool.get().await?;
         let protocol = self.protocol().clone();
         if !protocol.try_lead(&session, name).await? {

@@ -64,7 +64,8 @@ impl Iceberg<'_> {
     pub async fn ensure(&self) -> Result<Runtime> {
         let (identity, schema) = (self.lake.identity(), self.lake.schema().to_string());
         let postgres = self.lake.catalog_postgres()?;
-        blocking(move || server::ensure(&identity, &postgres, &schema)).await
+        let auth = self.lake.catalog_auth()?.name();
+        blocking(move || server::ensure(&identity, &postgres, &schema, auth)).await
     }
 
     /// The URL engines connect to, the server started if it is not.

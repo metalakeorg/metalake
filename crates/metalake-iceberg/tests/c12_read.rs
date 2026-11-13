@@ -291,6 +291,9 @@ async fn tt3_pyiceberg_as_of_time_matches_metalake() -> Result<(), Failure> {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         append(&catalog, &main, &storage, "plain", keys).await?;
     }
+    // A time is read only once it is a second old (TT-3): the client asks for the last commit's own time, and a client
+    // that starts fast asks for it sooner than that.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
 
     let (_server, uri) = server(&schema)?;
     let said = client("as_of", &uri)?;

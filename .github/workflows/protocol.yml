@@ -40,6 +40,8 @@ jobs:
         run: bash spec/v0/conformance/iceberg/run.sh
       - name: The protocol
         run: bash sql/test.sh
+      - name: "The connection: TLS, and a password per connection"
+        run: TLS=1 CRATE=metalake-pg bash sql/test.sh --test c_connect
       - name: The core
         run: CRATE=metalake bash sql/test.sh
       - name: The client

@@ -7,7 +7,7 @@ use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use metalake::environment::{self, has_password, storage_options, without_password};
-use metalake::{Catalog, CatalogConfig, Storage};
+use metalake::{Auth, Catalog, CatalogConfig, Storage};
 use metalake_local::{Binaries, Cluster};
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -35,6 +35,9 @@ struct Location {
     /// A Ballista scheduler of the lake's (`df://host:port`), where the router may send a statement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     scheduler: Option<String>,
+    /// How a client signs in to `postgres`: a cloud's token for its identity, by name, or its password when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    auth: Option<String>,
 }
 
 impl Location {
@@ -46,6 +49,15 @@ impl Location {
     fn scheduler(&self) -> Option<String> {
         let named = || env::var(environment::SCHEDULER).ok().filter(|s| !s.is_empty());
         self.scheduler.clone().or_else(named)
+    }
+
+    fn auth(&self) -> Result<Auth> {
+        Ok(self.auth.as_deref().map(Auth::parse).transpose()?.unwrap_or_default())
+    }
+
+    /// The auth the environment names, for a catalog it or a caller names by its connection string.
+    fn auth_of_env() -> Option<String> {
+        env::var(environment::POSTGRES_AUTH).ok().filter(|a| !a.is_empty())
     }
 
     /// What names the lake whatever reaching it takes: its own directory, or its catalog without a password. A lake's
@@ -65,12 +77,26 @@ impl Location {
 
     /// How to connect: a lake's own Postgres is brought up if it is not.
     fn config(&self, connections: Option<usize>) -> Result<CatalogConfig> {
-        let connection = match (&self.postgres, &self.local) {
-            (Some(postgres), None) => with_password(postgres),
-            (None, Some(_)) => self.cluster()?.ensure()?,
+        let auth = self.auth()?;
+        let connection = match (&self.postgres, &self.local, auth) {
+            (Some(postgres), None, Auth::Password) => with_password(postgres),
+            (Some(_), None, auth) if env::var_os(environment::PASSWORD).is_some() => {
+                return Err(Error::usage(format!(
+                    "auth `{}` signs in with a token: unset PGPASSWORD",
+                    auth.name()
+                )));
+            }
+            (Some(postgres), None, _) => postgres.clone(),
+            (None, Some(_), Auth::Password) => self.cluster()?.ensure()?,
+            (None, Some(_), auth) => {
+                return Err(Error::usage(format!(
+                    "a lake's own Postgres signs in by its own password, not auth `{}`",
+                    auth.name()
+                )));
+            }
             _ => return Err(Error::failed(format!("{FILE} must say either postgres or local"))),
         };
-        let mut config = CatalogConfig::new(connection, self.schema());
+        let mut config = CatalogConfig::new(connection, self.schema()).auth(auth);
         if let Some(connections) = connections {
             config.connections = connections;
         }
@@ -107,6 +133,7 @@ impl Location {
                 local: None,
                 schema,
                 scheduler: None,
+                auth: Self::auth_of_env(),
             });
         }
         let here = env::current_dir()?;
@@ -128,6 +155,7 @@ impl Location {
                 local: None,
                 schema: None,
                 scheduler: None,
+                auth: Self::auth_of_env(),
             },
             Some(directory) => {
                 let directory = std::path::absolute(directory)?;
@@ -138,6 +166,7 @@ impl Location {
                         local: Some(directory),
                         schema: None,
                         scheduler: None,
+                        auth: None,
                     },
                     _ => {
                         return Err(Error::failed(format!(
@@ -246,8 +275,19 @@ impl Lake {
 
     /// A lake a program makes: its file beside it wherever the program runs, with the core's default of connections.
     pub async fn init(catalog: &str, warehouse: Option<&str>, schema: Option<&str>) -> Result<Self> {
+        Self::init_with(catalog, warehouse, schema, Auth::Password).await
+    }
+
+    /// The same, signing in to an existing Postgres as `auth` says.
+    pub async fn init_with(catalog: &str, warehouse: Option<&str>, schema: Option<&str>, auth: Auth) -> Result<Self> {
         if is_postgres(catalog) {
-            return Self::create(catalog, warehouse, schema, None, None).await;
+            return Self::create_with(catalog, warehouse, schema, None, None, auth).await;
+        }
+        if auth != Auth::Password {
+            return Err(Error::usage(format!(
+                "a lake's own Postgres signs in by its own password, not auth `{}`",
+                auth.name()
+            )));
         }
         let path = std::path::absolute(catalog)?;
         let (Some(parent), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
@@ -265,6 +305,18 @@ impl Lake {
         schema: Option<&str>,
         dir: Option<&Path>,
         connections: Option<usize>,
+    ) -> Result<Self> {
+        Self::create_with(catalog, warehouse, schema, dir, connections, Auth::Password).await
+    }
+
+    /// The same, signing in to an existing Postgres as `auth` says, which the file keeps.
+    pub async fn create_with(
+        catalog: &str,
+        warehouse: Option<&str>,
+        schema: Option<&str>,
+        dir: Option<&Path>,
+        connections: Option<usize>,
+        auth: Auth,
     ) -> Result<Self> {
         if has_password(catalog) {
             return Err(Error::usage(
@@ -286,7 +338,16 @@ impl Lake {
             local: own.then(|| PathBuf::from(catalog)),
             schema: schema.filter(|s| *s != SCHEMA).map(str::to_string),
             scheduler: None,
+            auth: (auth != Auth::Password).then(|| auth.name().to_string()),
         };
+        // A lake's own Postgres is refused a cloud's auth before anything is written.
+        location.auth()?;
+        if own && auth != Auth::Password {
+            return Err(Error::usage(format!(
+                "a lake's own Postgres signs in by its own password, not auth `{}`",
+                auth.name()
+            )));
+        }
         fs::create_dir_all(dir)?;
         let file = dir.join(FILE);
         let text = toml::to_string(&location).map_err(|e| Error::failed(e.to_string()))?;
@@ -347,6 +408,11 @@ impl Lake {
     /// How to reach the catalog's Postgres, with its password: what a pipeline's process is given, never printed.
     pub fn catalog_postgres(&self) -> Result<String> {
         Ok(self.location.config(None)?.postgres)
+    }
+
+    /// How a client signs in to the catalog.
+    pub fn catalog_auth(&self) -> Result<Auth> {
+        self.location.auth()
     }
 
     /// The Postgres of the catalog, fit to print, unless it is the lake's own.
@@ -434,6 +500,7 @@ mod tests {
             local: None,
             schema: None,
             scheduler: None,
+            auth: None,
         };
         assert_eq!(
             toml::to_string(&plain).unwrap(),
@@ -444,13 +511,31 @@ mod tests {
             local: None,
             schema: Some("other".into()),
             scheduler: None,
+            auth: Some("aws-iam".into()),
         };
         let own = Location {
             postgres: None,
             local: Some("./lake".into()),
             schema: None,
             scheduler: None,
+            auth: None,
         };
+        assert!(toml::to_string(&named).unwrap().contains("auth = \"aws-iam\"\n"));
+        assert_eq!(named.auth().unwrap(), Auth::AwsIam);
+        let unknown = Location {
+            auth: Some("kerberos".into()),
+            ..named.clone()
+        };
+        assert!(unknown.config(None).is_err(), "an auth no client knows is refused");
+        let own_in_cloud = Location {
+            auth: Some("gcp-iam".into()),
+            ..own.clone()
+        };
+        let refused = own_in_cloud.config(None).unwrap_err().to_string();
+        assert!(
+            refused.contains("a lake's own Postgres signs in by its own password"),
+            "{refused}"
+        );
         assert_eq!(toml::to_string(&own).unwrap(), "local = \"./lake\"\n");
         assert!(is_postgres("postgresql://h/db") && is_postgres("host=h user=u"));
         assert!(!is_postgres("./lake") && !is_postgres(r"C:\lake"));

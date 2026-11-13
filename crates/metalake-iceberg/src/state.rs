@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use metalake::{Catalog, CatalogConfig, Error, Ref, Result, Storage, Table};
+use metalake::{Auth, Catalog, CatalogConfig, Error, Ref, Result, Storage, Table};
 use uuid::Uuid;
 
 use crate::footers::{Footers, Job, QUEUE};
@@ -39,7 +39,13 @@ pub struct State {
 impl State {
     /// Reaches the catalog of `schema` in `postgres`, and refuses one whose versions it does not speak.
     pub async fn connect(postgres: &str, schema: &str) -> Result<Self> {
-        let catalog = Catalog::connect(CatalogConfig::new(postgres, schema)).await?;
+        Self::connect_with(postgres, schema, Auth::Password).await
+    }
+
+    /// The same, signing in as `auth` says: with a cloud's token for the server's own identity, it reaches the catalog
+    /// as the client that runs it does.
+    pub async fn connect_with(postgres: &str, schema: &str, auth: Auth) -> Result<Self> {
+        let catalog = Catalog::connect(CatalogConfig::new(postgres, schema).auth(auth)).await?;
         let main = catalog.branch("main").await?;
         let keeper = catalog.clone();
         let footers = Footers::start(QUEUE, move |job: Job| {

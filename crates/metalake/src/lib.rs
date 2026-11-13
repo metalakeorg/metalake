@@ -16,6 +16,7 @@
 
 pub mod bounds;
 mod catalog;
+pub mod credential;
 pub mod environment;
 mod error;
 mod evolve;
@@ -37,6 +38,7 @@ mod write;
 pub const ICEBERG_METADATA: &str = "metalake.iceberg.metadata";
 
 pub use catalog::{Catalog, CatalogConfig, LatestPoints, Ref, RefValue};
+pub use credential::Auth;
 pub use error::{Error, Result};
 pub use evolve::Evolve;
 pub use follow::{FeedCursor, Lead};

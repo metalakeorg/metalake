@@ -6,10 +6,11 @@ use std::time::{Duration, SystemTime};
 
 use futures_util::TryStreamExt;
 use metalake_pg::records::{CommitEntry, ListedFile, NamespaceRow, RefRow, SnapshotEntry, TableName, TableSnapshot};
-use metalake_pg::{CreateRef, Pool, PooledSession, Protocol, Retention, Roles, Versions};
+use metalake_pg::{CreateRef, Credential, Pool, PooledSession, Protocol, Retention, Roles, Versions};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::credential::Auth;
 use crate::error::{Error, Result};
 use crate::table::Table;
 
@@ -22,6 +23,8 @@ pub struct CatalogConfig {
     pub connections: usize,
     /// Stored by `init`; for `connect`, where this connection's new tables go instead of the catalog's warehouse: a URL, such as `gs://lake/warehouse`.
     pub warehouse: Option<String>,
+    /// How the client signs in: the string's password, or a cloud's token for its identity.
+    pub auth: Auth,
 }
 
 impl CatalogConfig {
@@ -31,6 +34,7 @@ impl CatalogConfig {
             schema: schema.into(),
             connections: 8,
             warehouse: None,
+            auth: Auth::Password,
         }
     }
 
@@ -38,7 +42,44 @@ impl CatalogConfig {
         self.warehouse = Some(url.into());
         self
     }
+
+    pub fn auth(mut self, auth: Auth) -> Self {
+        self.auth = auth;
+        self
+    }
+
+    /// Where a pool connects and with what, as the auth's rules hold them.
+    fn reach(&self) -> Result<Reach> {
+        let (postgres, credential) = self.auth.prepared(&self.postgres)?;
+        Ok(Reach { postgres, credential })
+    }
 }
+
+/// Where a catalog's pools connect, and the credential they sign in with if not the string's password.
+#[derive(Clone)]
+struct Reach {
+    postgres: String,
+    credential: Option<Arc<dyn Credential>>,
+}
+
+/// Where, without the password `PGPASSWORD` put in the string: a catalog's handle is printed.
+impl std::fmt::Debug for Reach {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Reach")
+            .field("postgres", &crate::environment::without_password(&self.postgres))
+            .field("credential", &self.credential)
+            .finish()
+    }
+}
+
+impl Reach {
+    fn pool(&self, size: usize, wait: Duration) -> Result<Pool> {
+        Ok(Pool::connecting(&self.postgres, size, wait, self.credential.clone())?)
+    }
+}
+
+/// How long a caller waits for a connection of a catalog's pool when all are taken.
+const WAIT: Duration = Duration::from_secs(60);
 
 /// Where to read each table of some refs, from [`Catalog::latest`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,7 +102,7 @@ pub struct Catalog {
 struct Inner {
     pool: Pool,
     /// Where the pool connects, for a connection of one's own (`Catalog::lead`).
-    postgres: String,
+    reach: Reach,
     protocol: Protocol,
     versions: Versions,
     warehouse: Option<String>,
@@ -70,7 +111,8 @@ struct Inner {
 impl Catalog {
     /// Connects to a catalog and checks that the core speaks its versions (LAY-3).
     pub async fn connect(config: CatalogConfig) -> Result<Self> {
-        let pool = Pool::new(&config.postgres, config.connections)?;
+        let reach = config.reach()?;
+        let pool = reach.pool(config.connections, WAIT)?;
         let session = pool.get().await?;
         let versions = metalake_pg::check_versions(&session, &config.schema).await?;
         let warehouse = match config.warehouse {
@@ -81,7 +123,7 @@ impl Catalog {
         Ok(Self {
             inner: Arc::new(Inner {
                 pool,
-                postgres: config.postgres,
+                reach,
                 protocol: Protocol::new(&config.schema),
                 versions,
                 warehouse,
@@ -92,7 +134,7 @@ impl Catalog {
     /// Creates a catalog in a new schema (`metalake init`), with the config's warehouse and its roles if given, and
     /// connects to it.
     pub async fn init(config: CatalogConfig, roles: Option<&Roles>) -> Result<Self> {
-        let pool = Pool::new(&config.postgres, 1)?;
+        let pool = config.reach()?.pool(1, WAIT)?;
         let mut session = pool.get().await?;
         metalake_pg::init(&mut session, &config.schema, config.warehouse.as_deref(), roles).await?;
         Self::connect(config).await
@@ -107,7 +149,7 @@ impl Catalog {
     /// format's rows, if there was one. It connects by itself, since `connect` refuses a catalog that needs this, and
     /// it holds every ref while it runs, so nothing calls it on its own.
     pub async fn migrate(config: &CatalogConfig) -> Result<Option<i64>> {
-        let pool = Pool::new(&config.postgres, 1)?;
+        let pool = config.reach()?.pool(1, WAIT)?;
         let mut session = pool.get().await?;
         Ok(metalake_pg::migrate(&mut session, &config.schema).await?)
     }
@@ -233,8 +275,9 @@ impl Catalog {
         &self.inner.protocol
     }
 
-    pub(crate) fn postgres(&self) -> &str {
-        &self.inner.postgres
+    /// A pool of its own, connecting as this catalog's does.
+    pub(crate) fn own_pool(&self, wait: Duration) -> Result<Pool> {
+        self.inner.reach.pool(1, wait)
     }
 
     /// A point of the catalog to follow it from, once its sequence is stable (VIS-11): no commit at or below it is in

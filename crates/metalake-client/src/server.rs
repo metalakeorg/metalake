@@ -204,12 +204,13 @@ fn shut(runtime: &Runtime, path: &Path) -> Result<()> {
 /// that it outlives this process, as the lake's own Postgres does. Callers take turns, so they start one between them.
 /// `postgres` is the catalog's connection with its password, which the server takes from its environment alone;
 /// `identity` names the lake ([`key`]).
-pub(crate) fn ensure(identity: &str, postgres: &str, schema: &str) -> Result<Runtime> {
+pub(crate) fn ensure(identity: &str, postgres: &str, schema: &str, auth: &str) -> Result<Runtime> {
     let files = Files::of(&key(identity, schema))?;
     let _turn = files.locked()?;
     if let Some(running) = Runtime::read(&files.runtime) {
         if answers(running.port) {
-            if running.version == VERSION {
+            // One of another version, or that signs in otherwise than the lake now says, is replaced.
+            if running.version == VERSION && running.auth == auth {
                 return Ok(running);
             }
             shut(&running, &files.runtime)?;
@@ -217,7 +218,7 @@ pub(crate) fn ensure(identity: &str, postgres: &str, schema: &str) -> Result<Run
         let _ = fs::remove_file(&files.runtime);
     }
     let token = lake_token(&files.token)?;
-    start(&files, postgres, schema, preferred_port(identity, schema), &token)
+    start(&files, postgres, schema, auth, preferred_port(identity, schema), &token)
 }
 
 /// The lake's token: made the first time a server is started for it, kept where this user alone reads it, and the same
@@ -250,7 +251,7 @@ fn lake_token(path: &Path) -> Result<String> {
 pub const START: &str = "METALAKE_ICEBERG_START";
 
 /// Starts a server, and waits until its runtime file names it and it answers.
-fn start(files: &Files, postgres: &str, schema: &str, port: u16, token: &str) -> Result<Runtime> {
+fn start(files: &Files, postgres: &str, schema: &str, auth: &str, port: u16, token: &str) -> Result<Runtime> {
     let started = uuid::Uuid::new_v4().simple().to_string();
     let command = launcher()?;
     let (program, prefix) = command
@@ -271,6 +272,7 @@ fn start(files: &Files, postgres: &str, schema: &str, port: u16, token: &str) ->
         .arg(&files.runtime)
         .env(environment::POSTGRES, postgres)
         .env(environment::SCHEMA, schema)
+        .env(environment::POSTGRES_AUTH, auth)
         .env(SHUTDOWN_TOKEN, token)
         .env(START, &started)
         .current_dir(directory()?)
@@ -409,6 +411,13 @@ pub struct Runtime {
     /// What names this start of it, new each time.
     #[serde(default)]
     pub start: String,
+    /// How it signs in to the catalog, by name: `password` when a server's file of before said nothing.
+    #[serde(default = "password")]
+    pub auth: String,
+}
+
+fn password() -> String {
+    "password".into()
 }
 
 impl Runtime {
@@ -468,6 +477,7 @@ mod tests {
             version: VERSION.into(),
             token: "t".into(),
             start: "s".into(),
+            auth: "password".into(),
         };
         runtime.write(&path).unwrap();
         assert_eq!(Runtime::read(&path), Some(runtime.clone()));
