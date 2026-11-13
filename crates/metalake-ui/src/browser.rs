@@ -70,12 +70,23 @@ fn escape(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// The `file:` URL of an absolute path, on Windows (`C:\…`, or `\\?\C:\…` as `canonicalize` gives it) as elsewhere.
+/// The `file:` URL of an absolute path, on Windows as elsewhere (RFC 8089): a drive's (`C:\…`, or `\\?\C:\…` as
+/// `canonicalize` gives it) as `file:///C:/…`; a network share's (`\\server\share\…`, or `\\?\UNC\server\share\…`), a home
+/// on one included, as `file://server/share/…`.
 fn file_url(path: &Path) -> String {
     let text = path.to_string_lossy();
-    let text = text.strip_prefix(r"\\?\").unwrap_or(&text).replace('\\', "/");
+    let (share, rest) = if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        (true, rest)
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        (false, rest)
+    } else if let Some(rest) = text.strip_prefix(r"\\") {
+        (true, rest)
+    } else {
+        (false, text.as_ref())
+    };
+    let text = rest.replace('\\', "/");
     let mut url = String::from("file://");
-    if !text.starts_with('/') {
+    if !share && !text.starts_with('/') {
         url.push('/');
     }
     for byte in text.bytes() {
@@ -129,6 +140,15 @@ mod tests {
             "file:///C:/Users/PC/.metalake/ui/open-1.html"
         );
         assert_eq!(file_url(Path::new(r"C:\a b\ñ.html")), "file:///C:/a%20b/%C3%B1.html");
+        // A home on a network share, as `canonicalize` gives it and as it is written.
+        assert_eq!(
+            file_url(Path::new(r"\\?\UNC\server\profiles\alice\.metalake\ui\open-1.html")),
+            "file://server/profiles/alice/.metalake/ui/open-1.html"
+        );
+        assert_eq!(
+            file_url(Path::new(r"\\server\profiles\alice\open-1.html")),
+            "file://server/profiles/alice/open-1.html"
+        );
         assert_eq!(
             file_url(Path::new("/home/a b/open-1.html")),
             "file:///home/a%20b/open-1.html"
