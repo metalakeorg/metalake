@@ -14,8 +14,19 @@ include = ["src/**", "web/dist/**", "build.rs", "Cargo.toml"]
 name = "metalake_ui"
 path = "src/lib.rs"
 
+[features]
+default = ["lake"]
+# The API over a lake, through metalake-client, which links the whole of MetaLake. Without it the router, the guard and
+# the frontend compile in seconds, over a backend a test or an example gives (`api::Detached`).
+lake = ["dep:metalake-client"]
+
 [dependencies]
+metalake-client = { path = "../metalake-client", optional = true }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+serde.workspace = true
+serde_json.workspace = true
+# The API's OpenAPI spec, from the handlers and the types they answer, which the frontend's types are generated from.
+utoipa = "6"
 # `debug-embed`: a debug build embeds as a release one does, so that both serve the same files; `mime-guess`: each
 # file's type; `include-exclude`: the `.gitkeep` that keeps `web/dist/` is not served.
 rust-embed = { version = "8.9", features = ["debug-embed", "mime-guess", "include-exclude"] }

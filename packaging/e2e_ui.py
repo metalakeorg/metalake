@@ -1,6 +1,6 @@
-"""What a person gets from `metalake ui` once MetaLake is installed: the application, not the page that says how to build
-it; its API, to the run's token alone; and the licenses of what the frontend bundles. Then it stops (ADR 0007, milestone
-5).
+"""What a person gets from `metalake ui` once MetaLake is installed, run in a lake's directory: the application, not the
+page that says how to build it; its API, to the run's token alone, saying what the lake is; and the licenses of what the
+frontend bundles. Then it stops (ADR 0007, milestones 5 and 6).
 
     python packaging/e2e_ui.py                        # the `metalake` on PATH, as a wheel installed it
     python packaging/e2e_ui.py target/debug/metalake  # a binary built from the checkout
@@ -50,6 +50,8 @@ try:
     assert get(base + "api/v1/version")[0] == 401, "the API answers without the token"
     status, version = get(base + "api/v1/version", TOKEN)
     assert status == 200 and json.loads(version) == {"api": 1}, (status, version)
+    status, lake = get(base + "api/v1/status", TOKEN)
+    assert status == 200 and any(r["name"] == "main" for r in json.loads(lake)["refs"]), (status, lake)
 
     status, licenses = get(base + "licenses.txt")
     assert status == 200 and b"Name: react" in licenses and b"License: MIT" in licenses, licenses[:400]

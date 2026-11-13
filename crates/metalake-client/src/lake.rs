@@ -392,6 +392,12 @@ impl Lake {
         self.location.schema()
     }
 
+    /// The port the lake's UI tries first: the same each run, so that a browser keeps what it stored for the lake, by
+    /// origin, and a bookmark keeps working (ADR 0007 §6.2).
+    pub fn ui_port(&self) -> u16 {
+        crate::server::port_in(crate::server::UI_PORTS, &self.identity(), self.schema())
+    }
+
     /// What names the lake to its Iceberg server's files, whatever reaching it takes.
     pub(crate) fn identity(&self) -> String {
         self.location.identity()

@@ -6,9 +6,9 @@ name: ui
 on:
   push:
     branches: [main]
-    paths: ["crates/metalake-ui/**", "crates/metalake-cli/**", "packaging/e2e_ui.py", "Cargo.lock", ".github/workflows/ui.yml"]
+    paths: ["crates/metalake-ui/**", "crates/metalake-cli/**", "crates/metalake-client/**", "packaging/e2e_ui.py", "Cargo.lock", ".github/workflows/ui.yml"]
   pull_request:
-    paths: ["crates/metalake-ui/**", "crates/metalake-cli/**", "packaging/e2e_ui.py", "Cargo.lock", ".github/workflows/ui.yml"]
+    paths: ["crates/metalake-ui/**", "crates/metalake-cli/**", "crates/metalake-client/**", "packaging/e2e_ui.py", "Cargo.lock", ".github/workflows/ui.yml"]
   workflow_dispatch:
 
 permissions:
@@ -79,20 +79,25 @@ jobs:
       - name: Format
         if: runner.os == 'Linux'
         run: cargo fmt -p metalake-ui --check
+      # With the API over a lake, which links the whole of MetaLake, and without; the crate's own code alone.
       - name: Lints
         if: runner.os == 'Linux'
-        run: cargo clippy --locked -p metalake-ui --all-targets -- -D warnings
+        run: |
+          cargo clippy --locked -p metalake-ui --no-deps --all-targets -- -D warnings
+          cargo clippy --locked -p metalake-ui --no-deps --no-default-features --all-targets -- -D warnings
+      # The router, the guard and the frontend need no lake: tested without one, so that Windows builds no DataFusion.
       # A checkout has no frontend built: the crate compiles and serves the page that says how to build it.
       - name: Tests, the frontend not built
-        run: cargo test --locked -p metalake-ui
+        run: cargo test --locked -p metalake-ui --no-default-features
       - uses: actions/download-artifact@v4
         with:
           name: ui-dist
           path: crates/metalake-ui/web/dist
       - name: Tests, the frontend embedded
-        run: cargo test --locked -p metalake-ui
+        run: cargo test --locked -p metalake-ui --no-default-features
 
-  # The binary a user runs, built with the frontend embedded: its life as a process, then a browser against it.
+  # The binary a user runs, built with the frontend embedded, on a lake in the specification's Postgres: its life as a
+  # process, its API on the lake, then a browser against it.
   e2e:
     needs: web
     runs-on: ubuntu-latest
@@ -100,6 +105,7 @@ jobs:
     env:
       # Line tables are enough for a backtrace, and keep the link of the whole of MetaLake light.
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      DATABASE_URL: host=localhost port=55433 user=postgres dbname=postgres
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -111,12 +117,23 @@ jobs:
           path: crates/metalake-ui/web/dist
       - name: Format of the verb
         run: cargo fmt -p metalake-cli --check
+      - name: Postgres, as the protocol's tests start it
+        run: |
+          docker run -d --name pg -p 55433:5432 -e POSTGRES_HOST_AUTH_METHOD=trust             postgres:17@sha256:3b0cda93be7c8dba2ed484d19393d93845dc3dafb88973e248ba8e6d99d784e1             -c track_commit_timestamp=on -c fsync=off
+          until docker exec pg pg_isready -q -U postgres; do sleep 1; done; sleep 2
       - name: Build `metalake`
         run: cargo build --locked -p metalake-cli
+      - name: A lake
+        run: |
+          mkdir "$RUNNER_TEMP/lake"
+          (cd "$RUNNER_TEMP/lake" && "$GITHUB_WORKSPACE/target/debug/metalake" init "$DATABASE_URL" data --schema ui)
+          echo "METALAKE=$GITHUB_WORKSPACE/target/debug/metalake --lake $RUNNER_TEMP/lake" >> "$GITHUB_ENV"
+      - name: "`metalake ui` on a lake: C19"
+        run: cargo test --locked -p metalake-cli --test c19_ui
       - name: "`metalake ui`: serves, refuses who may not use it, then stops on SIGINT with nothing left"
         run: |
           token=ci0ci0ci0ci0ci0ci0ci0ci0ci0ci0ci0ci0ci0
-          METALAKE_UI_TOKEN=$token ./target/debug/metalake ui --no-browser --port 4174 > ui.out 2> ui.err &
+          METALAKE_UI_TOKEN=$token $METALAKE ui --no-browser --port 4174 > ui.out 2> ui.err &
           pid=$!
           for _ in $(seq 100); do curl -sf -o /dev/null http://127.0.0.1:4174/ && break; sleep 0.1; done
           test "$(head -1 ui.out)" = "http://127.0.0.1:4174/#token=$token"
@@ -124,19 +141,21 @@ jobs:
           code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
           test "$(code http://127.0.0.1:4174/api/v1/version)" = 401
           test "$(code -H "Authorization: Bearer $token" http://127.0.0.1:4174/api/v1/version)" = 200
+          curl -sf -H "Authorization: Bearer $token" http://127.0.0.1:4174/api/v1/status | grep -q '"schema":"ui"'
           test "$(code -H 'Host: evil.example:4174' http://127.0.0.1:4174/)" = 403
           test "$(code -X POST -H "Authorization: Bearer $token" -H 'Origin: http://evil.example'             http://127.0.0.1:4174/api/v1/version)" = 403
           kill -INT "$pid"
           wait "$pid" || { echo "exit $?"; cat ui.err; exit 1; }
           if curl -s -o /dev/null http://127.0.0.1:4174/; then echo "still listening" && exit 1; fi
-          ./target/debug/metalake ui --no-browser --port 4174 > /dev/null 2>&1 & first=$!
-          sleep 1
-          if ./target/debug/metalake ui --no-browser --port 4174 2> taken.err; then echo "a taken port served" && exit 1; fi
+          $METALAKE ui --no-browser --port 4174 > /dev/null 2>&1 & first=$!
+          for _ in $(seq 100); do curl -sf -o /dev/null http://127.0.0.1:4174/ && break; sleep 0.1; done
+          if $METALAKE ui --no-browser --port 4174 2> taken.err; then echo "a taken port served" && exit 1; fi
           grep -q "port 4174 is taken" taken.err
           kill -INT "$first" && wait "$first"
       # What every wheel's e2e.sh checks of the `metalake` it installs, here of the one built from this branch.
       - name: "`metalake ui` as a wheel's is checked: the application, its API, its licenses"
-        run: python3 packaging/e2e_ui.py ./target/debug/metalake
+        working-directory: ${{ runner.temp }}/lake
+        run: python3 "$GITHUB_WORKSPACE/packaging/e2e_ui.py" "$GITHUB_WORKSPACE/target/debug/metalake"
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: crates/metalake-ui/web/package.json
@@ -152,7 +171,7 @@ jobs:
           pnpm exec playwright install --with-deps chromium
       - name: Playwright against `metalake ui`
         working-directory: crates/metalake-ui/web
-        run: pnpm e2e
+        run: METALAKE_UI_COMMAND="$METALAKE ui --no-browser" pnpm e2e
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

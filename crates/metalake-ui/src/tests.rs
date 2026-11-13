@@ -9,6 +9,7 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
 use tower::ServiceExt;
 
+use crate::api::Detached;
 use crate::assets::{File, Files};
 use crate::frontend::{Coding, codings, matches};
 use crate::{Token, built, frontend_router, router};
@@ -57,7 +58,7 @@ fn built_router() -> Router {
 
 /// The router a run serves, with the files this crate embedded, on port 4173.
 fn embedded() -> Router {
-    router(Token::given("t".repeat(32)).unwrap(), 4173)
+    router(Arc::new(Detached), Token::given("t".repeat(32)).unwrap(), 4173)
 }
 
 /// The `Host` a browser sends to it.
@@ -493,6 +494,7 @@ mod access {
     use axum::http::{Method, StatusCode, header};
 
     use super::{Answer, HOST, Memory, PAGE, send};
+    use crate::api::Detached;
     use crate::guard::Access;
     use crate::{Token, router_with};
 
@@ -508,7 +510,7 @@ mod access {
             token: Token::given(SECRET.to_owned()).unwrap(),
             port: 4173,
         };
-        router_with(Arc::new(files), access)
+        router_with(Arc::new(files), Arc::new(Detached), access)
     }
 
     fn bearer() -> String {
@@ -667,5 +669,140 @@ mod access {
                 "{path} {host}"
             );
         }
+    }
+}
+
+// The API over a lake (milestone 6).
+
+mod api {
+    use std::sync::Arc;
+
+    use axum::Router;
+    use axum::http::{Method, StatusCode, header};
+
+    use super::{Answer, HOST, Memory, send};
+    use crate::api::{self, Backend, Detached, Fault, Kind, Named, Status};
+    use crate::guard::Access;
+    use crate::{Token, router_with};
+
+    const SECRET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    /// A lake that answers what it is given.
+    struct Given(Result<Status, Fault>);
+
+    impl Backend for Given {
+        fn status(&self) -> api::Answer<'_, Status> {
+            let answer = self.0.clone();
+            Box::pin(async move { answer })
+        }
+    }
+
+    fn status() -> Status {
+        Status {
+            postgres: None,
+            local: Some("/home/a/lake/postgres".into()),
+            schema: "metalake".into(),
+            warehouse: Some("file:///home/a/lake/data".into()),
+            format_version: "0".into(),
+            writer_version: "0.2.0".into(),
+            protocol_version: Some("0".into()),
+            refs: vec![Named {
+                name: "main".into(),
+                kind: "branch".into(),
+            }],
+        }
+    }
+
+    fn over(backend: impl Backend) -> Router {
+        let access = Access {
+            token: Token::given(SECRET.to_owned()).unwrap(),
+            port: 4173,
+        };
+        router_with(Arc::new(Memory::new(&[])), Arc::new(backend), access)
+    }
+
+    async fn ask(router: Router, path: &str) -> Answer {
+        let bearer = format!("Bearer {SECRET}");
+        let headers = [(header::HOST, HOST), (header::AUTHORIZATION, bearer.as_str())];
+        send(router, Method::GET, path, &headers).await
+    }
+
+    fn json(answer: &Answer) -> serde_json::Value {
+        serde_json::from_slice(&answer.body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn status_answers_lake() {
+        let answer = ask(over(Given(Ok(status()))), "/api/v1/status").await;
+        assert_eq!(answer.status, StatusCode::OK);
+        assert_eq!(answer.header(header::CACHE_CONTROL), Some("no-store"));
+        let body = json(&answer);
+        assert_eq!(body["schema"], "metalake");
+        assert_eq!(body["postgres"], serde_json::Value::Null);
+        assert_eq!(body["refs"][0]["name"], "main");
+        assert_eq!(body["refs"][0]["kind"], "branch");
+    }
+
+    /// Each kind of failure with its status, said as the command line's `--format json` says it.
+    #[tokio::test]
+    async fn fault_by_kind() {
+        let cases = [
+            (Kind::Usage, StatusCode::BAD_REQUEST, "usage"),
+            (Kind::Failed, StatusCode::INTERNAL_SERVER_ERROR, "failed"),
+            (Kind::Conflict, StatusCode::CONFLICT, "conflict"),
+            (Kind::Unknown, StatusCode::BAD_GATEWAY, "unknown"),
+        ];
+        for (kind, code, name) in cases {
+            let fault = Fault {
+                code: Some("40001".into()),
+                retryable: true,
+                ..Fault::new(kind, "the catalog said no")
+            };
+            let answer = ask(over(Given(Err(fault))), "/api/v1/status").await;
+            assert_eq!(answer.status, code, "{name}");
+            let body = json(&answer);
+            assert_eq!(body["kind"], name);
+            assert_eq!(body["message"], "the catalog said no");
+            assert_eq!(body["code"], "40001");
+            assert_eq!(body["retryable"], true);
+            assert!(body.get("rule").is_none(), "absent, not null: {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn detached_says_no_lake() {
+        let answer = ask(over(Detached), "/api/v1/status").await;
+        assert_eq!(answer.status, StatusCode::BAD_REQUEST);
+        assert!(json(&answer)["message"].as_str().unwrap().contains("without a lake"));
+    }
+
+    /// Every path of the spec is behind the token: the spec and the router are walked together, so that a path added
+    /// to one is checked.
+    #[tokio::test]
+    async fn every_spec_path_behind_token() {
+        let spec: serde_json::Value = serde_json::from_str(&api::openapi()).unwrap();
+        let paths = spec["paths"].as_object().unwrap();
+        assert!(paths.len() >= 2, "{paths:?}");
+        for (path, _) in paths {
+            assert!(path.starts_with("/api/v1/"), "{path}");
+            let without = send(over(Given(Ok(status()))), Method::GET, path, &[(header::HOST, HOST)]).await;
+            assert_eq!(without.status, StatusCode::UNAUTHORIZED, "{path}");
+            assert_eq!(
+                ask(over(Given(Ok(status()))), path).await.status,
+                StatusCode::OK,
+                "{path}"
+            );
+        }
+    }
+
+    /// The spec the frontend's types are generated from is the one the router answers by. Written again with
+    /// `cargo run -p metalake-ui --no-default-features --example openapi`.
+    #[test]
+    fn spec_committed() {
+        let committed = include_str!("../web/openapi.json").replace("\r\n", "\n");
+        assert!(
+            committed == api::openapi(),
+            "web/openapi.json is not the router's: cargo run -p metalake-ui --no-default-features --example openapi"
+        );
     }
 }

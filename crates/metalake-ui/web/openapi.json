@@ -1,0 +1,244 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "MetaLake UI",
+    "description": "The API of `metalake ui` (ADR 0007 §4.1)",
+    "license": {
+      "name": "Apache-2.0",
+      "identifier": "Apache-2.0"
+    },
+    "version": "1"
+  },
+  "paths": {
+    "/api/v1/status": {
+      "get": {
+        "tags": [
+          "lake"
+        ],
+        "summary": "What the lake is: its catalog, its warehouse, its versions and its refs.",
+        "operationId": "status",
+        "responses": {
+          "200": {
+            "description": "What the lake is",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Without the run's token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The lake could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The connection to its Postgres was lost",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/version": {
+      "get": {
+        "tags": [
+          "api"
+        ],
+        "summary": "The API's version.",
+        "operationId": "version",
+        "responses": {
+          "200": {
+            "description": "The API's version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Version"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Without the run's token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Fault": {
+        "type": "object",
+        "description": "A failure, as the command line's `--format json` says it.",
+        "required": [
+          "kind",
+          "message",
+          "retryable"
+        ],
+        "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Postgres's SQLSTATE."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/Kind"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean",
+            "description": "Whether the same request may succeed if made again."
+          },
+          "rule": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The specification's rule a refused write broke."
+          }
+        }
+      },
+      "Kind": {
+        "type": "string",
+        "description": "What a failure means to whoever called, as the command line's exit codes and Python's exceptions say it.",
+        "enum": [
+          "usage",
+          "failed",
+          "conflict",
+          "unknown"
+        ]
+      },
+      "Named": {
+        "type": "object",
+        "description": "A ref, by its name and its kind.",
+        "required": [
+          "name",
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "`branch` or `tag`."
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "Status": {
+        "type": "object",
+        "description": "What the lake is, as `metalake status` says it.",
+        "required": [
+          "schema",
+          "format_version",
+          "writer_version",
+          "refs"
+        ],
+        "properties": {
+          "format_version": {
+            "type": "string"
+          },
+          "local": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The directory of the lake's own Postgres; absent for a lake on another."
+          },
+          "postgres": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The catalog's Postgres, without its password; absent for a lake with its own."
+          },
+          "protocol_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "refs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Named"
+            },
+            "description": "Every branch and tag."
+          },
+          "schema": {
+            "type": "string",
+            "description": "The catalog's schema in that Postgres."
+          },
+          "warehouse": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the lake's files are."
+          },
+          "writer_version": {
+            "type": "string"
+          }
+        }
+      },
+      "Version": {
+        "type": "object",
+        "description": "The API's version.",
+        "required": [
+          "api"
+        ],
+        "properties": {
+          "api": {
+            "type": "integer",
+            "format": "int32",
+            "description": "[`VERSION`]: a frontend built for another refuses this server.",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "token": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  },
+  "security": [
+    {
+      "token": []
+    }
+  ]
+}

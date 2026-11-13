@@ -454,7 +454,8 @@ pub struct Init {
 
 #[derive(Debug, Args)]
 pub struct Ui {
-    /// The port to listen on; by default a free one. A port taken is refused.
+    /// The port to listen on; by default the lake's own, the same each run, or a free one if it is taken. A port asked
+    /// for and taken is refused.
     #[arg(long)]
     pub port: Option<u16>,
     /// Prints the URL without opening a browser.
