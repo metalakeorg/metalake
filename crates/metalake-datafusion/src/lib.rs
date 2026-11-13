@@ -29,6 +29,7 @@ mod options;
 mod point;
 mod read;
 mod sink;
+mod source;
 mod stats;
 mod table;
 mod written;

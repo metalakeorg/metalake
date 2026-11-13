@@ -16,6 +16,8 @@ proto = ["dep:datafusion-proto", "dep:postcard", "dep:prost", "dep:serde", "dep:
 metalake.workspace = true
 async-trait = "0.1"
 datafusion = { version = "55.2", default-features = false, features = ["parquet", "sql"] }
+# Parquet's morsels, which MetaLake's source hands on and `datafusion` does not re-export.
+datafusion-datasource = { version = "55.2", default-features = false }
 datafusion-proto = { version = "55.2", default-features = false, features = ["parquet"], optional = true }
 futures-util.workspace = true
 object_store.workspace = true

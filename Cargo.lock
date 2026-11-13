@@ -3055,6 +3055,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "datafusion",
+ "datafusion-datasource",
  "datafusion-proto",
  "futures-util",
  "metalake",
