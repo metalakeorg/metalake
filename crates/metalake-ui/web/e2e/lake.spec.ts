@@ -29,6 +29,32 @@ test("a table made on the lake is listed at once, and a branch made is in the se
   await expect(assets.getByRole("option", { name })).toBeAttached({ timeout: 15_000 });
 });
 
+/** Writes `text` in the editor, over what it held, and runs it. */
+async function runInEditor(page: import("@playwright/test").Page, text: string) {
+  await page.getByRole("textbox", { name: "SQL" }).click();
+  await page.keyboard.press("Control+a");
+  await page.keyboard.type(text);
+  await page.keyboard.press("Control+Enter");
+}
+
+test("the editor reads the lake, and a table it writes is in the tree at once", async ({ page }) => {
+  test.skip(!lake, "METALAKE names no lake");
+  await page.goto(`/#token=${TOKEN}`);
+  await runInEditor(page, "select 41 + 1 as answer");
+  const rows = page.getByRole("table", { name: "Rows" });
+  await expect(rows.getByRole("columnheader", { name: "answer" })).toBeVisible();
+  await expect(rows.getByRole("cell", { name: "42" })).toBeVisible();
+
+  const name = `edited_${Date.now()}`;
+  await runInEditor(
+    page,
+    `create schema ${name}; create table ${name}.t (k bigint); insert into ${name}.t values (1), (2)`,
+  );
+  await expect(page.getByRole("complementary", { name: "Assets" }).getByRole("list", { name })).toContainText("t");
+  await runInEditor(page, `select count(*) as n from ${name}.t`);
+  await expect(page.getByRole("table", { name: "Rows" }).getByRole("cell", { name: "2" })).toBeVisible();
+});
+
 test("an address that is no page says so", async ({ page }) => {
   await page.goto(`/#token=${TOKEN}`);
   await page.goto("/nowhere/at/all");

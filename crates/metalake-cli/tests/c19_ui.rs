@@ -12,6 +12,8 @@ use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{directory, lake, metalake, ok, sql, text};
+use datafusion::arrow::array::Int64Array;
+use datafusion::arrow::ipc::reader::StreamReader;
 use metalake_client::server::UI_PORTS;
 
 const TOKEN: &str = "c19c19c19c19c19c19c19c19c19c19c19c19c19c";
@@ -207,6 +209,74 @@ fn events_say_lake_changed() {
         made["deleted"].as_i64().map(|d| d + 1),
         "{made} {deleted}"
     );
+    ui.kill().unwrap();
+    ui.wait().unwrap();
+}
+
+/// One `POST /api/v1/sql` from the UI's own origin: its status, its headers and its body.
+fn run(port: u16, body: &str) -> (u16, String, Vec<u8>) {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let request = format!(
+        "POST /api/v1/sql HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\n\
+         Authorization: Bearer {TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+         Connection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut answer = Vec::new();
+    stream.read_to_end(&mut answer).unwrap();
+    let end = answer.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    let head = String::from_utf8_lossy(&answer[..end]).into_owned();
+    let status = head.split_whitespace().nth(1).unwrap().parse().unwrap();
+    (status, head.to_lowercase(), answer[end + 4..].to_vec())
+}
+
+#[test]
+fn sql_on_branch_writes_and_reads() {
+    let (dir, _) = lake();
+    ok(&dir, &["branch", "create", "dev"]);
+    let (mut ui, port) = started(&dir);
+
+    // Names that say no ref are the branch's: the table is made and filled on `dev`.
+    let made =
+        r#"{"sql":"create table default.t (k bigint); insert into default.t values (3), (1), (2)","branch":"dev"}"#;
+    let (code, _, body) = run(port, made);
+    assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
+
+    let (code, head, body) = run(
+        port,
+        r#"{"sql":"select k from default.t order by k","branch":"dev","limit":2}"#,
+    );
+    assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
+    assert!(
+        head.contains("content-type: application/vnd.apache.arrow.stream"),
+        "{head}"
+    );
+    assert!(
+        head.contains("metalake-rows: 2") && head.contains("metalake-truncated: true"),
+        "{head}"
+    );
+    let reader = StreamReader::try_new(std::io::Cursor::new(body), None).unwrap();
+    let mut values = Vec::new();
+    for batch in reader {
+        let batch = batch.unwrap();
+        let column = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+        values.extend(column.iter().map(Option::unwrap));
+    }
+    assert_eq!(values, [1, 2]);
+
+    // All of it, within the limit, is not truncated.
+    let (_, head, _) = run(port, r#"{"sql":"select k from dev.default.t"}"#);
+    assert!(
+        head.contains("metalake-rows: 3") && head.contains("metalake-truncated: false"),
+        "{head}"
+    );
+
+    // `main` has no such table: said as the command line says it.
+    let (code, _, body) = run(port, r#"{"sql":"select k from default.t"}"#);
+    assert!(code >= 400, "{code}");
+    let fault: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(fault["message"].as_str().unwrap().contains("t"), "{fault}");
     ui.kill().unwrap();
     ui.wait().unwrap();
 }

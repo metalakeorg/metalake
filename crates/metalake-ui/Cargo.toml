@@ -18,10 +18,12 @@ path = "src/lib.rs"
 default = ["lake"]
 # The API over a lake, through metalake-client, which links the whole of MetaLake. Without it the router, the guard and
 # the frontend compile in seconds, over a backend a test or an example gives (`api::Detached`).
-lake = ["dep:metalake-client"]
+lake = ["dep:metalake-client", "dep:datafusion"]
 
 [dependencies]
 metalake-client = { path = "../metalake-client", optional = true }
+# Over a lake, a statement's rows are written as Arrow IPC, with the Arrow DataFusion answers them in.
+datafusion = { version = "55.2", default-features = false, optional = true }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 futures-util.workspace = true
 serde.workspace = true

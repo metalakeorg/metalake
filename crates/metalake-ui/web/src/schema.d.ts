@@ -58,6 +58,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sql": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Runs statements on the lake, as `metalake sql` and Python's `lake.sql` do, through the same session: a read at the
+         *     point it is run, a write committed. The rows of the last statement come as an Arrow IPC stream, so that each value
+         *     keeps its type, and at most as many as asked: a statement that answered more says so. A request the browser drops
+         *     drops the statement, which stops reading.
+         */
+        post: operations["sql"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/status": {
         parameters: {
             query?: never;
@@ -150,6 +172,17 @@ export interface components {
             parent?: string | null;
             /** @description Whether it may be deleted. */
             protected: boolean;
+        };
+        /** @description What to run: a text of statements, in order, each committed before the next, as `metalake sql` runs one. */
+        Statement: {
+            /**
+             * @description The branch a name that says no ref reads and writes on: `default.t` is `dev.default.t` on `dev`. By default,
+             *     `main`.
+             */
+            branch?: string | null;
+            /** @description How many rows of the last statement to answer, at most [`MOST`]; by default [`LIMIT`]. */
+            limit?: number | null;
+            sql: string;
         };
         /** @description What the lake is, as `metalake status` says it. */
         Status: {
@@ -305,6 +338,79 @@ export interface operations {
                 };
             };
             /** @description The lake could not be read */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+        };
+    };
+    sql: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Statement"];
+            };
+        };
+        responses: {
+            /** @description The first rows of the last statement */
+            200: {
+                headers: {
+                    /** @description How many rows it holds */
+                    "metalake-rows"?: number;
+                    /** @description Whether the statement answered more */
+                    "metalake-truncated"?: boolean;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/vnd.apache.arrow.stream": unknown;
+                };
+            };
+            /** @description A statement that is wrong, or refused */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description Without the run's token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description From another origin than the UI's own */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description A write that conflicts with another; nothing changed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description The statement failed */
             500: {
                 headers: {
                     [name: string]: unknown;

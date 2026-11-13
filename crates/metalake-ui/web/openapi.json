@@ -160,6 +160,99 @@
         }
       }
     },
+    "/api/v1/sql": {
+      "post": {
+        "tags": [
+          "sql"
+        ],
+        "summary": "Runs statements on the lake, as `metalake sql` and Python's `lake.sql` do, through the same session: a read at the\npoint it is run, a write committed. The rows of the last statement come as an Arrow IPC stream, so that each value\nkeeps its type, and at most as many as asked: a statement that answered more says so. A request the browser drops\ndrops the statement, which stops reading.",
+        "operationId": "sql",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Statement"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The first rows of the last statement",
+            "headers": {
+              "metalake-rows": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "How many rows it holds"
+              },
+              "metalake-truncated": {
+                "schema": {
+                  "type": "boolean"
+                },
+                "description": "Whether the statement answered more"
+              }
+            },
+            "content": {
+              "application/vnd.apache.arrow.stream": {}
+            }
+          },
+          "400": {
+            "description": "A statement that is wrong, or refused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Without the run's token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "From another origin than the UI's own",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A write that conflicts with another; nothing changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The statement failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/status": {
       "get": {
         "tags": [
@@ -367,6 +460,33 @@
           "protected": {
             "type": "boolean",
             "description": "Whether it may be deleted."
+          }
+        }
+      },
+      "Statement": {
+        "type": "object",
+        "description": "What to run: a text of statements, in order, each committed before the next, as `metalake sql` runs one.",
+        "required": [
+          "sql"
+        ],
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The branch a name that says no ref reads and writes on: `default.t` is `dev.default.t` on `dev`. By default,\n`main`."
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "How many rows of the last statement to answer, at most [`MOST`]; by default [`LIMIT`].",
+            "minimum": 0
+          },
+          "sql": {
+            "type": "string"
           }
         }
       },

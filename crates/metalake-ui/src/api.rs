@@ -12,14 +12,14 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use futures_util::{Stream, StreamExt};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi, ToSchema};
 
@@ -43,7 +43,14 @@ pub trait Backend: Send + Sync + 'static {
     fn tables<'a>(&'a self, on: &'a str) -> Answer<'a, Vec<Table>>;
     /// The lake's mark now, then each that differs from the last, as the lake changes.
     fn watch(&self) -> Answer<'_, Marks>;
+    /// Runs a text's statements, each committed before the next, and answers the first rows of the last.
+    fn sql(&self, statement: Statement) -> Answer<'_, Rows>;
 }
+
+/// How many rows a statement answers when the request says no other: what a page shows without holding too much.
+pub const LIMIT: usize = 10_000;
+/// The most a request may ask for.
+pub const MOST: usize = 100_000;
 
 /// A backend with no lake behind it: every path that reads one says so. What the `serve` example and the router's tests
 /// serve, where nothing of MetaLake is linked.
@@ -64,6 +71,10 @@ impl Backend for Detached {
     }
 
     fn watch(&self) -> Answer<'_, Marks> {
+        Box::pin(async { Err(Detached::fault()) })
+    }
+
+    fn sql(&self, _: Statement) -> Answer<'_, Rows> {
         Box::pin(async { Err(Detached::fault()) })
     }
 }
@@ -142,6 +153,36 @@ pub struct Mark {
     pub deleted: i64,
 }
 
+/// What to run: a text of statements, in order, each committed before the next, as `metalake sql` runs one.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct Statement {
+    pub sql: String,
+    /// The branch a name that says no ref reads and writes on: `default.t` is `dev.default.t` on `dev`. By default,
+    /// `main`.
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// How many rows of the last statement to answer, at most [`MOST`]; by default [`LIMIT`].
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+impl Statement {
+    /// The rows to answer, as asked within the bounds.
+    pub fn limit(&self) -> usize {
+        self.limit.unwrap_or(LIMIT).clamp(1, MOST)
+    }
+}
+
+/// The first rows a statement answered, as an Arrow IPC stream: their schema, then their batches.
+#[derive(Debug, Clone)]
+pub struct Rows {
+    pub arrow: Vec<u8>,
+    /// How many rows it holds.
+    pub rows: usize,
+    /// Whether the statement answered more than it holds.
+    pub truncated: bool,
+}
+
 /// What a failure means to whoever called, as the command line's exit codes and Python's exceptions say it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
@@ -200,6 +241,7 @@ pub(crate) fn router(backend: Arc<dyn Backend>) -> Router {
         .route("/v1/refs", get(refs))
         .route("/v1/refs/{ref}/tables", get(tables))
         .route("/v1/events", get(events))
+        .route("/v1/sql", post(sql))
         .fallback(no_route)
         .with_state(backend)
 }
@@ -273,6 +315,51 @@ async fn events(State(backend): State<Arc<dyn Backend>>) -> Response {
     response
 }
 
+/// Runs statements on the lake, as `metalake sql` and Python's `lake.sql` do, through the same session: a read at the
+/// point it is run, a write committed. The rows of the last statement come as an Arrow IPC stream, so that each value
+/// keeps its type, and at most as many as asked: a statement that answered more says so. A request the browser drops
+/// drops the statement, which stops reading.
+#[utoipa::path(post, path = "/api/v1/sql", tag = "sql",
+    request_body(content = Statement, content_type = "application/json"),
+    responses(
+        (status = 200, description = "The first rows of the last statement", content_type = "application/vnd.apache.arrow.stream",
+            headers(
+                ("metalake-rows" = u64, description = "How many rows it holds"),
+                ("metalake-truncated" = bool, description = "Whether the statement answered more"),
+            )),
+        (status = 400, description = "A statement that is wrong, or refused", body = Fault),
+        (status = 401, description = "Without the run's token", body = Fault),
+        (status = 403, description = "From another origin than the UI's own", body = Fault),
+        (status = 409, description = "A write that conflicts with another; nothing changed", body = Fault),
+        (status = 500, description = "The statement failed", body = Fault),
+    ))]
+async fn sql(State(backend): State<Arc<dyn Backend>>, body: Bytes) -> Response {
+    let statement: Statement = match serde_json::from_slice(&body) {
+        Ok(statement) => statement,
+        Err(e) => return answer::<()>(Err(Fault::new(Kind::Usage, format!("a request to run is JSON: {e}")))),
+    };
+    if statement.sql.trim().is_empty() {
+        return answer::<()>(Err(Fault::new(Kind::Usage, "no statement to run")));
+    }
+    let rows = match backend.sql(statement).await {
+        Ok(rows) => rows,
+        Err(fault) => return answer::<()>(Err(fault)),
+    };
+    let mut response = Response::new(Body::from(rows.arrow));
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/vnd.apache.arrow.stream"),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert("metalake-rows", HeaderValue::from(rows.rows));
+    headers.insert(
+        "metalake-truncated",
+        HeaderValue::from_static(if rows.truncated { "true" } else { "false" }),
+    );
+    response
+}
+
 fn to_json(value: &impl Serialize) -> String {
     serde_json::to_string(value).expect("the API's types are JSON")
 }
@@ -289,7 +376,7 @@ async fn no_route() -> Response {
 #[derive(OpenApi)]
 #[openapi(
     info(title = "MetaLake UI", version = "1", description = "The API of `metalake ui` (ADR 0007 §4.1)"),
-    paths(version, status, refs, tables, events),
+    paths(version, status, refs, tables, events, sql),
     modifiers(&Token),
     security(("token" = []))
 )]

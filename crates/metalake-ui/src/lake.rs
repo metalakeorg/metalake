@@ -3,9 +3,12 @@
 
 use std::time::Duration;
 
-use metalake_client::Lake;
+use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::ipc::writer::StreamWriter;
+use futures_util::StreamExt;
+use metalake_client::{Lake, Session};
 
-use crate::api::{Answer, Backend, Fault, Kind, Mark, Marks, Named, Ref, Status, Table};
+use crate::api::{Answer, Backend, Fault, Kind, Mark, Marks, Named, Ref, Rows, Statement, Status, Table};
 
 /// How often the lake's mark is read again besides its notifications: what tells a deleted ref, which notifies
 /// nothing, and a change while the connection that listens was lost.
@@ -83,6 +86,50 @@ impl Backend for Lake {
                 }
             });
             Ok(Box::pin(marks) as Marks)
+        })
+    }
+
+    fn sql(&self, statement: Statement) -> Answer<'_, Rows> {
+        Box::pin(async move {
+            let limit = statement.limit();
+            // A session of its own, as each `metalake sql` has: it sees the catalog as it is now.
+            let session = Session::new(self).await?;
+            if let Some(branch) = &statement.branch {
+                session.on_ref(branch);
+            }
+            let prepared = session.run(&statement.sql).await?;
+            let schema = prepared.schema();
+            let mut stream = prepared.read()?;
+            let (mut batches, mut rows, mut truncated) = (Vec::<RecordBatch>::new(), 0, false);
+            // Read until the limit; then one batch more, to tell whether there was more. What is not read is not run.
+            while let Some(batch) = stream.next().await {
+                let batch = batch.map_err(metalake_client::Error::from)?;
+                if batch.num_rows() == 0 {
+                    continue;
+                }
+                if rows == limit {
+                    truncated = true;
+                    break;
+                }
+                let taken = batch.num_rows().min(limit - rows);
+                truncated = taken < batch.num_rows();
+                batches.push(batch.slice(0, taken));
+                rows += taken;
+                if truncated {
+                    break;
+                }
+            }
+            drop(stream);
+            let mut arrow = Vec::new();
+            let written = (|| {
+                let mut writer = StreamWriter::try_new(&mut arrow, &schema)?;
+                for batch in &batches {
+                    writer.write(batch)?;
+                }
+                writer.finish()
+            })();
+            written.map_err(|e| Fault::new(Kind::Failed, format!("the rows could not be written as Arrow: {e}")))?;
+            Ok(Rows { arrow, rows, truncated })
         })
     }
 }

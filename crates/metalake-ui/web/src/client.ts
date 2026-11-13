@@ -3,6 +3,7 @@
 
 import createClient, { type Middleware } from "openapi-fetch";
 import { token, Unauthorized } from "./auth";
+import { decode, type Result } from "./result";
 import type { components, paths } from "./schema";
 
 export type Status = components["schemas"]["Status"];
@@ -64,4 +65,21 @@ export async function tables(on: string, api: Client = client()): Promise<Table[
   const { data, error } = await api.GET("/api/v1/refs/{ref}/tables", { params: { path: { ref: on } } });
   if (error) throw new Failure(error);
   return data;
+}
+
+/** How many rows a statement answers to the page. */
+export const LIMIT = 10_000;
+
+/**
+ * Runs a text's statements on the lake, names that say no ref on `branch`, and answers the first rows of the last. An
+ * abort of `signal` drops the request, and the server stops the statement.
+ */
+export async function run(sql: string, branch: string, signal?: AbortSignal, api: Client = client()): Promise<Result> {
+  const { data, error, response } = await api.POST("/api/v1/sql", {
+    body: { sql, branch, limit: LIMIT },
+    parseAs: "arrayBuffer",
+    ...(signal ? { signal } : {}),
+  });
+  if (error) throw new Failure(error);
+  return decode(data, response.headers.get("metalake-truncated") === "true");
 }

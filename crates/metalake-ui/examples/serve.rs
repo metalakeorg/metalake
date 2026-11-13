@@ -11,7 +11,7 @@
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
-use metalake_ui::api::{Answer, Backend, Detached, Fault, Kind, Mark, Marks, Ref, Status, Table};
+use metalake_ui::api::{Answer, Backend, Detached, Fault, Kind, Mark, Marks, Ref, Rows, Statement, Status, Table};
 use metalake_ui::browser::{self, Redirect};
 use tokio::net::TcpListener;
 
@@ -113,6 +113,15 @@ impl Backend for Sample {
             } else {
                 Err(Fault::new(Kind::Usage, format!("no ref {on}")))
             }
+        })
+    }
+
+    fn sql(&self, _: Statement) -> Answer<'_, Rows> {
+        Box::pin(async {
+            Err(Fault::new(
+                Kind::Usage,
+                "a sample lake runs no statement: run `metalake ui` in a lake",
+            ))
         })
     }
 

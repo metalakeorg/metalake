@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { TOKEN } from "../playwright.config";
 
-// The Query page's shell: an editor that highlights SQL and runs on Ctrl-Enter, though running reaches no lake yet.
+// The Query page: an editor that highlights SQL and runs on Ctrl-Enter, and the assets of a branch beside it.
 
 test("the editor takes SQL, highlights it, and runs it on Ctrl-Enter", async ({ page }) => {
   // What the browser refuses, a style the page's policy blocks among it, is said in the console.
@@ -16,7 +16,8 @@ test("the editor takes SQL, highlights it, and runs it on Ctrl-Enter", async ({ 
   await expect(page.locator(".tok-keyword").first()).toHaveText("select");
   await expect(page.locator(".tok-comment")).toHaveText("-- a comment");
   await page.keyboard.press("Control+Enter");
-  await expect(page.getByRole("status")).toContainText("does not reach the lake yet");
+  // Run: the server answered, with rows or with a failure, whichever lake is behind it.
+  await expect(page.getByRole("region", { name: "Results" })).not.toContainText("Run a statement");
   // Its gutter beside the text, as its own style sheet lays it out.
   const gutter = await page.locator(".cm-gutters").boundingBox();
   const content = await page.locator(".cm-content").boundingBox();

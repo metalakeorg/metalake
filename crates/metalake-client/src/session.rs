@@ -136,6 +136,14 @@ impl Session {
         })
     }
 
+    /// Names that do not say their ref read and write on `name`: `default.t` is `name.default.t`, as it is
+    /// `main.default.t` until this is called. A name that says its ref is not changed.
+    pub fn on_ref(&self, name: &str) {
+        let state = self.context.state_ref();
+        let mut state = state.write();
+        state.config_mut().options_mut().catalog.default_catalog = name.to_string();
+    }
+
     /// The statements of a text, in order. A text with none is a wrong use.
     pub fn parse(text: &str) -> Result<Vec<Statement>> {
         let statements = DFParser::parse_sql(text)?;
@@ -187,7 +195,10 @@ impl Session {
         let task = Arc::new(task.with_session_config(config));
         let plan = frame.create_physical_plan().await?;
         let batches = collect(plan, task).await?;
-        let batch = batches.iter().find(|b| b.num_rows() > 0).ok_or_else(|| Error::failed("a write answered no row"))?;
+        let batch = batches
+            .iter()
+            .find(|b| b.num_rows() > 0)
+            .ok_or_else(|| Error::failed("a write answered no row"))?;
         Ok(WrittenRow::of(batch)?)
     }
 
