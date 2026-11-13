@@ -1,0 +1,4 @@
+node_modules/
+# What `tsc` writes; `jupyter labextension build` writes the extension into the UI's `web/dist/labextension/`.
+lib/
+tsconfig.tsbuildinfo

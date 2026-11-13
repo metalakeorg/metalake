@@ -5,3 +5,6 @@ dist/*
 # What Playwright leaves.
 test-results/
 playwright-report/
+# Notebooks a local run of the Notebook keeps where it was started
+*.ipynb
+.ipynb_checkpoints/

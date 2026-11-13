@@ -1,0 +1,7 @@
+# One package; this file holds pnpm's settings for it.
+
+# A release is taken once it is two weeks old (in minutes), as the UI's frontend takes them.
+minimumReleaseAge: 20160
+
+# JupyterLab's builder resolves the packages it shares with JupyterLab from a flat `node_modules`.
+nodeLinker: hoisted

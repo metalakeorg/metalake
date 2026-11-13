@@ -1,0 +1,22 @@
+/* The ref selector: JupyterLab's own colours and sizes, so that it reads as the toolbar's. */
+.jp-MetaLakeRef-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+  font-size: var(--jp-ui-font-size1);
+  color: var(--jp-ui-font-color1);
+}
+
+.jp-MetaLakeRef-select {
+  height: 22px;
+  font-size: var(--jp-ui-font-size1);
+  color: var(--jp-ui-font-color1);
+  background: var(--jp-layout-color1);
+  border: var(--jp-border-width) solid var(--jp-border-color1);
+  border-radius: 2px;
+}
+
+.jp-MetaLakeRef-select.jp-mod-missing {
+  border-color: var(--jp-warn-color1);
+}
