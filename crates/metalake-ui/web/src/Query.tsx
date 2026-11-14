@@ -26,8 +26,10 @@ export function QueryPage() {
       <Assets
         branches={picked.branches}
         tags={picked.tags}
-        branch={branch}
-        onBranch={picked.pick}
+        branch={picked.branch}
+        tag={picked.tag}
+        onBranch={picked.pickBranch}
+        onTag={picked.pickTag}
         tables={picked.tables}
         failure={picked.failure}
       />

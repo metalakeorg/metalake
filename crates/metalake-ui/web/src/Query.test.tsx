@@ -87,12 +87,17 @@ describe("QueryPage", () => {
     page();
     const assets = within(screen.getByRole("complementary", { name: "Assets" }));
     expect(await assets.findByRole("option", { name: "dev" })).toBeInTheDocument();
-    expect(assets.queryByRole("option", { name: "v1" })).toBeNull();
+    const branch = within(assets.getByRole("combobox", { name: "Branch" }));
+    expect(branch.queryByRole("option", { name: "v1" })).toBeNull();
     expect(await assets.findByRole("list", { name: "sales" })).toHaveTextContent("orders");
     expect(assets.queryByRole("list", { name: "default" })).toBeNull();
 
     fireEvent.change(assets.getByRole("combobox", { name: "Branch" }), { target: { value: "dev" } });
     expect(await assets.findByRole("list", { name: "default" })).toHaveTextContent("t");
+    // v1 was made from main: dev has no tags.
+    const tag = assets.getByRole("combobox", { name: "Tag" });
+    expect(within(tag).queryByRole("option", { name: "v1" })).toBeNull();
+    expect(tag).toBeDisabled();
   });
 
   it("runs the statement on the branch picked, and shows its rows", async () => {
@@ -115,12 +120,14 @@ describe("QueryPage", () => {
     expect(within(results).getByRole("status")).toHaveTextContent("the statement answered more");
   });
 
-  it("lists the tags apart, and a tag picked is its catalog, read only, where statements run", async () => {
+  it("lists the branch's tags apart, none picked at first, and a tag picked is its catalog, read only, where statements run", async () => {
     page();
     const assets = within(screen.getByRole("complementary", { name: "Assets" }));
-    const tags = within(await assets.findByRole("list", { name: "Tags" }));
-    fireEvent.click(tags.getByRole("button", { name: "v1" }));
-    expect(tags.getByRole("button", { name: "v1" })).toHaveAttribute("aria-pressed", "true");
+    await assets.findByRole("option", { name: "v1" });
+    const tag = assets.getByRole("combobox", { name: "Tag" });
+    expect(tag).toHaveValue("");
+    fireEvent.change(tag, { target: { value: "v1" } });
+    expect(tag).toHaveValue("v1");
     expect(await assets.findByRole("list", { name: "sales" })).toHaveTextContent("orders_then");
     expect(screen.getByRole("region", { name: "Query" })).toHaveTextContent("tag · read only");
 
