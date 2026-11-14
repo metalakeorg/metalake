@@ -50,6 +50,17 @@ impl SslMode {
         })
     }
 
+    /// The mode as libpq names it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Disable => "disable",
+            Self::Prefer => "prefer",
+            Self::Require => "require",
+            Self::VerifyCa => "verify-ca",
+            Self::VerifyFull => "verify-full",
+        }
+    }
+
     /// The mode as the driver knows it.
     fn driver(self) -> &'static str {
         match self {
@@ -100,6 +111,30 @@ pub fn split(postgres: &str) -> Result<(String, Tls)> {
 }
 
 impl Tls {
+    /// The connection string `rest` was split from, as libpq reads it: `rest` with the mode, if it was named, and the
+    /// roots, if they are a file. What [`split`] takes out, this puts back.
+    pub fn written(&self, rest: &str) -> String {
+        let mut pairs = Vec::new();
+        if self.named {
+            pairs.push(("sslmode", self.mode.name().to_string()));
+        }
+        if let Roots::File(path) = &self.roots {
+            pairs.push(("sslrootcert", path.to_string_lossy().into_owned()));
+        }
+        let mut out = rest.to_string();
+        for (key, value) in pairs {
+            out = if is_url(&out) {
+                let joiner = if out.contains('?') { '&' } else { '?' };
+                format!("{out}{joiner}{key}={}", encode(&value))
+            } else if out.trim().is_empty() {
+                format!("{key}={}", quote(&value))
+            } else {
+                format!("{out} {key}={}", quote(&value))
+            };
+        }
+        out
+    }
+
     /// The string the driver is given: `rest` with the mode it knows.
     pub fn driver_string(&self, rest: &str) -> String {
         let mode = self.mode.driver();
@@ -198,6 +233,23 @@ fn split_url(url: &str) -> Result<Parts> {
     Ok((rest, mode, roots))
 }
 
+/// A URL's query value, percent-encoded but for what needs no encoding, `/` among it, as a path keeps it readable.
+fn encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => out.push(byte as char),
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
+/// A `key=value` pair's value, quoted as libpq reads it: within `'`, a `\` or a `'` escaped by a `\`.
+fn quote(value: &str) -> String {
+    format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
+}
+
 /// Percent-decoding of a URL's query value.
 fn decode(value: &str) -> Result<String> {
     let bytes = value.as_bytes();
@@ -237,7 +289,7 @@ fn split_pairs(pairs: &str) -> Result<Parts> {
         match key.as_str() {
             "sslmode" => mode = Some(value),
             "sslrootcert" => roots = Some(value),
-            _ => kept.push(format!("{key}='{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))),
+            _ => kept.push(format!("{key}={}", quote(&value))),
         }
     }
     Ok((kept.join(" "), mode, roots))
@@ -384,6 +436,42 @@ mod tests {
 
     fn tls(mode: SslMode, named: bool, roots: Roots) -> Tls {
         Tls { mode, named, roots }
+    }
+
+    #[test]
+    fn written_puts_back_what_split_took_out() {
+        for given in [
+            "postgresql://u%40x.com@h/db?sslmode=verify-ca&sslrootcert=C:/lakes/nube/server-ca.pem",
+            "postgresql://u:p@h:5432/db?application_name=x&sslmode=verify-full&sslrootcert=%2Fetc%2Frds%20ca.pem",
+            "postgresql://u@h/db?sslrootcert=system",
+            "postgresql://u@h/db",
+            r"host=h port=5432 sslmode=verify-ca sslrootcert='C:\\certs\\a b.pem' password='it\'s'",
+            "host=h user=u sslmode=require",
+            "sslrootcert=/certs/root.pem",
+        ] {
+            let (rest, tls) = split(given).unwrap();
+            let written = tls.written(&rest);
+            assert_eq!(split(&written).unwrap(), (rest, tls), "{given} -> {written}");
+        }
+        // A mode not named stays not named; the system's roots are its default, which needs no naming.
+        let (rest, tls) = split("postgresql://u@h/db?sslrootcert=system").unwrap();
+        assert_eq!(tls.written(&rest), "postgresql://u@h/db");
+    }
+
+    #[test]
+    fn written_with_other_roots() {
+        let (rest, mut tls) = split("postgresql://u@h/db?sslmode=verify-ca&sslrootcert=C:/lakes/ca.pem").unwrap();
+        tls.roots = Roots::File(PathBuf::from("/pipeline/root.crt"));
+        assert_eq!(
+            tls.written(&rest),
+            "postgresql://u@h/db?sslmode=verify-ca&sslrootcert=/pipeline/root.crt"
+        );
+        let (rest, mut tls) = split("host=h sslmode=verify-full sslrootcert=/etc/a.pem").unwrap();
+        tls.roots = Roots::File(PathBuf::from("/home/me/.metalake/pipelines/x/root.crt"));
+        assert_eq!(
+            tls.written(&rest),
+            "host='h' sslmode='verify-full' sslrootcert='/home/me/.metalake/pipelines/x/root.crt'"
+        );
     }
 
     #[test]

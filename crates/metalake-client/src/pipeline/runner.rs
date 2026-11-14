@@ -74,6 +74,18 @@ impl Runner {
     pub fn start(&self, launch: &Launch<'_>) -> Result<Handle> {
         fs::create_dir_all(launch.home)?;
         fs::write(launch.home.join(QUERY), launch.query)?;
+        // Its variables as it must be given them, where it sees its home: there, as a process; at `/pipeline`, in a
+        // container.
+        let variables = |seen: &str| -> Result<Vec<(String, String)>> {
+            launch
+                .env
+                .iter()
+                .map(|(name, value)| match name == metalake::environment::POSTGRES {
+                    true => Ok((name.clone(), rooted(value, launch.home, seen)?)),
+                    false => Ok((name.clone(), value.clone())),
+                })
+                .collect()
+        };
         let host = host();
         match self {
             Self::Process { binary } => {
@@ -86,7 +98,7 @@ impl Runner {
                 let mut command = Command::new(binary);
                 command
                     .args(arguments(launch, &launch.home.join(QUERY).to_string_lossy()))
-                    .envs(launch.env.iter().map(|(k, v)| (k, v)))
+                    .envs(variables(&launch.home.to_string_lossy())?)
                     .stdin(Stdio::null())
                     .stdout(log.try_clone()?)
                     .stderr(log);
@@ -139,9 +151,9 @@ impl Runner {
                     command.arg("-v").arg(format!("{0}:{0}", warehouse.display()));
                 }
                 // By name only: the values stay in this process's environment, out of any listing of processes.
-                for (name, value) in &launch.env {
-                    command.arg("-e").arg(name);
-                    command.env(name, in_container(name, value));
+                for (name, value) in variables("/pipeline")? {
+                    command.arg("-e").arg(&name);
+                    command.env(&name, in_container(&name, &value));
                 }
                 command.arg(image);
                 command.args(arguments(launch, "/pipeline/query.sql"));
@@ -270,6 +282,23 @@ pub fn home(state: &str) -> Result<PathBuf> {
         .join(format!("{:016x}", fnv(state))))
 }
 
+/// The file a pipeline's roots are copied to, in its home.
+const ROOTS: &str = "root.crt";
+
+/// The catalog's connection string as a pipeline is given it: roots that are a file of this machine, which a container
+/// does not see, copied into its home, and named where the pipeline sees that home, `seen`.
+fn rooted(postgres: &str, home: &Path, seen: &str) -> Result<String> {
+    let invalid = |e: metalake_pg::Error| Error::usage(format!("the catalog's connection string: {e}"));
+    let (rest, mut tls) = metalake_pg::tls::split(postgres).map_err(invalid)?;
+    let metalake_pg::tls::Roots::File(file) = &tls.roots else {
+        return Ok(postgres.to_string());
+    };
+    fs::copy(file, home.join(ROOTS))
+        .map_err(|e| Error::usage(format!("the catalog's sslrootcert, {}: {e}", file.display())))?;
+    tls.roots = metalake_pg::tls::Roots::File(PathBuf::from(format!("{}/{ROOTS}", seen.trim_end_matches('/'))));
+    Ok(tls.written(&rest))
+}
+
 /// A variable as a container must see it: the machine's own Postgres is `host.docker.internal` from inside.
 fn in_container(name: &str, value: &str) -> String {
     if name != metalake::environment::POSTGRES {
@@ -384,6 +413,48 @@ mod tests {
             "localhost",
             "only the catalog's"
         );
+    }
+
+    #[test]
+    fn roots_copied_where_the_pipeline_sees_them() {
+        let dir = env::temp_dir().join(format!("metalake-rooted-{}", std::process::id()));
+        let (here, home) = (dir.join("here"), dir.join("home"));
+        fs::create_dir_all(&here).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        let ca = here.join("server ca.pem");
+        fs::write(&ca, "-----BEGIN CERTIFICATE-----").unwrap();
+        let named = ca.to_string_lossy().replace('\\', "/");
+
+        let url = format!(
+            "postgresql://u%40x.com@h/db?sslmode=verify-ca&sslrootcert={}",
+            named.replace(' ', "%20")
+        );
+        assert_eq!(
+            rooted(&url, &home, "/pipeline").unwrap(),
+            "postgresql://u%40x.com@h/db?sslmode=verify-ca&sslrootcert=/pipeline/root.crt"
+        );
+        assert_eq!(
+            fs::read_to_string(home.join(ROOTS)).unwrap(),
+            "-----BEGIN CERTIFICATE-----"
+        );
+
+        let pairs = format!("host=h user=u sslmode=verify-full sslrootcert='{named}'");
+        assert_eq!(
+            rooted(&pairs, &home, "/home/me/p/").unwrap(),
+            "host='h' user='u' sslmode='verify-full' sslrootcert='/home/me/p/root.crt'"
+        );
+
+        // Nothing of this machine's to copy: given as it is.
+        for kept in [
+            "postgresql://u@h/db?sslmode=require",
+            "postgresql://u@h/db?sslrootcert=system",
+            "host=h",
+        ] {
+            assert_eq!(rooted(kept, &home, "/pipeline").unwrap(), kept);
+        }
+        let missing = rooted("host=h sslrootcert=/nowhere/ca.pem", &home, "/pipeline").unwrap_err();
+        assert!(missing.to_string().contains("sslrootcert"), "{missing}");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

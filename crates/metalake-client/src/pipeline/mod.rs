@@ -272,6 +272,11 @@ impl Lake {
             (environment::POSTGRES.to_string(), self.catalog_postgres()?),
             (environment::SCHEMA.to_string(), self.schema().to_string()),
         ];
+        // How it signs in, as this client does: by a password unless the lake names a cloud's identity.
+        let auth = self.catalog_auth()?;
+        if auth != metalake::Auth::Password {
+            variables.push((environment::POSTGRES_AUTH.to_string(), auth.name().to_string()));
+        }
         variables.extend(env::vars().filter(|(name, _)| environment::is_storage_variable(name)));
         Ok(variables)
     }
