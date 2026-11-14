@@ -16,6 +16,7 @@ use crate::schema::spec_fields;
 use crate::storage::Storage;
 use crate::table::Table;
 use crate::vectors::Deletes;
+use crate::write::alter::{self, TableChange};
 use crate::write::delete::{self, TableDeletes};
 
 /// How many times a commit is tried when the attempt may be repeated.
@@ -212,6 +213,63 @@ impl Transaction {
         }
         self.changes.insert(id.to_string(), definition);
         Ok((self, id))
+    }
+
+    /// The table this transaction creates under `id`, as `describe` will answer it once committed, with no snapshot:
+    /// for a writer to write its first files before the commit that creates it, as `create table … as select` does,
+    /// so that one commit makes the table and its rows, or neither. A partitioned one is not written so: its spec's id
+    /// is the protocol's to give.
+    pub fn created(&self, id: Uuid) -> Result<Table> {
+        let definition = self
+            .changes
+            .get(&id.to_string())
+            .filter(|d| d.get("create").is_some())
+            .ok_or_else(|| Error::Invalid(format!("this transaction creates no table {id}")))?;
+        if definition.get("partition_spec").is_some() {
+            return Err(Error::Unsupported(
+                "writing a partitioned table in the commit that creates it".to_string(),
+            ));
+        }
+        let create = &definition["create"];
+        // A field as `describe` has it: no mark of being new.
+        let fields: Vec<Value> = definition["fields"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|field| {
+                let mut field = field.clone();
+                if let Some(f) = field.as_object_mut() {
+                    f.remove("new");
+                }
+                field
+            })
+            .collect();
+        let described = json!({
+            "table_id": id.to_string(),
+            "namespace": create["namespace"],
+            "name": create["name"],
+            "location": create["location"],
+            "fields": fields,
+            "cluster_key": definition.get("cluster_key").cloned().unwrap_or_else(|| json!([])),
+            "properties": definition.get("properties").cloned().unwrap_or_else(|| json!({})),
+        });
+        Table::from_definition(self.on.id(), 0, &described)
+    }
+
+    /// Changes `table`'s definition as `changes` say, against the table as it was read: columns added, dropped, renamed,
+    /// widened or made optional, and the table renamed (`alter table`). What the format does not allow is refused before
+    /// the commit.
+    pub async fn alter(self, table: &Table, changes: &[TableChange]) -> Result<Self> {
+        let catalog = self.on.catalog().clone();
+        let definition = alter::definition(table, changes, || {
+            let catalog = catalog.clone();
+            async move {
+                let session = catalog.session().await?;
+                Ok(catalog.protocol().next_id(&session, table.id(), "field").await?)
+            }
+        })
+        .await?;
+        Ok(self.define(table.id(), definition))
     }
 
     /// Changes a namespace by an entry already in the protocol's shape (NS-1 to NS-4).
