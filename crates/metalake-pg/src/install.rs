@@ -19,6 +19,8 @@ pub struct Roles {
 /// given, its warehouse and the roles. Installs in one database take turns, since two transactions creating the same
 /// extension at once collide.
 pub async fn init(client: &mut Client, schema: &str, warehouse: Option<&str>, roles: Option<&Roles>) -> Result<()> {
+    // Before anything is created: a catalog there would have commits without a time (TT-1).
+    crate::requirements::check_commit_time(&*client).await?;
     let q = quote_ident(schema);
     let tx = client.transaction().await?;
     tx.batch_execute(&format!(
