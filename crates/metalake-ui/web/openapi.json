@@ -177,6 +177,214 @@
         }
       }
     },
+    "/api/v1/refs/{ref}": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "A ref: what it is, what it holds, and its schemas, each with what it holds.",
+        "operationId": "ref_details",
+        "parameters": [
+          {
+            "name": "ref",
+            "in": "path",
+            "description": "The branch or tag, percent-encoded",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The ref",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefDetails"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No such ref",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Without the run's token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The lake could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/refs/{ref}/commits": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "A ref's commits, the latest first.",
+        "operationId": "commits",
+        "parameters": [
+          {
+            "name": "ref",
+            "in": "path",
+            "description": "The branch or tag, percent-encoded",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "How many, the latest first: 50 when absent, 1,000 at most.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Its commits",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Commit"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No such ref, or a limit out of bounds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Without the run's token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The lake could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/refs/{ref}/schemas/{schema}": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "A schema of a ref, by its levels: its properties, and its tables, each with what it holds.",
+        "operationId": "schema_details",
+        "parameters": [
+          {
+            "name": "ref",
+            "in": "path",
+            "description": "The branch or tag, percent-encoded",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "schema",
+            "in": "path",
+            "description": "The schema, its levels joined by U+001F, percent-encoded",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The schema",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaDetails"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No such ref or schema",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Without the run's token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The lake could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/refs/{ref}/tables": {
       "get": {
         "tags": [
@@ -211,6 +419,179 @@
           },
           "400": {
             "description": "No such ref",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Without the run's token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The lake could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/refs/{ref}/tables/{schema}/{table}": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "A table of a ref: its columns, its layout, how much it holds, and its Iceberg metadata.",
+        "operationId": "table_details",
+        "parameters": [
+          {
+            "name": "ref",
+            "in": "path",
+            "description": "The branch or tag, percent-encoded",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "schema",
+            "in": "path",
+            "description": "The table's schema, its levels joined by U+001F, percent-encoded",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "table",
+            "in": "path",
+            "description": "The table's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The table",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TableDetails"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No such ref or table",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Without the run's token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The lake could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/refs/{ref}/tables/{schema}/{table}/snapshots": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "A table's snapshots on a ref, the latest first.",
+        "operationId": "snapshots",
+        "parameters": [
+          {
+            "name": "ref",
+            "in": "path",
+            "description": "The branch or tag, percent-encoded",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "schema",
+            "in": "path",
+            "description": "The table's schema, its levels joined by U+001F, percent-encoded",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "table",
+            "in": "path",
+            "description": "The table's name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "How many, the latest first: 50 when absent, 1,000 at most.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Its snapshots",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Snapshot"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No such ref or table, or a limit out of bounds",
             "content": {
               "application/json": {
                 "schema": {
@@ -420,6 +801,85 @@
   },
   "components": {
     "schemas": {
+      "Column": {
+        "type": "object",
+        "description": "A column of a table, nested ones included.",
+        "required": [
+          "id",
+          "name",
+          "type",
+          "required"
+        ],
+        "properties": {
+          "default": {
+            "description": "What a write that does not name it gives it."
+          },
+          "doc": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "name": {
+            "type": "string"
+          },
+          "parent": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The column it is a field of, for a nested one."
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "type": {
+            "type": "string",
+            "description": "Its type, as Iceberg writes it."
+          }
+        }
+      },
+      "Commit": {
+        "type": "object",
+        "description": "A commit of a ref.",
+        "required": [
+          "seq",
+          "operation"
+        ],
+        "properties": {
+          "author": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "committed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "operation": {
+            "type": "string",
+            "description": "What it did: `append`, `update`, `merge`, `branch`…"
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "Fault": {
         "type": "object",
         "description": "A failure, as the command line's `--format json` says it.",
@@ -452,6 +912,50 @@
               "null"
             ],
             "description": "The specification's rule a refused write broke."
+          }
+        }
+      },
+      "IcebergState": {
+        "type": "object",
+        "description": "Where a table's Iceberg metadata stands, for a table set to write it on commit.",
+        "required": [
+          "behind"
+        ],
+        "properties": {
+          "behind": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Its commits that metadata does not serve yet."
+          },
+          "head": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The table's latest snapshot on the ref."
+          },
+          "metadata": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The latest metadata file."
+          },
+          "since": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the first of those was committed."
+          },
+          "written": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The sequence its latest metadata file serves."
           }
         }
       },
@@ -586,6 +1090,149 @@
           }
         }
       },
+      "RefDetails": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Ref"
+          },
+          {
+            "type": "object",
+            "required": [
+              "size",
+              "schemas"
+            ],
+            "properties": {
+              "schemas": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SchemaSummary"
+                }
+              },
+              "size": {
+                "$ref": "#/components/schemas/Size"
+              },
+              "warehouse": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Where the lake's files are."
+              }
+            }
+          }
+        ],
+        "description": "A ref, what it holds, and its schemas, as the Catalog's view of it shows them."
+      },
+      "SchemaDetails": {
+        "type": "object",
+        "description": "A schema, its properties, and its tables.",
+        "required": [
+          "namespace",
+          "properties",
+          "size",
+          "tables"
+        ],
+        "properties": {
+          "namespace": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "properties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "size": {
+            "$ref": "#/components/schemas/Size"
+          },
+          "tables": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TableSummary"
+            }
+          }
+        }
+      },
+      "SchemaSummary": {
+        "type": "object",
+        "description": "A schema, by its levels, and what it holds. A level may hold a dot: a path names a schema by its levels joined by\nU+001F, as Iceberg's REST catalog does.",
+        "required": [
+          "namespace",
+          "size"
+        ],
+        "properties": {
+          "namespace": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "size": {
+            "$ref": "#/components/schemas/Size"
+          }
+        }
+      },
+      "Size": {
+        "type": "object",
+        "description": "How much something holds: its tables, their rows, and their bytes.",
+        "required": [
+          "tables",
+          "rows",
+          "bytes"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "rows": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "tables": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "Snapshot": {
+        "type": "object",
+        "description": "A snapshot of a table on a ref: the table as a commit left it.",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "committed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "operation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parent": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
       "Statement": {
         "type": "object",
         "description": "What to run: a text of statements, in order, each committed before the next, as `metalake sql` runs one.",
@@ -685,6 +1332,132 @@
             "items": {
               "type": "string"
             }
+          }
+        }
+      },
+      "TableDetails": {
+        "type": "object",
+        "description": "A table: what it is, how it is laid out, how much it holds, and where its Iceberg metadata stands.",
+        "required": [
+          "namespace",
+          "name",
+          "id",
+          "location",
+          "columns",
+          "rows",
+          "bytes",
+          "files",
+          "inline_files",
+          "deleted_rows",
+          "cluster_key",
+          "properties"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "cluster_key": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The columns whose statistics are indexed for pruning."
+          },
+          "columns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Column"
+            }
+          },
+          "deleted_rows": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "files": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Its files stored in the warehouse."
+          },
+          "iceberg": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/IcebergState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "inline_files": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Its files kept in the catalog itself, until they are flushed."
+          },
+          "location": {
+            "type": "string",
+            "description": "The prefix its files are written under."
+          },
+          "name": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "partition": {
+            "description": "Its default partition spec, as Iceberg writes one."
+          },
+          "properties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "rows": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Its rows: those of its files, less those their deletion vectors delete."
+          },
+          "sort_order": {
+            "description": "Its default sort order, as Iceberg writes one."
+          }
+        }
+      },
+      "TableSummary": {
+        "type": "object",
+        "description": "A table of a schema: what it holds, and when it last changed.",
+        "required": [
+          "name",
+          "rows",
+          "bytes"
+        ],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "changed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When its latest snapshot on the ref was committed."
+          },
+          "name": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },

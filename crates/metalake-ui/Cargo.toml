@@ -24,7 +24,7 @@ lake = ["dep:metalake-client", "dep:datafusion"]
 metalake-client = { path = "../metalake-client", optional = true }
 # Over a lake, a statement's rows are written as Arrow IPC, with the Arrow DataFusion answers them in.
 datafusion = { version = "55.2", default-features = false, optional = true }
-axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "query", "tokio"] }
 futures-util.workspace = true
 # JupyterLab proxied on the UI's origin: a connection of its own per request, and a websocket's upgrade tunneled.
 hyper = { version = "1", default-features = false, features = ["client", "http1"] }

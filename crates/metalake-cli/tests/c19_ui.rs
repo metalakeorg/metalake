@@ -295,6 +295,79 @@ fn sql_on_branch_writes_and_reads() {
     ui.wait().unwrap();
 }
 
+/// The Catalog views' reads (ADR 0007): a ref with its schemas and what they hold, its commits, a schema with its
+/// tables, a table with its columns and size, and its snapshots; and a tag, the lake as it was when tagged.
+#[test]
+fn catalog_details_of_ref_schema_and_table() {
+    let (dir, _) = lake();
+    let (mut ui, port) = started(&dir);
+    let made = r#"{"sql":"create schema shop; create table shop.customers (id bigint not null, name varchar); insert into shop.customers values (1, 'ana'), (2, 'bob')"}"#;
+    let (code, _, body) = run(port, made);
+    assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
+    ok(&dir, &["tag", "create", "then"]);
+    let (code, _, _) = run(port, r#"{"sql":"insert into shop.customers values (3, 'eva')"}"#);
+    assert_eq!(code, 200);
+    let read = |path: &str| -> serde_json::Value {
+        let (code, body) = get(port, path, Some(TOKEN));
+        assert_eq!(code, 200, "{path}: {body}");
+        serde_json::from_str(&body).unwrap()
+    };
+
+    let main = read("/api/v1/refs/main");
+    assert_eq!(
+        (main["name"].as_str(), main["kind"].as_str()),
+        (Some("main"), Some("branch"))
+    );
+    assert_eq!(main["size"]["tables"], 1);
+    assert_eq!(main["size"]["rows"], 3);
+    let shop = main["schemas"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["namespace"] == serde_json::json!(["shop"]))
+        .unwrap();
+    assert_eq!(shop["size"]["rows"], 3);
+
+    let commits = read("/api/v1/refs/main/commits?limit=2");
+    assert_eq!(commits.as_array().unwrap().len(), 2);
+    assert_eq!(commits[0]["operation"], "append");
+
+    let schema = read("/api/v1/refs/main/schemas/shop");
+    assert_eq!(schema["tables"][0]["name"], "customers");
+    assert_eq!(schema["tables"][0]["rows"], 3);
+    assert!(schema["tables"][0]["changed_at"].is_string(), "{schema}");
+
+    let table = read("/api/v1/refs/main/tables/shop/customers");
+    let columns: Vec<_> = table["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].clone())
+        .collect();
+    assert_eq!(columns, ["id", "name"]);
+    assert_eq!(table["columns"][0]["required"], true);
+    assert_eq!(table["rows"], 3);
+    assert!(table["bytes"].as_i64().unwrap() > 0, "{table}");
+    assert!(table["location"].as_str().unwrap().contains("customers"), "{table}");
+
+    let snapshots = read("/api/v1/refs/main/tables/shop/customers/snapshots");
+    assert!(snapshots.as_array().unwrap().len() >= 2, "{snapshots}");
+
+    // The tag: the lake as it was when tagged, two rows.
+    let then = read("/api/v1/refs/then");
+    assert_eq!(
+        (then["kind"].as_str(), then["size"]["rows"].as_i64()),
+        (Some("tag"), Some(2))
+    );
+    assert_eq!(read("/api/v1/refs/then/tables/shop/customers")["rows"], 2);
+
+    // What does not exist is said, not answered empty.
+    let (code, _) = get(port, "/api/v1/refs/main/schemas/nowhere", Some(TOKEN));
+    assert!(code >= 400, "{code}");
+    ui.kill().unwrap();
+    ui.wait().unwrap();
+}
+
 /// The port a run of the UI's JupyterLab serves at, from the runtime file it writes in the run's own directory.
 fn jupyter_port(ui: u32) -> Option<u16> {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;

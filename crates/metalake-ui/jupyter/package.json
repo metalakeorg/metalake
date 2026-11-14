@@ -15,7 +15,7 @@
     "style/*.css"
   ],
   "scripts": {
-    "build": "tsc && jupyter-builder build .",
+    "build": "tsc && python build.py",
     "check": "biome check .",
     "fix": "biome check --write ."
   },
