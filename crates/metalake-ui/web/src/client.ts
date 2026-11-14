@@ -72,6 +72,7 @@ export type Commit = components["schemas"]["Commit"];
 export type SchemaDetails = components["schemas"]["SchemaDetails"];
 export type TableDetails = components["schemas"]["TableDetails"];
 export type Snapshot = components["schemas"]["Snapshot"];
+export type Column = components["schemas"]["Column"];
 
 /** A schema's levels as a path names them: joined by U+001F, as Iceberg's REST catalog does. */
 export function schemaPath(namespace: readonly string[]): string {

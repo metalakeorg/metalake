@@ -32,6 +32,7 @@ export function QueryPage() {
         onTag={picked.pickTag}
         tables={picked.tables}
         failure={picked.failure}
+        columns
       />
       <section aria-label="Query" className="flex min-w-0 flex-1 flex-col">
         <div className="flex h-11 shrink-0 items-center gap-3 border-zinc-200 border-b px-4 dark:border-zinc-800">

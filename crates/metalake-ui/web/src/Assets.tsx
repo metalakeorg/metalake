@@ -1,7 +1,11 @@
 // A page's assets: the meta tables of the catalog on one ref, which the branch selector above them picks, or a tag of
 // that branch's, which the tag selector below it picks: the branch as it was when tagged, read only.
 
-import type { ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { type ReactNode, useState } from "react";
+import { type Column, tableDetails } from "./client";
+import { CatalogIcon, SchemaIcon, TableIcon, TypeIcon } from "./icons";
+import { CATALOG } from "./live";
 
 /** What a page may show of the tree: the ref's catalog, a schema by its levels, or a table. */
 export type Asset =
@@ -59,7 +63,10 @@ export function Assets({
   children,
   onPick,
   picked,
+  columns = false,
 }: {
+  /** Makes each table of the tree fold open on its columns. */
+  columns?: boolean;
   /** Makes each name of the tree pick what it names, which the page then shows. */
   onPick?: ((asset: Asset) => void) | undefined;
   picked?: Asset | undefined;
@@ -122,6 +129,7 @@ export function Assets({
           failure={failure ?? null}
           onPick={onPick}
           picked={picked}
+          columns={columns}
         />
       </div>
     </aside>
@@ -185,7 +193,9 @@ function Tables({
   failure,
   onPick,
   picked,
+  columns,
 }: {
+  columns: boolean;
   branch: string;
   tagged: boolean;
   tables: readonly Table[] | undefined;
@@ -225,24 +235,15 @@ function Tables({
           >
             <ul aria-label={namespace}>
               {names.map((name) => (
-                <li
+                <TableNode
                   key={name}
-                  className="flex items-center gap-1 truncate rounded px-1 py-0.5 pl-4 font-mono hover:bg-zinc-100 dark:hover:bg-zinc-800"
-                >
-                  <TableIcon />
-                  {onPick ? (
-                    <button
-                      type="button"
-                      aria-current={same(picked, { kind: "table", namespace: levels, name }) ? "true" : undefined}
-                      onClick={() => onPick({ kind: "table", namespace: levels, name })}
-                      className="min-w-0 flex-1 truncate text-left hover:underline aria-[current]:bg-zinc-200 dark:aria-[current]:bg-zinc-800"
-                    >
-                      {name}
-                    </button>
-                  ) : (
-                    <span className="truncate">{name}</span>
-                  )}
-                </li>
+                  on={branch}
+                  levels={levels}
+                  name={name}
+                  columns={columns}
+                  onPick={onPick && (() => onPick({ kind: "table", namespace: levels, name }))}
+                  current={same(picked, { kind: "table", namespace: levels, name })}
+                />
               ))}
             </ul>
           </Node>
@@ -252,50 +253,92 @@ function Tables({
   );
 }
 
-/** An icon of the tree, the size of its text. */
-function Icon({ children }: { children: ReactNode }) {
-  return (
-    <svg
-      aria-hidden
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.3"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="size-3.5 shrink-0 text-zinc-500 dark:text-zinc-400"
+const ROW = "flex items-center gap-1 rounded px-1 py-0.5 font-mono hover:bg-zinc-100 dark:hover:bg-zinc-800";
+
+/** A table of the tree: its name, which may pick it, and its columns, folded at first, if it may show them. */
+function TableNode({
+  on,
+  levels,
+  name,
+  columns,
+  onPick,
+  current,
+}: {
+  on: string;
+  levels: string[];
+  name: string;
+  columns: boolean;
+  onPick?: (() => void) | undefined;
+  current: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const label = onPick ? (
+    <button
+      type="button"
+      aria-current={current ? "true" : undefined}
+      onClick={(event) => {
+        event.preventDefault();
+        onPick();
+      }}
+      className="min-w-0 flex-1 truncate text-left hover:underline aria-[current]:bg-zinc-200 dark:aria-[current]:bg-zinc-800"
     >
-      {children}
-    </svg>
+      {name}
+    </button>
+  ) : (
+    <span className="min-w-0 flex-1 truncate">{name}</span>
+  );
+  if (!columns) {
+    return (
+      <li className={`${ROW} pl-4`}>
+        <TableIcon />
+        {label}
+      </li>
+    );
+  }
+  return (
+    <li>
+      <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)} className="group/table">
+        <summary aria-label={name} className={`${ROW} cursor-pointer list-none`}>
+          <span aria-hidden className="w-3 text-zinc-400 text-xs transition-transform group-open/table:rotate-90">
+            ▸
+          </span>
+          <TableIcon />
+          {label}
+        </summary>
+        {open && <Columns on={on} levels={levels} name={name} />}
+      </details>
+    </li>
   );
 }
 
-/** A catalog: a store of data, as a cylinder. */
-function CatalogIcon() {
-  return (
-    <Icon>
-      <ellipse cx="8" cy="3.5" rx="5.5" ry="2" />
-      <path d="M2.5 3.5v9c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2v-9" />
-      <path d="M2.5 8c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2" />
-    </Icon>
-  );
+/** A table's columns, read when it is unfolded; a nested one below the column it is a field of. */
+function Columns({ on, levels, name }: { on: string; levels: string[]; name: string }) {
+  // The key the Catalog's view of the table reads it by: one read serves both.
+  const details = useQuery({
+    queryKey: [...CATALOG, "table", on, ...levels, name],
+    queryFn: () => tableDetails(on, levels, name),
+  });
+  if (details.error) {
+    return <p className="py-0.5 pl-8 text-red-700 text-xs dark:text-red-400">metalake: {details.error.message}</p>;
+  }
+  if (!details.data) return <p className="py-0.5 pl-8 text-xs text-zinc-500">Reading the columns…</p>;
+  const all = details.data.columns;
+  const below = (parent: number | null) => all.filter((c) => (c.parent ?? null) === parent);
+  const rows = (parent: number | null, depth: number): ReactNode[] =>
+    below(parent).flatMap((c) => [<ColumnRow key={c.id} column={c} depth={depth} />, ...rows(c.id, depth + 1)]);
+  return <ul aria-label={`Columns of ${name}`}>{rows(null, 0)}</ul>;
 }
 
-/** A schema: what holds tables, as a folder. */
-function SchemaIcon() {
+function ColumnRow({ column, depth }: { column: Column; depth: number }) {
   return (
-    <Icon>
-      <path d="M1.5 4.5v8a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-6.5a1 1 0 0 0-1-1h-6l-1.5-2h-3.5a1 1 0 0 0-1 1z" />
-    </Icon>
-  );
-}
-
-/** A table: rows and columns, as a grid. */
-function TableIcon() {
-  return (
-    <Icon>
-      <rect x="1.5" y="2.5" width="13" height="11" rx="1" />
-      <path d="M1.5 6h13M1.5 9.5h13M6 6v7.5" />
-    </Icon>
+    <li
+      title={`${column.name}: ${column.type}${column.required ? ", required" : ""}`}
+      style={{ paddingLeft: `${2 + depth}rem` }}
+      className="flex items-center gap-1 rounded py-0.5 pr-1 font-mono text-xs hover:bg-zinc-100 dark:hover:bg-zinc-800"
+    >
+      <TypeIcon type={column.type} />
+      <span className="min-w-0 flex-1 truncate">{column.name}</span>
+      <span className="shrink-0 text-[10px] text-zinc-400 dark:text-zinc-500">{column.type}</span>
+    </li>
   );
 }

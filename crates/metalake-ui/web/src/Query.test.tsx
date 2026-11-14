@@ -14,6 +14,28 @@ const LAKE: Record<string, unknown> = {
   ],
   "/api/v1/refs/main/tables": [{ namespace: ["sales"], name: "orders" }],
   "/api/v1/refs/v1/tables": [{ namespace: ["sales"], name: "orders_then" }],
+  "/api/v1/refs/main/tables/sales/orders": {
+    namespace: ["sales"],
+    name: "orders",
+    id: "0e0c4a",
+    location: "file:///lake/data/sales/orders",
+    columns: [
+      { id: 1, parent: null, name: "id", type: "long", required: true, doc: null, default: null },
+      { id: 2, parent: null, name: "at", type: "timestamptz", required: false, doc: null, default: null },
+      { id: 3, parent: null, name: "ship", type: "struct", required: false, doc: null, default: null },
+      { id: 4, parent: 3, name: "city", type: "string", required: false, doc: null, default: null },
+    ],
+    rows: 0,
+    bytes: 0,
+    files: 0,
+    inline_files: 0,
+    deleted_rows: 0,
+    partition: null,
+    sort_order: null,
+    cluster_key: [],
+    properties: {},
+    iceberg: null,
+  },
   "/api/v1/refs/dev/tables": [
     { namespace: ["sales"], name: "orders" },
     { namespace: ["default"], name: "t" },
@@ -98,6 +120,21 @@ describe("QueryPage", () => {
     const tag = assets.getByRole("combobox", { name: "Tag" });
     expect(within(tag).queryByRole("option", { name: "v1" })).toBeNull();
     expect(tag).toBeDisabled();
+  });
+
+  it("unfolds a table on its columns, each with its type, a nested one below its column", async () => {
+    page();
+    const assets = within(screen.getByRole("complementary", { name: "Assets" }));
+    const sales = within(await assets.findByRole("list", { name: "sales" }));
+    expect(assets.queryByRole("list", { name: "Columns of orders" })).toBeNull();
+    fireEvent.click(sales.getByText("orders"));
+    const columns = within(await assets.findByRole("list", { name: "Columns of orders" }));
+    expect(columns.getAllByRole("listitem").map((c) => c.textContent)).toEqual([
+      "idlong",
+      "attimestamptz",
+      "shipstruct",
+      "citystring",
+    ]);
   });
 
   it("runs the statement on the branch picked, and shows its rows", async () => {

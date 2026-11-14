@@ -41,11 +41,11 @@ describe("Assets", () => {
   it("holds the tables in their schema, and the schemas in the branch's catalog", () => {
     render(<Assets branches={["main", "dev"]} branch="dev" onBranch={() => {}} tables={TABLES} />);
     const catalog = screen.getByText("dev", { selector: "summary span" }).closest("details");
-    expect(catalog?.querySelector("summary")).toHaveTextContent("devcatalog");
+    expect(catalog?.querySelector("summary")).toHaveTextContent("▸dev");
     const schemas = [...(catalog?.querySelectorAll("details") ?? [])].map(
       (d) => d.querySelector("summary")?.textContent,
     );
-    expect(schemas).toEqual(["▸defaultschema", "▸salesschema", "▸sales.euschema"]);
+    expect(schemas).toEqual(["▸default", "▸sales", "▸sales.eu"]);
   });
 
   it("tells the page which branch was picked", () => {
