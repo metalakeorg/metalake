@@ -13,9 +13,10 @@ const RUN_KEYS = /Mac|iPhone|iPad/.test(globalThis.navigator?.platform ?? "") ? 
 const MAIN = "main";
 
 /**
- * The Query page, where the UI opens: the assets of a branch beside it, read from the lake and kept as it is; an SQL
- * editor above, and the rows of what it ran below. A statement runs on the branch picked, as `metalake sql` runs one:
- * a read at the point it is run, a write committed, which the assets then show.
+ * The Query page, where the UI opens: the assets of a ref beside it, read from the lake and kept as it is; an SQL
+ * editor above, and the rows of what it ran below. A statement runs on the ref picked, as `metalake sql` runs one: a
+ * read at the point it is run, a write committed, which the assets then show. A tag is the lake as it was when tagged:
+ * read only, its writes refused by the lake.
  */
 export function QueryPage() {
   const [text, setText] = useState("");
@@ -23,9 +24,11 @@ export function QueryPage() {
 
   const known = useQuery({ queryKey: [...CATALOG, "refs"], queryFn: () => refs() });
   const branches = known.data?.filter((r) => r.kind === "branch").map((r) => r.name) ?? [MAIN];
+  const tags = known.data?.filter((r) => r.kind === "tag").map((r) => r.name) ?? [];
+  const tagged = tags.includes(branch);
   const listed = useQuery({ queryKey: [...CATALOG, "tables", branch], queryFn: () => tables(branch) });
-  // A branch deleted while it was picked: back to the one every lake has.
-  const gone = known.data !== undefined && !branches.includes(branch);
+  // A ref deleted while it was picked: back to the one every lake has.
+  const gone = known.data !== undefined && !branches.includes(branch) && !tags.includes(branch);
   useEffect(() => {
     if (gone) setBranch(MAIN);
   }, [gone]);
@@ -36,6 +39,7 @@ export function QueryPage() {
     <div className="flex h-full">
       <Assets
         branches={branches}
+        tags={tags}
         branch={branch}
         onBranch={setBranch}
         tables={listed.data}
@@ -46,6 +50,7 @@ export function QueryPage() {
           <h1 className="font-semibold">Query</h1>
           <span className="text-xs text-zinc-500 dark:text-zinc-400">
             on <span className="font-mono">{branch}</span>
+            {tagged && <span className="ml-1.5 text-amber-700 dark:text-amber-400">tag · read only</span>}
           </span>
           {state.kind === "running" ? (
             <button

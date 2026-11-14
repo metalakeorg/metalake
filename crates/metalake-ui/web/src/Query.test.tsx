@@ -13,6 +13,7 @@ const LAKE: Record<string, unknown> = {
     { name: "v1", kind: "tag", parent: "main", fork_seq: 3, created_seq: 5, protected: false },
   ],
   "/api/v1/refs/main/tables": [{ namespace: ["sales"], name: "orders" }],
+  "/api/v1/refs/v1/tables": [{ namespace: ["sales"], name: "orders_then" }],
   "/api/v1/refs/dev/tables": [
     { namespace: ["sales"], name: "orders" },
     { namespace: ["default"], name: "t" },
@@ -112,6 +113,21 @@ describe("QueryPage", () => {
     const results = screen.getByRole("region", { name: "Results" });
     expect(within(results).getByRole("status")).toHaveTextContent("2 rows");
     expect(within(results).getByRole("status")).toHaveTextContent("the statement answered more");
+  });
+
+  it("lists the tags apart, and a tag picked is its catalog, read only, where statements run", async () => {
+    page();
+    const assets = within(screen.getByRole("complementary", { name: "Assets" }));
+    const tags = within(await assets.findByRole("list", { name: "Tags" }));
+    fireEvent.click(tags.getByRole("button", { name: "v1" }));
+    expect(tags.getByRole("button", { name: "v1" })).toHaveAttribute("aria-pressed", "true");
+    expect(await assets.findByRole("list", { name: "sales" })).toHaveTextContent("orders_then");
+    expect(screen.getByRole("region", { name: "Query" })).toHaveTextContent("tag · read only");
+
+    write("select 1");
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    await screen.findByRole("table", { name: "Rows" });
+    expect(asked.at(-1)?.branch).toBe("v1");
   });
 
   it("says a failure as the command line does", async () => {
