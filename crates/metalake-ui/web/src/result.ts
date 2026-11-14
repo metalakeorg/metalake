@@ -49,13 +49,16 @@ function plain(value: unknown): unknown {
   return value;
 }
 
-/** The rows as JSON: an array of objects by column name; a name that repeats takes its position after it (`k_2`). */
+/** The rows as JSON: an array of objects by column name. A name that repeats takes the first suffix (`k_2`, `k_3`…)
+ * that no other column has, so that every column keeps its value. */
 export function toJson(result: Result): string {
-  const seen = new Map<string, number>();
+  const names = new Set(result.columns);
+  const used = new Set<string>();
   const keys = result.columns.map((name) => {
-    const count = (seen.get(name) ?? 0) + 1;
-    seen.set(name, count);
-    return count === 1 ? name : `${name}_${count}`;
+    let key = name;
+    for (let n = 2; used.has(key) || (key !== name && names.has(key)); n++) key = `${name}_${n}`;
+    used.add(key);
+    return key;
   });
   const objects = result.rows.map((row) => Object.fromEntries(keys.map((key, at) => [key, row[at]])));
   return JSON.stringify(objects, (_, value) => plain(value), 2);

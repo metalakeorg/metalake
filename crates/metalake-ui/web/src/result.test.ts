@@ -38,6 +38,16 @@ describe("toJson", () => {
   });
 });
 
+describe("toJson's names", () => {
+  const keys = (columns: string[]) =>
+    Object.keys(JSON.parse(toJson({ columns, rows: [columns.map((_, i) => i)], truncated: false }))[0]);
+  it("never takes another column's name, so that no column is lost", () => {
+    expect(keys(["id", "id", "id_2"])).toEqual(["id", "id_3", "id_2"]);
+    expect(keys(["id_2", "id", "id"])).toEqual(["id_2", "id", "id_3"]);
+    expect(keys(["id", "id", "id_2", "id_2"])).toEqual(["id", "id_3", "id_2", "id_2_2"]);
+  });
+});
+
 describe("show", () => {
   it("says each kind of value as the grid shows it", () => {
     expect(show(null)).toBe("NULL");
