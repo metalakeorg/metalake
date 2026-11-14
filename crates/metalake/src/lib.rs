@@ -57,4 +57,6 @@ pub use stream::{
 };
 pub use table::{Field, Table};
 pub use watch::{Mark, Watch};
-pub use write::{Merge, MergeReport, NewTable, Outcome, RowLocation, TableWriter, Transaction, WriteOptions};
+pub use write::{
+    Merge, MergeReport, NewTable, Outcome, RowLocation, TableChange, TableWriter, Transaction, WriteOptions,
+};
