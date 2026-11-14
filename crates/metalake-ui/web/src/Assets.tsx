@@ -1,4 +1,5 @@
-// The Query page's assets: the meta tables of the catalog on one branch, which the branch selector above them picks.
+// The Query page's assets: the meta tables of the catalog on one ref, which the branch selector above them picks, or
+// a tag of the list below it: the lake as it was when tagged, read only.
 
 import type { ReactNode } from "react";
 
@@ -21,32 +22,40 @@ export function byNamespace(tables: readonly Table[]): [string, string[]][] {
 }
 
 /**
- * The panel: the branch, and the tables on it, by namespace. `tables` is absent while they are read, and `failure`
- * says why they could not be.
+ * The panel: the branch, the tags, and the tables of the ref picked, by namespace. `branch` is the ref picked, a
+ * branch or a tag; `tables` is absent while they are read, and `failure` says why they could not be.
  */
 export function Assets({
   branches,
+  tags = [],
   branch,
   onBranch,
   tables,
   failure,
 }: {
   branches: readonly string[];
+  tags?: readonly string[];
   branch: string;
   onBranch: (branch: string) => void;
   tables: readonly Table[] | undefined;
   failure?: Error | null;
 }) {
+  const tagged = tags.includes(branch);
   return (
     <aside aria-label="Assets" className="flex w-60 shrink-0 flex-col border-zinc-200 border-r dark:border-zinc-800">
       <div className="border-zinc-200 border-b p-2 dark:border-zinc-800">
         <label className="flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
           Branch
           <select
-            value={branch}
+            value={tagged ? "" : branch}
             onChange={(event) => onBranch(event.target.value)}
             className="min-w-0 flex-1 rounded border border-zinc-300 bg-transparent px-1.5 py-1 font-mono text-sm text-zinc-900 dark:border-zinc-700 dark:text-zinc-100"
           >
+            {tagged && (
+              <option value="" disabled className="bg-white dark:bg-zinc-900">
+                —
+              </option>
+            )}
             {branches.map((name) => (
               <option key={name} value={name} className="bg-white dark:bg-zinc-900">
                 {name}
@@ -54,9 +63,30 @@ export function Assets({
             ))}
           </select>
         </label>
+        <div className="mt-2">
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">Tags</p>
+          {tags.length === 0 ? (
+            <p className="mt-1 px-1 text-xs text-zinc-400 dark:text-zinc-500">No tags.</p>
+          ) : (
+            <ul aria-label="Tags" className="mt-1 max-h-32 overflow-auto">
+              {tags.map((name) => (
+                <li key={name}>
+                  <button
+                    type="button"
+                    aria-pressed={name === branch}
+                    onClick={() => onBranch(name)}
+                    className="w-full truncate rounded px-1 py-0.5 text-left font-mono text-sm hover:bg-zinc-100 aria-pressed:bg-zinc-200 dark:aria-pressed:bg-zinc-800 dark:hover:bg-zinc-800"
+                  >
+                    {name}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-2 text-sm">
-        <Tables branch={branch} tables={tables} failure={failure ?? null} />
+        <Tables branch={branch} tagged={tagged} tables={tables} failure={failure ?? null} />
       </div>
     </aside>
   );
@@ -78,13 +108,15 @@ function Node({ kind, name, children }: { kind: string; name: string; children: 
   );
 }
 
-/** The tree of what the branch holds: its catalog, which is the branch itself; its schemas; their tables. */
+/** The tree of what the ref holds: its catalog, which is the ref itself; its schemas; their tables. */
 function Tables({
   branch,
+  tagged,
   tables,
   failure,
 }: {
   branch: string;
+  tagged: boolean;
   tables: readonly Table[] | undefined;
   failure: Error | null;
 }) {
@@ -99,8 +131,10 @@ function Tables({
     return <p className="px-1 text-xs text-zinc-500">Reading the catalog…</p>;
   }
   return (
-    <Node kind="catalog" name={branch}>
-      {tables.length === 0 && <p className="px-1 py-0.5 text-xs text-zinc-500">No tables on this branch.</p>}
+    <Node kind={tagged ? "tag · read only" : "catalog"} name={branch}>
+      {tables.length === 0 && (
+        <p className="px-1 py-0.5 text-xs text-zinc-500">No tables on this {tagged ? "tag" : "branch"}.</p>
+      )}
       {byNamespace(tables).map(([namespace, names]) => (
         <Node key={namespace} kind="schema" name={namespace}>
           <ul aria-label={namespace}>
