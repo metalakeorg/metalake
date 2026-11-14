@@ -20,7 +20,7 @@ use crate::{Error, Result};
 pub const ARROYO: &str = "METALAKE_ARROYO";
 /// The image of Arroyo to run a pipeline in, when there is no binary.
 pub const ARROYO_IMAGE: &str = "METALAKE_ARROYO_IMAGE";
-const DEFAULT_IMAGE: &str = "ghcr.io/describeloai/arroyo-metalake:feat-metalake-resolve";
+const DEFAULT_IMAGE: &str = "ghcr.io/describeloai/arroyo-metalake:acd3762c8a29a99f81529616e21edecc2bca83ad";
 
 /// How long a pipeline has to take its final checkpoint when it stops.
 const STOPPING: Duration = Duration::from_secs(90);
