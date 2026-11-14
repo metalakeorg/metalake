@@ -1,6 +1,7 @@
 //! What MetaLake's faces share (ADR 0003 §4). A face turns what it is given into calls and their answers into its own
 //! form, and decides nothing: which lake is meant and what each verb does live here, once.
 
+mod details;
 mod error;
 mod follow;
 mod hash;
@@ -17,6 +18,7 @@ mod session;
 mod status;
 mod write;
 
+pub use details::{Column, RefDetails, SchemaDetails, SchemaSummary, Size, TableDetails, TableSize, TableSummary};
 pub use error::{Error, Kind, Result};
 pub use follow::{Changes, Follower, StartAt};
 pub use history::duration;

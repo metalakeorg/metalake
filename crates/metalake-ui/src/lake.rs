@@ -8,7 +8,10 @@ use datafusion::arrow::ipc::writer::StreamWriter;
 use futures_util::StreamExt;
 use metalake_client::{Lake, Session};
 
-use crate::api::{Answer, Backend, Fault, Kind, Mark, Marks, Named, Ref, Rows, Statement, Status, Table};
+use crate::api::{
+    Answer, Backend, Column, Commit, Fault, IcebergState, Kind, Mark, Marks, Named, Ref, RefDetails, Rows,
+    SchemaDetails, SchemaSummary, Size, Snapshot, Statement, Status, Table, TableDetails, TableSummary,
+};
 
 /// How often the lake's mark is read again besides its notifications: what tells a deleted ref, which notifies
 /// nothing, and a change while the connection that listens was lost.
@@ -132,6 +135,134 @@ impl Backend for Lake {
             written.map_err(|e| Fault::new(Kind::Failed, format!("the rows could not be written as Arrow: {e}")))?;
             Ok(Rows { arrow, rows, truncated })
         })
+    }
+
+    fn ref_details<'a>(&'a self, on: &'a str) -> Answer<'a, RefDetails> {
+        Box::pin(async move {
+            let d = Lake::ref_details(self, on).await?;
+            Ok(RefDetails {
+                r#ref: Ref {
+                    name: d.info.name,
+                    kind: d.info.kind,
+                    parent: d.info.parent,
+                    fork_seq: d.info.fork_seq,
+                    created_seq: d.info.created_seq,
+                    protected: d.info.protected,
+                },
+                warehouse: d.warehouse,
+                size: size(d.size),
+                schemas: d
+                    .schemas
+                    .into_iter()
+                    .map(|s| SchemaSummary {
+                        name: s.name,
+                        size: size(s.size),
+                    })
+                    .collect(),
+            })
+        })
+    }
+
+    fn commits<'a>(&'a self, on: &'a str, limit: i64) -> Answer<'a, Vec<Commit>> {
+        Box::pin(async move {
+            let commits = Lake::commits(self, on, limit).await?;
+            Ok(commits
+                .into_iter()
+                .map(|c| Commit {
+                    seq: c.commit_seq,
+                    committed_at: c.committed_at,
+                    author: c.author,
+                    operation: c.operation,
+                    message: c.message,
+                })
+                .collect())
+        })
+    }
+
+    fn schema_details<'a>(&'a self, on: &'a str, schema: &'a str) -> Answer<'a, SchemaDetails> {
+        Box::pin(async move {
+            let d = Lake::schema_details(self, on, schema).await?;
+            Ok(SchemaDetails {
+                name: d.name,
+                properties: d.properties,
+                size: size(d.size),
+                tables: d
+                    .tables
+                    .into_iter()
+                    .map(|t| TableSummary {
+                        name: t.name,
+                        rows: t.rows,
+                        bytes: t.bytes,
+                        changed_at: t.changed_at,
+                    })
+                    .collect(),
+            })
+        })
+    }
+
+    fn table_details<'a>(&'a self, on: &'a str, schema: &'a str, table: &'a str) -> Answer<'a, TableDetails> {
+        Box::pin(async move {
+            let d = Lake::table_details(self, on, schema, table).await?;
+            Ok(TableDetails {
+                namespace: d.namespace,
+                name: d.name,
+                id: d.id,
+                location: d.location,
+                columns: d
+                    .columns
+                    .into_iter()
+                    .map(|c| Column {
+                        id: c.id,
+                        parent: c.parent,
+                        name: c.name,
+                        r#type: c.r#type,
+                        required: c.required,
+                        doc: c.doc,
+                        default: c.default,
+                    })
+                    .collect(),
+                rows: d.size.rows,
+                bytes: d.size.bytes,
+                files: d.size.files,
+                inline_files: d.size.inline_files,
+                deleted_rows: d.size.deleted_rows,
+                partition: d.partition,
+                sort_order: d.sort_order,
+                cluster_key: d.cluster_key,
+                properties: d.properties,
+                iceberg: d.iceberg.map(|i| IcebergState {
+                    head: i.head,
+                    written: i.written,
+                    behind: i.behind,
+                    since: i.since,
+                    metadata: i.metadata,
+                }),
+            })
+        })
+    }
+
+    fn snapshots<'a>(&'a self, on: &'a str, schema: &'a str, table: &'a str, limit: i64) -> Answer<'a, Vec<Snapshot>> {
+        Box::pin(async move {
+            let snapshots = Lake::snapshots(self, on, &format!("{schema}.{table}"), limit).await?;
+            Ok(snapshots
+                .into_iter()
+                .map(|s| Snapshot {
+                    id: s.snapshot_id,
+                    parent: s.parent_snapshot_id,
+                    operation: s.operation,
+                    committed_at: s.committed_at,
+                })
+                .collect())
+        })
+    }
+}
+
+/// What the client says something holds, as the API says it.
+fn size(s: metalake_client::Size) -> Size {
+    Size {
+        tables: s.tables,
+        rows: s.rows,
+        bytes: s.bytes,
     }
 }
 

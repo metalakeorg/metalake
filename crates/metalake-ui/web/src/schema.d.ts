@@ -78,6 +78,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/refs/{ref}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A ref: what it is, what it holds, and its schemas, each with what it holds. */
+        get: operations["ref_details"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/refs/{ref}/commits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A ref's commits, the latest first. */
+        get: operations["commits"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/refs/{ref}/schemas/{schema}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A schema of a ref, by its levels joined by dots: its properties, and its tables, each with what it holds. */
+        get: operations["schema_details"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/refs/{ref}/tables": {
         parameters: {
             query?: never;
@@ -87,6 +138,40 @@ export interface paths {
         };
         /** The tables a ref sees at its head. */
         get: operations["tables"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/refs/{ref}/tables/{schema}/{table}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A table of a ref: its columns, its layout, how much it holds, and its Iceberg metadata. */
+        get: operations["table_details"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/refs/{ref}/tables/{schema}/{table}/snapshots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A table's snapshots on a ref, the latest first. */
+        get: operations["snapshots"];
         put?: never;
         post?: never;
         delete?: never;
@@ -155,6 +240,33 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description A column of a table, nested ones included. */
+        Column: {
+            /** @description What a write that names it not gives it. */
+            default?: unknown;
+            doc?: string | null;
+            /** Format: int32 */
+            id: number;
+            name: string;
+            /**
+             * Format: int32
+             * @description The column it is a field of, for a nested one.
+             */
+            parent?: number | null;
+            required: boolean;
+            /** @description Its type, as Iceberg writes it. */
+            type: string;
+        };
+        /** @description A commit of a ref. */
+        Commit: {
+            author?: string | null;
+            committed_at?: string | null;
+            message?: string | null;
+            /** @description What it did: `append`, `update`, `merge`, `branch`… */
+            operation: string;
+            /** Format: int64 */
+            seq: number;
+        };
         /** @description A failure, as the command line's `--format json` says it. */
         Fault: {
             /** @description Postgres's SQLSTATE. */
@@ -165,6 +277,28 @@ export interface components {
             retryable: boolean;
             /** @description The specification's rule a refused write broke. */
             rule?: string | null;
+        };
+        /** @description Where a table's Iceberg metadata stands, for a table set to write it on commit. */
+        IcebergState: {
+            /**
+             * Format: int64
+             * @description Its commits that metadata does not serve yet.
+             */
+            behind: number;
+            /**
+             * Format: int64
+             * @description The table's latest snapshot on the ref.
+             */
+            head?: number | null;
+            /** @description The latest metadata file. */
+            metadata?: string | null;
+            /** @description When the first of those was committed. */
+            since?: string | null;
+            /**
+             * Format: int64
+             * @description The sequence its latest metadata file serves.
+             */
+            written?: number | null;
         };
         /**
          * @description What a failure means to whoever called, as the command line's exit codes and Python's exceptions say it.
@@ -228,6 +362,45 @@ export interface components {
             /** @description Whether it may be deleted. */
             protected: boolean;
         };
+        /** @description A ref, what it holds, and its schemas, as the Catalog's view of it shows them. */
+        RefDetails: components["schemas"]["Ref"] & {
+            schemas: components["schemas"]["SchemaSummary"][];
+            size: components["schemas"]["Size"];
+            /** @description Where the lake's files are. */
+            warehouse?: string | null;
+        };
+        /** @description A schema, its properties, and its tables. */
+        SchemaDetails: {
+            name: string;
+            properties: {
+                [key: string]: string;
+            };
+            size: components["schemas"]["Size"];
+            tables: components["schemas"]["TableSummary"][];
+        };
+        /** @description A schema, by its levels joined by dots, and what it holds. */
+        SchemaSummary: {
+            name: string;
+            size: components["schemas"]["Size"];
+        };
+        /** @description How much something holds: its tables, their rows, and their bytes. */
+        Size: {
+            /** Format: int64 */
+            bytes: number;
+            /** Format: int64 */
+            rows: number;
+            /** Format: int64 */
+            tables: number;
+        };
+        /** @description A snapshot of a table on a ref: the table as a commit left it. */
+        Snapshot: {
+            committed_at?: string | null;
+            /** Format: int64 */
+            id: number;
+            operation?: string | null;
+            /** Format: int64 */
+            parent?: number | null;
+        };
         /** @description What to run: a text of statements, in order, each committed before the next, as `metalake sql` runs one. */
         Statement: {
             /**
@@ -259,6 +432,54 @@ export interface components {
         Table: {
             name: string;
             namespace: string[];
+        };
+        /** @description A table: what it is, how it is laid out, how much it holds, and where its Iceberg metadata stands. */
+        TableDetails: {
+            /** Format: int64 */
+            bytes: number;
+            /** @description The columns whose statistics are indexed for pruning. */
+            cluster_key: string[];
+            columns: components["schemas"]["Column"][];
+            /** Format: int64 */
+            deleted_rows: number;
+            /**
+             * Format: int64
+             * @description Its files stored in the warehouse.
+             */
+            files: number;
+            iceberg?: components["schemas"]["IcebergState"] | null;
+            id: string;
+            /**
+             * Format: int64
+             * @description Its files kept in the catalog itself, until they are flushed.
+             */
+            inline_files: number;
+            /** @description The prefix its files are written under. */
+            location: string;
+            name: string;
+            namespace: string[];
+            /** @description Its default partition spec, as Iceberg writes one. */
+            partition?: unknown;
+            properties: {
+                [key: string]: string;
+            };
+            /**
+             * Format: int64
+             * @description Its rows: those of its files, less those their deletion vectors delete.
+             */
+            rows: number;
+            /** @description Its default sort order, as Iceberg writes one. */
+            sort_order?: unknown;
+        };
+        /** @description A table of a schema: what it holds, and when it last changed. */
+        TableSummary: {
+            /** Format: int64 */
+            bytes: number;
+            /** @description When its latest snapshot on the ref was committed. */
+            changed_at?: string | null;
+            name: string;
+            /** Format: int64 */
+            rows: number;
         };
         /** @description The API's version. */
         Version: {
@@ -429,6 +650,160 @@ export interface operations {
             };
         };
     };
+    ref_details: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The branch or tag, percent-encoded */
+                ref: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The ref */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RefDetails"];
+                };
+            };
+            /** @description No such ref */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description Without the run's token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description The lake could not be read */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+        };
+    };
+    commits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The branch or tag, percent-encoded */
+                ref: string;
+                /** @description How many, the latest first: 50 when absent, 1,000 at most. */
+                limit: number | null;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Its commits */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Commit"][];
+                };
+            };
+            /** @description No such ref, or a limit out of bounds */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description Without the run's token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description The lake could not be read */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+        };
+    };
+    schema_details: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The branch or tag, percent-encoded */
+                ref: string;
+                /** @description The schema, its levels joined by dots */
+                schema: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The schema */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SchemaDetails"];
+                };
+            };
+            /** @description No such ref or schema */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description Without the run's token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description The lake could not be read */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+        };
+    };
     tables: {
         parameters: {
             query?: never;
@@ -451,6 +826,116 @@ export interface operations {
                 };
             };
             /** @description No such ref */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description Without the run's token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description The lake could not be read */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+        };
+    };
+    table_details: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The branch or tag, percent-encoded */
+                ref: string;
+                /** @description The table's schema, its levels joined by dots */
+                schema: string;
+                /** @description The table's name */
+                table: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The table */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TableDetails"];
+                };
+            };
+            /** @description No such ref or table */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description Without the run's token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description The lake could not be read */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+        };
+    };
+    snapshots: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The branch or tag, percent-encoded */
+                ref: string;
+                /** @description The table's schema, its levels joined by dots */
+                schema: string;
+                /** @description The table's name */
+                table: string;
+                /** @description How many, the latest first: 50 when absent, 1,000 at most. */
+                limit: number | null;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Its snapshots */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Snapshot"][];
+                };
+            };
+            /** @description No such ref or table, or a limit out of bounds */
             400: {
                 headers: {
                     [name: string]: unknown;
