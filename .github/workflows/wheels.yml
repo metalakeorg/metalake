@@ -93,11 +93,14 @@ jobs:
           test -f crates/metalake-ui/web/dist/index.html
           mkdir -p crates/metalake-py/python/metalake/licenses
           cp crates/metalake-ui/web/dist/licenses.txt crates/metalake-py/python/metalake/licenses/ui.txt
+      # Compiled through sccache, its objects in the Actions cache, one per target: what did not change since a run
+      # that saw it is not compiled again, as the dependencies, which are most of the build.
       - name: Build the wheel
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'auto' }}
+          sccache: "true"
           args: --release --out dist -m crates/metalake-py/Cargo.toml
       - uses: actions/upload-artifact@v4
         with:
