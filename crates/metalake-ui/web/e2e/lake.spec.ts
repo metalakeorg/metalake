@@ -4,10 +4,10 @@ import { TOKEN } from "../playwright.config";
 
 // The frame on a lake (ADR 0007, milestone 6): `metalake ui` runs on one, as the end-to-end job starts it.
 
-test("the UI opens on Query, the sidebar's first entry, Notebook after it", async ({ page }) => {
+test("the UI opens on Query, the sidebar's first entry, Notebook and Catalog after it", async ({ page }) => {
   await page.goto(`/#token=${TOKEN}`);
   const sidebar = page.getByRole("navigation", { name: "Pages" });
-  await expect(sidebar.getByRole("link")).toHaveText(["Query", "Notebook"]);
+  await expect(sidebar.getByRole("link")).toHaveText(["Query", "Notebook", "Catalog"]);
   await expect(page.getByRole("main").getByRole("heading", { name: "Query" })).toBeVisible();
   await page.reload();
   await expect(page.getByRole("main").getByRole("heading", { name: "Query" })).toBeVisible();

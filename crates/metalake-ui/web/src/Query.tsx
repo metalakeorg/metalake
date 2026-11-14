@@ -1,16 +1,12 @@
-import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Assets } from "./Assets";
-import { refs, run, tables } from "./client";
+import { run } from "./client";
 import { Editor } from "./Editor";
-import { CATALOG } from "./live";
+import { usePicked } from "./picked";
 import { Results, type Run } from "./Results";
 
 /** The keys that run a statement, as this machine names them. */
 const RUN_KEYS = /Mac|iPhone|iPad/.test(globalThis.navigator?.platform ?? "") ? "⌘ Enter" : "Ctrl Enter";
-
-/** The branch every lake has, which the page opens on. */
-const MAIN = "main";
 
 /**
  * The Query page, where the UI opens: the assets of a ref beside it, read from the lake and kept as it is; an SQL
@@ -20,30 +16,20 @@ const MAIN = "main";
  */
 export function QueryPage() {
   const [text, setText] = useState("");
-  const [branch, setBranch] = useState(MAIN);
-
-  const known = useQuery({ queryKey: [...CATALOG, "refs"], queryFn: () => refs() });
-  const branches = known.data?.filter((r) => r.kind === "branch").map((r) => r.name) ?? [MAIN];
-  const tags = known.data?.filter((r) => r.kind === "tag").map((r) => r.name) ?? [];
-  const tagged = tags.includes(branch);
-  const listed = useQuery({ queryKey: [...CATALOG, "tables", branch], queryFn: () => tables(branch) });
-  // A ref deleted while it was picked: back to the one every lake has.
-  const gone = known.data !== undefined && !branches.includes(branch) && !tags.includes(branch);
-  useEffect(() => {
-    if (gone) setBranch(MAIN);
-  }, [gone]);
+  const picked = usePicked();
+  const { ref: branch, tagged } = picked;
 
   const { state, start, cancel } = useRun();
 
   return (
     <div className="flex h-full">
       <Assets
-        branches={branches}
-        tags={tags}
+        branches={picked.branches}
+        tags={picked.tags}
         branch={branch}
-        onBranch={setBranch}
-        tables={listed.data}
-        failure={listed.error ?? known.error}
+        onBranch={picked.pick}
+        tables={picked.tables}
+        failure={picked.failure}
       />
       <section aria-label="Query" className="flex min-w-0 flex-1 flex-col">
         <div className="flex h-11 shrink-0 items-center gap-3 border-zinc-200 border-b px-4 dark:border-zinc-800">
