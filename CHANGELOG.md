@@ -3,6 +3,13 @@
 What each version published on PyPI as `metalake` brings to whoever installs it. The work behind each line is in its
 pull request; the decisions, in the ADRs.
 
+## 0.4.0
+
+- **Catalog:** a new page to browse the lake by branch or tag: each catalog with its schemas and commits, each schema
+  with its tables and properties, and each table with its columns, a sample of rows, its details and snapshots
+  (#50, #51, #52).
+- **Query:** the lake's tags listed below the branches; a tag picked is browsed and queried read only (#49).
+
 ## 0.3.1
 
 - **UI:** Query's results copy to the clipboard as JSON, and show in pages of 100 (#46, #47).
