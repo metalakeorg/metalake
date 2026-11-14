@@ -14,6 +14,7 @@ use arrow_array::types::{Int64Type, UInt64Type};
 use arrow_schema::{DataType, Field, Schema};
 use common::{fresh_schema, url};
 use datafusion::prelude::SessionContext;
+use datafusion::sql::parser::DFParser;
 use futures_util::TryStreamExt;
 use metalake::{Catalog, CatalogConfig, Error, NewTable, Outcome, Ref, Scan, Storage, Table};
 use metalake_datafusion::{MetaLake, WrittenRow};
@@ -31,6 +32,7 @@ struct Lake {
     catalog: Catalog,
     main: Ref,
     schema: String,
+    engine: MetaLake,
     context: SessionContext,
 }
 
@@ -56,16 +58,25 @@ async fn lake() -> Result<Lake, Box<dyn std::error::Error>> {
     })?;
     let (tx, _) = tx.create_table(table("source"))?;
     tx.commit().await?;
-    let context = MetaLake::new(catalog.clone(), storage).await?.context()?;
+    let engine = MetaLake::new(catalog.clone(), storage).await?;
+    let context = engine.context()?;
     Ok(Lake {
         catalog,
         main,
         schema,
+        engine,
         context,
     })
 }
 
 impl Lake {
+    /// Runs one statement as a session of the client does, through `execute`, which takes what makes a table.
+    async fn execute(&self, sql: &str) -> datafusion::error::Result<Vec<RecordBatch>> {
+        let mut statements = DFParser::parse_sql(sql)?;
+        let statement = statements.pop_front().expect("a statement");
+        self.engine.execute(&self.context, statement).await?.collect().await
+    }
+
     /// How many rows a statement says it wrote.
     async fn run(&self, sql: &str) -> Result<u64, Box<dyn std::error::Error>> {
         let batches = self.context.sql(sql).await?.collect().await?;
@@ -148,6 +159,43 @@ async fn insert_single_commit() -> Result<(), Box<dyn std::error::Error>> {
     let small = lake.table("small").await?;
     assert!(lake.files(&small).await?.iter().all(|f| f.path.is_none()));
     assert_eq!(lake.keys("main.db.small").await?, [1]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn create_table_as_select_in_one_commit() -> Result<(), Box<dyn std::error::Error>> {
+    let lake = lake().await?;
+    let run = |sql: &'static str| lake.execute(sql);
+    run("insert into main.db.source values (1, 'a'), (2, 'b'), (3, null)").await?;
+
+    // The table, by the query's columns, and its rows: one commit makes both, as the ref before it has neither.
+    run("create table main.db.copy as select k * 10 as k, s from main.db.source where k > 1").await?;
+    assert_eq!(lake.keys("main.db.copy").await?, [20, 30]);
+    let copy = lake.table("copy").await?;
+    let fields: Vec<(&str, &str)> = copy.fields().iter().map(|f| (f.name.as_str(), f.ty.as_str())).collect();
+    assert_eq!(fields, [("k", "long"), ("s", "string")]);
+    let before = lake
+        .main
+        .at(copy.snapshot_id().unwrap() - 1)
+        .table(&["db"], "copy")
+        .await;
+    assert!(matches!(before, Err(Error::NotFound(_))), "{before:?}");
+
+    // A query of no rows: the table alone.
+    run("create table main.db.none as select k from main.db.source where k < 0").await?;
+    assert!(lake.keys("main.db.none").await?.is_empty());
+
+    // A table that exists is left as it is, its query not run.
+    run("create table if not exists main.db.copy as select 1 as k").await?;
+    assert_eq!(lake.keys("main.db.copy").await?, [20, 30]);
+
+    // A query that fails makes no table.
+    assert!(
+        run("create table main.db.broken as select k / 0 as k from main.db.source")
+            .await
+            .is_err()
+    );
+    assert!(matches!(lake.table("broken").await, Err(Error::NotFound(_))));
     Ok(())
 }
 
@@ -260,7 +308,10 @@ async fn insert_commit_options() -> Result<(), Box<dyn std::error::Error>> {
 
     // The same writer and version again: already applied, nothing written twice.
     let again = context.sql(insert).await?.collect().await?;
-    assert_eq!(WrittenRow::of(&again[0])?.outcome, Some(Outcome::AlreadyApplied(last.commit_seq)));
+    assert_eq!(
+        WrittenRow::of(&again[0])?.outcome,
+        Some(Outcome::AlreadyApplied(last.commit_seq))
+    );
     let count = context.sql("select count(*) from main.db.t").await?.collect().await?;
     assert_eq!(count[0].column(0).as_primitive::<Int64Type>().value(0), 2);
     Ok(())

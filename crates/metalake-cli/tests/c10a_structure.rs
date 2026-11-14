@@ -237,7 +237,6 @@ fn unsupported_table_options_refused() {
     for statement in [
         "create table main.db.a (k bigint primary key)",
         "create table main.db.b (k bigint default 1)",
-        "create table main.db.c as select 1 as k",
         "create or replace table main.db.t (k bigint)",
         "create schema if not exists main.other",
     ] {
@@ -252,6 +251,9 @@ fn unsupported_table_options_refused() {
     assert!(run(&dir, &["sql", "select * from main.db.a"]).status.code() == Some(1));
     sql(&dir, "create table if not exists main.db.t (other int)", "csv");
     assert!(sql(&dir, "select * from main.db.t limit 0", "csv").starts_with("k,s,f"));
+    // A table by a query's columns, with its rows.
+    sql(&dir, "create table main.db.c as select 1 as k", "csv");
+    assert_eq!(sql(&dir, "select k from main.db.c", "csv"), "k\n1\n");
 }
 
 #[test]

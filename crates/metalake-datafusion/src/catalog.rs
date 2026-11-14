@@ -165,7 +165,12 @@ impl MetaLake {
                 let path = TablePath::from_parts(Some(&name.catalog), Some(&name.schema), &name.table);
                 let on = self.shared.named(&path.on).await?;
                 let namespace: Vec<&str> = path.namespace.iter().map(String::as_str).collect();
-                ddl::create_table(&on, &namespace, &path.name, &create).await?;
+                let writing = ddl::Writing {
+                    context,
+                    catalog: &self.shared.catalog,
+                    storage: &self.shared.storage,
+                };
+                ddl::create_table(&on, &namespace, &path.name, &create, writing).await?;
             }
             plan => return context.execute_logical_plan(plan).await,
         }
