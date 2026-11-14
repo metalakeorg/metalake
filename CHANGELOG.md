@@ -5,7 +5,7 @@ pull request; the decisions, in the ADRs.
 
 ## 0.3.1
 
-- **UI:** Query's results copy to the clipboard as JSON (#46).
+- **UI:** Query's results copy to the clipboard as JSON, and show in pages of 100 (#46, #47).
 
 ## 0.3.0
 
