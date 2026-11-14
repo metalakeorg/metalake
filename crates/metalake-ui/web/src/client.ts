@@ -67,6 +67,75 @@ export async function tables(on: string, api: Client = client()): Promise<Table[
   return data;
 }
 
+export type RefDetails = components["schemas"]["RefDetails"];
+export type Commit = components["schemas"]["Commit"];
+export type SchemaDetails = components["schemas"]["SchemaDetails"];
+export type TableDetails = components["schemas"]["TableDetails"];
+export type Snapshot = components["schemas"]["Snapshot"];
+
+/** A schema's levels as a path names them: joined by U+001F, as Iceberg's REST catalog does. */
+export function schemaPath(namespace: readonly string[]): string {
+  return namespace.join("");
+}
+
+/** A ref: what it is, what it holds, and its schemas. */
+export async function refDetails(on: string, api: Client = client()): Promise<RefDetails> {
+  const { data, error } = await api.GET("/api/v1/refs/{ref}", { params: { path: { ref: on } } });
+  if (error) throw new Failure(error);
+  return data;
+}
+
+/** A ref's commits, the latest first. */
+export async function commits(on: string, limit?: number, api: Client = client()): Promise<Commit[]> {
+  const { data, error } = await api.GET("/api/v1/refs/{ref}/commits", {
+    params: { path: { ref: on }, query: limit === undefined ? {} : { limit } },
+  });
+  if (error) throw new Failure(error);
+  return data;
+}
+
+/** A schema of a ref, by its levels: its properties and its tables. */
+export async function schemaDetails(
+  on: string,
+  namespace: readonly string[],
+  api: Client = client(),
+): Promise<SchemaDetails> {
+  const { data, error } = await api.GET("/api/v1/refs/{ref}/schemas/{schema}", {
+    params: { path: { ref: on, schema: schemaPath(namespace) } },
+  });
+  if (error) throw new Failure(error);
+  return data;
+}
+
+/** A table of a ref: its columns, layout, size and Iceberg state. */
+export async function tableDetails(
+  on: string,
+  namespace: readonly string[],
+  table: string,
+  api: Client = client(),
+): Promise<TableDetails> {
+  const { data, error } = await api.GET("/api/v1/refs/{ref}/tables/{schema}/{table}", {
+    params: { path: { ref: on, schema: schemaPath(namespace), table } },
+  });
+  if (error) throw new Failure(error);
+  return data;
+}
+
+/** A table's snapshots on a ref, the latest first. */
+export async function snapshots(
+  on: string,
+  namespace: readonly string[],
+  table: string,
+  limit?: number,
+  api: Client = client(),
+): Promise<Snapshot[]> {
+  const { data, error } = await api.GET("/api/v1/refs/{ref}/tables/{schema}/{table}/snapshots", {
+    params: { path: { ref: on, schema: schemaPath(namespace), table }, query: limit === undefined ? {} : { limit } },
+  });
+  if (error) throw new Failure(error);
+  return data;
+}
+
 /** How many rows a statement answers to the page. */
 export const LIMIT = 10_000;
 
