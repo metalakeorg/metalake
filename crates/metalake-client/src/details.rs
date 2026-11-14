@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use futures_util::StreamExt;
-use metalake::{Scan, Table};
+use metalake::{ICEBERG_METADATA, Scan, SnapshotEntry, Table};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -57,18 +57,18 @@ pub struct RefDetails {
     pub schemas: Vec<SchemaSummary>,
 }
 
-/// A schema, by its name, and what it holds.
+/// A schema, by its levels, and what it holds. A level may hold a dot: a schema is known by its levels, never by
+/// their names joined.
 #[derive(Debug, Clone, Serialize)]
 pub struct SchemaSummary {
-    /// Its levels joined by dots.
-    pub name: String,
+    pub namespace: Vec<String>,
     pub size: Size,
 }
 
 /// A schema, its properties, and its tables.
 #[derive(Debug, Clone, Serialize)]
 pub struct SchemaDetails {
-    pub name: String,
+    pub namespace: Vec<String>,
     pub properties: BTreeMap<String, String>,
     pub size: Size,
     pub tables: Vec<TableSummary>,
@@ -95,7 +95,7 @@ pub struct Column {
     pub r#type: String,
     pub required: bool,
     pub doc: Option<String>,
-    /// What a write that names it not gives it.
+    /// What a write that does not name it gives it.
     pub default: Option<Value>,
 }
 
@@ -131,18 +131,18 @@ impl Lake {
             .find(|r| r.name == on)
             .ok_or_else(|| Error::usage(format!("no ref {on}")))?;
         let named = self.find_ref(on).await?;
-        let mut schemas: BTreeMap<String, Size> = named
+        let mut schemas: BTreeMap<Vec<String>, Size> = named
             .namespaces()
             .await?
             .into_iter()
-            .map(|n| (n.namespace.join("."), Size::default()))
+            .map(|n| (n.namespace, Size::default()))
             .collect();
         let mut size = Size::default();
         for name in named.tables().await? {
             let table = named.table(&parts(&name.namespace), &name.name).await?;
             let held = self.table_size(&table).await?;
             size.add(&held);
-            schemas.entry(name.namespace.join(".")).or_default().add(&held);
+            schemas.entry(name.namespace).or_default().add(&held);
         }
         Ok(RefDetails {
             info,
@@ -150,21 +150,21 @@ impl Lake {
             size,
             schemas: schemas
                 .into_iter()
-                .map(|(name, size)| SchemaSummary { name, size })
+                .map(|(namespace, size)| SchemaSummary { namespace, size })
                 .collect(),
         })
     }
 
-    /// A schema of a ref, by its levels joined by dots: its properties, and its tables, each with what it holds.
-    pub async fn schema_details(&self, on: &str, schema: &str) -> Result<SchemaDetails> {
+    /// A schema of a ref, by its levels: its properties, and its tables, each with what it holds.
+    pub async fn schema_details(&self, on: &str, schema: &[String]) -> Result<SchemaDetails> {
         let named = self.find_ref(on).await?;
-        let wanted: Vec<String> = schema.split('.').map(str::to_owned).collect();
+        let wanted = schema.to_vec();
         let found = named
             .namespaces()
             .await?
             .into_iter()
             .find(|n| n.namespace == wanted)
-            .ok_or_else(|| Error::usage(format!("no schema {schema} on {on}")))?;
+            .ok_or_else(|| Error::usage(format!("no schema {} on {on}", schema.join("."))))?;
         let mut size = Size::default();
         let mut tables = Vec::new();
         for name in named.tables().await?.into_iter().filter(|t| t.namespace == wanted) {
@@ -181,18 +181,17 @@ impl Lake {
         }
         tables.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(SchemaDetails {
-            name: schema.to_owned(),
+            namespace: wanted,
             properties: properties(&found.properties),
             size,
             tables,
         })
     }
 
-    /// A table of a ref, by its schema and name.
-    pub async fn table_details(&self, on: &str, schema: &str, name: &str) -> Result<TableDetails> {
+    /// A table of a ref, by its schema's levels and its name.
+    pub async fn table_details(&self, on: &str, schema: &[String], name: &str) -> Result<TableDetails> {
         let named = self.find_ref(on).await?;
-        let namespace: Vec<&str> = schema.split('.').collect();
-        let table = named.table(&namespace, name).await?;
+        let table = named.table(&parts(schema), name).await?;
         let size = self.table_size(&table).await?;
         let column = |id: &i32| {
             table
@@ -201,12 +200,18 @@ impl Lake {
                 .find(|f| f.field_id == *id)
                 .map(|f| f.name.clone())
         };
-        let iceberg = self
-            .iceberg()
-            .status(on)
-            .await?
-            .into_iter()
-            .find(|t| t.table == format!("{schema}.{name}"));
+        // Asked only of a table set to write its Iceberg metadata on commit: reading that metadata needs the lake's
+        // storage, which a catalog of tables at locations of their own may not have.
+        let iceberg = if table.properties().get(ICEBERG_METADATA).map(String::as_str) == Some("on-commit") {
+            let id = table.id();
+            let written = format!("{}.{}", table.namespace().join("."), table.name());
+            let mut found = self.iceberg().status(on).await?;
+            found.retain(|t| t.table == written);
+            let _ = id;
+            found.into_iter().next()
+        } else {
+            None
+        };
         Ok(TableDetails {
             namespace: table.namespace().to_vec(),
             name: table.name().to_owned(),
@@ -222,6 +227,19 @@ impl Lake {
             properties: table.properties().clone(),
             iceberg,
         })
+    }
+
+    /// A table's snapshots on a ref, by its schema's levels and its name, the latest first.
+    pub async fn table_snapshots(
+        &self,
+        on: &str,
+        schema: &[String],
+        name: &str,
+        limit: i64,
+    ) -> Result<Vec<SnapshotEntry>> {
+        let named = self.find_ref(on).await?;
+        let table = named.table(&parts(schema), name).await?;
+        Ok(named.snapshots(&table, limit).await?)
     }
 
     /// What a table holds, from the files the catalog lists for it.
@@ -262,7 +280,7 @@ fn columns(table: &Table) -> Vec<Column> {
             r#type: f.ty,
             required: f.required,
             doc: f.doc,
-            default: f.write_default.or(f.initial_default),
+            default: f.write_default,
         })
         .collect()
 }

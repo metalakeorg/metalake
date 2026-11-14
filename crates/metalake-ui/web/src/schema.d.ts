@@ -119,7 +119,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** A schema of a ref, by its levels joined by dots: its properties, and its tables, each with what it holds. */
+        /** A schema of a ref, by its levels: its properties, and its tables, each with what it holds. */
         get: operations["schema_details"];
         put?: never;
         post?: never;
@@ -242,7 +242,7 @@ export interface components {
     schemas: {
         /** @description A column of a table, nested ones included. */
         Column: {
-            /** @description What a write that names it not gives it. */
+            /** @description What a write that does not name it gives it. */
             default?: unknown;
             doc?: string | null;
             /** Format: int32 */
@@ -371,16 +371,19 @@ export interface components {
         };
         /** @description A schema, its properties, and its tables. */
         SchemaDetails: {
-            name: string;
+            namespace: string[];
             properties: {
                 [key: string]: string;
             };
             size: components["schemas"]["Size"];
             tables: components["schemas"]["TableSummary"][];
         };
-        /** @description A schema, by its levels joined by dots, and what it holds. */
+        /**
+         * @description A schema, by its levels, and what it holds. A level may hold a dot: a path names a schema by its levels joined by
+         *     U+001F, as Iceberg's REST catalog does.
+         */
         SchemaSummary: {
-            name: string;
+            namespace: string[];
             size: components["schemas"]["Size"];
         };
         /** @description How much something holds: its tables, their rows, and their bytes. */
@@ -702,13 +705,14 @@ export interface operations {
     };
     commits: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description How many, the latest first: 50 when absent, 1,000 at most. */
+                limit?: number;
+            };
             header?: never;
             path: {
                 /** @description The branch or tag, percent-encoded */
                 ref: string;
-                /** @description How many, the latest first: 50 when absent, 1,000 at most. */
-                limit: number | null;
             };
             cookie?: never;
         };
@@ -759,7 +763,7 @@ export interface operations {
             path: {
                 /** @description The branch or tag, percent-encoded */
                 ref: string;
-                /** @description The schema, its levels joined by dots */
+                /** @description The schema, its levels joined by U+001F, percent-encoded */
                 schema: string;
             };
             cookie?: never;
@@ -861,7 +865,7 @@ export interface operations {
             path: {
                 /** @description The branch or tag, percent-encoded */
                 ref: string;
-                /** @description The table's schema, its levels joined by dots */
+                /** @description The table's schema, its levels joined by U+001F, percent-encoded */
                 schema: string;
                 /** @description The table's name */
                 table: string;
@@ -910,17 +914,18 @@ export interface operations {
     };
     snapshots: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description How many, the latest first: 50 when absent, 1,000 at most. */
+                limit?: number;
+            };
             header?: never;
             path: {
                 /** @description The branch or tag, percent-encoded */
                 ref: string;
-                /** @description The table's schema, its levels joined by dots */
+                /** @description The table's schema, its levels joined by U+001F, percent-encoded */
                 schema: string;
                 /** @description The table's name */
                 table: string;
-                /** @description How many, the latest first: 50 when absent, 1,000 at most. */
-                limit: number | null;
             };
             cookie?: never;
         };

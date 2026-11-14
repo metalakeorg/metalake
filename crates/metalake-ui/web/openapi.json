@@ -258,14 +258,11 @@
           },
           {
             "name": "limit",
-            "in": "path",
+            "in": "query",
             "description": "How many, the latest first: 50 when absent, 1,000 at most.",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -322,7 +319,7 @@
         "tags": [
           "catalog"
         ],
-        "summary": "A schema of a ref, by its levels joined by dots: its properties, and its tables, each with what it holds.",
+        "summary": "A schema of a ref, by its levels: its properties, and its tables, each with what it holds.",
         "operationId": "schema_details",
         "parameters": [
           {
@@ -337,7 +334,7 @@
           {
             "name": "schema",
             "in": "path",
-            "description": "The schema, its levels joined by dots",
+            "description": "The schema, its levels joined by U+001F, percent-encoded",
             "required": true,
             "schema": {
               "type": "string"
@@ -473,7 +470,7 @@
           {
             "name": "schema",
             "in": "path",
-            "description": "The table's schema, its levels joined by dots",
+            "description": "The table's schema, its levels joined by U+001F, percent-encoded",
             "required": true,
             "schema": {
               "type": "string"
@@ -553,7 +550,7 @@
           {
             "name": "schema",
             "in": "path",
-            "description": "The table's schema, its levels joined by dots",
+            "description": "The table's schema, its levels joined by U+001F, percent-encoded",
             "required": true,
             "schema": {
               "type": "string"
@@ -570,14 +567,11 @@
           },
           {
             "name": "limit",
-            "in": "path",
+            "in": "query",
             "description": "How many, the latest first: 50 when absent, 1,000 at most.",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -818,7 +812,7 @@
         ],
         "properties": {
           "default": {
-            "description": "What a write that names it not gives it."
+            "description": "What a write that does not name it gives it."
           },
           "doc": {
             "type": [
@@ -1133,14 +1127,17 @@
         "type": "object",
         "description": "A schema, its properties, and its tables.",
         "required": [
-          "name",
+          "namespace",
           "properties",
           "size",
           "tables"
         ],
         "properties": {
-          "name": {
-            "type": "string"
+          "namespace": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "properties": {
             "type": "object",
@@ -1164,14 +1161,17 @@
       },
       "SchemaSummary": {
         "type": "object",
-        "description": "A schema, by its levels joined by dots, and what it holds.",
+        "description": "A schema, by its levels, and what it holds. A level may hold a dot: a path names a schema by its levels joined by\nU+001F, as Iceberg's REST catalog does.",
         "required": [
-          "name",
+          "namespace",
           "size"
         ],
         "properties": {
-          "name": {
-            "type": "string"
+          "namespace": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "size": {
             "$ref": "#/components/schemas/Size"

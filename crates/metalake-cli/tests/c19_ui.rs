@@ -324,7 +324,7 @@ fn catalog_details_of_ref_schema_and_table() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|s| s["name"] == "shop")
+        .find(|s| s["namespace"] == serde_json::json!(["shop"]))
         .unwrap();
     assert_eq!(shop["size"]["rows"], 3);
 

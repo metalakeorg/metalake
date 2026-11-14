@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::body::{Body, Bytes};
+use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -57,18 +58,18 @@ pub trait Backend: Send + Sync + 'static {
         Box::pin(async { Err(Detached::fault()) })
     }
     /// A schema of a ref: its properties, and its tables.
-    fn schema_details<'a>(&'a self, _on: &'a str, _schema: &'a str) -> Answer<'a, SchemaDetails> {
+    fn schema_details<'a>(&'a self, _on: &'a str, _schema: &'a [String]) -> Answer<'a, SchemaDetails> {
         Box::pin(async { Err(Detached::fault()) })
     }
     /// A table of a ref: what it is, how it is laid out, and how much it holds.
-    fn table_details<'a>(&'a self, _on: &'a str, _schema: &'a str, _table: &'a str) -> Answer<'a, TableDetails> {
+    fn table_details<'a>(&'a self, _on: &'a str, _schema: &'a [String], _table: &'a str) -> Answer<'a, TableDetails> {
         Box::pin(async { Err(Detached::fault()) })
     }
     /// A table's snapshots on a ref, the latest first.
     fn snapshots<'a>(
         &'a self,
         _on: &'a str,
-        _schema: &'a str,
+        _schema: &'a [String],
         _table: &'a str,
         _limit: i64,
     ) -> Answer<'a, Vec<Snapshot>> {
@@ -196,17 +197,18 @@ pub struct RefDetails {
     pub schemas: Vec<SchemaSummary>,
 }
 
-/// A schema, by its levels joined by dots, and what it holds.
+/// A schema, by its levels, and what it holds. A level may hold a dot: a path names a schema by its levels joined by
+/// U+001F, as Iceberg's REST catalog does.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct SchemaSummary {
-    pub name: String,
+    pub namespace: Vec<String>,
     pub size: Size,
 }
 
 /// A schema, its properties, and its tables.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct SchemaDetails {
-    pub name: String,
+    pub namespace: Vec<String>,
     pub properties: BTreeMap<String, String>,
     pub size: Size,
     pub tables: Vec<TableSummary>,
@@ -233,7 +235,7 @@ pub struct Column {
     pub r#type: String,
     pub required: bool,
     pub doc: Option<String>,
-    /// What a write that names it not gives it.
+    /// What a write that does not name it gives it.
     pub default: Option<serde_json::Value>,
 }
 
@@ -301,14 +303,17 @@ pub struct Snapshot {
 
 /// How much history a request asks for.
 #[derive(Debug, Clone, Copy, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct History {
     /// How many, the latest first: 50 when absent, 1,000 at most.
     pub limit: Option<i64>,
 }
 
 impl History {
-    fn limit(self) -> Result<i64, Fault> {
-        match self.limit {
+    /// The limit asked for, within bounds; a query that is not one, said as a usage fault, as every fault is JSON.
+    fn limit(asked: Result<Query<History>, QueryRejection>) -> Result<i64, Fault> {
+        let Query(history) = asked.map_err(|e| Fault::new(Kind::Usage, e.body_text()))?;
+        match history.limit {
             None => Ok(HISTORY),
             Some(n) if (1..=HISTORY_MOST).contains(&n) => Ok(n),
             Some(n) => Err(Fault::new(
@@ -517,19 +522,19 @@ async fn ref_details(State(backend): State<Arc<dyn Backend>>, Path(on): Path<Str
 async fn commits(
     State(backend): State<Arc<dyn Backend>>,
     Path(on): Path<String>,
-    Query(history): Query<History>,
+    history: Result<Query<History>, QueryRejection>,
 ) -> Response {
-    match history.limit() {
+    match History::limit(history) {
         Ok(limit) => answer(backend.commits(&on, limit).await),
         Err(fault) => answer::<()>(Err(fault)),
     }
 }
 
-/// A schema of a ref, by its levels joined by dots: its properties, and its tables, each with what it holds.
+/// A schema of a ref, by its levels: its properties, and its tables, each with what it holds.
 #[utoipa::path(get, path = "/api/v1/refs/{ref}/schemas/{schema}", tag = "catalog",
     params(
         ("ref" = String, Path, description = "The branch or tag, percent-encoded"),
-        ("schema" = String, Path, description = "The schema, its levels joined by dots"),
+        ("schema" = String, Path, description = "The schema, its levels joined by U+001F, percent-encoded"),
     ),
     responses(
         (status = 200, description = "The schema", body = SchemaDetails),
@@ -541,14 +546,14 @@ async fn schema_details(
     State(backend): State<Arc<dyn Backend>>,
     Path((on, schema)): Path<(String, String)>,
 ) -> Response {
-    answer(backend.schema_details(&on, &schema).await)
+    answer(backend.schema_details(&on, &levels(&schema)).await)
 }
 
 /// A table of a ref: its columns, its layout, how much it holds, and its Iceberg metadata.
 #[utoipa::path(get, path = "/api/v1/refs/{ref}/tables/{schema}/{table}", tag = "catalog",
     params(
         ("ref" = String, Path, description = "The branch or tag, percent-encoded"),
-        ("schema" = String, Path, description = "The table's schema, its levels joined by dots"),
+        ("schema" = String, Path, description = "The table's schema, its levels joined by U+001F, percent-encoded"),
         ("table" = String, Path, description = "The table's name"),
     ),
     responses(
@@ -561,14 +566,14 @@ async fn table_details(
     State(backend): State<Arc<dyn Backend>>,
     Path((on, schema, table)): Path<(String, String, String)>,
 ) -> Response {
-    answer(backend.table_details(&on, &schema, &table).await)
+    answer(backend.table_details(&on, &levels(&schema), &table).await)
 }
 
 /// A table's snapshots on a ref, the latest first.
 #[utoipa::path(get, path = "/api/v1/refs/{ref}/tables/{schema}/{table}/snapshots", tag = "catalog",
     params(
         ("ref" = String, Path, description = "The branch or tag, percent-encoded"),
-        ("schema" = String, Path, description = "The table's schema, its levels joined by dots"),
+        ("schema" = String, Path, description = "The table's schema, its levels joined by U+001F, percent-encoded"),
         ("table" = String, Path, description = "The table's name"),
         History,
     ),
@@ -581,12 +586,17 @@ async fn table_details(
 async fn snapshots(
     State(backend): State<Arc<dyn Backend>>,
     Path((on, schema, table)): Path<(String, String, String)>,
-    Query(history): Query<History>,
+    history: Result<Query<History>, QueryRejection>,
 ) -> Response {
-    match history.limit() {
-        Ok(limit) => answer(backend.snapshots(&on, &schema, &table, limit).await),
+    match History::limit(history) {
+        Ok(limit) => answer(backend.snapshots(&on, &levels(&schema), &table, limit).await),
         Err(fault) => answer::<()>(Err(fault)),
     }
+}
+
+/// A schema's levels, as a path names them: joined by U+001F, Iceberg REST's separator, so that a level may hold a dot.
+pub fn levels(schema: &str) -> Vec<String> {
+    schema.split('\u{1f}').map(str::to_owned).collect()
 }
 
 /// The lake's marks as it changes, as server-sent events: a `mark` now, then one each time the lake's differs, for as

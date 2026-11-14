@@ -892,7 +892,7 @@ mod api {
         assert_eq!(said(&answer), "main|50");
         let answer = ask(over(Given::lake()), "/api/v1/refs/dev%2F1/commits?limit=1000").await;
         assert_eq!(said(&answer), "dev/1|1000");
-        for limit in ["0", "1001", "-3"] {
+        for limit in ["0", "1001", "-3", "abc"] {
             let answer = ask(over(Given::lake()), &format!("/api/v1/refs/main/commits?limit={limit}")).await;
             assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{limit}");
             assert_eq!(json(&answer)["kind"], "usage");

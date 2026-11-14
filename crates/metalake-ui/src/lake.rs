@@ -155,7 +155,7 @@ impl Backend for Lake {
                     .schemas
                     .into_iter()
                     .map(|s| SchemaSummary {
-                        name: s.name,
+                        namespace: s.namespace,
                         size: size(s.size),
                     })
                     .collect(),
@@ -179,11 +179,11 @@ impl Backend for Lake {
         })
     }
 
-    fn schema_details<'a>(&'a self, on: &'a str, schema: &'a str) -> Answer<'a, SchemaDetails> {
+    fn schema_details<'a>(&'a self, on: &'a str, schema: &'a [String]) -> Answer<'a, SchemaDetails> {
         Box::pin(async move {
             let d = Lake::schema_details(self, on, schema).await?;
             Ok(SchemaDetails {
-                name: d.name,
+                namespace: d.namespace,
                 properties: d.properties,
                 size: size(d.size),
                 tables: d
@@ -200,7 +200,7 @@ impl Backend for Lake {
         })
     }
 
-    fn table_details<'a>(&'a self, on: &'a str, schema: &'a str, table: &'a str) -> Answer<'a, TableDetails> {
+    fn table_details<'a>(&'a self, on: &'a str, schema: &'a [String], table: &'a str) -> Answer<'a, TableDetails> {
         Box::pin(async move {
             let d = Lake::table_details(self, on, schema, table).await?;
             Ok(TableDetails {
@@ -241,9 +241,15 @@ impl Backend for Lake {
         })
     }
 
-    fn snapshots<'a>(&'a self, on: &'a str, schema: &'a str, table: &'a str, limit: i64) -> Answer<'a, Vec<Snapshot>> {
+    fn snapshots<'a>(
+        &'a self,
+        on: &'a str,
+        schema: &'a [String],
+        table: &'a str,
+        limit: i64,
+    ) -> Answer<'a, Vec<Snapshot>> {
         Box::pin(async move {
-            let snapshots = Lake::snapshots(self, on, &format!("{schema}.{table}"), limit).await?;
+            let snapshots = Lake::table_snapshots(self, on, schema, table, limit).await?;
             Ok(snapshots
                 .into_iter()
                 .map(|s| Snapshot {
