@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { Assets, byNamespace } from "./Assets";
+import { Assets, byNamespace, identifier } from "./Assets";
 
 const TABLES = [
   { namespace: ["sales"], name: "orders" },
@@ -8,6 +8,15 @@ const TABLES = [
   { namespace: ["sales"], name: "customers" },
   { namespace: ["sales", "eu"], name: "orders" },
 ];
+
+describe("identifier", () => {
+  it("leaves a plain name bare, and quotes any other", () => {
+    expect(identifier("orders")).toBe("orders");
+    expect(identifier("sales.eu")).toBe('"sales.eu"');
+    expect(identifier("Total")).toBe('"Total"');
+    expect(identifier('a"b')).toBe('"a""b"');
+  });
+});
 
 describe("byNamespace", () => {
   it("keeps apart schemas whose names, joined by dots, are the same", () => {

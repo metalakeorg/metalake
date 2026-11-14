@@ -2,6 +2,7 @@
 // that branch's, which the tag selector below it picks: the branch as it was when tagged, read only.
 
 import { useQuery } from "@tanstack/react-query";
+import { ArrowRight } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { type Column, tableDetails } from "./client";
 import { CatalogIcon, SchemaIcon, TableIcon, TypeIcon } from "./icons";
@@ -64,7 +65,10 @@ export function Assets({
   onPick,
   picked,
   columns = false,
+  onInsert,
 }: {
+  /** Makes each table and column of the tree offer its name, as a statement says it, to the page's editor. */
+  onInsert?: ((text: string) => void) | undefined;
   /** Makes each table of the tree fold open on its columns. */
   columns?: boolean;
   /** Makes each name of the tree pick what it names, which the page then shows. */
@@ -130,6 +134,7 @@ export function Assets({
           onPick={onPick}
           picked={picked}
           columns={columns}
+          onInsert={onInsert}
         />
       </div>
     </aside>
@@ -194,8 +199,10 @@ function Tables({
   onPick,
   picked,
   columns,
+  onInsert,
 }: {
   columns: boolean;
+  onInsert?: ((text: string) => void) | undefined;
   branch: string;
   tagged: boolean;
   tables: readonly Table[] | undefined;
@@ -241,6 +248,7 @@ function Tables({
                   levels={levels}
                   name={name}
                   columns={columns}
+                  onInsert={onInsert}
                   onPick={onPick && (() => onPick({ kind: "table", namespace: levels, name }))}
                   current={same(picked, { kind: "table", namespace: levels, name })}
                 />
@@ -261,6 +269,7 @@ function TableNode({
   levels,
   name,
   columns,
+  onInsert,
   onPick,
   current,
 }: {
@@ -268,6 +277,7 @@ function TableNode({
   levels: string[];
   name: string;
   columns: boolean;
+  onInsert?: ((text: string) => void) | undefined;
   onPick?: (() => void) | undefined;
   current: boolean;
 }) {
@@ -287,32 +297,48 @@ function TableNode({
   ) : (
     <span className="min-w-0 flex-1 truncate">{name}</span>
   );
+  // The table as a statement on any ref names it: its ref, its schema, and its name.
+  const put = onInsert && (
+    <Put name={name} onPut={() => onInsert([on, levels.join("."), name].map(identifier).join("."))} />
+  );
   if (!columns) {
     return (
-      <li className={`${ROW} pl-4`}>
+      <li className={`${ROW} group/row pl-4`}>
         <TableIcon />
         {label}
+        {put}
       </li>
     );
   }
   return (
     <li>
       <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)} className="group/table">
-        <summary aria-label={name} className={`${ROW} cursor-pointer list-none`}>
+        <summary aria-label={name} className={`${ROW} group/row cursor-pointer list-none`}>
           <span aria-hidden className="w-3 text-zinc-400 text-xs transition-transform group-open/table:rotate-90">
             ▸
           </span>
           <TableIcon />
           {label}
+          {put}
         </summary>
-        {open && <Columns on={on} levels={levels} name={name} />}
+        {open && <Columns on={on} levels={levels} name={name} onInsert={onInsert} />}
       </details>
     </li>
   );
 }
 
 /** A table's columns, read when it is unfolded; a nested one below the column it is a field of. */
-function Columns({ on, levels, name }: { on: string; levels: string[]; name: string }) {
+function Columns({
+  on,
+  levels,
+  name,
+  onInsert,
+}: {
+  on: string;
+  levels: string[];
+  name: string;
+  onInsert?: ((text: string) => void) | undefined;
+}) {
   // The key the Catalog's view of the table reads it by: one read serves both.
   const details = useQuery({
     queryKey: [...CATALOG, "table", on, ...levels, name],
@@ -324,21 +350,62 @@ function Columns({ on, levels, name }: { on: string; levels: string[]; name: str
   if (!details.data) return <p className="py-0.5 pl-8 text-xs text-zinc-500">Reading the columns…</p>;
   const all = details.data.columns;
   const below = (parent: number | null) => all.filter((c) => (c.parent ?? null) === parent);
-  const rows = (parent: number | null, depth: number): ReactNode[] =>
-    below(parent).flatMap((c) => [<ColumnRow key={c.id} column={c} depth={depth} />, ...rows(c.id, depth + 1)]);
-  return <ul aria-label={`Columns of ${name}`}>{rows(null, 0)}</ul>;
+  const rows = (parent: number | null, path: string[]): ReactNode[] =>
+    below(parent).flatMap((c) => [
+      <ColumnRow key={c.id} column={c} path={path} onInsert={onInsert} />,
+      ...rows(c.id, [...path, c.name]),
+    ]);
+  return <ul aria-label={`Columns of ${name}`}>{rows(null, [])}</ul>;
 }
 
-function ColumnRow({ column, depth }: { column: Column; depth: number }) {
+/** A column, below the columns it is a field of, `path`. */
+function ColumnRow({
+  column,
+  path,
+  onInsert,
+}: {
+  column: Column;
+  path: string[];
+  onInsert?: ((text: string) => void) | undefined;
+}) {
+  // A field of a struct, as a statement says it: its column, then each field's name in brackets.
+  const [top, ...fields] = [...path, column.name];
+  const said = `${identifier(top ?? column.name)}${fields.map((f) => `['${f.replaceAll("'", "''")}']`).join("")}`;
   return (
     <li
       title={`${column.name}: ${column.type}${column.required ? ", required" : ""}`}
-      style={{ paddingLeft: `${2 + depth}rem` }}
-      className="flex items-center gap-1 rounded py-0.5 pr-1 font-mono text-xs hover:bg-zinc-100 dark:hover:bg-zinc-800"
+      style={{ paddingLeft: `${2 + path.length}rem` }}
+      className="group/row flex items-center gap-1 rounded py-0.5 pr-1 font-mono text-xs hover:bg-zinc-100 dark:hover:bg-zinc-800"
     >
       <TypeIcon type={column.type} />
       <span className="min-w-0 flex-1 truncate">{column.name}</span>
       <span className="shrink-0 text-[10px] text-zinc-400 dark:text-zinc-500">{column.type}</span>
+      {onInsert && <Put name={column.name} onPut={() => onInsert(said)} />}
     </li>
+  );
+}
+
+/** A name as a statement says it: bare if it may be, else quoted. */
+export function identifier(name: string): string {
+  return /^[a-z_][a-z0-9_]*$/.test(name) ? name : `"${name.replaceAll('"', '""')}"`;
+}
+
+/** The arrow that puts a name in the editor: seen only while its row is pointed at, or it is focused. */
+function Put({ name, onPut }: { name: string; onPut: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-label={`Put ${name} in the editor`}
+      title="Put in the editor"
+      onClick={(event) => {
+        // Puts it, and leaves the table folded as it was.
+        event.preventDefault();
+        event.stopPropagation();
+        onPut();
+      }}
+      className="shrink-0 rounded p-0.5 text-zinc-400 opacity-0 hover:bg-zinc-200 hover:text-zinc-900 focus-visible:opacity-100 group-hover/row:opacity-100 dark:hover:bg-zinc-700 dark:hover:text-zinc-100"
+    >
+      <ArrowRight aria-hidden strokeWidth={1.75} className="size-3" />
+    </button>
   );
 }

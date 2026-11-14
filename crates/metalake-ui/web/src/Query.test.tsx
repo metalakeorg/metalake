@@ -89,7 +89,17 @@ function page() {
 function write(text: string) {
   const content = screen.getByRole("textbox", { name: "SQL" });
   const view = EditorView.findFromDOM(content);
-  act(() => view?.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } }));
+  act(() =>
+    view?.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: text },
+      selection: { anchor: text.length },
+    }),
+  );
+}
+
+/** What the editor holds. */
+function text(): string {
+  return EditorView.findFromDOM(screen.getByRole("textbox", { name: "SQL" }))?.state.doc.toString() ?? "";
 }
 
 describe("QueryPage", () => {
@@ -135,6 +145,20 @@ describe("QueryPage", () => {
       "shipstruct",
       "citystring",
     ]);
+  });
+
+  it("puts a table's path and a column's name in the editor, from the arrow of its row", async () => {
+    page();
+    const assets = within(screen.getByRole("complementary", { name: "Assets" }));
+    await assets.findByRole("list", { name: "sales" });
+    write("select ");
+    fireEvent.click(assets.getByRole("button", { name: "Put orders in the editor" }));
+    expect(text()).toBe("select main.sales.orders");
+    fireEvent.click(within(assets.getByRole("list", { name: "sales" })).getByText("orders"));
+    await assets.findByRole("list", { name: "Columns of orders" });
+    fireEvent.click(assets.getByRole("button", { name: "Put id in the editor" }));
+    fireEvent.click(assets.getByRole("button", { name: "Put city in the editor" }));
+    expect(text()).toBe("select main.sales.orders id ship['city']");
   });
 
   it("runs the statement on the branch picked, and shows its rows", async () => {
