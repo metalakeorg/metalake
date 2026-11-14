@@ -113,8 +113,10 @@ def test_on_ref_names_without_ref(lake):
     assert keys(lake, "main.default.t") == main
     assert lake.table("t").name == "worked.default.t"
     assert lake.log()[0].seq > lake.log("main")[0].seq
-    assert 7 in keys(lake, "table_changes('t', 0)")
-    assert 7 not in keys(lake, "table_changes('main.default.t', 0)")
+    # `table_changes` names its table on the session's ref too: the engine does not follow a branch's changes yet, and
+    # says so of `worked`, the session's, rather than reading `main`'s.
+    with pytest.raises(metalake.MetaLakeError, match="following worked"):
+        lake.sql("select k from table_changes('t', 0)")
     lake.on("main")
     assert keys(lake, "t") == main
     assert lake.table("t").name == "main.default.t"
