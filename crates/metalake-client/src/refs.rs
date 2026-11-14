@@ -23,7 +23,7 @@ impl RefKind {
 }
 
 /// What a ref is.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RefInfo {
     pub name: String,
     pub kind: String,

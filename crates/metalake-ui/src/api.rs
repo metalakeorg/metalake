@@ -6,6 +6,7 @@
 //! logic every face calls; its answer is written as JSON, a failure as the client's [`Kind`] and message. The types
 //! answered are the API's own, described in its OpenAPI spec ([`openapi`]), from which the frontend's are generated.
 
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
@@ -13,7 +14,8 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::body::{Body, Bytes};
-use axum::extract::{Path, State};
+use axum::extract::rejection::QueryRejection;
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -21,7 +23,7 @@ use axum::routing::{get, post};
 use futures_util::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
-use utoipa::{Modify, OpenApi, ToSchema};
+use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 
 use crate::notebook::Notebook;
 
@@ -47,7 +49,37 @@ pub trait Backend: Send + Sync + 'static {
     fn watch(&self) -> Answer<'_, Marks>;
     /// Runs a text's statements, each committed before the next, and answers the first rows of the last.
     fn sql(&self, statement: Statement) -> Answer<'_, Rows>;
+    /// A ref: what it is, what it holds, and its schemas. The Catalog views read these; a lake answers them.
+    fn ref_details<'a>(&'a self, _on: &'a str) -> Answer<'a, RefDetails> {
+        Box::pin(async { Err(Detached::fault()) })
+    }
+    /// A ref's commits, the latest first.
+    fn commits<'a>(&'a self, _on: &'a str, _limit: i64) -> Answer<'a, Vec<Commit>> {
+        Box::pin(async { Err(Detached::fault()) })
+    }
+    /// A schema of a ref: its properties, and its tables.
+    fn schema_details<'a>(&'a self, _on: &'a str, _schema: &'a [String]) -> Answer<'a, SchemaDetails> {
+        Box::pin(async { Err(Detached::fault()) })
+    }
+    /// A table of a ref: what it is, how it is laid out, and how much it holds.
+    fn table_details<'a>(&'a self, _on: &'a str, _schema: &'a [String], _table: &'a str) -> Answer<'a, TableDetails> {
+        Box::pin(async { Err(Detached::fault()) })
+    }
+    /// A table's snapshots on a ref, the latest first.
+    fn snapshots<'a>(
+        &'a self,
+        _on: &'a str,
+        _schema: &'a [String],
+        _table: &'a str,
+        _limit: i64,
+    ) -> Answer<'a, Vec<Snapshot>> {
+        Box::pin(async { Err(Detached::fault()) })
+    }
 }
+
+/// How many commits or snapshots a request answers when it says no other, and the most it may ask for.
+pub const HISTORY: i64 = 50;
+pub const HISTORY_MOST: i64 = 1_000;
 
 /// How many rows a statement answers when the request says no other: what a page shows without holding too much.
 pub const LIMIT: usize = 10_000;
@@ -144,6 +176,152 @@ pub struct Ref {
 pub struct Table {
     pub namespace: Vec<String>,
     pub name: String,
+}
+
+/// How much something holds: its tables, their rows, and their bytes.
+#[derive(Debug, Clone, Copy, Default, Serialize, ToSchema)]
+pub struct Size {
+    pub tables: i64,
+    pub rows: i64,
+    pub bytes: i64,
+}
+
+/// A ref, what it holds, and its schemas, as the Catalog's view of it shows them.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct RefDetails {
+    #[serde(flatten)]
+    pub r#ref: Ref,
+    /// Where the lake's files are.
+    pub warehouse: Option<String>,
+    pub size: Size,
+    pub schemas: Vec<SchemaSummary>,
+}
+
+/// A schema, by its levels, and what it holds. A level may hold a dot: a path names a schema by its levels joined by
+/// U+001F, as Iceberg's REST catalog does.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct SchemaSummary {
+    pub namespace: Vec<String>,
+    pub size: Size,
+}
+
+/// A schema, its properties, and its tables.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct SchemaDetails {
+    pub namespace: Vec<String>,
+    pub properties: BTreeMap<String, String>,
+    pub size: Size,
+    pub tables: Vec<TableSummary>,
+}
+
+/// A table of a schema: what it holds, and when it last changed.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct TableSummary {
+    pub name: String,
+    pub rows: i64,
+    pub bytes: i64,
+    /// When its latest snapshot on the ref was committed.
+    pub changed_at: Option<String>,
+}
+
+/// A column of a table, nested ones included.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct Column {
+    pub id: i32,
+    /// The column it is a field of, for a nested one.
+    pub parent: Option<i32>,
+    pub name: String,
+    /// Its type, as Iceberg writes it.
+    pub r#type: String,
+    pub required: bool,
+    pub doc: Option<String>,
+    /// What a write that does not name it gives it.
+    pub default: Option<serde_json::Value>,
+}
+
+/// Where a table's Iceberg metadata stands, for a table set to write it on commit.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct IcebergState {
+    /// The table's latest snapshot on the ref.
+    pub head: Option<i64>,
+    /// The sequence its latest metadata file serves.
+    pub written: Option<i64>,
+    /// Its commits that metadata does not serve yet.
+    pub behind: i64,
+    /// When the first of those was committed.
+    pub since: Option<String>,
+    /// The latest metadata file.
+    pub metadata: Option<String>,
+}
+
+/// A table: what it is, how it is laid out, how much it holds, and where its Iceberg metadata stands.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct TableDetails {
+    pub namespace: Vec<String>,
+    pub name: String,
+    pub id: String,
+    /// The prefix its files are written under.
+    pub location: String,
+    pub columns: Vec<Column>,
+    /// Its rows: those of its files, less those their deletion vectors delete.
+    pub rows: i64,
+    pub bytes: i64,
+    /// Its files stored in the warehouse.
+    pub files: i64,
+    /// Its files kept in the catalog itself, until they are flushed.
+    pub inline_files: i64,
+    pub deleted_rows: i64,
+    /// Its default partition spec, as Iceberg writes one.
+    pub partition: Option<serde_json::Value>,
+    /// Its default sort order, as Iceberg writes one.
+    pub sort_order: Option<serde_json::Value>,
+    /// The columns whose statistics are indexed for pruning.
+    pub cluster_key: Vec<String>,
+    pub properties: BTreeMap<String, String>,
+    pub iceberg: Option<IcebergState>,
+}
+
+/// A commit of a ref.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct Commit {
+    pub seq: i64,
+    pub committed_at: Option<String>,
+    pub author: Option<String>,
+    /// What it did: `append`, `update`, `merge`, `branch`…
+    pub operation: String,
+    pub message: Option<String>,
+}
+
+/// A snapshot of a table on a ref: the table as a commit left it.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct Snapshot {
+    pub id: i64,
+    pub parent: Option<i64>,
+    pub operation: Option<String>,
+    pub committed_at: Option<String>,
+}
+
+/// How much history a request asks for.
+#[derive(Debug, Clone, Copy, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct History {
+    /// How many, the latest first: 50 when absent, 1,000 at most.
+    pub limit: Option<i64>,
+}
+
+impl History {
+    /// The limit asked for, within bounds; a query that is not one, said as a usage fault, as every fault is JSON.
+    fn limit(asked: Result<Query<History>, QueryRejection>) -> Result<i64, Fault> {
+        let Query(history) = asked.map_err(|e| Fault::new(Kind::Usage, e.body_text()))?;
+        match history.limit {
+            None => Ok(HISTORY),
+            Some(n) if (1..=HISTORY_MOST).contains(&n) => Ok(n),
+            Some(n) => Err(Fault::new(
+                Kind::Usage,
+                format!("limit {n}: between 1 and {HISTORY_MOST}"),
+            )),
+        }
+    }
 }
 
 /// The lake's state, as far as telling that it changed needs: when either moves, what is shown of it is read again.
@@ -264,6 +442,11 @@ pub(crate) fn router(backend: Arc<dyn Backend>, notebook: Arc<Notebook>) -> Rout
         .route("/v1/status", get(status))
         .route("/v1/refs", get(refs))
         .route("/v1/refs/{ref}/tables", get(tables))
+        .route("/v1/refs/{ref}", get(ref_details))
+        .route("/v1/refs/{ref}/commits", get(commits))
+        .route("/v1/refs/{ref}/schemas/{schema}", get(schema_details))
+        .route("/v1/refs/{ref}/tables/{schema}/{table}", get(table_details))
+        .route("/v1/refs/{ref}/tables/{schema}/{table}/snapshots", get(snapshots))
         .route("/v1/events", get(events))
         .route("/v1/sql", post(sql))
         .fallback(no_route)
@@ -312,6 +495,108 @@ async fn refs(State(backend): State<Arc<dyn Backend>>) -> Response {
     ))]
 async fn tables(State(backend): State<Arc<dyn Backend>>, Path(on): Path<String>) -> Response {
     answer(backend.tables(&on).await)
+}
+
+/// A ref: what it is, what it holds, and its schemas, each with what it holds.
+#[utoipa::path(get, path = "/api/v1/refs/{ref}", tag = "catalog",
+    params(("ref" = String, Path, description = "The branch or tag, percent-encoded")),
+    responses(
+        (status = 200, description = "The ref", body = RefDetails),
+        (status = 400, description = "No such ref", body = Fault),
+        (status = 401, description = "Without the run's token", body = Fault),
+        (status = 500, description = "The lake could not be read", body = Fault),
+    ))]
+async fn ref_details(State(backend): State<Arc<dyn Backend>>, Path(on): Path<String>) -> Response {
+    answer(backend.ref_details(&on).await)
+}
+
+/// A ref's commits, the latest first.
+#[utoipa::path(get, path = "/api/v1/refs/{ref}/commits", tag = "catalog",
+    params(("ref" = String, Path, description = "The branch or tag, percent-encoded"), History),
+    responses(
+        (status = 200, description = "Its commits", body = [Commit]),
+        (status = 400, description = "No such ref, or a limit out of bounds", body = Fault),
+        (status = 401, description = "Without the run's token", body = Fault),
+        (status = 500, description = "The lake could not be read", body = Fault),
+    ))]
+async fn commits(
+    State(backend): State<Arc<dyn Backend>>,
+    Path(on): Path<String>,
+    history: Result<Query<History>, QueryRejection>,
+) -> Response {
+    match History::limit(history) {
+        Ok(limit) => answer(backend.commits(&on, limit).await),
+        Err(fault) => answer::<()>(Err(fault)),
+    }
+}
+
+/// A schema of a ref, by its levels: its properties, and its tables, each with what it holds.
+#[utoipa::path(get, path = "/api/v1/refs/{ref}/schemas/{schema}", tag = "catalog",
+    params(
+        ("ref" = String, Path, description = "The branch or tag, percent-encoded"),
+        ("schema" = String, Path, description = "The schema, its levels joined by U+001F, percent-encoded"),
+    ),
+    responses(
+        (status = 200, description = "The schema", body = SchemaDetails),
+        (status = 400, description = "No such ref or schema", body = Fault),
+        (status = 401, description = "Without the run's token", body = Fault),
+        (status = 500, description = "The lake could not be read", body = Fault),
+    ))]
+async fn schema_details(
+    State(backend): State<Arc<dyn Backend>>,
+    Path((on, schema)): Path<(String, String)>,
+) -> Response {
+    answer(backend.schema_details(&on, &levels(&schema)).await)
+}
+
+/// A table of a ref: its columns, its layout, how much it holds, and its Iceberg metadata.
+#[utoipa::path(get, path = "/api/v1/refs/{ref}/tables/{schema}/{table}", tag = "catalog",
+    params(
+        ("ref" = String, Path, description = "The branch or tag, percent-encoded"),
+        ("schema" = String, Path, description = "The table's schema, its levels joined by U+001F, percent-encoded"),
+        ("table" = String, Path, description = "The table's name"),
+    ),
+    responses(
+        (status = 200, description = "The table", body = TableDetails),
+        (status = 400, description = "No such ref or table", body = Fault),
+        (status = 401, description = "Without the run's token", body = Fault),
+        (status = 500, description = "The lake could not be read", body = Fault),
+    ))]
+async fn table_details(
+    State(backend): State<Arc<dyn Backend>>,
+    Path((on, schema, table)): Path<(String, String, String)>,
+) -> Response {
+    answer(backend.table_details(&on, &levels(&schema), &table).await)
+}
+
+/// A table's snapshots on a ref, the latest first.
+#[utoipa::path(get, path = "/api/v1/refs/{ref}/tables/{schema}/{table}/snapshots", tag = "catalog",
+    params(
+        ("ref" = String, Path, description = "The branch or tag, percent-encoded"),
+        ("schema" = String, Path, description = "The table's schema, its levels joined by U+001F, percent-encoded"),
+        ("table" = String, Path, description = "The table's name"),
+        History,
+    ),
+    responses(
+        (status = 200, description = "Its snapshots", body = [Snapshot]),
+        (status = 400, description = "No such ref or table, or a limit out of bounds", body = Fault),
+        (status = 401, description = "Without the run's token", body = Fault),
+        (status = 500, description = "The lake could not be read", body = Fault),
+    ))]
+async fn snapshots(
+    State(backend): State<Arc<dyn Backend>>,
+    Path((on, schema, table)): Path<(String, String, String)>,
+    history: Result<Query<History>, QueryRejection>,
+) -> Response {
+    match History::limit(history) {
+        Ok(limit) => answer(backend.snapshots(&on, &levels(&schema), &table, limit).await),
+        Err(fault) => answer::<()>(Err(fault)),
+    }
+}
+
+/// A schema's levels, as a path names them: joined by U+001F, Iceberg REST's separator, so that a level may hold a dot.
+pub fn levels(schema: &str) -> Vec<String> {
+    schema.split('\u{1f}').map(str::to_owned).collect()
 }
 
 /// The lake's marks as it changes, as server-sent events: a `mark` now, then one each time the lake's differs, for as
@@ -435,7 +720,10 @@ async fn no_route() -> Response {
 #[derive(OpenApi)]
 #[openapi(
     info(title = "MetaLake UI", version = "1", description = "The API of `metalake ui` (ADR 0007 §4.1)"),
-    paths(version, status, refs, tables, events, sql, notebook_state, notebook_start),
+    paths(
+        version, status, refs, tables, ref_details, commits, schema_details, table_details, snapshots, events, sql,
+        notebook_state, notebook_start
+    ),
     modifiers(&Token),
     security(("token" = []))
 )]

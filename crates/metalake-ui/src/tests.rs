@@ -779,6 +779,18 @@ mod api {
             Box::pin(async move { answer })
         }
 
+        /// One commit, which says back the ref and the limit it was asked with.
+        fn commits<'a>(&'a self, on: &'a str, limit: i64) -> api::Answer<'a, Vec<api::Commit>> {
+            let answer = self.or(vec![api::Commit {
+                seq: 9,
+                committed_at: None,
+                author: None,
+                operation: "append".into(),
+                message: Some(format!("{on}|{limit}")),
+            }]);
+            Box::pin(async move { answer })
+        }
+
         fn watch(&self) -> api::Answer<'_, Marks> {
             let marks = vec![
                 Ok(Mark {
@@ -870,12 +882,34 @@ mod api {
         }
     }
 
+    /// A ref's history: 50 commits unless asked for others, between 1 and 1,000; a ref's name that holds a `/`
+    /// percent-encoded, as for every path of a ref.
+    #[tokio::test]
+    async fn commits_by_limit() {
+        let said = |answer: &Answer| json(answer)[0]["message"].as_str().unwrap().to_owned();
+        let answer = ask(over(Given::lake()), "/api/v1/refs/main/commits").await;
+        assert_eq!(answer.status, StatusCode::OK);
+        assert_eq!(said(&answer), "main|50");
+        let answer = ask(over(Given::lake()), "/api/v1/refs/dev%2F1/commits?limit=1000").await;
+        assert_eq!(said(&answer), "dev/1|1000");
+        for limit in ["0", "1001", "-3", "abc"] {
+            let answer = ask(over(Given::lake()), &format!("/api/v1/refs/main/commits?limit={limit}")).await;
+            assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{limit}");
+            assert_eq!(json(&answer)["kind"], "usage");
+        }
+    }
+
     #[tokio::test]
     async fn detached_says_no_lake() {
         for path in [
             "/api/v1/status",
             "/api/v1/refs",
             "/api/v1/refs/main/tables",
+            "/api/v1/refs/main",
+            "/api/v1/refs/main/commits",
+            "/api/v1/refs/main/schemas/sales",
+            "/api/v1/refs/main/tables/sales/orders",
+            "/api/v1/refs/main/tables/sales/orders/snapshots",
             "/api/v1/events",
         ] {
             let answer = ask(over(Detached), path).await;
