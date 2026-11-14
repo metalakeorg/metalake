@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* The dark theme is the page's `data-theme`, which `public/theme.js` sets and the sidebar's toggle changes. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 @layer base {
   html,
   body,
@@ -18,11 +21,9 @@
     --gutter: var(--color-zinc-400);
     --active-line: color-mix(in oklab, var(--color-zinc-100) 60%, transparent);
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --gutter: var(--color-zinc-600);
-      --active-line: color-mix(in oklab, var(--color-zinc-800) 50%, transparent);
-    }
+  :root[data-theme="dark"] {
+    --gutter: var(--color-zinc-600);
+    --active-line: color-mix(in oklab, var(--color-zinc-800) 50%, transparent);
   }
   .tok-keyword {
     @apply text-violet-700 dark:text-violet-400;
