@@ -203,12 +203,8 @@ impl Lake {
         // Asked only of a table set to write its Iceberg metadata on commit: reading that metadata needs the lake's
         // storage, which a catalog of tables at locations of their own may not have.
         let iceberg = if table.properties().get(ICEBERG_METADATA).map(String::as_str) == Some("on-commit") {
-            let id = table.id();
-            let written = format!("{}.{}", table.namespace().join("."), table.name());
-            let mut found = self.iceberg().status(on).await?;
-            found.retain(|t| t.table == written);
-            let _ = id;
-            found.into_iter().next()
+            // The table's own, not one found among the ref's by a name that two schemas' tables may share.
+            Some(self.iceberg().state(&named, &table).await?)
         } else {
             None
         };
