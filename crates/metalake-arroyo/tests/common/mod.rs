@@ -111,6 +111,7 @@ impl Lake {
         MetaLakeProfile {
             postgres: VarStr::new(url()),
             schema: self.schema.clone(),
+            auth: None,
             storage: BTreeMap::new(),
         }
     }

@@ -258,6 +258,7 @@ pub fn state_name(state: &PipelineState) -> String {
         PipelineState::Running => "running".into(),
         PipelineState::Suspended => "suspended".into(),
         PipelineState::Failed { .. } => "failed".into(),
+        PipelineState::Failing { .. } => "failing".into(),
         PipelineState::Elsewhere { host } => format!("running on {host}"),
     }
 }
@@ -314,15 +315,7 @@ pub fn rows(pipelines: &[Pipeline]) -> Result<(SchemaRef, RecordBatch)> {
                 .with_timezone("UTC"),
         ),
         joined(&|p| p.query.clone()),
-        Arc::new(
-            pipelines
-                .iter()
-                .map(|p| match &p.state {
-                    PipelineState::Failed { log } => Some(log.clone()),
-                    _ => None,
-                })
-                .collect::<StringArray>(),
-        ),
+        Arc::new(pipelines.iter().map(|p| p.state.log()).collect::<StringArray>()),
     ];
     Ok((schema.clone(), RecordBatch::try_new(schema, columns)?))
 }

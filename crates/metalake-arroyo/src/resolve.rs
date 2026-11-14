@@ -116,6 +116,8 @@ pub struct Environment {
     /// The catalog's connection string, with its password.
     pub postgres: String,
     pub schema: String,
+    /// How the client signs in, as `METALAKE_POSTGRES_AUTH` names it: a password's when it names none.
+    pub auth: Option<String>,
     /// The object store's variables set here, by name.
     pub storage: Vec<String>,
 }
@@ -133,6 +135,9 @@ impl Environment {
         Some(Self {
             postgres: environment::with_password(&postgres, password.as_deref()),
             schema: std::env::var(environment::SCHEMA).unwrap_or_else(|_| environment::DEFAULT_SCHEMA.to_string()),
+            auth: std::env::var(environment::POSTGRES_AUTH)
+                .ok()
+                .filter(|a| !a.trim().is_empty()),
             storage,
         })
     }
@@ -143,6 +148,8 @@ impl Environment {
         MetaLakeProfile {
             postgres: placeholder(environment::POSTGRES),
             schema: self.schema.clone(),
+            // A way in, not a secret: carried as it is, for each worker to sign in as the planner did.
+            auth: self.auth.clone(),
             storage: self
                 .storage
                 .iter()
@@ -163,7 +170,8 @@ pub async fn resolve(query: &str, known: impl Fn(&str) -> bool, env: &Environmen
     if wanted.is_empty() {
         return Ok(Vec::new());
     }
-    let mut config = CatalogConfig::new(env.postgres.clone(), &env.schema);
+    let auth = metalake::Auth::named(env.auth.as_deref())?;
+    let mut config = CatalogConfig::new(env.postgres.clone(), &env.schema).auth(auth);
     config.connections = 1;
     let catalog = Catalog::connect(config).await?;
     let found = tables_of(&catalog, &wanted, env).await;
@@ -231,6 +239,26 @@ mod tests {
             .collect();
         found.sort_by(|a, b| a.0.cmp(&b.0));
         found
+    }
+
+    #[test]
+    fn profile_carries_the_planners_auth() {
+        let env = |auth: Option<&str>| Environment {
+            postgres: "host=pg".into(),
+            schema: "lake".into(),
+            auth: auth.map(str::to_string),
+            storage: vec!["GOOGLE_APPLICATION_CREDENTIALS".into()],
+        };
+        let gcp = env(Some("gcp-iam")).profile();
+        assert_eq!(gcp.auth.as_deref(), Some("gcp-iam"));
+        assert_eq!(gcp.auth().unwrap(), metalake::Auth::GcpIam);
+        // The connection string and the storage stay the variables' names, never their values.
+        assert_eq!(gcp.postgres, VarStr::new("{{ METALAKE_POSTGRES }}".into()));
+        assert_eq!(
+            gcp.storage["google_application_credentials"],
+            VarStr::new("{{ GOOGLE_APPLICATION_CREDENTIALS }}".into())
+        );
+        assert_eq!(env(None).profile().auth().unwrap(), metalake::Auth::Password);
     }
 
     #[test]

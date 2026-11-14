@@ -153,8 +153,13 @@ fn read(json: &str, from: &str) -> Result<Identity, String> {
 
 /// gcloud's application default credentials, where it writes them.
 fn gcloud_default() -> Option<String> {
-    std::fs::read_to_string(gcloud_dir(|name| std::env::var_os(name))?.join("application_default_credentials.json"))
-        .ok()
+    std::fs::read_to_string(default_file()?).ok()
+}
+
+/// The file of gcloud's application default credentials, if this machine has one.
+pub(super) fn default_file() -> Option<PathBuf> {
+    let file = gcloud_dir(|name| std::env::var_os(name))?.join("application_default_credentials.json");
+    file.is_file().then_some(file)
 }
 
 /// gcloud's configuration directory: `CLOUDSDK_CONFIG`, which names it, or `gcloud` in the system's place for it.

@@ -56,10 +56,25 @@ pub enum PipelineState {
     Failed {
         log: String,
     },
+    /// Running, and retrying what fails: why is in its log's last lines. It goes on once what fails works, as when a
+    /// credential it lacked is given; until then nothing flows.
+    Failing {
+        log: String,
+    },
     /// Running on another machine, which alone can stop it.
     Elsewhere {
         host: String,
     },
+}
+
+impl PipelineState {
+    /// What its log's last lines say, when it failed or is failing.
+    pub fn log(&self) -> Option<&str> {
+        match self {
+            Self::Failed { log } | Self::Failing { log } => Some(log),
+            _ => None,
+        }
+    }
 }
 
 /// A pipeline, as it is now.
@@ -261,6 +276,11 @@ impl Lake {
             home: &home,
             warehouse: local(&warehouse),
             own_postgres: self.local().is_some(),
+            // Google's identity signs it in to the catalog, or to the store of its state or its tables.
+            google: self.catalog_auth()? == metalake::Auth::GcpIam
+                || [state.as_str(), warehouse.as_str()]
+                    .iter()
+                    .any(|url| url.starts_with("gs://")),
         };
         Runner::find()?.start(&launch)
     }
@@ -272,6 +292,11 @@ impl Lake {
             (environment::POSTGRES.to_string(), self.catalog_postgres()?),
             (environment::SCHEMA.to_string(), self.schema().to_string()),
         ];
+        // How it signs in, as this client does: by a password unless the lake names a cloud's identity.
+        let auth = self.catalog_auth()?;
+        if auth != metalake::Auth::Password {
+            variables.push((environment::POSTGRES_AUTH.to_string(), auth.name().to_string()));
+        }
         variables.extend(env::vars().filter(|(name, _)| environment::is_storage_variable(name)));
         Ok(variables)
     }
@@ -293,7 +318,13 @@ impl Lake {
             (Desired::Running, Some(handle)) if !handle.here() => PipelineState::Elsewhere {
                 host: handle.host.clone(),
             },
-            (Desired::Running, Some(handle)) if handle.alive() => PipelineState::Running,
+            (Desired::Running, Some(handle)) if handle.alive() => {
+                let log = handle.log(&runner::home(&records.state(&record.name))?);
+                match runner::retrying(&log, SystemTime::now()) {
+                    true => PipelineState::Failing { log },
+                    false => PipelineState::Running,
+                }
+            }
             (Desired::Running, Some(handle)) => PipelineState::Failed {
                 log: handle.log(&runner::home(&records.state(&record.name))?),
             },

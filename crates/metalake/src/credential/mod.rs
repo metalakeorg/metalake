@@ -17,6 +17,13 @@ mod gcp;
 #[cfg(any(feature = "s3", feature = "gcs", feature = "azure"))]
 mod http;
 
+/// The file of gcloud's application default credentials on this machine, which `gcloud auth application-default login`
+/// writes, if it has one: the Google identity a client finds when nothing names another.
+#[cfg(feature = "gcs")]
+pub fn gcloud_default_file() -> Option<std::path::PathBuf> {
+    gcp::default_file()
+}
+
 /// How a client signs in to its catalog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Auth {
@@ -45,6 +52,19 @@ impl Auth {
                 return Err(error(format!("auth `{other}` is none of {}", Self::NAMES.join(", "))).into());
             }
         })
+    }
+
+    /// The auth `name` names; a password when it names none, as an unset or empty variable does.
+    pub fn named(name: Option<&str>) -> crate::Result<Self> {
+        match name.map(str::trim).filter(|n| !n.is_empty()) {
+            Some(name) => Self::parse(name),
+            None => Ok(Self::Password),
+        }
+    }
+
+    /// The auth `METALAKE_POSTGRES_AUTH` names, as a process a client started finds it.
+    pub fn from_env() -> crate::Result<Self> {
+        Self::named(std::env::var(crate::environment::POSTGRES_AUTH).ok().as_deref())
     }
 
     pub fn name(self) -> &'static str {
@@ -145,6 +165,17 @@ mod tests {
             "{refused}"
         );
         assert!(Auth::Password.credential("host=h user=u").unwrap().is_none());
+    }
+
+    #[test]
+    fn named_defaults_to_password() {
+        assert_eq!(Auth::named(None).unwrap(), Auth::Password);
+        assert_eq!(Auth::named(Some("")).unwrap(), Auth::Password);
+        assert_eq!(Auth::named(Some(" gcp-iam ")).unwrap(), Auth::GcpIam);
+        for name in Auth::NAMES {
+            assert_eq!(Auth::named(Some(name)).unwrap().name(), name);
+        }
+        assert!(Auth::named(Some("kerberos")).is_err());
     }
 
     #[test]

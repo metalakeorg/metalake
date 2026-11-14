@@ -22,6 +22,10 @@ pub struct MetaLakeProfile {
     pub postgres: VarStr,
     /// The Postgres schema that holds the catalog
     pub schema: String,
+    /// How a worker signs in to the catalog: `password`, the connection string's or `PGPASSWORD`, when not given; or a
+    /// cloud's token for the worker's own identity: `aws-iam`, `gcp-iam` or `azure-entra`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<String>,
     /// Options of the object store that holds the tables' files, such as credentials
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub storage: BTreeMap<String, VarStr>,
@@ -38,8 +42,24 @@ impl FromOpts for MetaLakeProfile {
         Ok(Self {
             postgres: VarStr::new(opts.pull_str("catalog.postgres")?),
             schema: opts.pull_str("catalog.schema")?,
+            auth: auth(opts.pull_opt_str("catalog.auth")?)?,
             storage,
         })
+    }
+}
+
+/// `catalog.auth`, refused when it names none of the ways in, before a worker would find out.
+fn auth(named: Option<String>) -> Result<Option<String>, DataFusionError> {
+    if let Some(name) = &named {
+        metalake::Auth::named(Some(name)).map_err(|e| plan_datafusion_err!("catalog.auth: {e}"))?;
+    }
+    Ok(named)
+}
+
+impl MetaLakeProfile {
+    /// How a worker signs in to the catalog: by password unless the profile names a cloud's identity.
+    pub fn auth(&self) -> metalake::Result<metalake::Auth> {
+        metalake::Auth::named(self.auth.as_deref())
     }
 }
 
@@ -330,6 +350,31 @@ mod tests {
         assert_eq!(profile.storage.keys().collect::<Vec<_>>(), ["aws_region"]);
         assert_eq!(table.table_type, MetaLakeTableType::Sink(MetaLakeSink::default()));
         assert_eq!(table.qualified_name(), "dev:shop.orders");
+    }
+
+    #[test]
+    fn profile_auth_option() {
+        let profile = |auth: Option<&str>| {
+            let mut pairs = vec![("catalog.postgres", "host=pg"), ("catalog.schema", "lake")];
+            pairs.extend(auth.map(|a| ("catalog.auth", a)));
+            options(&pairs).pull_struct::<MetaLakeProfile>()
+        };
+        let unset = profile(None).unwrap();
+        assert_eq!(unset.auth, None);
+        assert_eq!(unset.auth().unwrap(), metalake::Auth::Password);
+        let gcp = profile(Some("gcp-iam")).unwrap();
+        assert_eq!(gcp.auth().unwrap(), metalake::Auth::GcpIam);
+        assert!(
+            profile(Some("kerberos"))
+                .unwrap_err()
+                .to_string()
+                .contains("catalog.auth")
+        );
+        // In the API's JSON, a profile without it is a password's, as before it was named.
+        let json = serde_json::to_value(&unset).unwrap();
+        assert!(json.get("auth").is_none());
+        let back: MetaLakeProfile = serde_json::from_value(serde_json::to_value(&gcp).unwrap()).unwrap();
+        assert_eq!(back, gcp);
     }
 
     #[test]

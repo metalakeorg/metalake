@@ -28,7 +28,7 @@ use arroyo_rpc::api_types::connections::{ConnectionProfile, ConnectionSchema, Co
 use arroyo_rpc::{ConnectorOptions, OperatorConfig};
 use chrono::Utc;
 use datafusion::common::plan_datafusion_err;
-use metalake::{Catalog, CatalogConfig};
+use metalake::Catalog;
 use tokio::sync::mpsc::Sender;
 
 use crate::config::{MetaLakeProfile, MetaLakeTable, MetaLakeTableType};
@@ -192,9 +192,7 @@ fn declared_schema(schema: &ConnectionSchema) -> Schema {
 
 /// Finds the table on its branch, and checks the declared columns against its own.
 async fn test_table(profile: &MetaLakeProfile, table: &MetaLakeTable, declared: Option<Schema>) -> anyhow::Result<()> {
-    let mut config = CatalogConfig::new(crate::lake::postgres_of(profile)?, &profile.schema);
-    config.connections = 1;
-    let catalog = Catalog::connect(config).await?;
+    let catalog = Catalog::connect(crate::lake::catalog_config(profile, 1)?).await?;
     let namespace: Vec<&str> = table.namespace.iter().map(String::as_str).collect();
     let found = catalog
         .branch(&table.branch)
@@ -224,6 +222,7 @@ mod tests {
         MetaLakeProfile {
             postgres: VarStr::new("host=pg".to_string()),
             schema: "lake".to_string(),
+            auth: None,
             storage: Default::default(),
         }
     }

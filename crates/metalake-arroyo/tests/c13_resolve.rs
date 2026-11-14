@@ -38,6 +38,7 @@ fn environment(lake: &Lake, storage: &[&str]) -> Environment {
     Environment {
         postgres: url(),
         schema: lake.schema.clone(),
+        auth: None,
         storage: storage.iter().map(|s| s.to_string()).collect(),
     }
 }
@@ -101,6 +102,7 @@ async fn resolve_nothing_reaches_nothing() {
     let unreachable = Environment {
         postgres: "host=unreachable.invalid port=1 connect_timeout=1".into(),
         schema: "nowhere".into(),
+        auth: None,
         storage: vec![],
     };
     let tables = resolve(QUERY, |_| true, &unreachable).await.unwrap();

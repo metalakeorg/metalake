@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use metalake_client::{Lake, Pipeline, PipelineState, state_name};
+use metalake_client::{Lake, Pipeline, state_name};
 use pyo3::prelude::*;
 
 use crate::errors::to_python;
@@ -80,19 +80,17 @@ impl PyPipeline {
         self.seen(|p| p.parallelism)
     }
 
-    /// `running`, `suspended`, `failed`, or `running on <host>`, when another machine runs it.
+    /// `running`, `failing` (running, and retrying what fails), `suspended`, `failed`, or `running on <host>`, when
+    /// another machine runs it.
     #[getter]
     fn state(&self) -> String {
         self.seen(|p| state_name(&p.state))
     }
 
-    /// When it failed, its log's last lines.
+    /// When it failed or is failing, its log's last lines.
     #[getter]
     fn log(&self) -> Option<String> {
-        self.seen(|p| match &p.state {
-            PipelineState::Failed { log } => Some(log.clone()),
-            _ => None,
-        })
+        self.seen(|p| p.state.log().map(str::to_string))
     }
 
     #[getter]

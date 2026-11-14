@@ -10,7 +10,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::hash::fnv;
 use crate::pipeline::record::{Handle, RunnerKind};
@@ -20,7 +20,7 @@ use crate::{Error, Result};
 pub const ARROYO: &str = "METALAKE_ARROYO";
 /// The image of Arroyo to run a pipeline in, when there is no binary.
 pub const ARROYO_IMAGE: &str = "METALAKE_ARROYO_IMAGE";
-const DEFAULT_IMAGE: &str = "ghcr.io/describeloai/arroyo-metalake:feat-metalake-resolve";
+const DEFAULT_IMAGE: &str = "ghcr.io/describeloai/arroyo-metalake:acd3762c8a29a99f81529616e21edecc2bca83ad";
 
 /// How long a pipeline has to take its final checkpoint when it stops.
 const STOPPING: Duration = Duration::from_secs(90);
@@ -49,6 +49,8 @@ pub struct Launch<'a> {
     pub warehouse: Option<PathBuf>,
     /// Whether the catalog is the lake's own Postgres, which only this machine reaches.
     pub own_postgres: bool,
+    /// Whether it signs in as a Google identity, to the catalog or to a store.
+    pub google: bool,
 }
 
 impl Runner {
@@ -74,6 +76,18 @@ impl Runner {
     pub fn start(&self, launch: &Launch<'_>) -> Result<Handle> {
         fs::create_dir_all(launch.home)?;
         fs::write(launch.home.join(QUERY), launch.query)?;
+        // Its variables as it must be given them, where it sees its home: there, as a process; at `/pipeline`, in a
+        // container.
+        let variables = |seen: &str| -> Result<Vec<(String, String)>> {
+            launch
+                .env
+                .iter()
+                .map(|(name, value)| match name == metalake::environment::POSTGRES {
+                    true => Ok((name.clone(), rooted(value, launch.home, seen)?)),
+                    false => Ok((name.clone(), value.clone())),
+                })
+                .collect()
+        };
         let host = host();
         match self {
             Self::Process { binary } => {
@@ -86,7 +100,7 @@ impl Runner {
                 let mut command = Command::new(binary);
                 command
                     .args(arguments(launch, &launch.home.join(QUERY).to_string_lossy()))
-                    .envs(launch.env.iter().map(|(k, v)| (k, v)))
+                    .envs(variables(&launch.home.to_string_lossy())?)
                     .stdin(Stdio::null())
                     .stdout(log.try_clone()?)
                     .stderr(log);
@@ -139,9 +153,23 @@ impl Runner {
                     command.arg("-v").arg(format!("{0}:{0}", warehouse.display()));
                 }
                 // By name only: the values stay in this process's environment, out of any listing of processes.
-                for (name, value) in &launch.env {
-                    command.arg("-e").arg(name);
-                    command.env(name, in_container(name, value));
+                // A credential that is a file of this machine, seen read only where the variable naming it says.
+                let mut variables = variables("/pipeline")?;
+                let gcloud = if launch.google {
+                    metalake::credential::gcloud_default_file()
+                } else {
+                    None
+                };
+                for mount in identity(&variables, gcloud) {
+                    command
+                        .arg("-v")
+                        .arg(format!("{}:{}:ro", mount.file.display(), mount.seen));
+                    variables.retain(|(name, _)| *name != mount.variable);
+                    variables.push((mount.variable.to_string(), mount.seen));
+                }
+                for (name, value) in variables {
+                    command.arg("-e").arg(&name);
+                    command.env(&name, in_container(&name, &value));
                 }
                 command.arg(image);
                 command.args(arguments(launch, "/pipeline/query.sql"));
@@ -237,6 +265,64 @@ impl Handle {
     }
 }
 
+/// How recent an error at the end of a pipeline's log is for it to be retrying still: longer than Arroyo's longest
+/// wait between two tries.
+const RETRYING: Duration = Duration::from_secs(60);
+
+/// Whether a pipeline that runs is retrying what fails: its log ends in an error of the last [`RETRYING`], as Arroyo
+/// writes one each time it tries again (`<RFC 3339 time> ERROR …`). One that got past it writes no more of them.
+pub fn retrying(log: &str, now: SystemTime) -> bool {
+    let plain = without_escapes(log);
+    let Some(last) = plain.lines().rev().find(|line| !line.trim().is_empty()) else {
+        return false;
+    };
+    let mut words = last.split_whitespace();
+    let (Some(at), Some("ERROR")) = (words.next().and_then(seconds_of), words.next()) else {
+        return false;
+    };
+    let now = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    now.saturating_sub(at) <= RETRYING.as_secs()
+}
+
+/// A log without the terminal's colours, `ESC [ … m`, which Arroyo writes to a container's.
+fn without_escapes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The Unix seconds of a UTC time as a log writes it, `2026-11-14T17:56:51.466700Z`.
+fn seconds_of(time: &str) -> Option<u64> {
+    let time = time.strip_suffix('Z')?;
+    let (date, clock) = time.split_once('T')?;
+    let mut date = date.splitn(3, '-').map(|p| p.parse::<i64>().ok());
+    let (year, month, day) = (date.next()??, date.next()??, date.next()??);
+    let mut clock = clock.split(['.', ':']).map(|p| p.parse::<i64>().ok());
+    let (hour, minute, second) = (clock.next()??, clock.next()??, clock.next()??);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    // Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant's `days_from_civil`).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    u64::try_from(days * 86_400 + hour * 3_600 + minute * 60 + second).ok()
+}
+
 const QUERY: &str = "query.sql";
 const LOG: &str = "pipeline.log";
 
@@ -268,6 +354,83 @@ pub fn home(state: &str) -> Result<PathBuf> {
         .join(".metalake")
         .join("pipelines")
         .join(format!("{:016x}", fnv(state))))
+}
+
+/// The variables that name a credential's file, which a container sees only mounted: Google's service account or
+/// user, and a web identity's or a workload identity's token.
+const CREDENTIAL_FILES: [&str; 5] = [
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_SERVICE_ACCOUNT",
+    "GOOGLE_SERVICE_ACCOUNT_PATH",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AZURE_FEDERATED_TOKEN_FILE",
+];
+
+/// The variables that name a Google identity, which gcloud's default credentials then do not stand for.
+const GOOGLE_NAMED: [&str; 4] = [
+    "GOOGLE_SERVICE_ACCOUNT_KEY",
+    "GOOGLE_SERVICE_ACCOUNT",
+    "GOOGLE_SERVICE_ACCOUNT_PATH",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+];
+
+/// Where a container sees the credentials mounted in it.
+const IDENTITY: &str = "/identity";
+
+/// A credential of this machine's that a container sees: the file, where it sees it, and the variable that names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Mount {
+    file: PathBuf,
+    seen: String,
+    variable: &'static str,
+}
+
+/// What a container must see of this machine to sign in as its client does: each credential file a variable names,
+/// and, when nothing names a Google identity, gcloud's default credentials, `gcloud`, if the pipeline needs one. A
+/// credential the variables hold, or the machine's own identity (its metadata server, its role), needs nothing.
+fn identity(variables: &[(String, String)], gcloud: Option<PathBuf>) -> Vec<Mount> {
+    let seen = |variable: &str| format!("{IDENTITY}/{}", variable.to_ascii_lowercase());
+    let mut mounts: Vec<Mount> = CREDENTIAL_FILES
+        .iter()
+        .filter_map(|&variable| {
+            let (_, value) = variables.iter().find(|(name, _)| name == variable)?;
+            let file = PathBuf::from(value);
+            file.is_file().then(|| Mount {
+                file,
+                seen: seen(variable),
+                variable,
+            })
+        })
+        .collect();
+    let named = variables
+        .iter()
+        .any(|(name, value)| GOOGLE_NAMED.contains(&name.as_str()) && !value.is_empty());
+    if let (false, Some(file)) = (named, gcloud) {
+        let variable = "GOOGLE_APPLICATION_CREDENTIALS";
+        mounts.push(Mount {
+            file,
+            seen: seen(variable),
+            variable,
+        });
+    }
+    mounts
+}
+
+/// The file a pipeline's roots are copied to, in its home.
+const ROOTS: &str = "root.crt";
+
+/// The catalog's connection string as a pipeline is given it: roots that are a file of this machine, which a container
+/// does not see, copied into its home, and named where the pipeline sees that home, `seen`.
+fn rooted(postgres: &str, home: &Path, seen: &str) -> Result<String> {
+    let invalid = |e: metalake_pg::Error| Error::usage(format!("the catalog's connection string: {e}"));
+    let (rest, mut tls) = metalake_pg::tls::split(postgres).map_err(invalid)?;
+    let metalake_pg::tls::Roots::File(file) = &tls.roots else {
+        return Ok(postgres.to_string());
+    };
+    fs::copy(file, home.join(ROOTS))
+        .map_err(|e| Error::usage(format!("the catalog's sslrootcert, {}: {e}", file.display())))?;
+    tls.roots = metalake_pg::tls::Roots::File(PathBuf::from(format!("{}/{ROOTS}", seen.trim_end_matches('/'))));
+    Ok(tls.written(&rest))
 }
 
 /// A variable as a container must see it: the machine's own Postgres is `host.docker.internal` from inside.
@@ -387,6 +550,128 @@ mod tests {
     }
 
     #[test]
+    fn roots_copied_where_the_pipeline_sees_them() {
+        let dir = env::temp_dir().join(format!("metalake-rooted-{}", std::process::id()));
+        let (here, home) = (dir.join("here"), dir.join("home"));
+        fs::create_dir_all(&here).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        let ca = here.join("server ca.pem");
+        fs::write(&ca, "-----BEGIN CERTIFICATE-----").unwrap();
+        let named = ca.to_string_lossy().replace('\\', "/");
+
+        let url = format!(
+            "postgresql://u%40x.com@h/db?sslmode=verify-ca&sslrootcert={}",
+            named.replace(' ', "%20")
+        );
+        assert_eq!(
+            rooted(&url, &home, "/pipeline").unwrap(),
+            "postgresql://u%40x.com@h/db?sslmode=verify-ca&sslrootcert=/pipeline/root.crt"
+        );
+        assert_eq!(
+            fs::read_to_string(home.join(ROOTS)).unwrap(),
+            "-----BEGIN CERTIFICATE-----"
+        );
+
+        let pairs = format!("host=h user=u sslmode=verify-full sslrootcert='{named}'");
+        assert_eq!(
+            rooted(&pairs, &home, "/home/me/p/").unwrap(),
+            "host='h' user='u' sslmode='verify-full' sslrootcert='/home/me/p/root.crt'"
+        );
+
+        // Nothing of this machine's to copy: given as it is.
+        for kept in [
+            "postgresql://u@h/db?sslmode=require",
+            "postgresql://u@h/db?sslrootcert=system",
+            "host=h",
+        ] {
+            assert_eq!(rooted(kept, &home, "/pipeline").unwrap(), kept);
+        }
+        let missing = rooted("host=h sslrootcert=/nowhere/ca.pem", &home, "/pipeline").unwrap_err();
+        assert!(missing.to_string().contains("sslrootcert"), "{missing}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn credential_files_mounted_where_their_variables_say() {
+        let dir = env::temp_dir().join(format!("metalake-identity-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let (key, adc) = (dir.join("key.json"), dir.join("adc.json"));
+        fs::write(&key, "{}").unwrap();
+        fs::write(&adc, "{}").unwrap();
+        let vars = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect()
+        };
+        let key_named = key.to_string_lossy().into_owned();
+
+        // gcloud's default, when nothing names a Google identity.
+        assert_eq!(
+            identity(&vars(&[("METALAKE_SCHEMA", "metalake")]), Some(adc.clone())),
+            [Mount {
+                file: adc.clone(),
+                seen: "/identity/google_application_credentials".into(),
+                variable: "GOOGLE_APPLICATION_CREDENTIALS",
+            }]
+        );
+        // A file a variable names, in its place: gcloud's default does not stand for it.
+        assert_eq!(
+            identity(
+                &vars(&[("GOOGLE_APPLICATION_CREDENTIALS", &key_named)]),
+                Some(adc.clone())
+            ),
+            [Mount {
+                file: key.clone(),
+                seen: "/identity/google_application_credentials".into(),
+                variable: "GOOGLE_APPLICATION_CREDENTIALS",
+            }]
+        );
+        assert_eq!(
+            identity(&vars(&[("AZURE_FEDERATED_TOKEN_FILE", &key_named)]), None),
+            [Mount {
+                file: key.clone(),
+                seen: "/identity/azure_federated_token_file".into(),
+                variable: "AZURE_FEDERATED_TOKEN_FILE",
+            }]
+        );
+        // A key the variables hold, a path that is no file here, or no default: nothing to mount.
+        assert!(identity(&vars(&[("GOOGLE_SERVICE_ACCOUNT_KEY", "{}")]), Some(adc.clone())).is_empty());
+        assert!(identity(&vars(&[("GOOGLE_SERVICE_ACCOUNT", "/nowhere/key.json")]), None).is_empty());
+        assert!(identity(&vars(&[("AWS_ACCESS_KEY_ID", "AKIA")]), None).is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn seconds_of_a_log_time() {
+        assert_eq!(seconds_of("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(seconds_of("2000-03-01T00:00:00.5Z"), Some(951_868_800));
+        assert_eq!(seconds_of("2026-11-14T17:56:51.466700Z"), Some(1_794_679_011));
+        for wrong in [
+            "2026-11-14T17:56:51",
+            "2026-13-01T00:00:00Z",
+            "yesterday",
+            "2026-11-14Z",
+        ] {
+            assert_eq!(seconds_of(wrong), None, "{wrong}");
+        }
+    }
+
+    #[test]
+    fn retrying_when_the_log_ends_in_a_recent_error() {
+        let at = |s: u64| UNIX_EPOCH + Duration::from_secs(s);
+        let error = "\u{1b}[2m2026-11-14T17:56:51.466700Z\u{1b}[0m \u{1b}[31mERROR\u{1b}[0m \u{1b}[2marroyo_storage\u{1b}[0m\u{1b}[2m:\u{1b}[0m Error: Generic GCS error … Retrying...";
+        let log = format!("2026-11-14T17:55:20.000000Z  INFO arroyo: starting\n{error}\n");
+        let then = 1_794_679_011;
+        assert!(retrying(&log, at(then + 5)));
+        assert!(retrying(&log, at(then + 60)));
+        // An error long past, or one an info line followed: it got past it.
+        assert!(!retrying(&log, at(then + 61)));
+        let past = format!("{log}2026-11-14T17:56:52.000000Z  INFO arroyo: Pipeline running...\n");
+        assert!(!retrying(&past, at(then + 5)));
+        // A log of nothing, or of lines with no time: no sign of it.
+        assert!(!retrying("", at(then)));
+        assert!(!retrying("ERROR something", at(then)));
+    }
+
+    #[test]
     fn sockets() {
         assert_eq!(
             socket_of("host='/lake/postgres/run' port=5432 user=metalake").as_deref(),
@@ -421,6 +706,7 @@ mod tests {
             home: &home,
             warehouse: None,
             own_postgres: false,
+            google: false,
         };
         assert_eq!(
             arguments(&launch, "/pipeline/query.sql"),

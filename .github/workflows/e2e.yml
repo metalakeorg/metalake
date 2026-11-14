@@ -15,7 +15,7 @@ on:
     inputs:
       arroyo_image:
         description: Arroyo's image, as the fork publishes it (a branch or a commit as its tag)
-        default: ghcr.io/describeloai/arroyo-metalake:feat-metalake-resolve
+        default: ghcr.io/describeloai/arroyo-metalake:acd3762c8a29a99f81529616e21edecc2bca83ad
 
 permissions:
   contents: read
@@ -38,10 +38,11 @@ jobs:
           cache-on-failure: true
       - name: MetaLake's command line
         run: cargo build --release --locked -p metalake-cli
-      # Until describeloai/arroyo#1 merges, the hook that finds the lake's names is on its branch's image.
+      # Arroyo's image pinned by the fork's commit (feat/metalake-cloud-identity): the hook that finds the lake's names, and
+      # the connector that signs in as a cloud's identity.
       - name: The end-to-end test
         env:
-          ARROYO_IMAGE: ${{ inputs.arroyo_image || 'ghcr.io/describeloai/arroyo-metalake:feat-metalake-resolve' }}
+          ARROYO_IMAGE: ${{ inputs.arroyo_image || 'ghcr.io/describeloai/arroyo-metalake:acd3762c8a29a99f81529616e21edecc2bca83ad' }}
           METALAKE_BIN: target/release/metalake
         run: |
           docker pull "$ARROYO_IMAGE"
@@ -49,12 +50,12 @@ jobs:
       # The same pipeline, as the client creates, suspends, resumes and drops it, Arroyo in a container of its image.
       - name: A pipeline through the client
         env:
-          METALAKE_ARROYO_IMAGE: ${{ inputs.arroyo_image || 'ghcr.io/describeloai/arroyo-metalake:feat-metalake-resolve' }}
+          METALAKE_ARROYO_IMAGE: ${{ inputs.arroyo_image || 'ghcr.io/describeloai/arroyo-metalake:acd3762c8a29a99f81529616e21edecc2bca83ad' }}
           METALAKE_PIPELINE_TEST: '1'
         run: CRATE=metalake-client bash sql/test.sh --test c14_pipeline -- --nocapture
       # And from the command line, in its verbs and in SQL's.
       - name: A pipeline from the command line
         env:
-          METALAKE_ARROYO_IMAGE: ${{ inputs.arroyo_image || 'ghcr.io/describeloai/arroyo-metalake:feat-metalake-resolve' }}
+          METALAKE_ARROYO_IMAGE: ${{ inputs.arroyo_image || 'ghcr.io/describeloai/arroyo-metalake:acd3762c8a29a99f81529616e21edecc2bca83ad' }}
           METALAKE: target/release/metalake
         run: bash crates/metalake-arroyo/e2e/cli.sh
