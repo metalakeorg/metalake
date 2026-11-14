@@ -3,6 +3,39 @@
 What each version published on PyPI as `metalake` brings to whoever installs it. The work behind each line is in its
 pull request; the decisions, in the ADRs.
 
+## 0.3.0
+
+### Upgrading from 0.2.0
+
+- **Nothing to migrate:** the protocol's sources are those of 0.2.0, and a lake of 0.2.0 is used as it is.
+
+### The UI on a lake
+
+- **`metalake ui` serves the lake it is run in**, from a `metalake.toml` or the environment, at the lake's own port,
+  behind a token of the run (#33).
+- **Query:** a tree of the branch's catalog, schemas and tables, kept live as commits land (Postgres `NOTIFY`, a
+  server-sent stream); a branch selector; and a SQL editor whose statements read and write on the chosen branch, its
+  rows streamed as Arrow and shown in a virtualized table, 10,000 by default (#33, #34).
+
+### The Notebook
+
+- **JupyterLab in the UI**, with `pip install "metalake[notebook]"`: started by `metalake ui` when its page first
+  asks, on the UI's own origin, isolated from the user's own Jupyter, and ended with it however it ends (#35, #36,
+  #37).
+- **The kernel MetaLake:** IPython in the same Python, with `lake` connected to the lake the UI serves, or saying why
+  it is not; notebooks kept in the lake's `notebooks/` (#38).
+- **`lake.on(ref)` and `lake.ref`** in metalake-py: names that say no ref read and write on the chosen one, in SQL,
+  `table_changes`, `lake.table` and `lake.log` (#38).
+- **The ref selector** in each notebook's toolbar: the lake's branches and tags, kept in the notebook, applied as it
+  opens and to a restarted kernel before any cell runs on it, carried by every wheel (#39, #42, #43).
+
+### Known limits
+
+- `create table … as select` is refused by the engine: create the table, then insert.
+- `table_changes` reads `main`'s changes; a branch's are refused for now.
+- polars' standard wheel needs a CPU with AVX2, and the process that imports it dies on one without:
+  `pip install "polars[rtcompat]"` is polars' runtime for such CPUs.
+
 ## 0.2.0
 
 ### Upgrading from 0.1.0
