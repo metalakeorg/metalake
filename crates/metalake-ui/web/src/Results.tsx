@@ -2,9 +2,9 @@
 // thousand of them cost what a screenful does (TanStack Virtual, ADR 0007 §5.2).
 
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Failure, LIMIT } from "./client";
-import { type Result, show } from "./result";
+import { type Result, show, toJson } from "./result";
 
 /** What a statement's run came to. */
 export type Run =
@@ -91,6 +91,7 @@ function Grid({ result, ms }: { result: Result; ms: number }) {
             the first {LIMIT.toLocaleString("en-US")}: the statement answered more
           </span>
         )}
+        <CopyJson result={result} />
       </p>
       <div ref={box} className="min-h-0 flex-1 overflow-auto font-mono text-xs">
         <table aria-label="Rows" className="min-w-full border-separate border-spacing-0">
@@ -128,5 +129,31 @@ function Grid({ result, ms }: { result: Result; ms: number }) {
         </table>
       </div>
     </>
+  );
+}
+
+/** Copies the rows shown, as JSON, to the clipboard; says it did, or that it could not. */
+function CopyJson({ result }: { result: Result }) {
+  const [said, setSaid] = useState<"" | "Copied" | "Not copied">("");
+  const copy = () => {
+    const done = navigator.clipboard?.writeText(toJson(result));
+    if (!done) {
+      setSaid("Not copied");
+      return;
+    }
+    done.then(
+      () => setSaid("Copied"),
+      () => setSaid("Not copied"),
+    );
+  };
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      onBlur={() => setSaid("")}
+      className="ml-auto rounded px-1.5 hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+    >
+      {said || "Copy JSON"}
+    </button>
   );
 }

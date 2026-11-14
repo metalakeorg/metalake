@@ -1,6 +1,6 @@
 import { columnFromArray, int64, tableFromColumns, tableToIPC, timestamp, utf8 } from "@uwdata/flechette";
 import { describe, expect, it } from "vitest";
-import { decode, show } from "./result";
+import { decode, show, toJson } from "./result";
 
 /** An Arrow IPC stream of `columns`, as the server writes one. */
 function arrow(columns: Record<string, ReturnType<typeof columnFromArray>>): ArrayBuffer {
@@ -22,6 +22,19 @@ describe("decode", () => {
     expect(result.rows[1]?.[0]).toBe(9007199254740993n);
     expect(result.rows[1]?.[1]).toBeNull();
     expect(result.rows[0]?.[2]).toBeInstanceOf(Date);
+  });
+});
+
+describe("toJson", () => {
+  it("gives the rows as objects by column, each value as JSON has it", () => {
+    const result = {
+      columns: ["id", "big", "at", "name", "id", "none"],
+      rows: [[1n, 2n ** 60n, new Date("2026-11-14T12:00:00Z"), "a", 7, null]],
+      truncated: false,
+    };
+    expect(JSON.parse(toJson(result))).toEqual([
+      { id: 1, big: "1152921504606846976", at: "2026-11-14T12:00:00.000Z", name: "a", id_2: 7, none: null },
+    ]);
   });
 });
 
