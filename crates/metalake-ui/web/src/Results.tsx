@@ -2,7 +2,7 @@
 // are drawn (TanStack Virtual, ADR 0007 §5.2).
 
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Failure, LIMIT } from "./client";
 import { type Result, show, toJson } from "./result";
 
@@ -66,16 +66,14 @@ function Said({ state }: { state: Run }) {
 
 function Grid({ result, ms }: { result: Result; ms: number }) {
   const box = useRef<HTMLDivElement>(null);
-  // A new result opens on its first page, at its top.
-  const [page, setPage] = useState(0);
-  useEffect(() => {
-    setPage(0);
-  }, [result]);
+  // The page is the result's it was turned on: a new result opens on its first page.
+  const [at, setAt] = useState({ result, page: 0 });
+  const page = at.result === result ? at.page : 0;
   const pages = Math.max(1, Math.ceil(result.rows.length / PAGE));
   const first = Math.min(page, pages - 1) * PAGE;
   const shown = useMemo(() => result.rows.slice(first, first + PAGE), [result, first]);
   const turn = (to: number) => {
-    setPage(to);
+    setAt({ result, page: to });
     box.current?.scrollTo({ top: 0 });
   };
   const rows = useVirtualizer({
