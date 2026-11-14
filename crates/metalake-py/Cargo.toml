@@ -1,6 +1,6 @@
 [package]
 name = "metalake-py"
-version = "0.2.0"
+version = "0.3.0"
 description = "MetaLake's Python package: the command line and the Python API, in one library"
 edition.workspace = true
 rust-version.workspace = true

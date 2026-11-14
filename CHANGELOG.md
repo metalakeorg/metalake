@@ -3,6 +3,12 @@
 What each version published on PyPI as `metalake` brings to whoever installs it. The work behind each line is in its
 pull request; the decisions, in the ADRs.
 
+## 0.3.0
+
+- **UI:** `metalake ui` on your lake, with a live catalog and a SQL editor that reads and writes by branch (#33, #34).
+- **Notebook:** JupyterLab in the UI, `pip install "metalake[notebook]"`, with `lake` ready and a branch selector
+  (#35–#39, #42, #43).
+
 ## 0.2.0
 
 ### Upgrading from 0.1.0
