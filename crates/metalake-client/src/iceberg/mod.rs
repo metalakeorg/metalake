@@ -13,7 +13,7 @@ mod trino;
 
 use std::collections::BTreeMap;
 
-use metalake::{ICEBERG_METADATA, Table};
+use metalake::{ICEBERG_METADATA, Ref, Table};
 use serde::Serialize;
 use serde_json::json;
 use uuid::Uuid;
@@ -140,6 +140,25 @@ impl Iceberg<'_> {
         Ok(Some(transaction.message(message).commit().await?.seq()))
     }
 
+    /// Where one table's Iceberg metadata stands on `on`: what it serves, and how many of its commits it does not yet.
+    pub(crate) async fn state(&self, on: &Ref, t: &Table) -> Result<IcebergTable> {
+        let storage = self.lake.storage()?;
+        let (written, metadata) = latest_metadata(&storage, t.location()).await?;
+        let snapshots = on.snapshots(t, LOOKED_AT).await?;
+        let unwritten: Vec<_> = snapshots
+            .iter()
+            .filter(|s| written.is_none_or(|w| s.snapshot_id > w))
+            .collect();
+        Ok(IcebergTable {
+            table: format!("{}.{}", t.namespace().join("."), t.name()),
+            head: t.snapshot_id(),
+            written,
+            behind: unwritten.len() as i64,
+            since: unwritten.last().and_then(|s| s.committed_at.clone()),
+            metadata,
+        })
+    }
+
     /// The tables set to `on-commit` on `on`, and where their Iceberg metadata stands: what it serves, and how many of
     /// their commits it does not yet. It reads the metadata files themselves, so it says so whether the service runs.
     pub async fn status(&self, on: &str) -> Result<Vec<IcebergTable>> {
@@ -149,24 +168,10 @@ impl Iceberg<'_> {
             .catalog
             .tables_with_property(ICEBERG_METADATA, ON_COMMIT)
             .await?;
-        let storage = self.lake.storage()?;
         let mut tables = Vec::new();
         for (_, id) in marked.into_iter().filter(|(ref_id, _)| *ref_id == on.id()) {
             let t = on.table_with_id(id).await?;
-            let (written, metadata) = latest_metadata(&storage, t.location()).await?;
-            let snapshots = on.snapshots(&t, LOOKED_AT).await?;
-            let unwritten: Vec<_> = snapshots
-                .iter()
-                .filter(|s| written.is_none_or(|w| s.snapshot_id > w))
-                .collect();
-            tables.push(IcebergTable {
-                table: format!("{}.{}", t.namespace().join("."), t.name()),
-                head: t.snapshot_id(),
-                written,
-                behind: unwritten.len() as i64,
-                since: unwritten.last().and_then(|s| s.committed_at.clone()),
-                metadata,
-            });
+            tables.push(self.state(&on, &t).await?);
         }
         tables.sort_by(|a, b| a.table.cmp(&b.table));
         Ok(tables)
