@@ -74,7 +74,7 @@ function Grid({ result, ms }: { result: Result; ms: number }) {
   const shown = useMemo(() => result.rows.slice(first, first + PAGE), [result, first]);
   const turn = (to: number) => {
     setAt({ result, page: to });
-    box.current?.scrollTo({ top: 0 });
+    if (box.current) box.current.scrollTop = 0;
   };
   const rows = useVirtualizer({
     count: shown.length,
