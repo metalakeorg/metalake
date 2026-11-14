@@ -6,7 +6,7 @@ import { ask } from "./server";
 describe("Frame", () => {
   it("names the product", () => {
     render(<Frame />);
-    expect(screen.getByRole("banner")).toHaveTextContent("MetaLake");
+    expect(screen.getByRole("banner")).toHaveTextContent("Metalake UI");
   });
 
   it("renders the page in main when the server is ready", () => {

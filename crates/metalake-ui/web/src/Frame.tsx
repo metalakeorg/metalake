@@ -10,7 +10,7 @@ export function Frame({ server, nav, children }: { server?: Server; nav?: ReactN
     <div className="flex h-full flex-col">
       <header className="flex h-12 shrink-0 items-center gap-2 border-zinc-200 border-b px-4 dark:border-zinc-800">
         <Grapes className="size-7" />
-        <span className="font-semibold tracking-tight">MetaLake</span>
+        <span className="font-semibold tracking-tight">Metalake UI</span>
       </header>
       <div className="flex min-h-0 flex-1">
         {ready && nav}
