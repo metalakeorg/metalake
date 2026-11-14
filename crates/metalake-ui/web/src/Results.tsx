@@ -1,5 +1,5 @@
-// The rows of what the Query page ran: a grid of its columns, of which only the rows in sight are drawn, so that ten
-// thousand of them cost what a screenful does (TanStack Virtual, ADR 0007 §5.2).
+// The rows of what the Query page ran: a grid of its columns, a page of them at a time, of which only the rows in sight
+// are drawn (TanStack Virtual, ADR 0007 §5.2).
 
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMemo, useRef, useState } from "react";
@@ -17,7 +17,11 @@ export type Run =
 
 /** The height of a row of the grid, in pixels. */
 const ROW = 28;
+/** The rows of a page of the grid. */
+export const PAGE = 100;
 const HEAD = "border-zinc-200 border-b px-2 py-1.5 font-semibold whitespace-nowrap dark:border-zinc-800";
+const TURN =
+  "rounded px-1.5 hover:bg-zinc-100 hover:text-zinc-900 disabled:opacity-40 disabled:hover:bg-transparent dark:hover:bg-zinc-800 dark:hover:text-zinc-100";
 const CELL = "max-w-96 truncate border-zinc-100 border-b px-2 py-1 whitespace-nowrap dark:border-zinc-900";
 
 export function Results({ state }: { state: Run }) {
@@ -62,8 +66,18 @@ function Said({ state }: { state: Run }) {
 
 function Grid({ result, ms }: { result: Result; ms: number }) {
   const box = useRef<HTMLDivElement>(null);
+  // The page is the result's it was turned on: a new result opens on its first page.
+  const [at, setAt] = useState({ result, page: 0 });
+  const page = at.result === result ? at.page : 0;
+  const pages = Math.max(1, Math.ceil(result.rows.length / PAGE));
+  const first = Math.min(page, pages - 1) * PAGE;
+  const shown = useMemo(() => result.rows.slice(first, first + PAGE), [result, first]);
+  const turn = (to: number) => {
+    setAt({ result, page: to });
+    if (box.current) box.current.scrollTop = 0;
+  };
   const rows = useVirtualizer({
-    count: result.rows.length,
+    count: shown.length,
     getScrollElement: () => box.current,
     estimateSize: () => ROW,
     overscan: 20,
@@ -93,6 +107,23 @@ function Grid({ result, ms }: { result: Result; ms: number }) {
         )}
         <CopyJson result={result} />
       </p>
+      {pages > 1 && (
+        <nav
+          aria-label="Pages of rows"
+          className="flex shrink-0 items-center gap-2 border-zinc-200 border-b px-4 py-1 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400"
+        >
+          <button type="button" onClick={() => turn(page - 1)} disabled={first === 0} className={TURN}>
+            Previous
+          </button>
+          <span>
+            Rows {(first + 1).toLocaleString("en-US")}–{(first + shown.length).toLocaleString("en-US")} · page{" "}
+            {first / PAGE + 1} of {pages}
+          </span>
+          <button type="button" onClick={() => turn(page + 1)} disabled={first / PAGE + 1 >= pages} className={TURN}>
+            Next
+          </button>
+        </nav>
+      )}
       <div ref={box} className="min-h-0 flex-1 overflow-auto font-mono text-xs">
         <table aria-label="Rows" className="min-w-full border-separate border-spacing-0">
           <thead className="sticky top-0 z-10 bg-white dark:bg-zinc-950">
@@ -108,10 +139,10 @@ function Grid({ result, ms }: { result: Result; ms: number }) {
           <tbody>
             {above > 0 && <tr aria-hidden style={{ height: above }} />}
             {items.map((item) => {
-              const row = result.rows[item.index] ?? [];
+              const row = shown[item.index] ?? [];
               return (
                 <tr key={item.key} style={{ height: ROW }} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
-                  <td className={`${CELL} text-right text-zinc-400`}>{item.index + 1}</td>
+                  <td className={`${CELL} text-right text-zinc-400`}>{first + item.index + 1}</td>
                   {columns.map(({ id, at }) => (
                     <td
                       key={id}
