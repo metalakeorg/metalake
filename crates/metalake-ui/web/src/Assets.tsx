@@ -30,9 +30,14 @@ export interface Table {
 }
 
 /** The namespaces of `tables`, each with its tables, both in name order. */
-export function byNamespace(tables: readonly Table[]): [string, string[], string[]][] {
+export function byNamespace(
+  tables: readonly Table[],
+  schemas: readonly string[][] = [],
+): [string, string[], string[]][] {
   // Grouped by the levels, which a dot inside one may not tell apart once they are joined by dots.
   const grouped = new Map<string, { levels: string[]; names: string[] }>();
+  // A schema with no table yet is in the tree too, empty.
+  for (const levels of schemas) grouped.set(levels.join("\u001f"), { levels, names: [] });
   for (const table of tables) {
     const key = table.namespace.join("\u001f");
     const group = grouped.get(key) ?? { levels: table.namespace, names: [] };
@@ -60,6 +65,7 @@ export function Assets({
   onBranch,
   onTag,
   tables,
+  schemas,
   failure,
   children,
   onPick,
@@ -85,6 +91,8 @@ export function Assets({
   onBranch: (branch: string) => void;
   onTag?: (tag: string | null) => void;
   tables: readonly Table[] | undefined;
+  /** The schemas of the ref, by their levels: each one in the tree, an empty one too. */
+  schemas?: readonly string[][] | undefined;
   failure?: Error | null;
 }) {
   const tagged = tag !== null;
@@ -130,6 +138,7 @@ export function Assets({
           branch={tag ?? branch}
           tagged={tagged}
           tables={tables}
+          schemas={schemas}
           failure={failure ?? null}
           onPick={onPick}
           picked={picked}
@@ -195,6 +204,7 @@ function Tables({
   branch,
   tagged,
   tables,
+  schemas,
   failure,
   onPick,
   picked,
@@ -206,6 +216,7 @@ function Tables({
   branch: string;
   tagged: boolean;
   tables: readonly Table[] | undefined;
+  schemas?: readonly string[][] | undefined;
   failure: Error | null;
   onPick?: ((asset: Asset) => void) | undefined;
   picked?: Asset | undefined;
@@ -220,6 +231,7 @@ function Tables({
   if (tables === undefined) {
     return <p className="px-1 text-xs text-zinc-500">Reading the catalog…</p>;
   }
+  const groups = byNamespace(tables, schemas);
   return (
     <Node
       icon={<CatalogIcon />}
@@ -228,10 +240,10 @@ function Tables({
       onName={onPick && (() => onPick({ kind: "ref" }))}
       current={same(picked, { kind: "ref" })}
     >
-      {tables.length === 0 && (
+      {groups.length === 0 && (
         <p className="px-1 py-0.5 text-xs text-zinc-500">No tables on this {tagged ? "tag" : "branch"}.</p>
       )}
-      {byNamespace(tables).map(([namespace, names, levels]) => {
+      {groups.map(([namespace, names, levels]) => {
         return (
           <Node
             key={levels.join("\u001f")}
@@ -240,6 +252,7 @@ function Tables({
             onName={onPick && (() => onPick({ kind: "schema", namespace: levels }))}
             current={same(picked, { kind: "schema", namespace: levels })}
           >
+            {names.length === 0 && <p className="py-0.5 pl-4 text-xs text-zinc-400 dark:text-zinc-500">No tables.</p>}
             <ul aria-label={namespace}>
               {names.map((name) => (
                 <TableNode

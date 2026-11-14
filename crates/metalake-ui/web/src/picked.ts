@@ -3,7 +3,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { refs, type Table, tables } from "./client";
+import { refDetails, refs, type Table, tables } from "./client";
 import { CATALOG } from "./live";
 
 /** The branch every lake has, which a page opens on. */
@@ -27,6 +27,8 @@ export interface Picked {
   tagged: boolean;
   /** The tables on the ref shown; absent while they are read. */
   tables: Table[] | undefined;
+  /** The schemas on the ref shown, by their levels, those without tables too; absent while they are read. */
+  schemas: string[][] | undefined;
   failure: Error | null;
 }
 
@@ -39,6 +41,8 @@ export function usePicked(): Picked {
   const allTags = known.data?.filter((r) => r.kind === "tag") ?? [];
   const tags = allTags.filter((r) => r.parent === branch).map((r) => r.name);
   const listed = useQuery({ queryKey: [...CATALOG, "tables", ref], queryFn: () => tables(ref) });
+  // The ref's details, which the Catalog's view of it reads by the same key: they name every schema, an empty one too.
+  const details = useQuery({ queryKey: [...CATALOG, "ref", ref], queryFn: () => refDetails(ref) });
   // A ref deleted while it was picked: back to the branch, or to the one every lake has.
   const branchGone = known.data !== undefined && !branches.includes(branch);
   const tagGone = known.data !== undefined && tag !== null && !tags.includes(tag);
@@ -61,6 +65,7 @@ export function usePicked(): Picked {
     tags,
     tagged: tag !== null,
     tables: listed.data,
+    schemas: details.data?.schemas.map((s) => s.namespace),
     failure: listed.error ?? known.error,
   };
 }

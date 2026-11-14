@@ -35,6 +35,7 @@ export function CatalogPage() {
         onBranch={pickBranch}
         onTag={pickTag}
         tables={picked.tables}
+        schemas={picked.schemas}
         failure={picked.failure}
         onPick={show}
         picked={asset}

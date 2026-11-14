@@ -32,6 +32,7 @@ export function QueryPage() {
         onBranch={picked.pickBranch}
         onTag={picked.pickTag}
         tables={picked.tables}
+        schemas={picked.schemas}
         failure={picked.failure}
         columns
         onInsert={(text) => insert.current?.(text)}

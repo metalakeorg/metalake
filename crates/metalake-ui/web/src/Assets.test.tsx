@@ -19,6 +19,13 @@ describe("identifier", () => {
 });
 
 describe("byNamespace", () => {
+  it("holds a schema with no tables, empty, among the others", () => {
+    expect(byNamespace([{ namespace: ["sales"], name: "orders" }], [["demo"], ["sales"]])).toEqual([
+      ["demo", [], ["demo"]],
+      ["sales", ["orders"], ["sales"]],
+    ]);
+  });
+
   it("keeps apart schemas whose names, joined by dots, are the same", () => {
     const groups = byNamespace([
       { namespace: ["a.b"], name: "one" },
