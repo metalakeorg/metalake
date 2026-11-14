@@ -17,18 +17,25 @@ export function CatalogPage() {
   const asset: Asset = shown.on === picked.ref ? shown.asset : { kind: "ref" };
   const show = (next: Asset) => setShown({ on: picked.ref, asset: next });
   // A ref picked shows its catalog, whatever was shown of it before.
-  const pick = (ref: string) => {
-    picked.pick(ref);
-    setShown({ on: ref, asset: { kind: "ref" } });
+  const pickBranch = (branch: string) => {
+    picked.pickBranch(branch);
+    setShown({ on: branch, asset: { kind: "ref" } });
+  };
+  const pickTag = (tag: string | null) => {
+    picked.pickTag(tag);
+    setShown({ on: tag ?? picked.branch, asset: { kind: "ref" } });
   };
   return (
     <div className="flex h-full">
       <Assets
         branches={picked.branches}
         tags={picked.tags}
-        branch={picked.ref}
-        onBranch={pick}
+        branch={picked.branch}
+        tag={picked.tag}
+        onBranch={pickBranch}
+        onTag={pickTag}
         tables={picked.tables}
+        schemas={picked.schemas}
         failure={picked.failure}
         onPick={show}
         picked={asset}

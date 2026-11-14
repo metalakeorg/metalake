@@ -15,7 +15,7 @@ import {
   placeholder,
 } from "@codemirror/view";
 import { classHighlighter } from "@lezer/highlight";
-import { useEffect, useRef } from "react";
+import { type RefObject, useEffect, useRef } from "react";
 
 /** The editor's frame: it fills its box, and takes its colours from the page. */
 const look = EditorView.theme({
@@ -28,18 +28,24 @@ const look = EditorView.theme({
   ".cm-placeholder": { color: "var(--gutter)" },
 });
 
+/** Puts text where the editor's cursor is, in place of what is selected. */
+export type Insert = (text: string) => void;
+
 /**
  * An SQL editor holding `value`; `onChange` is told each edit, and `onRun` is called by Ctrl-Enter (Cmd-Enter on a
- * Mac) with the text to run: the selection, if there is one, else the whole.
+ * Mac) with the text to run: the selection, if there is one, else the whole. `insert` is given the way to put text
+ * at its cursor.
  */
 export function Editor({
   value,
   onChange,
   onRun,
+  insert,
 }: {
   value: string;
   onChange: (value: string) => void;
   onRun: (statement: string) => void;
+  insert?: RefObject<Insert | null>;
 }) {
   const box = useRef<HTMLDivElement>(null);
   // The latest handlers, so that the editor, made once, calls the page's current ones.
@@ -83,7 +89,20 @@ export function Editor({
         ],
       }),
     });
-    return () => view.destroy();
+    if (insert) {
+      insert.current = (text) => {
+        const { from, to } = view.state.selection.main;
+        // Apart from a word just before it, as a name in a statement is.
+        const before = from > 0 ? view.state.sliceDoc(from - 1, from) : "";
+        const put = /[\w"]/.test(before) ? ` ${text}` : text;
+        view.dispatch({ changes: { from, to, insert: put }, selection: { anchor: from + put.length } });
+        view.focus();
+      };
+    }
+    return () => {
+      if (insert) insert.current = null;
+      view.destroy();
+    };
   }, []);
 
   return <div ref={box} className="h-full min-h-0" />;

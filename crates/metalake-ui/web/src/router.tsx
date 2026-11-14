@@ -9,6 +9,7 @@ import { NotebookPage } from "./Notebook";
 import { PAGES } from "./pages";
 import { QueryPage } from "./Query";
 import { useServer } from "./server";
+import { toggleTheme } from "./theme";
 
 function Shell() {
   const server = useServer();
@@ -23,7 +24,7 @@ function Shell() {
 
 function Nav() {
   return (
-    <nav aria-label="Pages" className="w-44 shrink-0 border-zinc-200 border-r p-2 dark:border-zinc-800">
+    <nav aria-label="Pages" className="flex w-44 shrink-0 flex-col border-zinc-200 border-r p-2 dark:border-zinc-800">
       <ul className="space-y-0.5 text-sm">
         {PAGES.map((page) => (
           <li key={page.path}>
@@ -38,6 +39,7 @@ function Nav() {
           </li>
         ))}
       </ul>
+      <ThemeToggle />
     </nav>
   );
 }
@@ -61,4 +63,22 @@ declare module "@tanstack/react-router" {
   interface Register {
     router: typeof router;
   }
+}
+
+/** The theme's toggle, at the foot of the sidebar: the landing's half-filled circle. */
+function ThemeToggle() {
+  return (
+    <button
+      type="button"
+      title="Switch between the light and the dark theme"
+      aria-label="Switch between the light and the dark theme"
+      onClick={toggleTheme}
+      className="mt-auto self-start rounded border border-zinc-300 p-1 text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+    >
+      <svg viewBox="0 0 24 24" aria-hidden className="size-4">
+        <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="2" />
+        <path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" />
+      </svg>
+    </button>
+  );
 }

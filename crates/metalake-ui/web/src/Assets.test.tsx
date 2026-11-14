@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { Assets, byNamespace } from "./Assets";
+import { Assets, byNamespace, identifier } from "./Assets";
 
 const TABLES = [
   { namespace: ["sales"], name: "orders" },
@@ -9,7 +9,23 @@ const TABLES = [
   { namespace: ["sales", "eu"], name: "orders" },
 ];
 
+describe("identifier", () => {
+  it("leaves a plain name bare, and quotes any other", () => {
+    expect(identifier("orders")).toBe("orders");
+    expect(identifier("sales.eu")).toBe('"sales.eu"');
+    expect(identifier("Total")).toBe('"Total"');
+    expect(identifier('a"b')).toBe('"a""b"');
+  });
+});
+
 describe("byNamespace", () => {
+  it("holds a schema with no tables, empty, among the others", () => {
+    expect(byNamespace([{ namespace: ["sales"], name: "orders" }], [["demo"], ["sales"]])).toEqual([
+      ["demo", [], ["demo"]],
+      ["sales", ["orders"], ["sales"]],
+    ]);
+  });
+
   it("keeps apart schemas whose names, joined by dots, are the same", () => {
     const groups = byNamespace([
       { namespace: ["a.b"], name: "one" },
@@ -41,11 +57,11 @@ describe("Assets", () => {
   it("holds the tables in their schema, and the schemas in the branch's catalog", () => {
     render(<Assets branches={["main", "dev"]} branch="dev" onBranch={() => {}} tables={TABLES} />);
     const catalog = screen.getByText("dev", { selector: "summary span" }).closest("details");
-    expect(catalog?.querySelector("summary")).toHaveTextContent("devcatalog");
+    expect(catalog?.querySelector("summary")).toHaveTextContent("▸dev");
     const schemas = [...(catalog?.querySelectorAll("details") ?? [])].map(
       (d) => d.querySelector("summary")?.textContent,
     );
-    expect(schemas).toEqual(["▸defaultschema", "▸salesschema", "▸sales.euschema"]);
+    expect(schemas).toEqual(["▸default", "▸sales", "▸sales.eu"]);
   });
 
   it("tells the page which branch was picked", () => {

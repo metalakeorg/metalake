@@ -80,11 +80,12 @@ function page() {
 }
 
 describe("CatalogPage", () => {
-  it("shows the tree of the branch picked, and of a tag pressed", async () => {
+  it("shows the tree of the branch picked, and of a tag of it picked", async () => {
     page();
     const assets = within(screen.getByRole("complementary", { name: "Assets" }));
     expect(await assets.findByRole("list", { name: "shop" })).toHaveTextContent("customers");
-    fireEvent.click(within(await assets.findByRole("list", { name: "Tags" })).getByRole("button", { name: "v1" }));
+    await assets.findByRole("option", { name: "v1" });
+    fireEvent.change(await assets.findByRole("combobox", { name: "Tag" }), { target: { value: "v1" } });
     expect(await assets.findByText("customers_then")).toBeInTheDocument();
   });
 
@@ -119,6 +120,8 @@ describe("CatalogPage", () => {
     await assets.findByRole("list", { name: "shop" });
     fireEvent.click(assets.getByRole("button", { name: "customers" }));
     const view = within(await screen.findByRole("region", { name: "Table shop.customers" }));
+    expect(view.getByText("main.shop")).toBeInTheDocument();
+    expect(view.getByRole("heading", { level: 1 })).toHaveTextContent("customerstable");
     const columns = within(await view.findByRole("table", { name: "Columns" }));
     expect(columns.getByText("the key")).toBeInTheDocument();
     expect(columns.getByText("long")).toBeInTheDocument();
@@ -135,8 +138,9 @@ describe("CatalogPage", () => {
     await assets.findByRole("list", { name: "shop" });
     fireEvent.click(assets.getByRole("button", { name: "shop" }));
     await screen.findByRole("region", { name: "Schema shop" });
-    fireEvent.click(within(assets.getByRole("list", { name: "Tags" })).getByRole("button", { name: "v1" }));
-    fireEvent.change(assets.getByRole("combobox", { name: "Branch" }), { target: { value: "main" } });
+    fireEvent.change(await assets.findByRole("combobox", { name: "Tag" }), { target: { value: "v1" } });
+    await assets.findByText("customers_then");
+    fireEvent.change(assets.getByRole("combobox", { name: "Tag" }), { target: { value: "" } });
     expect(await screen.findByRole("region", { name: "Branch main" })).toBeInTheDocument();
   });
 

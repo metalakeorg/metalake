@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* The dark theme is the page's `data-theme`, which the bundle sets and the sidebar's toggle changes. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 @layer base {
   html,
   body,
@@ -10,6 +13,13 @@
   body {
     @apply bg-white text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100;
   }
+
+  /* Before the bundle sets the theme, the system's: no white page on a dark system while it loads. */
+  @media (prefers-color-scheme: dark) {
+    html:not([data-theme]) body {
+      background-color: var(--color-zinc-950);
+    }
+  }
 }
 
 /* The SQL editor's colours (Editor.tsx): its tokens are classes, coloured here in light and dark. */
@@ -18,11 +28,9 @@
     --gutter: var(--color-zinc-400);
     --active-line: color-mix(in oklab, var(--color-zinc-100) 60%, transparent);
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --gutter: var(--color-zinc-600);
-      --active-line: color-mix(in oklab, var(--color-zinc-800) 50%, transparent);
-    }
+  :root[data-theme="dark"] {
+    --gutter: var(--color-zinc-600);
+    --active-line: color-mix(in oklab, var(--color-zinc-800) 50%, transparent);
   }
   .tok-keyword {
     @apply text-violet-700 dark:text-violet-400;
