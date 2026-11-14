@@ -1,5 +1,8 @@
 # Publishes a tagged version: every wheel goes to TestPyPI, is installed from there and run, and goes to PyPI only
 # once the `pypi` environment is approved. Publishing uses trusted publishing, so no token is stored anywhere.
+#
+# A commit tagged after it reached main has its wheels already, built and tested by main's own run of `wheels` from the
+# same sources: they are taken from that run. Any other commit has them built here.
 name: release
 
 on:
@@ -10,14 +13,35 @@ permissions:
   contents: read
 
 jobs:
+  # The successful run of `wheels` that main's push of this commit made, if there is one.
+  built:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      run: ${{ steps.find.outputs.run }}
+    steps:
+      - id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/wheels.yml/runs?branch=main&event=push&status=success&head_sha=$GITHUB_SHA" \
+            --jq '.workflow_runs[0].id // empty')
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "main's wheels of $GITHUB_SHA: ${run:-none; they are built here}"
+
   wheels:
+    needs: built
+    if: needs.built.outputs.run == ''
     uses: ./.github/workflows/wheels.yml
 
   testpypi:
-    needs: wheels
+    needs: [built, wheels]
+    if: always() && needs.built.result == 'success' && contains(fromJSON('["success", "skipped"]'), needs.wheels.result)
     runs-on: ubuntu-latest
     environment: testpypi
     permissions:
+      actions: read
       id-token: write
     steps:
       - uses: actions/download-artifact@v4
@@ -25,12 +49,20 @@ jobs:
           pattern: wheel-*
           path: dist
           merge-multiple: true
+          run-id: ${{ needs.built.outputs.run || github.run_id }}
+          github-token: ${{ github.token }}
+      - name: The five wheels, of this version
+        run: |
+          ls dist
+          test "$(ls dist/*.whl | wc -l)" = 5
+          ls dist/*.whl | grep -q -- "-${GITHUB_REF_NAME#v}-"
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
 
   from-testpypi:
     needs: testpypi
+    if: always() && needs.testpypi.result == 'success'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -41,17 +73,30 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install from TestPyPI and run what a person would
+      # TestPyPI's index lists a new version some time after the upload: asked until it does, for ten minutes at most.
+      - name: The version, once TestPyPI's index lists it
         shell: bash
         run: |
-          sleep 60
-          bash packaging/e2e.sh "metalake==${GITHUB_REF_NAME#v}" --index-url https://test.pypi.org/simple/
+          version=${GITHUB_REF_NAME#v}
+          for _ in $(seq 20); do
+            if python -m pip download --quiet --no-deps --dest "$RUNNER_TEMP/listed" \
+                 --index-url https://test.pypi.org/simple/ "metalake==$version"; then
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "TestPyPI does not list metalake $version after ten minutes" && exit 1
+      - name: Install from TestPyPI and run what a person would
+        shell: bash
+        run: bash packaging/e2e.sh "metalake==${GITHUB_REF_NAME#v}" --index-url https://test.pypi.org/simple/
 
   pypi:
-    needs: from-testpypi
+    needs: [built, from-testpypi]
+    if: always() && needs.from-testpypi.result == 'success'
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
+      actions: read
       id-token: write
     steps:
       - uses: actions/download-artifact@v4
@@ -59,4 +104,6 @@ jobs:
           pattern: wheel-*
           path: dist
           merge-multiple: true
+          run-id: ${{ needs.built.outputs.run || github.run_id }}
+          github-token: ${{ github.token }}
       - uses: pypa/gh-action-pypi-publish@release/v1
