@@ -17,6 +17,8 @@ import { Widget } from "@lumino/widgets";
 
 /** The key of the notebook's metadata that keeps its ref. */
 const KEY = "metalake";
+/** What an answer that never came says, so that it is told from what `lake` said. */
+const GONE = "the kernel did not answer: ";
 /** The ref of a notebook that keeps none. */
 const MAIN = "main";
 
@@ -37,15 +39,21 @@ function expression(all: boolean): string {
 
 /** Runs `code` silently in the kernel, then evaluates the state. */
 async function ask(kernel: Kernel.IKernelConnection, code: string, all: boolean): Promise<Answer> {
-  const future = kernel.requestExecute({
-    code,
-    silent: true,
-    store_history: false,
-    allow_stdin: false,
-    stop_on_error: false,
-    user_expressions: { state: expression(all) },
-  });
-  const reply = (await future.done) as KernelMessage.IExecuteReplyMsg;
+  let reply: KernelMessage.IExecuteReplyMsg;
+  try {
+    const future = kernel.requestExecute({
+      code,
+      silent: true,
+      store_history: false,
+      allow_stdin: false,
+      stop_on_error: false,
+      user_expressions: { state: expression(all) },
+    });
+    reply = (await future.done) as KernelMessage.IExecuteReplyMsg;
+  } catch (e) {
+    // The kernel ended, or restarted, before it answered: what it was asked is asked again of the next.
+    return { error: { name: "KernelGone", value: `${GONE}${String(e)}` } };
+  }
   const content = reply.content;
   if (content.status === "error") {
     return { error: { name: content.ename, value: content.evalue } };
@@ -70,6 +78,10 @@ export class RefSelector extends Widget {
   private readonly select: HTMLSelectElement;
   /** Set once its kernel starts again, so that the notebook's ref is applied once it is idle. */
   private fresh = false;
+  /** Set once its kernel restarts, until the notebook's ref is applied to the new one: what is applied then is applied
+   * only while `lake` is on `main`, where a new kernel's is, since a cell may reach the new kernel first. A kernel the
+   * notebook opens on, or changes to, may be another notebook's, on another ref: the notebook's ref is applied to it. */
+  private renewed = false;
   /** The missing ref last said, so that a notebook opened, whose ref is applied as it opens and as its kernel is
    * ready, says it once. */
   private warned = "";
@@ -98,6 +110,7 @@ export class RefSelector extends Widget {
     const session = panel.sessionContext;
     session.kernelChanged.connect(this.restarted, this);
     session.statusChanged.connect(this.status, this);
+    NotebookActions.executionScheduled.connect(this.scheduled, this);
     NotebookActions.executed.connect(this.executed, this);
     void Promise.all([panel.context.ready, session.ready]).then(() => this.apply(this.stored()));
   }
@@ -106,6 +119,7 @@ export class RefSelector extends Widget {
     if (this.isDisposed) {
       return;
     }
+    NotebookActions.executionScheduled.disconnect(this.scheduled, this);
     NotebookActions.executed.disconnect(this.executed, this);
     super.dispose();
   }
@@ -140,17 +154,31 @@ export class RefSelector extends Widget {
   }
 
   /** `lake` goes on `ref`. A ref that no longer exists is said, and the selector shows the ref `lake` is on. */
-  async apply(ref: string): Promise<void> {
+  async apply(ref: string, guarded = false): Promise<void> {
     const kernel = this.kernel;
     if (!kernel) {
       return;
     }
-    const answer = await ask(kernel, `lake.on(${JSON.stringify(ref)})`, true);
+    // Applied once sent, not once answered: the kernel runs what it is sent in order, and its being idle again before
+    // the answer comes would send it a second time, after a cell that may have moved `lake` itself.
+    this.fresh = false;
+    // Guarded, after a restart, only while `lake` is still where a new kernel's is: across a restart, a cell may reach
+    // the new kernel before it, and a `lake.on` of that cell is not undone (tried on Windows).
+    const on = `lake.on(${JSON.stringify(ref)})`;
+    const code = guarded ? `${on} if lake.ref == ${JSON.stringify(MAIN)} else None` : on;
+    const answer = await ask(kernel, code, true);
     if ("state" in answer) {
+      this.renewed = false;
       this.shown(answer.state);
       return;
     }
+    if (answer.error.name === "KernelGone") {
+      // Never reached the kernel, or the kernel ended first: the next one is sent it again.
+      this.fresh = true;
+      return;
+    }
     if (answer.error.name === "UsageError") {
+      this.renewed = false;
       // The notebook's ref is gone, or never was: its cells run where `lake` is, which the selector shows, flagged.
       // The notebook keeps the ref it names until the user chooses another, or a cell moves `lake`.
       // It stays chosen, so that choosing any ref, the one `lake` is on included, is a change that replaces it.
@@ -205,8 +233,12 @@ export class RefSelector extends Widget {
     this.show_(state.ref);
   }
 
-  /** `lake` is not there, or cannot be asked: the selector says why, and offers nothing. */
+  /** `lake` is not there, or cannot be asked: the selector says why, and offers nothing. A kernel that ended before it
+   * answered says nothing of `lake`: its next is asked as it starts. */
   private unreachable(why: string): void {
+    if (why.startsWith(GONE)) {
+      return;
+    }
     this.select.disabled = true;
     this.select.title = why;
   }
@@ -250,10 +282,29 @@ export class RefSelector extends Widget {
 
   private status(_: unknown, status: string): void {
     if (status === "starting" || status === "restarting" || status === "autorestarting") {
+      // A new kernel's `lake` is on `main`: a cell that finds it there before the notebook's ref is applied did not
+      // move it.
       this.fresh = true;
+      this.on = MAIN;
+    }
+    if (status === "restarting" || status === "autorestarting") {
+      this.renewed = true;
+    }
+    if (status === "autorestarting" || (status === "starting" && this.fresh)) {
+      // Asked at once, so that it waits in the new kernel ahead of any cell run after the restart: a kernel restarted
+      // after it died may never be said idle (JupyterLab 4.6 shows it "Starting" until a cell runs, tried on Windows).
+      void this.apply(this.stored(), this.renewed);
     } else if (status === "idle" && this.fresh) {
-      this.fresh = false;
-      void this.apply(this.stored());
+      void this.apply(this.stored(), this.renewed);
+    }
+  }
+
+  /** A cell of this notebook is about to be sent to a kernel the notebook's ref was not applied to yet: it is sent
+   * first, so that the kernel, which runs what it is sent in order, runs the cell on it. A cell run at once after a
+   * restart would otherwise find `lake` on `main` (tried on Windows). */
+  private scheduled(_: unknown, ran: { notebook: unknown }): void {
+    if (ran.notebook === this.panel.content && this.fresh) {
+      void this.apply(this.stored(), this.renewed);
     }
   }
 
