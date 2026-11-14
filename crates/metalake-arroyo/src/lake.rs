@@ -23,9 +23,7 @@ pub struct Lake {
 impl Lake {
     pub async fn open(profile: &MetaLakeProfile, at: &MetaLakeTable) -> Result<Self, DataflowError> {
         let name = at.qualified_name();
-        let postgres = postgres_of(profile).map_err(|e| user(&name, e))?;
-        let mut config = CatalogConfig::new(postgres, &profile.schema);
-        config.connections = CONNECTIONS;
+        let config = catalog_config(profile, CONNECTIONS).map_err(|e| user(&name, e))?;
         let catalog = Catalog::connect(config).await.map_err(|e| core(&name, e))?;
         let branch = catalog.branch(&at.branch).await.map_err(|e| core(&name, e))?;
         let namespace: Vec<&str> = at.namespace.iter().map(String::as_str).collect();
@@ -50,6 +48,14 @@ impl Lake {
         let namespace: Vec<&str> = self.table.namespace().iter().map(String::as_str).collect();
         self.branch.table(&namespace, self.table.name()).await
     }
+}
+
+/// How a worker reaches the profile's catalog: its connection string, its schema, and the way it signs in, with a pool of
+/// `connections`.
+pub fn catalog_config(profile: &MetaLakeProfile, connections: usize) -> anyhow::Result<CatalogConfig> {
+    let mut config = CatalogConfig::new(postgres_of(profile)?, &profile.schema).auth(profile.auth()?);
+    config.connections = connections;
+    Ok(config)
 }
 
 /// The catalog's connection string, its `{{ VAR }}` read from the environment, with `PGPASSWORD` as a client adds it:
