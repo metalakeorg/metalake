@@ -56,14 +56,28 @@ pub enum PipelineState {
     Failed {
         log: String,
     },
+    /// Running, and retrying what fails: why is in its log's last lines. It goes on once what fails works, as when a
+    /// credential it lacked is given; until then nothing flows.
+    Failing {
+        log: String,
+    },
     /// Running on another machine, which alone can stop it.
     Elsewhere {
         host: String,
     },
 }
 
-/// A pipeline, as it is now.
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl PipelineState {
+    /// What its log's last lines say, when it failed or is failing.
+    pub fn log(&self) -> Option<&str> {
+        match self {
+            Self::Failed { log } | Self::Failing { log } => Some(log),
+            _ => None,
+        }
+    }
+}
+
+/// A pipeline, as it is now.Debug, Clone, PartialEq, Eq)]
 pub struct Pipeline {
     pub name: String,
     pub query: String,
@@ -303,7 +317,13 @@ impl Lake {
             (Desired::Running, Some(handle)) if !handle.here() => PipelineState::Elsewhere {
                 host: handle.host.clone(),
             },
-            (Desired::Running, Some(handle)) if handle.alive() => PipelineState::Running,
+            (Desired::Running, Some(handle)) if handle.alive() => {
+                let log = handle.log(&runner::home(&records.state(&record.name))?);
+                match runner::retrying(&log, SystemTime::now()) {
+                    true => PipelineState::Failing { log },
+                    false => PipelineState::Running,
+                }
+            }
             (Desired::Running, Some(handle)) => PipelineState::Failed {
                 log: handle.log(&runner::home(&records.state(&record.name))?),
             },

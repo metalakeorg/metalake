@@ -10,7 +10,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::hash::fnv;
 use crate::pipeline::record::{Handle, RunnerKind};
@@ -263,6 +263,64 @@ impl Handle {
         let lines: Vec<&str> = text.lines().collect();
         lines[lines.len().saturating_sub(TAIL)..].join("\n")
     }
+}
+
+/// How recent an error at the end of a pipeline's log is for it to be retrying still: longer than Arroyo's longest
+/// wait between two tries.
+const RETRYING: Duration = Duration::from_secs(60);
+
+/// Whether a pipeline that runs is retrying what fails: its log ends in an error of the last [`RETRYING`], as Arroyo
+/// writes one each time it tries again (`<RFC 3339 time> ERROR …`). One that got past it writes no more of them.
+pub fn retrying(log: &str, now: SystemTime) -> bool {
+    let plain = without_escapes(log);
+    let Some(last) = plain.lines().rev().find(|line| !line.trim().is_empty()) else {
+        return false;
+    };
+    let mut words = last.split_whitespace();
+    let (Some(at), Some("ERROR")) = (words.next().and_then(seconds_of), words.next()) else {
+        return false;
+    };
+    let now = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    now.saturating_sub(at) <= RETRYING.as_secs()
+}
+
+/// A log without the terminal's colours, `ESC [ … m`, which Arroyo writes to a container's.
+fn without_escapes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The Unix seconds of a UTC time as a log writes it, `2026-11-14T17:56:51.466700Z`.
+fn seconds_of(time: &str) -> Option<u64> {
+    let time = time.strip_suffix('Z')?;
+    let (date, clock) = time.split_once('T')?;
+    let mut date = date.splitn(3, '-').map(|p| p.parse::<i64>().ok());
+    let (year, month, day) = (date.next()??, date.next()??, date.next()??);
+    let mut clock = clock.split(['.', ':']).map(|p| p.parse::<i64>().ok());
+    let (hour, minute, second) = (clock.next()??, clock.next()??, clock.next()??);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    // Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant's `days_from_civil`).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    u64::try_from(days * 86_400 + hour * 3_600 + minute * 60 + second).ok()
 }
 
 const QUERY: &str = "query.sql";
@@ -579,6 +637,38 @@ mod tests {
         assert!(identity(&vars(&[("GOOGLE_SERVICE_ACCOUNT", "/nowhere/key.json")]), None).is_empty());
         assert!(identity(&vars(&[("AWS_ACCESS_KEY_ID", "AKIA")]), None).is_empty());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn seconds_of_a_log_time() {
+        assert_eq!(seconds_of("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(seconds_of("2000-03-01T00:00:00.5Z"), Some(951_868_800));
+        assert_eq!(seconds_of("2026-11-14T17:56:51.466700Z"), Some(1_794_679_011));
+        for wrong in [
+            "2026-11-14T17:56:51",
+            "2026-13-01T00:00:00Z",
+            "yesterday",
+            "2026-11-14Z",
+        ] {
+            assert_eq!(seconds_of(wrong), None, "{wrong}");
+        }
+    }
+
+    #[test]
+    fn retrying_when_the_log_ends_in_a_recent_error() {
+        let at = |s: u64| UNIX_EPOCH + Duration::from_secs(s);
+        let error = "\u{1b}[2m2026-11-14T17:56:51.466700Z\u{1b}[0m \u{1b}[31mERROR\u{1b}[0m \u{1b}[2marroyo_storage\u{1b}[0m\u{1b}[2m:\u{1b}[0m Error: Generic GCS error … Retrying...";
+        let log = format!("2026-11-14T17:55:20.000000Z  INFO arroyo: starting\n{error}\n");
+        let then = 1_794_679_011;
+        assert!(retrying(&log, at(then + 5)));
+        assert!(retrying(&log, at(then + 60)));
+        // An error long past, or one an info line followed: it got past it.
+        assert!(!retrying(&log, at(then + 61)));
+        let past = format!("{log}2026-11-14T17:56:52.000000Z  INFO arroyo: Pipeline running...\n");
+        assert!(!retrying(&past, at(then + 5)));
+        // A log of nothing, or of lines with no time: no sign of it.
+        assert!(!retrying("", at(then)));
+        assert!(!retrying("ERROR something", at(then)));
     }
 
     #[test]
