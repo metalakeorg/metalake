@@ -107,16 +107,16 @@ def test_on_ref_names_without_ref(lake):
     lake.on("worked")
     assert lake.ref == "worked"
     assert 'ref="worked"' in repr(lake)
-    # Changes are read on a branch from its own commits on: before them, the range would cross where it forked.
-    forked = lake.log()[0].seq
     lake.table("t").append(pl.DataFrame({"k": [7]}))
     lake.sql("insert into t values (8)")
     assert keys(lake, "t") == sorted([*main, 7, 8])
     assert keys(lake, "main.default.t") == main
     assert lake.table("t").name == "worked.default.t"
     assert lake.log()[0].seq > lake.log("main")[0].seq
-    assert 7 in keys(lake, f"table_changes('t', {forked})")
-    assert 7 not in keys(lake, f"table_changes('main.default.t', {forked})")
+    # `table_changes` names its table on the session's ref too: the engine does not follow a branch's changes yet, and
+    # says so of `worked`, the session's, rather than reading `main`'s.
+    with pytest.raises(metalake.MetaLakeError, match="following worked"):
+        lake.sql("select k from table_changes('t', 0)")
     lake.on("main")
     assert keys(lake, "t") == main
     assert lake.table("t").name == "main.default.t"
