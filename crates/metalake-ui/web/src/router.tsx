@@ -2,6 +2,7 @@
 // under `/api` gets `index.html`, so a page's address may be bookmarked and reloaded (ADR 0007 §4.3).
 
 import { createRootRoute, createRoute, createRouter, Link, Outlet } from "@tanstack/react-router";
+import { CatalogPage } from "./Catalog";
 import { Frame, Notice } from "./Frame";
 import { useLive } from "./live";
 import { NotebookPage } from "./Notebook";
@@ -52,8 +53,9 @@ const root = createRootRoute({
 
 const query = createRoute({ getParentRoute: () => root, path: "/", component: QueryPage });
 const notebook = createRoute({ getParentRoute: () => root, path: "/notebook", component: NotebookPage });
+const catalog = createRoute({ getParentRoute: () => root, path: "/catalog", component: CatalogPage });
 
-export const router = createRouter({ routeTree: root.addChildren([query, notebook]) });
+export const router = createRouter({ routeTree: root.addChildren([query, notebook, catalog]) });
 
 declare module "@tanstack/react-router" {
   interface Register {

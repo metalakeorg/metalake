@@ -32,9 +32,12 @@ export function Assets({
   onBranch,
   tables,
   failure,
+  children,
 }: {
   branches: readonly string[];
   tags?: readonly string[];
+  /** What a page adds below the refs, above the tree. */
+  children?: ReactNode;
   branch: string;
   onBranch: (branch: string) => void;
   tables: readonly Table[] | undefined;
@@ -84,6 +87,7 @@ export function Assets({
             </ul>
           )}
         </div>
+        {children}
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-2 text-sm">
         <Tables branch={branch} tagged={tagged} tables={tables} failure={failure ?? null} />
