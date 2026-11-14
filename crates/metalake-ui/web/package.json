@@ -1,7 +1,7 @@
 {
   "name": "@metalake/ui",
   "description": "MetaLake's UI: the frontend metalake-ui embeds and `metalake ui` serves (ADR 0007)",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",

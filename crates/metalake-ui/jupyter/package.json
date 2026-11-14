@@ -1,7 +1,7 @@
 {
   "name": "@metalake/jupyterlab-ref",
   "description": "The Notebook's ref selector (ADR 0008 §6): the ref a notebook reads and writes on, kept in it",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "license": "Apache-2.0",
   "main": "lib/index.js",

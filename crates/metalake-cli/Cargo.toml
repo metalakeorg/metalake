@@ -1,6 +1,6 @@
 [package]
 name = "metalake-cli"
-version = "0.3.0"
+version = "0.3.1"
 description = "MetaLake's command line: every verb, over the core and the DataFusion adapter"
 edition.workspace = true
 rust-version.workspace = true

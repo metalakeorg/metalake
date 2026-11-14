@@ -3,6 +3,10 @@
 What each version published on PyPI as `metalake` brings to whoever installs it. The work behind each line is in its
 pull request; the decisions, in the ADRs.
 
+## 0.3.1
+
+- **UI:** Query's results copy to the clipboard as JSON, and show in pages of 100 (#46, #47).
+
 ## 0.3.0
 
 - **UI:** `metalake ui` on your lake, with a live catalog and a SQL editor that reads and writes by branch (#33, #34).
