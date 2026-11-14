@@ -10,7 +10,7 @@ publish.workspace = true
 
 [features]
 # A plan that crosses processes (Ballista, or any engine that ships DataFusion's plans): MetaLake's codecs.
-proto = ["dep:datafusion-proto", "dep:postcard", "dep:prost", "dep:serde", "dep:serde_json"]
+proto = ["dep:datafusion-proto", "dep:postcard", "dep:prost", "dep:serde"]
 
 [dependencies]
 metalake.workspace = true
@@ -24,7 +24,7 @@ object_store.workspace = true
 postcard = { workspace = true, optional = true }
 prost = { version = "0.14", optional = true }
 serde = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
+serde_json.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 url.workspace = true
 uuid.workspace = true

@@ -15,6 +15,8 @@ use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::{DdlStatement, LogicalPlan, LogicalPlanBuilder};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion::sql::parser::Statement;
+use datafusion::sql::planner::object_name_to_table_reference;
+use datafusion::sql::sqlparser::ast::Statement as SqlStatement;
 use metalake::path::{DEFAULT_NAMESPACE, MAIN, NAMESPACE_SEPARATOR};
 use metalake::{Catalog, Error, Ref, Result, Storage, TablePath};
 
@@ -140,6 +142,20 @@ impl MetaLake {
     /// a commit, which `context.sql` cannot do; and what reads `table_changes(…)`, which it does not know.
     pub async fn execute(&self, context: &SessionContext, mut statement: Statement) -> DataFusionResult<DataFrame> {
         // The ranges it reads live as sources until its plan holds them.
+        if let Statement::Statement(inner) = &statement
+            && let SqlStatement::AlterTable(alter) = inner.as_ref()
+        {
+            let defaults = context.state().config().options().catalog.clone();
+            let normalize = context.state().config().options().sql_parser.enable_ident_normalization;
+            let name = object_name_to_table_reference(alter.name.clone(), normalize)?
+                .resolve(&defaults.default_catalog, &defaults.default_schema);
+            let path = TablePath::from_parts(Some(&name.catalog), Some(&name.schema), &name.table);
+            let on = self.shared.named(&path.on).await?;
+            ddl::alter_table(&on, &path, alter, context).await?;
+            self.refresh().await.map_err(external)?;
+            let done = LogicalPlanBuilder::empty(false).build()?;
+            return context.execute_logical_plan(done).await;
+        }
         let state = context.state();
         let _ranges = self
             .table_changes(&mut statement, &state.config().options().catalog.default_catalog)

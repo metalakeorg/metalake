@@ -200,6 +200,82 @@ async fn create_table_as_select_in_one_commit() -> Result<(), Box<dyn std::error
 }
 
 #[tokio::test]
+async fn alter_table_in_one_commit_each() -> Result<(), Box<dyn std::error::Error>> {
+    let lake = lake().await?;
+    let run = |sql: &'static str| lake.execute(sql);
+    run("insert into main.db.source values (1, 'a'), (2, null)").await?;
+    run("create table main.db.a as select cast(k as int) as k, s, 'x' as gone from main.db.source").await?;
+
+    for sql in [
+        "alter table main.db.a add column n bigint not null default 7",
+        "alter table main.db.a alter column k type bigint",
+        "alter table main.db.a alter column k drop not null",
+        "alter table main.db.a rename column s to label",
+        "alter table main.db.a drop column gone",
+        "alter table main.db.a rename to b",
+    ] {
+        run(sql).await.map_err(|e| format!("{sql}: {e}"))?;
+    }
+    let b = lake.table("b").await?;
+    let fields: Vec<(&str, &str, bool)> = b
+        .fields()
+        .iter()
+        .map(|f| (f.name.as_str(), f.ty.as_str(), f.required))
+        .collect();
+    assert_eq!(
+        fields,
+        [("k", "long", false), ("label", "string", false), ("n", "long", true)]
+    );
+    assert!(matches!(lake.table("a").await, Err(Error::NotFound(_))));
+
+    // The rows written before, under the new definition.
+    let rows = lake
+        .context
+        .sql("select k, label, n from main.db.b order by k")
+        .await?
+        .collect()
+        .await?;
+    let batch = &rows[0];
+    assert_eq!(batch.column(0).as_primitive::<Int64Type>().values().to_vec(), [1, 2]);
+    assert_eq!(
+        batch.column(1).as_string::<i32>().iter().collect::<Vec<_>>(),
+        [Some("a"), None]
+    );
+    assert_eq!(batch.column(2).as_primitive::<Int64Type>().values().to_vec(), [7, 7]);
+
+    // Several changes in one statement are one commit; if exists and if not exists pass over what is not there or is.
+    run("alter table main.db.b add column if not exists n int, add column x int, drop column if exists nope").await?;
+    let b = lake.table("b").await?;
+    assert_eq!(
+        b.fields().iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+        ["k", "label", "n", "x"]
+    );
+    assert_eq!(
+        lake.main.at(b.seq() - 1).table(&["db"], "b").await?.fields().len(),
+        3,
+        "one commit"
+    );
+    run("alter table if exists main.db.nope add column z int").await?;
+
+    // Refused, and nothing changes.
+    for (sql, says) in [
+        ("alter table main.db.b alter column k type int", "TYP-3"),
+        ("alter table main.db.b add column r varchar not null", "TYP-5"),
+        ("alter table main.db.b alter column label set not null", "set not null"),
+        ("alter table main.db.b add column y int first", "goes last"),
+        ("alter table main.db.nope add column z int", "not found"),
+    ] {
+        let refused = run(sql).await.err().map(|e| e.to_string());
+        assert!(
+            refused.as_deref().is_some_and(|r| r.contains(says)),
+            "{sql}: {refused:?}"
+        );
+    }
+    assert_eq!(lake.table("b").await?.fields(), b.fields());
+    Ok(())
+}
+
+#[tokio::test]
 async fn refused_commit_rolls_back() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
     let t = lake.table("t").await?;
