@@ -379,7 +379,6 @@ function ColumnRow({
     >
       <TypeIcon type={column.type} />
       <span className="min-w-0 flex-1 truncate">{column.name}</span>
-      <span className="shrink-0 text-[10px] text-zinc-400 dark:text-zinc-500">{column.type}</span>
       {onInsert && <Put name={column.name} onPut={() => onInsert(said)} />}
     </li>
   );

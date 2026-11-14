@@ -139,12 +139,7 @@ describe("QueryPage", () => {
     expect(assets.queryByRole("list", { name: "Columns of orders" })).toBeNull();
     fireEvent.click(sales.getByText("orders"));
     const columns = within(await assets.findByRole("list", { name: "Columns of orders" }));
-    expect(columns.getAllByRole("listitem").map((c) => c.textContent)).toEqual([
-      "idlong",
-      "attimestamptz",
-      "shipstruct",
-      "citystring",
-    ]);
+    expect(columns.getAllByRole("listitem").map((c) => c.textContent)).toEqual(["id", "at", "ship", "city"]);
   });
 
   it("puts a table's path and a column's name in the editor, from the arrow of its row", async () => {

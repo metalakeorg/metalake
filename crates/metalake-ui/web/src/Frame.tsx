@@ -8,11 +8,8 @@ export function Frame({ server, nav, children }: { server?: Server; nav?: ReactN
   return (
     <div className="flex h-full flex-col">
       <header className="flex h-12 shrink-0 items-center gap-2 border-zinc-200 border-b px-4 dark:border-zinc-800">
-        <img src="/favicon.svg" alt="" className="size-6" />
+        <img src="/uvas.svg" alt="" className="size-7" />
         <span className="font-semibold tracking-tight">MetaLake</span>
-        {server?.state === "ready" && (
-          <span className="ml-auto text-xs text-zinc-500 dark:text-zinc-400">API {server.api}</span>
-        )}
       </header>
       <div className="flex min-h-0 flex-1">
         {ready && nav}

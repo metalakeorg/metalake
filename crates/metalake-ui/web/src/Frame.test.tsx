@@ -12,7 +12,6 @@ describe("Frame", () => {
   it("renders the page in main when the server is ready", () => {
     render(<Frame server={{ state: "ready", api: 1 }}>a page</Frame>);
     expect(screen.getByRole("main")).toHaveTextContent("a page");
-    expect(screen.getByRole("banner")).toHaveTextContent("API 1");
   });
 
   it("asks for the run's URL when the token is refused", () => {

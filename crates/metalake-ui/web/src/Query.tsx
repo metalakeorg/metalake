@@ -39,10 +39,7 @@ export function QueryPage() {
       <section aria-label="Query" className="flex min-w-0 flex-1 flex-col">
         <div className="flex h-11 shrink-0 items-center gap-3 border-zinc-200 border-b px-4 dark:border-zinc-800">
           <h1 className="font-semibold">Query</h1>
-          <span className="text-xs text-zinc-500 dark:text-zinc-400">
-            on <span className="font-mono">{branch}</span>
-            {tagged && <span className="ml-1.5 text-amber-700 dark:text-amber-400">tag · read only</span>}
-          </span>
+          {tagged && <span className="text-amber-700 text-xs dark:text-amber-400">tag · read only</span>}
           {state.kind === "running" ? (
             <button
               type="button"
