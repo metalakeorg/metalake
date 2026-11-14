@@ -50,6 +50,12 @@ impl Error {
         }
     }
 
+    /// Names the rule of the specification it breaks.
+    pub(crate) fn with_rule(mut self, rule: &str) -> Self {
+        self.rule = Some(rule.to_string());
+        self
+    }
+
     /// Adds where a failure happened, such as the source that was being installed.
     pub(crate) fn context(mut self, what: &str) -> Self {
         self.message = format!("{what}: {}", self.message);

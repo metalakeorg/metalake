@@ -34,7 +34,7 @@ impl Ref {
         storage: &Storage,
         ttl: Duration,
     ) -> Result<()> {
-        self.writable()?;
+        self.committable()?;
         let catalog = self.catalog();
         let session = catalog.session().await?;
         let p = catalog.protocol();

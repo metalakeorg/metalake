@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime};
 
 use futures_util::TryStreamExt;
 use metalake_pg::records::{CommitEntry, ListedFile, NamespaceRow, RefRow, SnapshotEntry, TableName, TableSnapshot};
-use metalake_pg::{CreateRef, Credential, Pool, PooledSession, Protocol, Retention, Roles, Versions};
+use metalake_pg::{CreateRef, Credential, Pool, PooledSession, Protocol, Retention, Roles, Session, Versions};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -108,6 +108,9 @@ struct Inner {
     schema: String,
     versions: Versions,
     warehouse: Option<String>,
+    /// Whether its Postgres keeps commit timestamps (TT-1): without them it is read, and no commit is made. Postgres
+    /// changes this only when it restarts, which ends every connection of the pool.
+    commit_time: bool,
 }
 
 impl Catalog {
@@ -117,6 +120,7 @@ impl Catalog {
         let pool = reach.pool(config.connections, WAIT)?;
         let session = pool.get().await?;
         let versions = metalake_pg::check_versions(&session, &config.schema).await?;
+        let commit_time = metalake_pg::requirements::commit_time_kept(session.client()).await?;
         let warehouse = match config.warehouse {
             Some(w) => Some(w),
             None => metalake_pg::warehouse(&session, &config.schema).await?,
@@ -130,6 +134,7 @@ impl Catalog {
                 schema: config.schema.clone(),
                 versions,
                 warehouse,
+                commit_time,
             }),
         })
     }
@@ -155,6 +160,11 @@ impl Catalog {
         let pool = config.reach()?.pool(1, WAIT)?;
         let mut session = pool.get().await?;
         Ok(metalake_pg::migrate(&mut session, &config.schema).await?)
+    }
+
+    /// Whether its Postgres keeps commit timestamps (TT-1): a catalog without them is read, and never written.
+    pub fn keeps_commit_time(&self) -> bool {
+        self.inner.commit_time
     }
 
     /// The versions of the catalog; whether the core may write it is `versions().writable()`.
@@ -691,6 +701,16 @@ impl Ref {
             at: Point::Latest,
             ..self.clone()
         }
+    }
+
+    /// Whether a commit may be made on this ref: it may be written, and the catalog's Postgres gives a commit its time
+    /// (TT-1), which a commit made without it would never have.
+    pub fn committable(&self) -> Result<()> {
+        self.writable()?;
+        if !self.catalog.keeps_commit_time() {
+            return Err(metalake_pg::requirements::no_commit_time().into());
+        }
+        Ok(())
     }
 
     /// Whether a commit may write this ref: a branch, at its latest state.
