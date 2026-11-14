@@ -22,6 +22,12 @@ const LAKE: Record<string, unknown> = {
     size: { tables: 1, rows: 3, bytes: 2048 },
     schemas: [{ namespace: ["shop"], size: { tables: 1, rows: 3, bytes: 2048 } }],
   },
+  "/api/v1/refs/main/schemas/shop": {
+    namespace: ["shop"],
+    properties: { owner_team: "sales" },
+    size: { tables: 1, rows: 3, bytes: 2048 },
+    tables: [{ name: "customers", rows: 3, bytes: 2048, changed_at: "2026-11-14T10:00:00Z" }],
+  },
   "/api/v1/refs/main/commits": [
     { seq: 4, committed_at: "2026-11-14T10:00:00Z", author: "ana", operation: "append", message: "first orders" },
   ],
@@ -71,6 +77,17 @@ describe("CatalogPage", () => {
     const history = within(await overview.findByRole("table", { name: "Commits" }));
     expect(history.getByText("first orders")).toBeInTheDocument();
     expect(history.getByText("append")).toBeInTheDocument();
+  });
+
+  it("shows a schema picked in the tree: its tables, and its properties", async () => {
+    page();
+    const assets = within(screen.getByRole("complementary", { name: "Assets" }));
+    await assets.findByRole("list", { name: "shop" });
+    fireEvent.click(assets.getByRole("button", { name: "shop" }));
+    const view = within(await screen.findByRole("region", { name: "Schema shop" }));
+    expect(within(await view.findByRole("table", { name: "Tables" })).getByText("customers")).toBeInTheDocument();
+    fireEvent.click(view.getByRole("tab", { name: "Details" }));
+    expect(within(view.getByRole("table", { name: "Properties" })).getByText("sales")).toBeInTheDocument();
   });
 
   it("holds the ways to the lists of branches and tags and of pull requests, not built yet", () => {

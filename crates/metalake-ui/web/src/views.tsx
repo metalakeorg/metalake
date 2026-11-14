@@ -3,7 +3,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
-import { commits, refDetails } from "./client";
+import { commits, refDetails, schemaDetails } from "./client";
 import { Failed } from "./Failed";
 import { CATALOG } from "./live";
 
@@ -222,6 +222,92 @@ export function RefView({ on, onSchema }: { on: string; onSchema?: (namespace: s
             ) : (
               <Reading error={history.error} what="commits" />
             ),
+        },
+      ]}
+    />
+  );
+}
+
+/** The view of a schema: what it holds and its tables, and its properties. */
+export function SchemaView({
+  on,
+  namespace,
+  onTable,
+}: {
+  on: string;
+  namespace: string[];
+  onTable?: ((name: string) => void) | undefined;
+}) {
+  const details = useQuery({
+    queryKey: [...CATALOG, "schema", on, ...namespace],
+    queryFn: () => schemaDetails(on, namespace),
+  });
+  const d = details.data;
+  if (!d) return <Reading error={details.error} what="schema" />;
+  const properties = Object.entries(d.properties);
+  return (
+    <View
+      kind="Schema"
+      name={d.namespace.join(".")}
+      badge={`on ${on}`}
+      tabs={[
+        {
+          title: "Overview",
+          body: () => (
+            <>
+              <Facts
+                facts={[
+                  ["Levels", d.namespace.length > 1 ? d.namespace.join(" › ") : "1"],
+                  ["Tables", count(d.size.tables)],
+                  ["Rows", count(d.size.rows)],
+                  ["Size", bytes(d.size.bytes)],
+                ]}
+              />
+              <h2 className="mt-6 mb-2 font-semibold">Tables</h2>
+              <Grid
+                label="Tables"
+                columns={["Table", "Rows", "Size", "Last change"]}
+                rows={d.tables.map((t) => [
+                  <span key="n" className="font-mono">
+                    {t.name}
+                  </span>,
+                  count(t.rows),
+                  bytes(t.bytes),
+                  when(t.changed_at),
+                ])}
+                onRow={
+                  onTable
+                    ? (i) => {
+                        const table = d.tables[i];
+                        if (table) onTable(table.name);
+                      }
+                    : undefined
+                }
+                empty="No tables."
+              />
+            </>
+          ),
+        },
+        {
+          title: "Details",
+          body: () => (
+            <>
+              <h2 className="mb-2 font-semibold">Properties</h2>
+              <Grid
+                label="Properties"
+                columns={["Key", "Value"]}
+                rows={properties.map(([k, v]) => [
+                  <span key="k" className="font-mono">
+                    {k}
+                  </span>,
+                  <span key="v" className="font-mono">
+                    {v}
+                  </span>,
+                ])}
+                empty="No properties."
+              />
+            </>
+          ),
         },
       ]}
     />
