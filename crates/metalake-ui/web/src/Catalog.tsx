@@ -5,7 +5,7 @@
 import { useState } from "react";
 import { type Asset, Assets } from "./Assets";
 import { usePicked } from "./picked";
-import { RefView, SchemaView } from "./views";
+import { RefView, SchemaView, TableView } from "./views";
 
 const WAY =
   "w-full rounded border border-zinc-300 px-2 py-1 text-left text-sm disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700";
@@ -50,7 +50,12 @@ export function CatalogPage() {
           />
         )}
         {asset.kind === "table" && (
-          <p className="px-6 py-4 text-sm text-zinc-500 dark:text-zinc-400">A table's view is not built yet.</p>
+          <TableView
+            key={`${picked.ref}\u001f${asset.namespace.join("\u001f")}\u001f${asset.name}`}
+            on={picked.ref}
+            namespace={asset.namespace}
+            name={asset.name}
+          />
         )}
       </section>
     </div>

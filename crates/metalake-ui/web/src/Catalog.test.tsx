@@ -28,6 +28,29 @@ const LAKE: Record<string, unknown> = {
     size: { tables: 1, rows: 3, bytes: 2048 },
     tables: [{ name: "customers", rows: 3, bytes: 2048, changed_at: "2026-11-14T10:00:00Z" }],
   },
+  "/api/v1/refs/main/tables/shop/customers": {
+    namespace: ["shop"],
+    name: "customers",
+    id: "0e0c4a",
+    location: "file:///lake/data/shop/customers",
+    columns: [
+      { id: 1, parent: null, name: "id", type: "long", required: true, doc: "the key", default: null },
+      { id: 2, parent: null, name: "name", type: "string", required: false, doc: null, default: null },
+    ],
+    rows: 3,
+    bytes: 2048,
+    files: 0,
+    inline_files: 2,
+    deleted_rows: 1,
+    partition: null,
+    sort_order: null,
+    cluster_key: [],
+    properties: {},
+    iceberg: null,
+  },
+  "/api/v1/refs/main/tables/shop/customers/snapshots": [
+    { id: 77, parent: 76, operation: "append", committed_at: "2026-11-14T10:00:00Z" },
+  ],
   "/api/v1/refs/main/commits": [
     { seq: 4, committed_at: "2026-11-14T10:00:00Z", author: "ana", operation: "append", message: "first orders" },
   ],
@@ -88,6 +111,22 @@ describe("CatalogPage", () => {
     expect(within(await view.findByRole("table", { name: "Tables" })).getByText("customers")).toBeInTheDocument();
     fireEvent.click(view.getByRole("tab", { name: "Details" }));
     expect(within(view.getByRole("table", { name: "Properties" })).getByText("sales")).toBeInTheDocument();
+  });
+
+  it("shows a table picked in the tree: its columns, what it holds, and its snapshots", async () => {
+    page();
+    const assets = within(screen.getByRole("complementary", { name: "Assets" }));
+    await assets.findByRole("list", { name: "shop" });
+    fireEvent.click(assets.getByRole("button", { name: "customers" }));
+    const view = within(await screen.findByRole("region", { name: "Table shop.customers" }));
+    const columns = within(await view.findByRole("table", { name: "Columns" }));
+    expect(columns.getByText("the key")).toBeInTheDocument();
+    expect(columns.getByText("long")).toBeInTheDocument();
+    fireEvent.click(view.getByRole("tab", { name: "Details" }));
+    expect(view.getByText("file:///lake/data/shop/customers")).toBeInTheDocument();
+    expect(view.getByText("not written on commit")).toBeInTheDocument();
+    fireEvent.click(view.getByRole("tab", { name: "History" }));
+    expect(within(await view.findByRole("table", { name: "Snapshots" })).getByText("77")).toBeInTheDocument();
   });
 
   it("holds the ways to the lists of branches and tags and of pull requests, not built yet", () => {

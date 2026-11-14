@@ -3,9 +3,10 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
-import { commits, refDetails, schemaDetails } from "./client";
+import { commits, refDetails, run, schemaDetails, snapshots, tableDetails } from "./client";
 import { Failed } from "./Failed";
 import { CATALOG } from "./live";
+import { Results } from "./Results";
 
 /** A count, as the page writes one. */
 export function count(n: number): string {
@@ -308,6 +309,159 @@ export function SchemaView({
               />
             </>
           ),
+        },
+      ]}
+    />
+  );
+}
+
+/** An SQL identifier, quoted: a name of the lake may hold any character. */
+function quoted(name: string): string {
+  return `"${name.replaceAll('"', '""')}"`;
+}
+
+/** How many rows a table's sample shows. */
+export const SAMPLE = 100;
+
+/** The view of a table: its columns, a sample of its rows, what it is and holds, and its snapshots. */
+export function TableView({ on, namespace, name }: { on: string; namespace: string[]; name: string }) {
+  const key = [on, ...namespace, name];
+  const details = useQuery({
+    queryKey: [...CATALOG, "table", ...key],
+    queryFn: () => tableDetails(on, namespace, name),
+  });
+  const history = useQuery({
+    queryKey: [...CATALOG, "snapshots", ...key],
+    queryFn: () => snapshots(on, namespace, name),
+  });
+  // The ref is named in the statement, as the schema and the table are: the sample is of this table on this ref.
+  const sql = `select * from ${quoted(on)}.${quoted(namespace.join("."))}.${quoted(name)} limit ${SAMPLE}`;
+  const sample = useQuery({
+    queryKey: [...CATALOG, "sample", ...key],
+    queryFn: async () => {
+      const started = performance.now();
+      const result = await run(sql, on);
+      return { result, ms: performance.now() - started };
+    },
+  });
+  const d = details.data;
+  if (!d) return <Reading error={details.error} what="table" />;
+  // A nested column says the columns it is a field of before its name.
+  const byId = new Map(d.columns.map((c) => [c.id, c]));
+  const path = (id: number | null | undefined): string[] => {
+    const column = id == null ? undefined : byId.get(id);
+    return column ? [...path(column.parent), column.name] : [];
+  };
+  const iceberg = d.iceberg
+    ? d.iceberg.behind === 0
+      ? "up to date"
+      : `${count(d.iceberg.behind)} commits behind, since ${when(d.iceberg.since)}`
+    : "not written on commit";
+  const json = (value: unknown) => (value == null ? "none" : JSON.stringify(value));
+  return (
+    <View
+      kind="Table"
+      name={`${d.namespace.join(".")}.${d.name}`}
+      badge={`on ${on}`}
+      tabs={[
+        {
+          title: "Columns",
+          body: () => (
+            <Grid
+              label="Columns"
+              columns={["Column", "Type", "Required", "Default", "Comment"]}
+              rows={d.columns.map((c) => [
+                <span key="n" className="font-mono">
+                  {path(c.id).join(".")}
+                </span>,
+                <span key="t" className="font-mono">
+                  {c.type}
+                </span>,
+                c.required ? "yes" : "no",
+                <span key="d" className="font-mono">
+                  {c.default == null ? "" : JSON.stringify(c.default)}
+                </span>,
+                c.doc ?? "",
+              ])}
+              empty="No columns."
+            />
+          ),
+        },
+        {
+          title: "Sample data",
+          body: () => (
+            <div className="-mx-6 -my-4 flex h-full flex-col">
+              <Results
+                state={
+                  sample.data
+                    ? { kind: "done", result: sample.data.result, ms: sample.data.ms }
+                    : sample.error
+                      ? { kind: "failed", error: sample.error }
+                      : { kind: "running" }
+                }
+              />
+            </div>
+          ),
+        },
+        {
+          title: "Details",
+          body: () => (
+            <>
+              <Facts
+                facts={[
+                  ["Rows", count(d.rows)],
+                  ["Size", bytes(d.bytes)],
+                  ["Files", count(d.files)],
+                  ["Inline files", count(d.inline_files)],
+                  ["Deleted rows", count(d.deleted_rows)],
+                  ["Partition", json(d.partition)],
+                  ["Sort order", json(d.sort_order)],
+                  ["Clustering", d.cluster_key.length ? d.cluster_key.join(", ") : "none"],
+                  ["Location", d.location],
+                  ["Id", d.id],
+                  ["Iceberg", iceberg],
+                  ["Iceberg metadata", d.iceberg?.metadata ?? "—"],
+                ]}
+              />
+              <h2 className="mt-6 mb-2 font-semibold">Properties</h2>
+              <Grid
+                label="Properties"
+                columns={["Key", "Value"]}
+                rows={Object.entries(d.properties).map(([k, v]) => [
+                  <span key="k" className="font-mono">
+                    {k}
+                  </span>,
+                  <span key="v" className="font-mono">
+                    {v}
+                  </span>,
+                ])}
+                empty="No properties."
+              />
+            </>
+          ),
+        },
+        {
+          title: "History",
+          body: () =>
+            history.data ? (
+              <Grid
+                label="Snapshots"
+                columns={["Snapshot", "Parent", "Operation", "When"]}
+                rows={history.data.map((s) => [
+                  <span key="s" className="font-mono">
+                    {s.id}
+                  </span>,
+                  <span key="p" className="font-mono">
+                    {s.parent ?? "—"}
+                  </span>,
+                  s.operation ?? "—",
+                  when(s.committed_at),
+                ])}
+                empty="No snapshots."
+              />
+            ) : (
+              <Reading error={history.error} what="snapshots" />
+            ),
         },
       ]}
     />
