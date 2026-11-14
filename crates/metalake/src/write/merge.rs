@@ -108,7 +108,7 @@ impl Merge {
 
     /// Merges, in one transaction, and answers the merge's sequence, or none if the branch had nothing to merge.
     pub async fn commit(self) -> Result<Option<i64>> {
-        self.branch.writable()?;
+        self.branch.committable()?;
         let catalog = self.branch.catalog();
         let mut call = self.call();
         let mut attempt = 0;
