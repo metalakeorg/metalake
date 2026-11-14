@@ -77,7 +77,8 @@ impl PipelineState {
     }
 }
 
-/// A pipeline, as it is now.Debug, Clone, PartialEq, Eq)]
+/// A pipeline, as it is now.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pipeline {
     pub name: String,
     pub query: String,
