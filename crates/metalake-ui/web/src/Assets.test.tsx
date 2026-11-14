@@ -10,11 +10,22 @@ const TABLES = [
 ];
 
 describe("byNamespace", () => {
+  it("keeps apart schemas whose names, joined by dots, are the same", () => {
+    const groups = byNamespace([
+      { namespace: ["a.b"], name: "one" },
+      { namespace: ["a", "b"], name: "two" },
+    ]);
+    expect(groups.map(([, names, levels]) => [levels, names])).toEqual([
+      [["a.b"], ["one"]],
+      [["a", "b"], ["two"]],
+    ]);
+  });
+
   it("groups by namespace, both in name order", () => {
     expect(byNamespace(TABLES)).toEqual([
-      ["default", ["t"]],
-      ["sales", ["customers", "orders"]],
-      ["sales.eu", ["orders"]],
+      ["default", ["t"], ["default"]],
+      ["sales", ["customers", "orders"], ["sales"]],
+      ["sales.eu", ["orders"], ["sales", "eu"]],
     ]);
   });
 });

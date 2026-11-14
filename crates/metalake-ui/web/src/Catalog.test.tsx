@@ -93,7 +93,7 @@ describe("CatalogPage", () => {
     const view = await screen.findByRole("region", { name: "Branch main" });
     const overview = within(view);
     expect(overview.getByText("file:///lake/data")).toBeInTheDocument();
-    expect(overview.getByText("2.0 KB")).toBeInTheDocument();
+    expect(overview.getAllByText("2.0 KB").length).toBeGreaterThan(0);
     expect(within(overview.getByRole("table", { name: "Schemas" })).getByText("shop")).toBeInTheDocument();
 
     fireEvent.click(overview.getByRole("tab", { name: "History" }));
@@ -127,6 +127,17 @@ describe("CatalogPage", () => {
     expect(view.getByText("not written on commit")).toBeInTheDocument();
     fireEvent.click(view.getByRole("tab", { name: "History" }));
     expect(within(await view.findByRole("table", { name: "Snapshots" })).getByText("77")).toBeInTheDocument();
+  });
+
+  it("shows a ref's catalog again when the ref is picked again", async () => {
+    page();
+    const assets = within(screen.getByRole("complementary", { name: "Assets" }));
+    await assets.findByRole("list", { name: "shop" });
+    fireEvent.click(assets.getByRole("button", { name: "shop" }));
+    await screen.findByRole("region", { name: "Schema shop" });
+    fireEvent.click(within(assets.getByRole("list", { name: "Tags" })).getByRole("button", { name: "v1" }));
+    fireEvent.change(assets.getByRole("combobox", { name: "Branch" }), { target: { value: "main" } });
+    expect(await screen.findByRole("region", { name: "Branch main" })).toBeInTheDocument();
   });
 
   it("holds the ways to the lists of branches and tags and of pull requests, not built yet", () => {

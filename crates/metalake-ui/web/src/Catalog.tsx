@@ -16,13 +16,18 @@ export function CatalogPage() {
   const [shown, setShown] = useState<{ on: string; asset: Asset }>({ on: picked.ref, asset: { kind: "ref" } });
   const asset: Asset = shown.on === picked.ref ? shown.asset : { kind: "ref" };
   const show = (next: Asset) => setShown({ on: picked.ref, asset: next });
+  // A ref picked shows its catalog, whatever was shown of it before.
+  const pick = (ref: string) => {
+    picked.pick(ref);
+    setShown({ on: ref, asset: { kind: "ref" } });
+  };
   return (
     <div className="flex h-full">
       <Assets
         branches={picked.branches}
         tags={picked.tags}
         branch={picked.ref}
-        onBranch={picked.pick}
+        onBranch={pick}
         tables={picked.tables}
         failure={picked.failure}
         onPick={show}

@@ -25,15 +25,22 @@ export interface Table {
 }
 
 /** The namespaces of `tables`, each with its tables, both in name order. */
-export function byNamespace(tables: readonly Table[]): [string, string[]][] {
-  const grouped = new Map<string, string[]>();
+export function byNamespace(tables: readonly Table[]): [string, string[], string[]][] {
+  // Grouped by the levels, which a dot inside one may not tell apart once they are joined by dots.
+  const grouped = new Map<string, { levels: string[]; names: string[] }>();
   for (const table of tables) {
-    const namespace = table.namespace.join(".");
-    grouped.set(namespace, [...(grouped.get(namespace) ?? []), table.name]);
+    const key = table.namespace.join("\u001f");
+    const group = grouped.get(key) ?? { levels: table.namespace, names: [] };
+    group.names.push(table.name);
+    grouped.set(key, group);
   }
-  return [...grouped.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([namespace, names]) => [namespace, names.sort((a, b) => a.localeCompare(b))]);
+  return [...grouped.values()]
+    .map(({ levels, names }): [string, string[], string[]] => [
+      levels.join("."),
+      names.sort((a, b) => a.localeCompare(b)),
+      levels,
+    ])
+    .sort(([a, , x], [b, , y]) => a.localeCompare(b) || x.length - y.length);
 }
 
 /**
@@ -202,12 +209,10 @@ function Tables({
       {tables.length === 0 && (
         <p className="px-1 py-0.5 text-xs text-zinc-500">No tables on this {tagged ? "tag" : "branch"}.</p>
       )}
-      {byNamespace(tables).map(([namespace, names]) => {
-        // A schema is known by its levels, which its name, joined by dots, may not tell apart.
-        const levels = tables.find((t) => t.namespace.join(".") === namespace)?.namespace ?? [namespace];
+      {byNamespace(tables).map(([namespace, names, levels]) => {
         return (
           <Node
-            key={namespace}
+            key={levels.join("\u001f")}
             kind="schema"
             name={namespace}
             onName={onPick && (() => onPick({ kind: "schema", namespace: levels }))}
