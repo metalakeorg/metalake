@@ -17,6 +17,13 @@ mod gcp;
 #[cfg(any(feature = "s3", feature = "gcs", feature = "azure"))]
 mod http;
 
+/// The file of gcloud's application default credentials on this machine, which `gcloud auth application-default login`
+/// writes, if it has one: the Google identity a client finds when nothing names another.
+#[cfg(feature = "gcs")]
+pub fn gcloud_default_file() -> Option<std::path::PathBuf> {
+    gcp::default_file()
+}
+
 /// How a client signs in to its catalog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Auth {

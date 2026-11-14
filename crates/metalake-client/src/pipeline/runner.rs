@@ -49,6 +49,8 @@ pub struct Launch<'a> {
     pub warehouse: Option<PathBuf>,
     /// Whether the catalog is the lake's own Postgres, which only this machine reaches.
     pub own_postgres: bool,
+    /// Whether it signs in as a Google identity, to the catalog or to a store.
+    pub google: bool,
 }
 
 impl Runner {
@@ -151,7 +153,21 @@ impl Runner {
                     command.arg("-v").arg(format!("{0}:{0}", warehouse.display()));
                 }
                 // By name only: the values stay in this process's environment, out of any listing of processes.
-                for (name, value) in variables("/pipeline")? {
+                // A credential that is a file of this machine, seen read only where the variable naming it says.
+                let mut variables = variables("/pipeline")?;
+                let gcloud = if launch.google {
+                    metalake::credential::gcloud_default_file()
+                } else {
+                    None
+                };
+                for mount in identity(&variables, gcloud) {
+                    command
+                        .arg("-v")
+                        .arg(format!("{}:{}:ro", mount.file.display(), mount.seen));
+                    variables.retain(|(name, _)| *name != mount.variable);
+                    variables.push((mount.variable.to_string(), mount.seen));
+                }
+                for (name, value) in variables {
                     command.arg("-e").arg(&name);
                     command.env(&name, in_container(&name, &value));
                 }
@@ -280,6 +296,66 @@ pub fn home(state: &str) -> Result<PathBuf> {
         .join(".metalake")
         .join("pipelines")
         .join(format!("{:016x}", fnv(state))))
+}
+
+/// The variables that name a credential's file, which a container sees only mounted: Google's service account or
+/// user, and a web identity's or a workload identity's token.
+const CREDENTIAL_FILES: [&str; 5] = [
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_SERVICE_ACCOUNT",
+    "GOOGLE_SERVICE_ACCOUNT_PATH",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AZURE_FEDERATED_TOKEN_FILE",
+];
+
+/// The variables that name a Google identity, which gcloud's default credentials then do not stand for.
+const GOOGLE_NAMED: [&str; 4] = [
+    "GOOGLE_SERVICE_ACCOUNT_KEY",
+    "GOOGLE_SERVICE_ACCOUNT",
+    "GOOGLE_SERVICE_ACCOUNT_PATH",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+];
+
+/// Where a container sees the credentials mounted in it.
+const IDENTITY: &str = "/identity";
+
+/// A credential of this machine's that a container sees: the file, where it sees it, and the variable that names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Mount {
+    file: PathBuf,
+    seen: String,
+    variable: &'static str,
+}
+
+/// What a container must see of this machine to sign in as its client does: each credential file a variable names,
+/// and, when nothing names a Google identity, gcloud's default credentials, `gcloud`, if the pipeline needs one. A
+/// credential the variables hold, or the machine's own identity (its metadata server, its role), needs nothing.
+fn identity(variables: &[(String, String)], gcloud: Option<PathBuf>) -> Vec<Mount> {
+    let seen = |variable: &str| format!("{IDENTITY}/{}", variable.to_ascii_lowercase());
+    let mut mounts: Vec<Mount> = CREDENTIAL_FILES
+        .iter()
+        .filter_map(|&variable| {
+            let (_, value) = variables.iter().find(|(name, _)| name == variable)?;
+            let file = PathBuf::from(value);
+            file.is_file().then(|| Mount {
+                file,
+                seen: seen(variable),
+                variable,
+            })
+        })
+        .collect();
+    let named = variables
+        .iter()
+        .any(|(name, value)| GOOGLE_NAMED.contains(&name.as_str()) && !value.is_empty());
+    if let (false, Some(file)) = (named, gcloud) {
+        let variable = "GOOGLE_APPLICATION_CREDENTIALS";
+        mounts.push(Mount {
+            file,
+            seen: seen(variable),
+            variable,
+        });
+    }
+    mounts
 }
 
 /// The file a pipeline's roots are copied to, in its home.
@@ -458,6 +534,54 @@ mod tests {
     }
 
     #[test]
+    fn credential_files_mounted_where_their_variables_say() {
+        let dir = env::temp_dir().join(format!("metalake-identity-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let (key, adc) = (dir.join("key.json"), dir.join("adc.json"));
+        fs::write(&key, "{}").unwrap();
+        fs::write(&adc, "{}").unwrap();
+        let vars = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect()
+        };
+        let key_named = key.to_string_lossy().into_owned();
+
+        // gcloud's default, when nothing names a Google identity.
+        assert_eq!(
+            identity(&vars(&[("METALAKE_SCHEMA", "metalake")]), Some(adc.clone())),
+            [Mount {
+                file: adc.clone(),
+                seen: "/identity/google_application_credentials".into(),
+                variable: "GOOGLE_APPLICATION_CREDENTIALS",
+            }]
+        );
+        // A file a variable names, in its place: gcloud's default does not stand for it.
+        assert_eq!(
+            identity(
+                &vars(&[("GOOGLE_APPLICATION_CREDENTIALS", &key_named)]),
+                Some(adc.clone())
+            ),
+            [Mount {
+                file: key.clone(),
+                seen: "/identity/google_application_credentials".into(),
+                variable: "GOOGLE_APPLICATION_CREDENTIALS",
+            }]
+        );
+        assert_eq!(
+            identity(&vars(&[("AZURE_FEDERATED_TOKEN_FILE", &key_named)]), None),
+            [Mount {
+                file: key.clone(),
+                seen: "/identity/azure_federated_token_file".into(),
+                variable: "AZURE_FEDERATED_TOKEN_FILE",
+            }]
+        );
+        // A key the variables hold, a path that is no file here, or no default: nothing to mount.
+        assert!(identity(&vars(&[("GOOGLE_SERVICE_ACCOUNT_KEY", "{}")]), Some(adc.clone())).is_empty());
+        assert!(identity(&vars(&[("GOOGLE_SERVICE_ACCOUNT", "/nowhere/key.json")]), None).is_empty());
+        assert!(identity(&vars(&[("AWS_ACCESS_KEY_ID", "AKIA")]), None).is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn sockets() {
         assert_eq!(
             socket_of("host='/lake/postgres/run' port=5432 user=metalake").as_deref(),
@@ -492,6 +616,7 @@ mod tests {
             home: &home,
             warehouse: None,
             own_postgres: false,
+            google: false,
         };
         assert_eq!(
             arguments(&launch, "/pipeline/query.sql"),

@@ -261,6 +261,11 @@ impl Lake {
             home: &home,
             warehouse: local(&warehouse),
             own_postgres: self.local().is_some(),
+            // Google's identity signs it in to the catalog, or to the store of its state or its tables.
+            google: self.catalog_auth()? == metalake::Auth::GcpIam
+                || [state.as_str(), warehouse.as_str()]
+                    .iter()
+                    .any(|url| url.starts_with("gs://")),
         };
         Runner::find()?.start(&launch)
     }
