@@ -13,6 +13,7 @@ if _POSTGRES.is_dir():
 from ._metalake import (  # noqa: E402
     Batch,
     Commit,
+    Engine,
     Done,
     Follower,
     Iceberg,
@@ -41,6 +42,7 @@ from .errors import ConflictError, MetaLakeError, UnknownOutcomeError, UsageErro
 __all__ = [
     "Batch",
     "Commit",
+    "Engine",
     "ConflictError",
     "Done",
     "Follower",

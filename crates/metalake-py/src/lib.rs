@@ -1,6 +1,7 @@
 //! The library of the Python package: one copy of everything Rust, which `import metalake` and the `metalake` command
 //! both load, since a wheel with a binary beside it would carry the engine twice.
 
+mod engine;
 mod errors;
 mod follow;
 mod iceberg;
@@ -45,6 +46,7 @@ fn _metalake(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<follow::PyStep>()?;
     module.add_class::<writer::PyWriter>()?;
     module.add_class::<pipeline::PyPipeline>()?;
+    module.add_class::<engine::PyEngine>()?;
     module.add_class::<result::QueryResult>()?;
     module.add_class::<result::PyBatch>()?;
     module.add_class::<result::Batches>()?;

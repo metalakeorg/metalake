@@ -24,9 +24,15 @@ async fn lake() -> (Lake, PathBuf) {
     let schema = format!("dist_{}_{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
     let dir = std::env::temp_dir().join(&schema);
     let warehouse = dir.join("data");
-    let lake = Lake::create(&url(), Some(&warehouse.to_string_lossy()), Some(&schema), Some(&dir), Some(4))
-        .await
-        .expect("a lake");
+    let lake = Lake::create(
+        &url(),
+        Some(&warehouse.to_string_lossy()),
+        Some(&schema),
+        Some(&dir),
+        Some(4),
+    )
+    .await
+    .expect("a lake");
     let main = lake.catalog.branch("main").await.unwrap();
     main.transaction().create_namespace(&["db"]).commit().await.unwrap();
     let shape = Arc::new(Schema::new(vec![
@@ -47,7 +53,9 @@ async fn lake() -> (Lake, PathBuf) {
         .unwrap();
     tx.commit().await.unwrap();
     let here = Session::new(&lake).await.unwrap();
-    rows(&here, "insert into db.t values (1, 'a'), (2, 'b'), (3, 'c')").await.unwrap();
+    rows(&here, "insert into db.t values (1, 'a'), (2, 'b'), (3, 'c')")
+        .await
+        .unwrap();
     (lake, dir)
 }
 

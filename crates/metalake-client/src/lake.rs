@@ -1,6 +1,7 @@
 //! Which lake a command means, and the one place that knows how to reach it. What a lake is lives in its catalog; a
 //! client holds only where the catalog is, and secrets come from the environment, never from a file.
 
+use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
@@ -12,6 +13,7 @@ use metalake_local::{Binaries, Cluster};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use crate::engine::{EngineConfig, Engines, check_engine_name};
 use crate::{Error, Result};
 
 /// The file `init` writes, which a command finds in its directory or the nearest above it.
@@ -38,6 +40,9 @@ struct Location {
     /// How a client signs in to `postgres`: a cloud's token for its identity, by name, or its password when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     auth: Option<String>,
+    /// Engines its faces send statements to, by name (`[engines.<name>]`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    engines: Engines,
     /// The directory of the file that named the lake, if a file did: where the lake's own things beside it go.
     #[serde(skip)]
     directory: Option<PathBuf>,
@@ -137,6 +142,7 @@ impl Location {
                 schema,
                 scheduler: None,
                 auth: Self::auth_of_env(),
+                engines: Engines::new(),
                 directory: None,
             });
         }
@@ -160,6 +166,7 @@ impl Location {
                 schema: None,
                 scheduler: None,
                 auth: Self::auth_of_env(),
+                engines: Engines::new(),
                 directory: None,
             },
             Some(directory) => {
@@ -172,6 +179,7 @@ impl Location {
                         schema: None,
                         scheduler: None,
                         auth: None,
+                        engines: Engines::new(),
                         directory: None,
                     },
                     _ => {
@@ -198,6 +206,121 @@ impl Location {
     }
 }
 
+/// The engines a lake's file names, edited in place: what else the file holds, comments too, is kept. Written whole to a
+/// file beside it, then renamed over it, so that a reader never sees half of it.
+fn edit_engines<T>(file: &Path, edit: impl FnOnce(&mut toml_edit::Table) -> Result<T>) -> Result<T> {
+    let text = fs::read_to_string(file).map_err(|e| Error::failed(format!("{}: {e}", file.display())))?;
+    let mut document: toml_edit::DocumentMut = text
+        .parse()
+        .map_err(|e| Error::failed(format!("{}: {e}", file.display())))?;
+    let engines = document
+        .entry("engines")
+        .or_insert_with(|| {
+            let mut table = toml_edit::Table::new();
+            table.set_implicit(true);
+            toml_edit::Item::Table(table)
+        })
+        .as_table_mut()
+        .ok_or_else(|| Error::failed(format!("{}: `engines` is not a table", file.display())))?;
+    let answer = edit(engines)?;
+    let written = file.with_extension("toml.writing");
+    fs::write(&written, document.to_string()).map_err(|e| Error::failed(format!("{}: {e}", written.display())))?;
+    fs::rename(&written, file).map_err(|e| Error::failed(format!("{}: {e}", file.display())))?;
+    Ok(answer)
+}
+
+/// An engine as a table of the file.
+fn engine_table(config: &EngineConfig) -> toml_edit::Table {
+    let mut table = toml_edit::Table::new();
+    table["type"] = toml_edit::value(config.kind.name());
+    table["url"] = toml_edit::value(&config.url);
+    for (key, value) in [
+        ("user", &config.user),
+        ("token_env", &config.token_env),
+        ("password_env", &config.password_env),
+        ("catalog", &config.catalog),
+    ] {
+        if let Some(value) = value {
+            table[key] = toml_edit::value(value);
+        }
+    }
+    table
+}
+
+/// A lake's file, found as a command finds it, and nothing reached: what is named in it alone, its engines, is read
+/// and written without the catalog.
+#[derive(Debug, Clone)]
+pub struct LakeFile {
+    path: PathBuf,
+}
+
+impl LakeFile {
+    /// The file a command in `dir` means: there, or the nearest above it.
+    pub fn find(dir: Option<&Path>) -> Result<Self> {
+        let location = Location::find(dir)?;
+        let directory = location.directory.ok_or_else(|| {
+            Error::usage(format!(
+                "the lake is named by the environment, with no {FILE}: an engine is named in one"
+            ))
+        })?;
+        Ok(Self {
+            path: directory.join(FILE),
+        })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The engines it names now.
+    pub fn engines(&self) -> Result<Engines> {
+        Ok(Location::read(&self.path)?.engines)
+    }
+
+    /// Names an engine. It reaches nothing: the engine need not run, nor reach the lake, until a statement is sent to
+    /// it. A name taken is refused, unless `replace`.
+    pub fn add_engine(&self, name: &str, config: &EngineConfig, replace: bool) -> Result<()> {
+        add_engine_in(&self.path, name, config, replace)
+    }
+
+    /// Forgets an engine. The engine itself is not touched.
+    pub fn remove_engine(&self, name: &str) -> Result<()> {
+        remove_engine_in(&self.path, name)
+    }
+}
+
+/// One engine of `engines`, or why there is none.
+pub(crate) fn named_engine(mut engines: Engines, name: &str) -> Result<EngineConfig> {
+    engines.remove(name).ok_or_else(|| {
+        let named: Vec<&str> = engines.keys().map(String::as_str).collect();
+        Error::usage(match named.as_slice() {
+            [] => format!("no engine `{name}`: none is named; `metalake engine add` names one"),
+            named => format!("no engine `{name}`: the engines are {}", named.join(", ")),
+        })
+    })
+}
+
+fn add_engine_in(file: &Path, name: &str, config: &EngineConfig, replace: bool) -> Result<()> {
+    check_engine_name(name)?;
+    config.validate()?;
+    edit_engines(file, |engines| {
+        if engines.contains_key(name) && !replace {
+            return Err(Error::usage(format!(
+                "an engine `{name}` is named already: --replace replaces it"
+            )));
+        }
+        engines.insert(name, toml_edit::Item::Table(engine_table(config)));
+        Ok(())
+    })
+}
+
+fn remove_engine_in(file: &Path, name: &str) -> Result<()> {
+    edit_engines(file, |engines| match engines.remove(name) {
+        Some(_) => Ok(()),
+        None => Err(Error::usage(format!("no engine `{name}`"))),
+    })
+}
+
 /// A lake, reached.
 #[derive(Debug, Clone)]
 pub struct Lake {
@@ -220,6 +343,41 @@ impl Lake {
     pub fn with_scheduler(mut self, url: impl Into<String>) -> Self {
         self.location.scheduler = Some(url.into());
         self
+    }
+
+    /// The file that names this lake: where its engines are named.
+    fn file(&self) -> Result<PathBuf> {
+        let directory = self.location.directory.as_ref().ok_or_else(|| {
+            Error::usage(format!(
+                "this lake was named by its catalog, with no {FILE}: an engine is named in one"
+            ))
+        })?;
+        Ok(directory.join(FILE))
+    }
+
+    /// The engines the lake's file names now, read again each time: another process may have named one since. A lake
+    /// named by its catalog alone has none.
+    pub fn engines(&self) -> Result<Engines> {
+        match self.location.directory {
+            Some(_) => Ok(Location::read(&self.file()?)?.engines),
+            None => Ok(Engines::new()),
+        }
+    }
+
+    /// One engine the lake's file names.
+    pub fn engine_config(&self, name: &str) -> Result<EngineConfig> {
+        named_engine(self.engines()?, name)
+    }
+
+    /// Names an engine in the lake's file. It reaches nothing: the engine need not run, nor reach the lake, until a
+    /// statement is sent to it. A name taken is refused, unless `replace`.
+    pub fn add_engine(&self, name: &str, config: &EngineConfig, replace: bool) -> Result<()> {
+        add_engine_in(&self.file()?, name, config, replace)
+    }
+
+    /// Forgets an engine the lake's file names. The engine itself is not touched.
+    pub fn remove_engine(&self, name: &str) -> Result<()> {
+        remove_engine_in(&self.file()?, name)
     }
 
     /// The lake a command means.
@@ -346,6 +504,7 @@ impl Lake {
             schema: schema.filter(|s| *s != SCHEMA).map(str::to_string),
             scheduler: None,
             auth: (auth != Auth::Password).then(|| auth.name().to_string()),
+            engines: Engines::new(),
             directory: None,
         };
         // A lake's own Postgres is refused a cloud's auth before anything is written.
@@ -369,6 +528,8 @@ impl Lake {
                 _ => Error::failed(format!("{}: {e}", file.display())),
             })?;
         location.local = location.local.map(|local| within(dir, &local));
+        // The lake just made is named by the file just written, as the next command finds it.
+        location.directory = Some(std::path::absolute(dir)?);
         let catalog = match location.install(warehouse, connections).await {
             Ok(catalog) => catalog,
             Err(e) => {
@@ -520,6 +681,7 @@ mod tests {
             schema: None,
             scheduler: None,
             auth: None,
+            engines: Engines::new(),
             directory: None,
         };
         assert_eq!(
@@ -532,6 +694,7 @@ mod tests {
             schema: Some("other".into()),
             scheduler: None,
             auth: Some("aws-iam".into()),
+            engines: Engines::new(),
             directory: None,
         };
         let own = Location {
@@ -540,6 +703,7 @@ mod tests {
             schema: None,
             scheduler: None,
             auth: None,
+            engines: Engines::new(),
             directory: None,
         };
         assert!(toml::to_string(&named).unwrap().contains("auth = \"aws-iam\"\n"));
@@ -602,5 +766,84 @@ mod tests {
         assert!(url.starts_with("file:///") && url.ends_with('/'), "{url}");
         assert!(dir.is_dir());
         fs::remove_dir(dir).unwrap();
+    }
+
+    fn trino(url: &str) -> EngineConfig {
+        EngineConfig {
+            kind: crate::EngineKind::Trino,
+            url: url.into(),
+            user: Some("ana".into()),
+            token_env: Some("TRINO_TOKEN".into()),
+            password_env: None,
+            catalog: None,
+        }
+    }
+
+    /// An engine is named in the file whether or not anything runs, read back as named, and forgotten; what else the
+    /// file holds, its comments too, is kept.
+    #[test]
+    fn engines_are_named_in_the_file_and_the_rest_is_kept() {
+        let dir = std::env::temp_dir().join(format!("engines_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(FILE);
+        let written = "# the lake of the team
+postgres = \"postgresql://a@h/db\"
+warehouse = \"gs://b/lake\"
+";
+        fs::write(
+            &file,
+            written.replace(
+                "warehouse = \"gs://b/lake\"
+",
+                "",
+            ),
+        )
+        .unwrap();
+
+        add_engine_in(&file, "trino_prod", &trino("https://trino.example:8443"), false).unwrap();
+        let read = Location::read(&file).unwrap();
+        assert_eq!(
+            read.engines.get("trino_prod"),
+            Some(&trino("https://trino.example:8443"))
+        );
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(
+            text.starts_with(
+                "# the lake of the team
+postgres"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "[engines.trino_prod]
+"
+            ),
+            "{text}"
+        );
+        assert!(
+            !text.contains(
+                "[engines]
+"
+            ),
+            "no empty header: {text}"
+        );
+
+        let taken = add_engine_in(&file, "trino_prod", &trino("https://other:8443"), false).unwrap_err();
+        assert!(taken.to_string().contains("--replace"), "{taken}");
+        add_engine_in(&file, "trino_prod", &trino("https://other:8443"), true).unwrap();
+        assert_eq!(
+            Location::read(&file).unwrap().engines["trino_prod"].url,
+            "https://other:8443"
+        );
+
+        assert!(add_engine_in(&file, "Bad-Name", &trino("https://x"), false).is_err());
+        assert!(add_engine_in(&file, "t", &trino("ftp://x"), false).is_err());
+
+        remove_engine_in(&file, "trino_prod").unwrap();
+        assert!(Location::read(&file).unwrap().engines.is_empty());
+        assert!(remove_engine_in(&file, "trino_prod").is_err());
+        assert!(!dir.join("metalake.toml.writing").exists());
+        let _ = fs::remove_dir_all(dir);
     }
 }

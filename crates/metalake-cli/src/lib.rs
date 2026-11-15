@@ -74,5 +74,7 @@ async fn run(cli: Cli) -> Result<(), Error> {
         Verb::Follow(follow) => commands::follow::run(follow, &Lake::open(dir).await?, cli.format).await,
         Verb::Ingest(ingest) => commands::ingest::run(ingest, Arc::new(Lake::open(dir).await?)).await,
         Verb::Pipeline { verb } => commands::pipeline::run(verb, &Lake::open(dir).await?, &out).await,
+        // Engines are named in the lake's file: no catalog is reached.
+        Verb::Engine { verb } => commands::engine::run(verb, dir, &out).await,
     }
 }
