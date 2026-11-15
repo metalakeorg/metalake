@@ -36,11 +36,17 @@ export function when(at: string | null | undefined): string {
 export function View({
   kind,
   name,
+  path,
+  heading,
   badge,
   tabs,
 }: {
   kind: string;
   name: string;
+  /** Where it is, said above its name in place of its kind. */
+  path?: string | undefined;
+  /** What its title says, if not its name. */
+  heading?: string | undefined;
   badge?: string | undefined;
   tabs: { title: string; body: () => ReactNode }[];
 }) {
@@ -50,9 +56,11 @@ export function View({
   return (
     <section aria-label={`${kind} ${name}`} className="flex h-full min-w-0 flex-col">
       <header className="shrink-0 border-zinc-200 border-b px-6 pt-4 dark:border-zinc-800">
-        <p className="text-[10px] text-zinc-500 uppercase tracking-wide dark:text-zinc-400">{kind}</p>
+        <p className="text-[10px] text-zinc-500 uppercase tracking-wide dark:text-zinc-400">
+          {path === undefined ? kind : <span className="font-mono normal-case tracking-normal">{path}</span>}
+        </p>
         <h1 className="flex items-center gap-2 font-mono font-semibold text-lg">
-          {name}
+          {heading ?? name}
           {badge && <span className="font-sans font-normal text-amber-700 text-xs dark:text-amber-400">{badge}</span>}
         </h1>
         <div role="tablist" aria-label="Tabs" className="mt-3 flex gap-4 text-sm">
@@ -362,7 +370,9 @@ export function TableView({ on, namespace, name }: { on: string; namespace: stri
     <View
       kind="Table"
       name={`${d.namespace.join(".")}.${d.name}`}
-      badge={`on ${on}`}
+      path={[on, ...d.namespace].join(".")}
+      heading={d.name}
+      badge="table"
       tabs={[
         {
           title: "Columns",

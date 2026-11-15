@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Assets } from "./Assets";
 import { run } from "./client";
-import { Editor } from "./Editor";
+import { Editor, type Insert } from "./Editor";
 import { usePicked } from "./picked";
 import { Results, type Run } from "./Results";
 
@@ -20,24 +20,27 @@ export function QueryPage() {
   const { ref: branch, tagged } = picked;
 
   const { state, start, cancel } = useRun();
+  const insert = useRef<Insert | null>(null);
 
   return (
     <div className="flex h-full">
       <Assets
         branches={picked.branches}
         tags={picked.tags}
-        branch={branch}
-        onBranch={picked.pick}
+        branch={picked.branch}
+        tag={picked.tag}
+        onBranch={picked.pickBranch}
+        onTag={picked.pickTag}
         tables={picked.tables}
+        schemas={picked.schemas}
         failure={picked.failure}
+        columns
+        onInsert={(text) => insert.current?.(text)}
       />
       <section aria-label="Query" className="flex min-w-0 flex-1 flex-col">
         <div className="flex h-11 shrink-0 items-center gap-3 border-zinc-200 border-b px-4 dark:border-zinc-800">
           <h1 className="font-semibold">Query</h1>
-          <span className="text-xs text-zinc-500 dark:text-zinc-400">
-            on <span className="font-mono">{branch}</span>
-            {tagged && <span className="ml-1.5 text-amber-700 dark:text-amber-400">tag · read only</span>}
-          </span>
+          {tagged && <span className="text-amber-700 text-xs dark:text-amber-400">tag · read only</span>}
           {state.kind === "running" ? (
             <button
               type="button"
@@ -58,7 +61,7 @@ export function QueryPage() {
           <kbd className="text-xs text-zinc-500 dark:text-zinc-400">{RUN_KEYS}</kbd>
         </div>
         <div className="h-2/5 min-h-24 shrink-0 border-zinc-200 border-b py-1 dark:border-zinc-800">
-          <Editor value={text} onChange={setText} onRun={(statement) => start(statement, branch)} />
+          <Editor value={text} onChange={setText} onRun={(statement) => start(statement, branch)} insert={insert} />
         </div>
         <Results state={state} />
       </section>

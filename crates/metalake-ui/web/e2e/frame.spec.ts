@@ -3,13 +3,13 @@ import { expect, test } from "@playwright/test";
 test("the frame names the product", async ({ page }) => {
   await page.goto("/");
   await expect(page).toHaveTitle("MetaLake");
-  await expect(page.getByRole("banner")).toContainText("MetaLake");
+  await expect(page.getByRole("banner")).toContainText("Metalake UI");
   await expect(page.getByRole("main")).toBeVisible();
 });
 
 test("a route of the frontend's router loads the application", async ({ page }) => {
   await page.goto("/refs/main");
-  await expect(page.getByRole("banner")).toContainText("MetaLake");
+  await expect(page.getByRole("banner")).toContainText("Metalake UI");
 });
 
 test("the script arrives compressed and cached forever", async ({ page }) => {

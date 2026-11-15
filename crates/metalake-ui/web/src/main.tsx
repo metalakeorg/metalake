@@ -5,9 +5,11 @@ import { createRoot } from "react-dom/client";
 import { adopt, Unauthorized } from "./auth";
 import { Failure } from "./client";
 import { router } from "./router";
+import { applyTheme } from "./theme";
 import "./index.css";
 
-// Before anything renders: the token leaves the address bar, and every request bears it.
+// Before anything renders: the theme, and the token leaves the address bar, every request bearing it.
+applyTheme();
 adopt();
 
 /** A request the API answered is not tried again: it would answer the same. One that did not reach it is, once. */

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Grapes } from "./Grapes";
 import type { Server } from "./server";
 
 /** The frame every page sits in: a header naming the product and the server's state; the sidebar beside the page; or,
@@ -8,11 +9,8 @@ export function Frame({ server, nav, children }: { server?: Server; nav?: ReactN
   return (
     <div className="flex h-full flex-col">
       <header className="flex h-12 shrink-0 items-center gap-2 border-zinc-200 border-b px-4 dark:border-zinc-800">
-        <img src="/favicon.svg" alt="" className="size-6" />
-        <span className="font-semibold tracking-tight">MetaLake</span>
-        {server?.state === "ready" && (
-          <span className="ml-auto text-xs text-zinc-500 dark:text-zinc-400">API {server.api}</span>
-        )}
+        <Grapes className="size-7" />
+        <span className="font-semibold tracking-tight">Metalake UI</span>
       </header>
       <div className="flex min-h-0 flex-1">
         {ready && nav}
