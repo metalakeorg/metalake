@@ -404,10 +404,14 @@ export function TableView({ on, namespace, name }: { on: string; namespace: stri
               <Results
                 state={
                   sample.data
-                    ? { kind: "done", result: sample.data.result, ms: sample.data.ms }
+                    ? {
+                        kind: "done",
+                        id: 0,
+                        steps: [{ index: 0, sql: "", state: "ok", ms: sample.data.ms, result: sample.data.result }],
+                      }
                     : sample.error
                       ? { kind: "failed", error: sample.error }
-                      : { kind: "running" }
+                      : { kind: "running", id: 0, steps: [] }
                 }
               />
             </div>

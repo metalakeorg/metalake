@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Assets } from "./Assets";
-import { run } from "./client";
+import { runSteps, type Step } from "./client";
 import { Editor, type Insert } from "./Editor";
 import { usePicked } from "./picked";
 import { Results, type Run } from "./Results";
@@ -73,6 +73,7 @@ export function QueryPage() {
 function useRun() {
   const [state, setState] = useState<Run>({ kind: "idle" });
   const current = useRef<AbortController | null>(null);
+  const runs = useRef(0);
 
   const cancel = () => current.current?.abort();
 
@@ -85,15 +86,23 @@ function useRun() {
     cancel();
     const stop = new AbortController();
     current.current = stop;
-    const began = performance.now();
-    setState({ kind: "running" });
-    run(sql, branch, stop.signal).then(
-      (result) => {
-        if (current.current === stop) setState({ kind: "done", result, ms: performance.now() - began });
+    const id = ++runs.current;
+    const steps: Step[] = [];
+    setState({ kind: "running", id, steps: [] });
+    // Each statement shows as it ends: the run's state is replaced with each, so that it draws again.
+    (async () => {
+      for await (const step of runSteps(sql, branch, stop.signal)) {
+        steps.push(step);
+        if (current.current === stop) setState({ kind: "running", id, steps: [...steps] });
+      }
+    })().then(
+      () => {
+        if (current.current === stop) setState({ kind: "done", id, steps: [...steps] });
       },
       (error: unknown) => {
         if (current.current !== stop) return;
-        if (stop.signal.aborted) setState({ kind: "cancelled" });
+        if (stop.signal.aborted) setState({ kind: "cancelled", id, steps: [...steps] });
+        else if (steps.length) setState({ kind: "done", id, steps: [...steps] });
         else setState({ kind: "failed", error: error instanceof Error ? error : new Error(String(error)) });
       },
     );

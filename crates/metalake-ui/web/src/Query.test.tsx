@@ -42,22 +42,41 @@ const LAKE: Record<string, unknown> = {
   ],
 };
 
-/** What each `POST /api/v1/sql` asked. */
+/** What each `POST /api/v1/sql/run` asked. */
 let asked: { sql: string; branch: string; limit: number }[] = [];
 
-/** The rows a statement answers: `k` of 1 and 2, and more it left. One that says `fail` conflicts. */
+/**
+ * A run's lines, a statement each, split at `;`: a read of `k` 1 and 2, and more it left. A statement that says `fail`
+ * fails, as a write that conflicts; those after it are not run. `refuse` is refused as a whole.
+ */
 async function runs(request: Request): Promise<Response> {
   const statement = (await request.json()) as { sql: string; branch: string; limit: number };
   asked.push(statement);
-  if (statement.sql === "fail") {
-    const fault = { kind: "conflict", message: "a write conflicts with another", retryable: true };
-    return new Response(JSON.stringify(fault), { status: 409, headers: { "content-type": "application/json" } });
+  if (statement.sql === "refuse") {
+    const fault = { kind: "usage", message: "the text cannot be read", retryable: false };
+    return new Response(JSON.stringify(fault), { status: 400, headers: { "content-type": "application/json" } });
   }
   const table = tableFromColumns({ k: columnFromArray([1n, 2n], int64()) });
   const bytes = tableToIPC(table, { format: "stream" }) as Uint8Array;
-  return new Response(bytes.slice(), {
-    headers: { "content-type": "application/vnd.apache.arrow.stream", "metalake-truncated": "true" },
+  const arrow = btoa(String.fromCharCode(...bytes));
+  let failed = false;
+  const lines = statement.sql.split(";").map((sql, index) => {
+    sql = sql.trim();
+    if (failed) return { index, sql, state: "skipped" };
+    if (sql === "fail") {
+      failed = true;
+      const fault = { kind: "conflict", message: "a write conflicts with another", retryable: true };
+      return { index, sql, state: "error", ms: 1, fault };
+    }
+    return { index, sql, state: "ok", ms: 2, rows: 2, truncated: true, arrow };
   });
+  const body = lines
+    .map(
+      (line) => `${JSON.stringify(line)}
+`,
+    )
+    .join("");
+  return new Response(body, { headers: { "content-type": "application/x-ndjson" } });
 }
 
 beforeEach(() => {
@@ -191,6 +210,26 @@ describe("QueryPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Run" }));
     await screen.findByRole("table", { name: "Rows" });
     expect(asked.at(-1)?.branch).toBe("v1");
+  });
+
+  it("runs several statements, a tab each, and opens on the one that failed", async () => {
+    page();
+    write("select 1; fail; select 2");
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    const tabs = await screen.findAllByRole("tab");
+    expect(tabs).toHaveLength(3);
+    expect(tabs[1]).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("alert")).toHaveTextContent("metalake (conflict): a write conflicts with another");
+    fireEvent.click(tabs[0] as HTMLElement);
+    expect(screen.getByRole("table", { name: "Rows" })).toBeInTheDocument();
+    expect(asked).toHaveLength(1);
+  });
+
+  it("says a text refused as a whole as the command line does", async () => {
+    page();
+    write("refuse");
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("metalake (usage): the text cannot be read");
   });
 
   it("says a failure as the command line does", async () => {

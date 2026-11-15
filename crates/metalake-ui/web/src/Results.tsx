@@ -1,19 +1,32 @@
-// The rows of what the Query page ran: a grid of its columns, a page of them at a time, of which only the rows in sight
-// are drawn (TanStack Virtual, ADR 0007 §5.2).
+// What the Query page ran: a tab per statement, each with how it ended: a read's rows in a grid of its columns, a page
+// of them at a time, of which only the rows in sight are drawn (TanStack Virtual, ADR 0007 §5.2); a write's commit; a
+// failure; or that it was not run.
 
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { CircleCheck, CircleMinus, CircleX } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
-import { Failure, LIMIT } from "./client";
+import { Failure, type Fault, LIMIT, type Step } from "./client";
 import { type Result, show, toJson } from "./result";
 
-/** What a statement's run came to. */
+/**
+ * What a run came to: its statements as each ended, while it runs and after. `failed` is a run refused as a whole,
+ * before any statement ran. `id` tells one run from the next.
+ */
 export type Run =
   | { kind: "idle" }
   | { kind: "empty" }
-  | { kind: "running" }
-  | { kind: "cancelled" }
-  | { kind: "done"; result: Result; ms: number }
+  | { kind: "running"; id: number; steps: Step[] }
+  | { kind: "cancelled"; id: number; steps: Step[] }
+  | { kind: "done"; id: number; steps: Step[] }
   | { kind: "failed"; error: Error };
+
+/** The tab a run opens on: the statement that failed, or else the last that ran. */
+export function opened(steps: readonly Step[]): number {
+  const failed = steps.findIndex((step) => step.state === "error");
+  if (failed >= 0) return failed;
+  const ran = steps.findLastIndex((step) => step.state !== "skipped");
+  return Math.max(ran, 0);
+}
 
 /** The height of a row of the grid, in pixels. */
 const ROW = 28;
@@ -32,36 +45,132 @@ export function Results({ state }: { state: Run }) {
   );
 }
 
+const QUIET = "p-4 text-zinc-500 dark:text-zinc-400";
+const STATUS =
+  "flex shrink-0 gap-3 border-zinc-200 border-b px-4 py-1.5 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400";
+
 function Said({ state }: { state: Run }) {
-  const quiet = "p-4 text-zinc-500 dark:text-zinc-400";
   switch (state.kind) {
     case "idle":
-      return <p className={quiet}>Run a statement to see its rows here.</p>;
+      return <p className={QUIET}>Run a statement to see its rows here.</p>;
     case "empty":
-      return <p className={quiet}>There is nothing to run.</p>;
+      return <p className={QUIET}>There is nothing to run.</p>;
+    case "failed":
+      return <Fails kind={state.error instanceof Failure ? state.error.fault.kind : undefined} error={state.error} />;
     case "running":
-      return (
-        <p role="status" className={quiet}>
-          Running…
-        </p>
-      );
     case "cancelled":
-      return (
-        <p role="status" className={quiet}>
-          Cancelled.
-        </p>
-      );
-    case "failed": {
-      const kind = state.error instanceof Failure ? ` (${state.error.fault.kind})` : "";
-      return (
-        <p role="alert" className="p-4 font-mono text-red-700 text-xs dark:text-red-400">
-          metalake{kind}: {state.error.message}
-        </p>
-      );
-    }
     case "done":
-      return <Grid result={state.result} ms={state.ms} />;
+      return <Steps key={state.id} state={state} />;
   }
+}
+
+/** A failure, as the command line says it. */
+function Fails({ kind, error }: { kind: string | undefined; error: { message: string } }) {
+  return (
+    <p role="alert" className="p-4 font-mono text-red-700 text-xs dark:text-red-400">
+      metalake{kind ? ` (${kind})` : ""}: {error.message}
+    </p>
+  );
+}
+
+/**
+ * A run's statements, a tab each, in order, as they end. Until a tab is picked, the one shown follows the run: the
+ * latest while it runs, then the statement that failed or the last that ran. One statement alone has no tabs.
+ */
+function Steps({ state }: { state: Extract<Run, { steps: Step[] }> }) {
+  const { steps } = state;
+  const [picked, setPicked] = useState<number | null>(null);
+  const shown = picked ?? (state.kind === "running" ? steps.length - 1 : opened(steps));
+  const step = steps[shown];
+  const tail =
+    state.kind === "running"
+      ? "Running…"
+      : state.kind === "cancelled"
+        ? "Cancelled."
+        : steps.length
+          ? ""
+          : "Nothing ran.";
+  return (
+    <>
+      {steps.length > 1 && (
+        <div
+          role="tablist"
+          aria-label="Statements"
+          className="flex shrink-0 gap-1 overflow-x-auto border-zinc-200 border-b px-2 pt-1 dark:border-zinc-800"
+        >
+          {steps.map((s, at) => (
+            <button
+              key={s.index}
+              type="button"
+              role="tab"
+              aria-selected={at === shown}
+              title={s.sql}
+              onClick={() => setPicked(at)}
+              className={`flex max-w-56 shrink-0 items-center gap-1.5 rounded-t border-b-2 px-2 py-1 text-xs ${
+                at === shown
+                  ? "border-zinc-900 text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
+                  : "border-transparent text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+              }`}
+            >
+              <Ended step={s} />
+              <span className="tabular-nums">{s.index + 1}</span>
+              <span className="truncate font-mono">{s.sql}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {step && (
+        <div role={steps.length > 1 ? "tabpanel" : undefined} className="flex min-h-0 flex-1 flex-col">
+          <Answer step={step} />
+        </div>
+      )}
+      {tail && (
+        <p role="status" className={QUIET}>
+          {tail}
+        </p>
+      )}
+    </>
+  );
+}
+
+/** How a statement ended, as an icon its tab shows. */
+function Ended({ step }: { step: Step }) {
+  const size = { size: 13, "aria-hidden": true } as const;
+  switch (step.state) {
+    case "ok":
+      return <CircleCheck {...size} className="shrink-0 text-emerald-600 dark:text-emerald-400" />;
+    case "error":
+      return <CircleX {...size} className="shrink-0 text-red-600 dark:text-red-400" />;
+    case "skipped":
+      return <CircleMinus {...size} className="shrink-0 text-zinc-400" />;
+  }
+}
+
+/** What one statement came to: its rows, its commit, that it ran, its failure, or that it was not run. */
+function Answer({ step }: { step: Step }) {
+  const took = step.ms === undefined ? null : <span>{(step.ms / 1000).toFixed(2)} s</span>;
+  if (step.state === "skipped") {
+    return <p className={QUIET}>Not run: a statement before it failed.</p>;
+  }
+  if (step.state === "error") {
+    const fault: Fault | undefined = step.fault;
+    return <Fails kind={fault?.kind} error={{ message: fault?.message ?? "it failed" }} />;
+  }
+  if (step.result) return <Grid result={step.result} ms={step.ms ?? 0} />;
+  return (
+    <p role="status" className={STATUS}>
+      <span className="text-emerald-700 dark:text-emerald-400">OK</span>
+      {step.written && (
+        <>
+          <span>
+            {step.written.rows.toLocaleString("en-US")} {step.written.rows === 1 ? "row" : "rows"} written
+          </span>
+          <span>{step.written.commit == null ? "no commit: nothing changed" : `commit ${step.written.commit}`}</span>
+        </>
+      )}
+      {took}
+    </p>
+  );
 }
 
 function Grid({ result, ms }: { result: Result; ms: number }) {
@@ -92,10 +201,7 @@ function Grid({ result, ms }: { result: Result; ms: number }) {
 
   return (
     <>
-      <p
-        role="status"
-        className="flex shrink-0 gap-3 border-zinc-200 border-b px-4 py-1.5 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400"
-      >
+      <p role="status" className={STATUS}>
         <span>
           {count} {result.rows.length === 1 ? "row" : "rows"}
         </span>
