@@ -23,7 +23,8 @@ pyarrow = ["pyarrow>=15"]
 pandas = ["pandas", "pyarrow>=15"]
 # Engines connected to the lake by `lake.iceberg`.
 pyiceberg = ["pyiceberg[pyarrow]>=0.12"]
-duckdb = ["duckdb>=1.5"]
+# DuckDB answers `USING duckdb` as Arrow, which pyarrow is.
+duckdb = ["duckdb>=1.5", "pyarrow>=15"]
 # Within the minor version the Iceberg runtime that MetaLake names was built for.
 spark = ["pyspark>=3.5,<3.6"]
 flink = ["apache-flink>=1.20,<1.21"]

@@ -133,3 +133,51 @@ def _same_version(engine, installed, profile, runtime):
     built = named.split(runtime)[1].split("_")[0].split(":")[0]
     if not installed.startswith(built + "."):
         raise UsageError(f"{engine} {installed} is installed; the lake's Iceberg runtime is for {engine} {built}")
+
+
+# `USING duckdb …` from any face of this process: a connection per lake, made as `lake.iceberg.duckdb()` makes one and
+# kept for the statements after it. One statement at a time on it, as DuckDB's connection is one.
+_local = {}
+_local_lock = None
+
+
+def run_local(engine, setup, sql):
+    """One statement on a local engine, connected by `setup` the first time: its rows, as Arrow."""
+    import threading
+
+    global _local_lock
+    if _local_lock is None:
+        _local_lock = threading.Lock()
+    if engine != "duckdb":
+        raise UsageError(f"USING {engine}: the engines that run here are duckdb")
+    duckdb_module = _using("duckdb")
+    pyarrow = _using("pyarrow")
+    with _local_lock:
+        key = tuple(setup)
+        connection = _local.get(key)
+        if connection is None:
+
+            class Profile:
+                statements = setup
+
+            connection = duckdb(Profile, duckdb_module.connect())
+            _local[key] = connection
+        result = connection.execute(sql)
+        # A statement that answers no rows, as a CREATE, answers an empty table.
+        if result.description is None:
+            return pyarrow.table({})
+        return result.arrow()
+
+
+def _using(module):
+    """A module `USING duckdb` needs, or an error that says what to install, in the Python this runs in."""
+    import importlib
+    import sys
+
+    try:
+        return importlib.import_module(module)
+    except ImportError as missing:
+        raise ImportError(
+            f"USING duckdb needs {module}, which this metalake's Python does not have: "
+            f"{sys.executable} -m pip install \"metalake[duckdb]\""
+        ) from missing

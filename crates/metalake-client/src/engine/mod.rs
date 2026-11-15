@@ -15,9 +15,12 @@ use url::Url;
 
 use crate::{Error, Result};
 
+mod local;
 mod trino;
 mod using;
 
+pub(crate) use local::run_local;
+pub use local::{LOCAL, LocalFailure, LocalRunner, set_local_runner};
 pub use trino::Trino;
 pub use using::{OWN, Using, UsingOf, using_of};
 pub(crate) use using::{Placed, place};

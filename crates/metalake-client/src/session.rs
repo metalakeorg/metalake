@@ -316,11 +316,7 @@ impl Session {
         match step {
             Step::Statement(statement) => self.prepare(statement).await,
             Step::Pipeline(verb) => crate::pipeline::sql::run(&self.lake, verb).await,
-            // Sent to its engine by the process of I2.2; until then, said and refused.
-            Step::Using(using) => Err(Error::usage(format!(
-                "USING {}: no engine but the lake's runs statements here yet",
-                using.engine
-            ))),
+            Step::Using(using) => crate::engine::run_local(&self.lake, &self.current_ref(), &using).await,
         }
     }
 
