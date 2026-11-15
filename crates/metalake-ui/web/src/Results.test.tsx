@@ -95,6 +95,24 @@ describe("Results' statements", () => {
   });
 });
 
+describe("Results' engines", () => {
+  it("says the engine that ran a result after the arrows, and nothing for the lake's own", () => {
+    const chose: Step = { index: 0, sql: "using duckdb", state: "ok", ms: 0, engine: "duckdb" };
+    const ducked: Step = { ...read(3, 1), engine: "duckdb" };
+    render(<Results state={done(chose, ducked, read(2, 2))} />);
+    expect(screen.getByRole("status")).toHaveTextContent(/Result 3 of 3\s*2 rows/);
+    fireEvent.click(screen.getByRole("button", { name: "Previous result" }));
+    expect(screen.getByRole("status")).toHaveTextContent(/Result 2 of 3duckdb3 rows/);
+    fireEvent.click(screen.getByRole("button", { name: "Previous result" }));
+    expect(screen.getByRole("status")).toHaveTextContent(/Result 1 of 3duckdbOK0.00 s/);
+  });
+
+  it("says it for one statement alone too, with no arrows", () => {
+    render(<Results state={done({ ...read(1), engine: "trino_prod" })} />);
+    expect(screen.getByRole("status")).toHaveTextContent(/^trino_prod1 row/);
+  });
+});
+
 describe("opened", () => {
   it("is the failure, or else the last that ran", () => {
     expect(opened([created, write, failed, skipped])).toBe(2);

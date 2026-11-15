@@ -204,6 +204,19 @@ fn a_trino_named_and_checked_end_to_end() {
             "{links:?}"
         );
 
+        // A statement sent to it by `USING`, as Query and `lake.sql` send one: Trino reads the lake's table.
+        let counted = ok(
+            &dir,
+            &[
+                "sql",
+                "using trino_test select count(*) as n from db.t",
+                "--format",
+                "json",
+            ],
+        );
+        let row: Value = serde_json::from_str(counted.lines().next().unwrap()).unwrap();
+        assert_eq!(row["n"], 2, "{counted}");
+
         ok(
             &dir,
             &[

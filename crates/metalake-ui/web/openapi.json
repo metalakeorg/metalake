@@ -1393,6 +1393,13 @@
             ],
             "description": "The rows, as an Arrow IPC stream in base64: their schema, then their batches."
           },
+          "engine": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The engine that runs it, when not the lake's own (`USING`): `duckdb`, or one the lake's file names."
+          },
           "fault": {
             "oneOf": [
               {

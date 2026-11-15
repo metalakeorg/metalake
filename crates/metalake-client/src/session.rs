@@ -25,11 +25,27 @@ use metalake_datafusion::{MetaLake, MetaLakeOptions, Source, WrittenRow};
 use crate::write::{Details, TablePath, Written};
 use crate::{Error, Lake, Result};
 
-/// One statement of a text: the engine's, or a pipeline's verb, which is the client's.
+/// One statement of a text: the engine's, a pipeline's verb, which is the client's, or one for another engine.
 #[derive(Debug)]
 pub enum Step {
     Statement(Statement),
     Pipeline(crate::pipeline::Verb),
+    /// `USING <engine> <statement>`: the statement is the engine's, sent to it as written.
+    Using(crate::Using),
+    /// `USING <engine>` alone: runs nothing, and chooses the engine for the statements after it. A step of its own, so
+    /// that where the engine changes is seen with what follows.
+    Choose(String),
+}
+
+impl Step {
+    /// The engine that runs it, when not the lake's own: what a face says beside its answer.
+    pub fn engine(&self) -> Option<&str> {
+        match self {
+            Step::Statement(_) | Step::Pipeline(_) => None,
+            Step::Using(using) => Some(&using.engine),
+            Step::Choose(engine) => (engine != crate::OWN).then_some(engine.as_str()),
+        }
+    }
 }
 
 /// A step and the text it was written as, which is what a face shows for it: the piece of the text it came from, or,
@@ -247,47 +263,77 @@ impl Session {
         Ok(Written::of_statement(row.outcome, row.count).merged(row.inserted, row.updated))
     }
 
-    /// The statements of a text, in order: the engine's, and a pipeline's verbs (`CREATE PIPELINE …`, `SHOW PIPELINES`,
-    /// …), which are the client's. A text with no verb goes to the engine whole, as written.
+    /// The statements of a text, in order: the engine's; a pipeline's verbs (`CREATE PIPELINE …`, `SHOW PIPELINES`, …),
+    /// which are the client's; and `USING <engine> …`, another engine's. A text with none of the client's goes to the
+    /// engine whole, as written. A statement for another engine is not parsed: it is that engine's SQL.
     pub fn steps(text: &str) -> Result<Vec<Step>> {
+        Ok(Self::sourced_steps(text)?.into_iter().map(|s| s.step).collect())
+    }
+
+    /// The steps of a text, each with the text it was written as: its piece of the text, or, where a piece holds more
+    /// than one statement or the text is the lake's alone and does not split one to one, the statement as the parser
+    /// writes it. Each piece is placed where the text chose before it, in one pass.
+    pub fn sourced_steps(text: &str) -> Result<Vec<SourcedStep>> {
+        use crate::engine::Placed;
         let pieces = crate::pipeline::sql::pieces(text);
-        let mut verbs = Vec::with_capacity(pieces.len());
+        let mut chosen = None;
+        let mut placed = Vec::with_capacity(pieces.len());
         for piece in &pieces {
-            verbs.push(crate::pipeline::sql::verb_of(piece)?);
+            let place = crate::engine::place(piece, &mut chosen)?;
+            // On the lake's engine, a pipeline's verb is the client's; anything else, DataFusion's.
+            let verb = match &place {
+                Placed::Own(sql) => crate::pipeline::sql::verb_of(sql)?,
+                _ => None,
+            };
+            placed.push((piece.trim().to_string(), place, verb));
         }
-        if verbs.iter().all(Option::is_none) {
-            return Ok(Self::parse(text)?.into_iter().map(Step::Statement).collect());
+        let written = |statement: &Statement| statement.to_string();
+        // A text that is the lake's alone, with none of the client's, goes to DataFusion whole, as written.
+        let lakes_alone = placed.iter().all(|(piece, place, verb)| {
+            matches!(place, Placed::Own(sql) if sql.trim() == piece.as_str()) && verb.is_none()
+        });
+        if lakes_alone {
+            let statements = Self::parse(text)?;
+            let one_to_one = statements.len() == placed.len();
+            return Ok(statements
+                .into_iter()
+                .enumerate()
+                .map(|(at, statement)| SourcedStep {
+                    text: if one_to_one {
+                        placed[at].0.clone()
+                    } else {
+                        written(&statement)
+                    },
+                    step: Step::Statement(statement),
+                })
+                .collect());
         }
         let mut steps = Vec::new();
-        for (piece, verb) in pieces.iter().zip(verbs) {
-            match verb {
-                Some(verb) => steps.push(Step::Pipeline(verb)),
-                None => steps.extend(Self::parse(piece)?.into_iter().map(Step::Statement)),
+        for (piece, place, verb) in placed {
+            match (place, verb) {
+                (Placed::Chosen(engine), _) => steps.push(SourcedStep {
+                    text: piece,
+                    step: Step::Choose(engine),
+                }),
+                (Placed::Other(using), _) => steps.push(SourcedStep {
+                    text: piece,
+                    step: Step::Using(using),
+                }),
+                (Placed::Own(_), Some(verb)) => steps.push(SourcedStep {
+                    text: piece,
+                    step: Step::Pipeline(verb),
+                }),
+                (Placed::Own(sql), None) => {
+                    let statements = Self::parse(&sql)?;
+                    let one = statements.len() == 1;
+                    steps.extend(statements.into_iter().map(|statement| SourcedStep {
+                        text: if one { piece.clone() } else { written(&statement) },
+                        step: Step::Statement(statement),
+                    }));
+                }
             }
         }
         Ok(steps)
-    }
-
-    /// The steps of a text, each with the text it was written as.
-    pub fn sourced_steps(text: &str) -> Result<Vec<SourcedStep>> {
-        let steps = Self::steps(text)?;
-        let pieces = crate::pipeline::sql::pieces(text);
-        let texts: Vec<String> = if pieces.len() == steps.len() {
-            pieces.iter().map(|piece| piece.trim().to_string()).collect()
-        } else {
-            steps
-                .iter()
-                .map(|step| match step {
-                    Step::Statement(statement) => statement.to_string(),
-                    Step::Pipeline(verb) => format!("{verb:?}"),
-                })
-                .collect()
-        };
-        Ok(texts
-            .into_iter()
-            .zip(steps)
-            .map(|(text, step)| SourcedStep { text, step })
-            .collect())
     }
 
     /// Prepares one step, and runs it if it does more than read.
@@ -295,6 +341,11 @@ impl Session {
         match step {
             Step::Statement(statement) => self.prepare(statement).await,
             Step::Pipeline(verb) => crate::pipeline::sql::run(&self.lake, verb).await,
+            Step::Using(using) => crate::engine::run_using(&self.lake, &self.current_ref(), &using).await,
+            // It ran nothing: an answer with no column, as a statement that leaves nothing to show.
+            Step::Choose(_) => {
+                Prepared::from_batches(Arc::new(datafusion::arrow::datatypes::Schema::empty()), Vec::new())
+            }
         }
     }
 

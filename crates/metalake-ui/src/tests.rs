@@ -792,6 +792,8 @@ mod api {
                 let step = |index: usize, sql: &str, ms: Option<u64>, outcome: StepOutcome| StepAnswer {
                     index,
                     sql: sql.into(),
+                    // The second statement as another engine's, the rest the lake's own.
+                    engine: (index == 1).then(|| "duckdb".to_string()),
                     ms,
                     outcome,
                 };
@@ -1143,7 +1145,9 @@ mod api {
             .unwrap();
         assert_eq!(arrow, br#"Some("dev")|5"#);
 
+        assert!(read.get("engine").is_none(), "the lake's own engine is not said");
         let write = &lines[1];
+        assert_eq!(write["engine"], "duckdb");
         assert_eq!(write["state"], "ok");
         assert_eq!(
             (write["written"]["commit"].as_i64(), write["written"]["rows"].as_u64()),
