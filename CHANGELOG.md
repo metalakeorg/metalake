@@ -3,6 +3,27 @@
 What each version published on PyPI as `metalake` brings to whoever installs it. The work behind each line is in its
 pull request; the decisions, in the ADRs.
 
+## 0.6.0
+
+### Query
+
+- **Several statements in one run**, on one session, as SQL editors do: each statement's result shows as it ends,
+  one at a time, turned with `‹ Result 2 of 5 ›`. A failure ends the run, and the statements after it are shown as not
+  run (#62).
+
+### Engines
+
+- **`USING`: statements on another engine**, from Query, `metalake sql` and `lake.sql`. `USING duckdb SELECT …` runs one
+  statement on DuckDB, and `USING duckdb` alone runs the statements after it there, until `USING metalake`. Each result
+  says the engine that ran it. DuckDB runs in this process, connected as `lake.iceberg.duckdb()` connects it:
+  `pip install "metalake[duckdb]"` (#63).
+- **Engines elsewhere, named once** in the lake's `metalake.toml`, as a Trino that reaches the lake through its Iceberg
+  server: `metalake engine add / list / remove / check`, and `lake.add_engine`, `lake.engine(name).sql(…)` and
+  `.check()`. A secret is never written, only the variable that holds it. `USING trino_prod …` sends statements to it
+  (#61, #63).
+- **`metalake iceberg connect <engine> --uri`**, and `lake.iceberg.properties(…, uri=)`: an engine's profile for the
+  lake's server running elsewhere, as `metalake iceberg serve --listen` on a machine a cluster reaches (#61).
+
 ## 0.5.0
 
 ### Upgrading from 0.4.0
