@@ -25,11 +25,13 @@ use metalake_datafusion::{MetaLake, MetaLakeOptions, Source, WrittenRow};
 use crate::write::{Details, TablePath, Written};
 use crate::{Error, Lake, Result};
 
-/// One statement of a text: the engine's, or a pipeline's verb, which is the client's.
+/// One statement of a text: the engine's, a pipeline's verb, which is the client's, or one for another engine.
 #[derive(Debug)]
 pub enum Step {
     Statement(Statement),
     Pipeline(crate::pipeline::Verb),
+    /// `USING <engine> <statement>`: the statement is the engine's, sent to it as written.
+    Using(crate::Using),
 }
 
 /// A step and the text it was written as, which is what a face shows for it: the piece of the text it came from, or,
@@ -247,13 +249,17 @@ impl Session {
         Ok(Written::of_statement(row.outcome, row.count).merged(row.inserted, row.updated))
     }
 
-    /// The statements of a text, in order: the engine's, and a pipeline's verbs (`CREATE PIPELINE …`, `SHOW PIPELINES`,
-    /// …), which are the client's. A text with no verb goes to the engine whole, as written.
+    /// The statements of a text, in order: the engine's; a pipeline's verbs (`CREATE PIPELINE …`, `SHOW PIPELINES`, …),
+    /// which are the client's; and `USING <engine> …`, another engine's. A text with none of the client's goes to the
+    /// engine whole, as written. A statement for another engine is not parsed: it is that engine's SQL.
     pub fn steps(text: &str) -> Result<Vec<Step>> {
         let pieces = crate::pipeline::sql::pieces(text);
         let mut verbs = Vec::with_capacity(pieces.len());
         for piece in &pieces {
-            verbs.push(crate::pipeline::sql::verb_of(piece)?);
+            verbs.push(match crate::using_of(piece)? {
+                Some(using) => Some(Step::Using(using)),
+                None => crate::pipeline::sql::verb_of(piece)?.map(Step::Pipeline),
+            });
         }
         if verbs.iter().all(Option::is_none) {
             return Ok(Self::parse(text)?.into_iter().map(Step::Statement).collect());
@@ -261,7 +267,7 @@ impl Session {
         let mut steps = Vec::new();
         for (piece, verb) in pieces.iter().zip(verbs) {
             match verb {
-                Some(verb) => steps.push(Step::Pipeline(verb)),
+                Some(step) => steps.push(step),
                 None => steps.extend(Self::parse(piece)?.into_iter().map(Step::Statement)),
             }
         }
@@ -295,6 +301,11 @@ impl Session {
         match step {
             Step::Statement(statement) => self.prepare(statement).await,
             Step::Pipeline(verb) => crate::pipeline::sql::run(&self.lake, verb).await,
+            // Sent to its engine by the process of I2.2; until then, said and refused.
+            Step::Using(using) => Err(Error::usage(format!(
+                "USING {}: no engine but the lake's runs statements here yet",
+                using.engine
+            ))),
         }
     }
 

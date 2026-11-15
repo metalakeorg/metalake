@@ -20,7 +20,9 @@ mod status;
 mod write;
 
 pub use details::{Column, RefDetails, SchemaDetails, SchemaSummary, Size, TableDetails, TableSize, TableSummary};
-pub use engine::{CATALOG, Checked, EngineConfig, EngineKind, Engines, Remote, Trino, check_engine_name, engine_rows};
+pub use engine::{
+    CATALOG, Checked, EngineConfig, EngineKind, Engines, Remote, Trino, Using, check_engine_name, engine_rows, using_of,
+};
 pub use error::{Error, Kind, Result};
 pub use follow::{Changes, Follower, StartAt};
 pub use history::duration;

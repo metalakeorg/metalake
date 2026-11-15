@@ -16,8 +16,10 @@ use url::Url;
 use crate::{Error, Result};
 
 mod trino;
+mod using;
 
 pub use trino::Trino;
+pub use using::{Using, using_of};
 
 /// An engine the lake names, ready to be sent statements.
 #[derive(Debug, Clone)]
