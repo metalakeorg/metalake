@@ -298,7 +298,7 @@ pub struct IcebergConnect {
     /// The name the lake's catalog takes in the engine, as `lake.db.t`.
     #[arg(long, default_value = "lake")]
     pub name: String,
-    /// Where the engine reaches the lake's server, when it runs elsewhere, as `metalake iceberg serve --listen` on a
+    /// Where the engine reaches the lake's server, when it runs elsewhere, as `metalake iceberg serve` listening on a
     /// machine the engine reaches: `https://iceberg.example:8181`. Nothing is started here. Run it with the same
     /// METALAKE_ICEBERG_TOKEN that server was started with, for the engine to write; without it, the engine reads.
     #[arg(long, value_name = "URI")]
