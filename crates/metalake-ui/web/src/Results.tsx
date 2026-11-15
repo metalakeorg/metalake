@@ -119,11 +119,19 @@ function Steps({ state }: { state: Extract<Run, { steps: Step[] }> }) {
         </button>
       </nav>
     ) : null;
+  // The engine that ran it, after the arrows, when not the lake's own: `USING duckdb`, or one the lake's file names.
+  const lead =
+    turns || step?.engine ? (
+      <>
+        {turns}
+        {step?.engine && <span className="font-medium text-zinc-700 dark:text-zinc-300">{step.engine}</span>}
+      </>
+    ) : null;
   return (
     <>
       {step && (
         <div className="flex min-h-0 flex-1 flex-col">
-          <Answer step={step} turns={turns} />
+          <Answer step={step} turns={lead} />
         </div>
       )}
       {tail && (

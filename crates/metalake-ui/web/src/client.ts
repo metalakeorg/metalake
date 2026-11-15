@@ -164,6 +164,8 @@ export interface Step {
   /** The statement, as written. */
   sql: string;
   state: StepState;
+  /** The engine that ran it, when not the lake's own: `duckdb`, or one the lake's file names. */
+  engine?: string;
   /** How long it took; none for one not run. */
   ms?: number;
   /** A read's first rows. */
@@ -217,6 +219,7 @@ export async function* runSteps(
 export function step(line: StepResult): Step {
   const read: Step = { index: line.index, sql: line.sql, state: line.state };
   if (line.ms != null) read.ms = line.ms;
+  if (line.engine != null) read.engine = line.engine;
   if (line.arrow != null) read.result = decode(fromBase64(line.arrow), line.truncated === true);
   if (line.written != null) read.written = line.written;
   if (line.fault != null) read.fault = line.fault;

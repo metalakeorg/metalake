@@ -86,15 +86,16 @@ pub fn using_of(text: &str) -> Result<Option<UsingOf>> {
 pub(crate) enum Placed {
     Own(String),
     Other(Using),
-    Chosen,
+    /// A `USING` alone: the engine it chooses for what follows.
+    Chosen(String),
 }
 
 /// Places a piece of a text, and keeps the engine `chosen` for the pieces after it.
 pub(crate) fn place(piece: &str, chosen: &mut Option<String>) -> Result<Placed> {
     match using_of(piece)? {
         Some(UsingOf::Switch(engine)) => {
-            *chosen = (engine != OWN).then_some(engine);
-            Ok(Placed::Chosen)
+            *chosen = (engine != OWN).then(|| engine.clone());
+            Ok(Placed::Chosen(engine))
         }
         Some(UsingOf::Statement { engine, sql }) if engine == OWN => Ok(Placed::Own(sql)),
         Some(UsingOf::Statement { engine, sql }) => Ok(Placed::Other(Using { engine, sql })),
@@ -184,6 +185,7 @@ mod tests {
                 Step::Statement(_) => "metalake".to_string(),
                 Step::Pipeline(_) => "pipeline".to_string(),
                 Step::Using(using) => using.engine.clone(),
+                Step::Choose(engine) => format!("choose {engine}"),
             })
             .collect()
     }
@@ -201,12 +203,19 @@ mod tests {
                 "using duckdb; insert into lake.t values (1); insert into lake.t values (2); select 1; \
                  using metalake; delete from t where a = 1"
             ),
-            ["duckdb", "duckdb", "duckdb", "metalake"],
-            "a USING alone chooses for what follows, until another; it runs nothing"
+            [
+                "choose duckdb",
+                "duckdb",
+                "duckdb",
+                "duckdb",
+                "choose metalake",
+                "metalake"
+            ],
+            "a USING alone is a step that chooses for what follows, until another"
         );
         assert_eq!(
             engines("using duckdb; using metalake select 1; select 2; show pipelines"),
-            ["metalake", "duckdb", "pipeline"],
+            ["choose duckdb", "metalake", "duckdb", "pipeline"],
             "the lake's own by name, for one statement; a pipeline's verbs stay the client's"
         );
     }
@@ -214,9 +223,34 @@ mod tests {
     #[test]
     fn a_statement_for_an_engine_is_kept_as_written_and_not_parsed() {
         let steps = Session::steps("using duckdb; select * from read_parquet('x.parquet') limit 2").unwrap();
-        let Step::Using(using) = &steps[0] else {
-            panic!("{:?}", steps[0])
+        let Step::Using(using) = &steps[1] else {
+            panic!("{:?}", steps[1])
         };
         assert_eq!(using.sql, "select * from read_parquet('x.parquet') limit 2");
+    }
+
+    /// Each step with the piece of the text it was written as, one to one, and the engine a face shows beside it: none
+    /// for the lake's own.
+    #[test]
+    fn each_step_keeps_its_text_and_says_its_engine() {
+        let sourced = Session::sourced_steps(
+            "using duckdb;
+ select 1 ;
+using metalake select 2; using metalake;
+select 3; show pipelines",
+        )
+        .unwrap();
+        let seen: Vec<(&str, Option<&str>)> = sourced.iter().map(|s| (s.text.as_str(), s.step.engine())).collect();
+        assert_eq!(
+            seen,
+            [
+                ("using duckdb", Some("duckdb")),
+                ("select 1", Some("duckdb")),
+                ("using metalake select 2", None),
+                ("using metalake", None),
+                ("select 3", None),
+                ("show pipelines", None),
+            ]
+        );
     }
 }

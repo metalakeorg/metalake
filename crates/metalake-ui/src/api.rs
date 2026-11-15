@@ -50,6 +50,8 @@ pub struct StepAnswer {
     pub index: usize,
     /// The statement, as written.
     pub sql: String,
+    /// The engine that runs it, when not the lake's own: `duckdb`, or one the lake's file names.
+    pub engine: Option<String>,
     /// How long it took, from being prepared to its rows read; none for one not run.
     pub ms: Option<u64>,
     pub outcome: StepOutcome,
@@ -443,6 +445,9 @@ pub struct StepResult {
     /// The statement, as written.
     pub sql: String,
     pub state: StepState,
+    /// The engine that runs it, when not the lake's own (`USING`): `duckdb`, or one the lake's file names.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
     /// How long it took; none for one not run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ms: Option<u64>,
@@ -485,6 +490,7 @@ impl From<StepAnswer> for StepResult {
             index: answer.index,
             sql: answer.sql,
             state: StepState::Ok,
+            engine: answer.engine,
             ms: answer.ms,
             rows: None,
             truncated: None,

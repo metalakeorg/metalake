@@ -457,6 +457,8 @@ export interface components {
         StepResult: {
             /** @description The rows, as an Arrow IPC stream in base64: their schema, then their batches. */
             arrow?: string | null;
+            /** @description The engine that runs it, when not the lake's own (`USING`): `duckdb`, or one the lake's file names. */
+            engine?: string | null;
             fault?: components["schemas"]["Fault"] | null;
             /** @description Its place in the text, from 0. */
             index: number;

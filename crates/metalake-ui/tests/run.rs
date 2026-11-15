@@ -134,3 +134,36 @@ async fn a_text_with_no_statement_fails_before_any_runs() {
     assert!(lake.run(statement("  -- nothing\n", None)).await.is_err());
     done(lake, dir).await;
 }
+
+/// A `USING` alone is a step of its own, which runs nothing and says the engine it chooses; a statement on the lake's
+/// own engine says none. (DuckDB itself runs in Python, where `test_using.py` runs it.)
+#[tokio::test]
+async fn using_alone_is_a_step_that_says_its_engine() {
+    let (lake, dir) = lake().await;
+    let answers = run(
+        &lake,
+        "using duckdb; using metalake select 1 as one; using metalake",
+        None,
+    )
+    .await;
+    let seen: Vec<(&str, Option<&str>)> = answers.iter().map(|a| (a.sql.as_str(), a.engine.as_deref())).collect();
+    assert_eq!(
+        seen,
+        [
+            ("using duckdb", Some("duckdb")),
+            ("using metalake select 1 as one", None),
+            ("using metalake", None),
+        ]
+    );
+    assert!(
+        matches!(answers[0].outcome, StepOutcome::Done),
+        "{:?}",
+        answers[0].outcome
+    );
+    assert!(
+        matches!(answers[1].outcome, StepOutcome::Rows(_)),
+        "{:?}",
+        answers[1].outcome
+    );
+    done(lake, dir).await;
+}

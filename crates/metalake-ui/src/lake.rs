@@ -225,12 +225,14 @@ impl Backend for Lake {
                 let index = run.index;
                 run.index += 1;
                 let sql = sourced.text;
+                let engine = sourced.step.engine().map(str::to_string);
                 if run.failed {
                     let outcome = StepOutcome::Skipped;
                     return Some((
                         StepAnswer {
                             index,
                             sql,
+                            engine,
                             ms: None,
                             outcome,
                         },
@@ -250,6 +252,7 @@ impl Backend for Lake {
                     StepAnswer {
                         index,
                         sql,
+                        engine,
                         ms,
                         outcome,
                     },

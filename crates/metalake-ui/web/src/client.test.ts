@@ -92,7 +92,14 @@ describe("runSteps", () => {
       truncated: true,
       arrow: rowsOf([1n, 2n]),
     });
-    const write = JSON.stringify({ index: 1, sql: "insert", state: "ok", ms: 40, written: { commit: 57, rows: 1 } });
+    const write = JSON.stringify({
+      index: 1,
+      sql: "insert",
+      state: "ok",
+      engine: "duckdb",
+      ms: 40,
+      written: { commit: 57, rows: 1 },
+    });
     const failed = JSON.stringify({
       index: 2,
       sql: "select nope",
@@ -126,6 +133,8 @@ describe("runSteps", () => {
     for await (const step of steps) rest.push(step);
     expect(rest.map((s) => s.state)).toEqual(["ok", "error", "skipped"]);
     expect(rest[0]?.written).toEqual({ commit: 57, rows: 1 });
+    expect(rest[0]?.engine).toBe("duckdb");
+    expect(first.value?.engine).toBeUndefined();
     expect(rest[0]?.result).toBeUndefined();
     expect(rest[1]?.fault?.message).toBe("no column nope");
     expect(rest[2]?.ms).toBeUndefined();
