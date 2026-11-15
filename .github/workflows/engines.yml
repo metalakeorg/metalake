@@ -111,7 +111,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        engine: [spark, flink]
+        engine: [spark, flink, duckdb]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -131,6 +131,12 @@ jobs:
         run: |
           cd "$RUNNER_TEMP"
           python -m pytest "$GITHUB_WORKSPACE/crates/metalake-py/tests/test_engines.py" -k ${{ matrix.engine }} -q --tb=short -p no:cacheprovider -rs
+      # `USING duckdb`, run in this process by the call a notebook makes.
+      - name: USING the engine from SQL
+        if: matrix.engine == 'duckdb'
+        run: |
+          cd "$RUNNER_TEMP"
+          python -m pytest "$GITHUB_WORKSPACE/crates/metalake-py/tests/test_using.py" -q --tb=short -p no:cacheprovider -rs
 
   # Credentials vended for a table's files on S3 (REST-11), on MinIO, whose token service answers AssumeRole with a
   # session policy: PyIceberg, Spark and Trino, connected by the lake's profiles with no key of their own, read and write
