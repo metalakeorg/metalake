@@ -18,6 +18,13 @@ def lake(directory):
     return metalake.init(directory / "lake")
 
 
+@pytest.fixture(autouse=True)
+def no_engine_named(lake):
+    """Each test starts with no engine named, whatever the last one left."""
+    for engine in lake.engines():
+        lake.remove_engine(engine.name)
+
+
 def test_named_listed_found_and_forgotten(lake, directory):
     added = lake.add_engine(
         "trino_prod", url="https://trino.example:8443", user="ana", token_env="TRINO_TOKEN"
@@ -26,7 +33,8 @@ def test_named_listed_found_and_forgotten(lake, directory):
     assert added.auth == "token from $TRINO_TOKEN"
     assert added.catalog == "lake"
 
-    written = (directory / "lake" / "metalake.toml").read_text()
+    # `init(directory / "lake")` writes the file in `directory`, its own Postgres in `lake`.
+    written = (directory / "metalake.toml").read_text()
     assert "[engines.trino_prod]" in written
     assert 'token_env = "TRINO_TOKEN"' in written
 
