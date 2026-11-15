@@ -5,6 +5,7 @@ the engine's own object, so what one knows of each keeps working.
 """
 
 import threading
+from types import SimpleNamespace
 import warnings
 from typing import Any
 
@@ -153,11 +154,7 @@ def run_local(engine, setup, sql):
         key = tuple(setup)
         connection = _local.get(key)
         if connection is None:
-
-            class Profile:
-                statements = setup
-
-            connection = duckdb(Profile, duckdb_module.connect())
+            connection = duckdb(SimpleNamespace(statements=setup), duckdb_module.connect())
             _local[key] = connection
         # `sql` runs a statement that answers no rows, as a CREATE or an INSERT, at once, and answers None for it.
         relation = connection.sql(sql)

@@ -77,29 +77,41 @@ impl PyIceberg {
     /// What `engine` (`pyiceberg`, `duckdb`, `spark`, `flink`, `trino`) needs to connect to the lake, its catalog named
     /// `name`: what fixes it as it starts and what sets it once running, in one dict, by the engine's own keys. For what
     /// MetaLake does not connect itself: a Spark Connect server, Trino, a file of one's own. Starts the lake's server.
-    #[pyo3(signature = (engine, *, name = "lake"))]
-    fn properties(&self, py: Python<'_>, engine: &str, name: &str) -> PyResult<BTreeMap<String, String>> {
-        let profile = self.profile(py, engine, name)?;
+    #[pyo3(signature = (engine, *, name = "lake", uri = None))]
+    fn properties(
+        &self,
+        py: Python<'_>,
+        engine: &str,
+        name: &str,
+        uri: Option<&str>,
+    ) -> PyResult<BTreeMap<String, String>> {
+        let profile = self.profile(py, engine, name, uri)?;
         Ok(profile.startup.into_iter().chain(profile.properties).collect())
     }
 
     /// Everything `engine` needs to connect to the lake, its catalog named `name`, apart: what fixes it as it starts,
     /// what sets it once running, the statements that make the catalog, the libraries it loads. Starts the lake's
-    /// server, and fetches the jars Flink is given as files.
-    #[pyo3(signature = (engine, *, name = "lake"))]
-    fn profile(&self, py: Python<'_>, engine: &str, name: &str) -> PyResult<PyProfile> {
+    /// server, and fetches the jars Flink is given as files. With `uri`, the lake's server elsewhere, as `metalake
+    /// iceberg serve` there: nothing is started here, and the token is that server's, from METALAKE_ICEBERG_TOKEN.
+    #[pyo3(signature = (engine, *, name = "lake", uri = None))]
+    fn profile(&self, py: Python<'_>, engine: &str, name: &str, uri: Option<&str>) -> PyResult<PyProfile> {
         self.owner.check(py, "Lake")?;
         let engine: Engine = engine.parse().map_err(|e| to_python(py, e))?;
         let lake = self.lake.clone();
-        let name = name.to_string();
-        let profile = wait(py, async move { lake.iceberg().profile(engine, &name).await })?;
+        let (name, uri) = (name.to_string(), uri.map(str::to_string));
+        let profile = wait(py, async move {
+            match uri {
+                Some(uri) => lake.iceberg().profile_at(engine, &name, &uri).await,
+                None => lake.iceberg().profile(engine, &name).await,
+            }
+        })?;
         Ok(PyProfile::from(profile.map_err(|e| to_python(py, e))?))
     }
 
     /// A PyIceberg catalog of the lake, named `name`. Polars' `scan_iceberg` and Daft take it as it is.
     #[pyo3(signature = (*, name = "lake"))]
     fn pyiceberg<'py>(&self, py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyAny>> {
-        let profile = self.profile(py, "pyiceberg", name)?;
+        let profile = self.profile(py, "pyiceberg", name, None)?;
         engines(py)?.getattr("pyiceberg")?.call1((profile,))
     }
 
@@ -111,7 +123,7 @@ impl PyIceberg {
         connection: Option<Bound<'py, PyAny>>,
         name: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let profile = self.profile(py, "duckdb", name)?;
+        let profile = self.profile(py, "duckdb", name, None)?;
         engines(py)?.getattr("duckdb")?.call1((profile, connection))
     }
 
@@ -125,7 +137,7 @@ impl PyIceberg {
         session: Option<Bound<'py, PyAny>>,
         name: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let profile = self.profile(py, "spark", name)?;
+        let profile = self.profile(py, "spark", name, None)?;
         engines(py)?.getattr("spark")?.call1((profile, session))
     }
 
@@ -140,7 +152,7 @@ impl PyIceberg {
         name: &str,
         streaming: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let profile = self.profile(py, "flink", name)?;
+        let profile = self.profile(py, "flink", name, None)?;
         engines(py)?.getattr("flink")?.call1((profile, environment, streaming))
     }
 
