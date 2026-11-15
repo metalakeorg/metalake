@@ -1,4 +1,6 @@
-# What needs a Postgres in Docker: the specification's suites, the protocol, the core and the Iceberg REST server.
+# What needs a Postgres in Docker: the specification's suites, the protocol, the core and the Iceberg REST server. The
+# suites run as five jobs at once, each with its own Postgres and its own cache of what Rust compiled, so that the
+# workflow takes as long as its longest group, not the sum of them.
 name: protocol
 
 on:
@@ -14,9 +16,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  protocol:
+  suite:
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: The specification and the protocol
+            clients: true
+            run: |
+              bash spec/v0/run.sh
+              bash spec/v0/conformance/iceberg/run.sh
+              bash sql/test.sh
+              TLS=1 CRATE=metalake-pg bash sql/test.sh --test c_connect
+          - name: The core and the client
+            run: |
+              CRATE=metalake bash sql/test.sh
+              bash sql/commit-time.sh
+              CRATE=metalake-client bash sql/test.sh --features distributed
+          - name: DataFusion, alone and on Ballista
+            run: |
+              CRATE=metalake-datafusion bash sql/test.sh --features proto
+              CRATE=metalake-ballista bash sql/test.sh
+          - name: The command line
+            run: CRATE=metalake-cli bash sql/test.sh
+          - name: The Iceberg REST server
+            clients: true
+            java: true
+            run: |
+              CRATE=metalake-iceberg bash sql/test.sh
+              cargo clippy -p metalake-iceberg --all-targets -- -D warnings
     env:
       METALAKE_TEST_PYTHON: python
       METALAKE_TEST_ENGINES: spark,duckdb
@@ -28,33 +59,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - uses: actions/setup-java@v4
+      # Each group keeps what it compiled, the dependencies above all, keyed by the lock: unchanged, they are not
+      # compiled again.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+      - if: matrix.java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
       - name: Real Iceberg clients
+        if: matrix.clients
         run: python -m pip install --quiet "pyiceberg[pyarrow]==0.12.0" duckdb "pyspark==3.5.5"
-      - name: The specification
-        run: bash spec/v0/run.sh
-      - name: The specification, with PyIceberg
-        run: bash spec/v0/conformance/iceberg/run.sh
-      - name: The protocol
-        run: bash sql/test.sh
-      - name: "The connection: TLS, and a password per connection"
-        run: TLS=1 CRATE=metalake-pg bash sql/test.sh --test c_connect
-      - name: The core
-        run: CRATE=metalake bash sql/test.sh
-      - name: "The core on a Postgres that stops keeping commit timestamps (TT-1)"
-        run: bash sql/commit-time.sh
-      - name: The client
-        run: CRATE=metalake-client bash sql/test.sh --features distributed
-      - name: DataFusion over the lake
-        run: CRATE=metalake-datafusion bash sql/test.sh --features proto
-      - name: DataFusion distributed on Ballista
-        run: CRATE=metalake-ballista bash sql/test.sh
-      - name: The command line
-        run: CRATE=metalake-cli bash sql/test.sh
-      - name: The Iceberg REST server
-        run: CRATE=metalake-iceberg bash sql/test.sh
-      - name: Lints of the Iceberg REST server
-        run: cargo clippy -p metalake-iceberg --all-targets -- -D warnings
+      - name: ${{ matrix.name }}
+        run: ${{ matrix.run }}

@@ -33,6 +33,11 @@ jobs:
           sudo mv /tmp/protoc/bin/protoc /usr/local/bin
       - name: The toolchain of rust-toolchain.toml
         run: rustup toolchain install
+      # A workspace of its own, with Arroyo's crates: its build is kept by its own lock.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/metalake-arroyo -> target
+          save-if: ${{ github.event_name != 'pull_request' }}
       - name: Its patches are Arroyo's at its rev
         run: bash ../../ci/arroyo-patch.sh
       - name: Its lock holds Arrow at 58.4

@@ -31,11 +31,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # rck's release build, which main's runs keep: this workflow runs on pull requests alone, which only read a cache
+      # of main's.
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: e2e-cli
-          # the build is what takes long: kept even when the test after it fails
-          cache-on-failure: true
+          shared-key: release-cli
+          save-if: ${{ github.event_name != 'pull_request' }}
       - name: MetaLake's command line
         run: cargo build --release --locked -p metalake-cli
       # Arroyo's image pinned by the fork's commit (feat/metalake-cloud-identity): the hook that finds the lake's names, and

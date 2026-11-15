@@ -92,6 +92,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ui-crate
+          save-if: ${{ github.event_name != 'pull_request' }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -138,6 +142,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ui-e2e
+          save-if: ${{ github.event_name != 'pull_request' }}
       - uses: actions/download-artifact@v4
         with:
           name: ui-dist
