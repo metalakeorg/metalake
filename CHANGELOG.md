@@ -3,6 +3,32 @@
 What each version published on PyPI as `metalake` brings to whoever installs it. The work behind each line is in its
 pull request; the decisions, in the ADRs.
 
+## 0.5.0
+
+### Upgrading from 0.4.0
+
+- **A catalog's Postgres must keep each commit's time** (`track_commit_timestamp = on`, rule TT-1 of the spec):
+  `metalake init` refuses one that does not, and a lake on such a server is read but no longer written until it is
+  turned on. On Cloud SQL, RDS or Azure it is a database flag; on your own Postgres, `ALTER SYSTEM` and a restart
+  (#55).
+
+### SQL
+
+- **`CREATE TABLE … AS SELECT`**, the table created and filled in one commit (#56).
+- **`ALTER TABLE`:** add, drop and rename a column, widen its type, drop its `NOT NULL`, and rename the table (#56).
+
+### Pipelines
+
+- **A pipeline on a lake whose catalog is in the cloud:** the catalog's identity (`auth = "gcp-iam"`, `"aws-iam"`,
+  `"azure-entra"`) and its verified TLS reach the pipeline, a pipeline that fails retries, and its state says
+  `failing`, with the log of why (#54).
+
+### UI
+
+- **Catalog and Query:** a tag is picked from the branch's own tags; tables open to their columns, with an icon for
+  each type, and a column's name or a table's path goes into the editor with one click; empty schemas are listed; a
+  light and dark theme, switched from the sidebar (#57).
+
 ## 0.4.0
 
 - **Catalog:** a new page to browse the lake by branch or tag: each catalog with its schemas and commits, each schema
