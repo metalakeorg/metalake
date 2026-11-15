@@ -202,6 +202,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sql/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Runs a text's statements on one session, as a SQL editor does, and answers each as it ends: one line of NDJSON per
+         *     statement, in order, as soon as it is known. A read's first rows come as Arrow IPC in base64, at most as many as
+         *     asked. The first statement that fails is the last that runs; each after it is answered as skipped. A text that
+         *     cannot be split into statements fails as a whole, before any runs. A request the browser drops stops the run.
+         */
+        post: operations["sql_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/status": {
         parameters: {
             query?: never;
@@ -431,6 +453,32 @@ export interface components {
             warehouse?: string | null;
             writer_version: string;
         };
+        /** @description One statement of a run, as `POST /api/v1/sql/run` answers it: one line of its NDJSON. */
+        StepResult: {
+            /** @description The rows, as an Arrow IPC stream in base64: their schema, then their batches. */
+            arrow?: string | null;
+            fault?: components["schemas"]["Fault"] | null;
+            /** @description Its place in the text, from 0. */
+            index: number;
+            /**
+             * Format: int64
+             * @description How long it took; none for one not run.
+             */
+            ms?: number | null;
+            /** @description A read's first rows: how many it holds. */
+            rows?: number | null;
+            /** @description The statement, as written. */
+            sql: string;
+            state: components["schemas"]["StepState"];
+            /** @description Whether the read answered more than it holds. */
+            truncated?: boolean | null;
+            written?: components["schemas"]["WrittenResult"] | null;
+        };
+        /**
+         * @description How a statement of a run ended: it ran, it failed, or it was not run, after one that failed.
+         * @enum {string}
+         */
+        StepState: "ok" | "error" | "skipped";
         /** @description A table of the catalog, by its namespace's parts and its name. */
         Table: {
             name: string;
@@ -491,6 +539,13 @@ export interface components {
              * @description [`VERSION`]: a frontend built for another refuses this server.
              */
             api: number;
+        };
+        /** @description What a write did: its commit, none when it changed nothing, and how many rows it wrote. */
+        WrittenResult: {
+            /** Format: int64 */
+            commit?: number | null;
+            /** Format: int64 */
+            rows: number;
         };
     };
     responses: never;
@@ -1033,6 +1088,57 @@ export interface operations {
             };
             /** @description The statement failed */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+        };
+    };
+    sql_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Statement"];
+            };
+        };
+        responses: {
+            /** @description One line per statement, as each ends */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/x-ndjson": components["schemas"]["StepResult"];
+                };
+            };
+            /** @description No statement, or a text that cannot be split */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description Without the run's token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Fault"];
+                };
+            };
+            /** @description From another origin than the UI's own */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

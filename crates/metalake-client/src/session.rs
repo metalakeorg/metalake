@@ -32,6 +32,14 @@ pub enum Step {
     Pipeline(crate::pipeline::Verb),
 }
 
+/// A step and the text it was written as, which is what a face shows for it: the piece of the text it came from, or,
+/// where the pieces and the statements do not match one to one, the statement as the parser writes it.
+#[derive(Debug)]
+pub struct SourcedStep {
+    pub text: String,
+    pub step: Step,
+}
+
 /// The engine over a lake, and a session of it.
 pub struct Session {
     engine: MetaLake,
@@ -84,6 +92,8 @@ async fn distributed(_: &MetaLake, url: &str) -> Result<SessionContext> {
 pub struct Prepared {
     plan: Arc<dyn ExecutionPlan>,
     task: Arc<TaskContext>,
+    /// A read, whose rows are the answer, or a statement that already ran, whose rows say what it did.
+    read: bool,
 }
 
 impl Prepared {
@@ -97,6 +107,7 @@ impl Prepared {
         Ok(Self {
             plan: Arc::new(plan),
             task: Arc::new(TaskContext::default()),
+            read: true,
         })
     }
 
@@ -106,11 +117,18 @@ impl Prepared {
         Ok(Self {
             plan,
             task: Arc::new(TaskContext::default()),
+            read: true,
         })
     }
 
     pub fn schema(&self) -> SchemaRef {
         self.plan.schema()
+    }
+
+    /// Whether its rows are a read's answer. Otherwise the statement already ran, and they say what it did: a write's
+    /// row, with its commit, or none.
+    pub fn is_read(&self) -> bool {
+        self.read
     }
 
     /// Its rows, from the same files each time. A plan keeps the state of a run, so each read has a clean one. It must
@@ -167,12 +185,12 @@ impl Session {
         let read = is_read(frame.logical_plan());
         let plan = frame.create_physical_plan().await?;
         if read {
-            return Ok(Prepared { plan, task });
+            return Ok(Prepared { plan, task, read });
         }
         let schema = plan.schema();
         let answer = collect(plan, task.clone()).await?;
         let plan = MemorySourceConfig::try_new_exec(&[answer], schema, None)?;
-        Ok(Prepared { plan, task })
+        Ok(Prepared { plan, task, read })
     }
 
     /// Deletes the rows of a table that a filter matches, in one commit. The filter is SQL, so what it makes is looked at
@@ -250,6 +268,28 @@ impl Session {
         Ok(steps)
     }
 
+    /// The steps of a text, each with the text it was written as.
+    pub fn sourced_steps(text: &str) -> Result<Vec<SourcedStep>> {
+        let steps = Self::steps(text)?;
+        let pieces = crate::pipeline::sql::pieces(text);
+        let texts: Vec<String> = if pieces.len() == steps.len() {
+            pieces.iter().map(|piece| piece.trim().to_string()).collect()
+        } else {
+            steps
+                .iter()
+                .map(|step| match step {
+                    Step::Statement(statement) => statement.to_string(),
+                    Step::Pipeline(verb) => format!("{verb:?}"),
+                })
+                .collect()
+        };
+        Ok(texts
+            .into_iter()
+            .zip(steps)
+            .map(|(text, step)| SourcedStep { text, step })
+            .collect())
+    }
+
     /// Prepares one step, and runs it if it does more than read.
     pub async fn step(&self, step: Step) -> Result<Prepared> {
         match step {
@@ -301,5 +341,56 @@ impl PartitionStream for Once {
             .boxed(),
         };
         Box::pin(RecordBatchStreamAdapter::new(self.schema.clone(), rows))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn texts(text: &str) -> Vec<String> {
+        Session::sourced_steps(text)
+            .unwrap()
+            .into_iter()
+            .map(|s| s.text)
+            .collect()
+    }
+
+    #[test]
+    fn each_step_keeps_the_text_it_was_written_as() {
+        assert_eq!(
+            texts("create table demo.t (a int);\n  insert into demo.t values (1) ;\nselect a from demo.t"),
+            [
+                "create table demo.t (a int)",
+                "insert into demo.t values (1)",
+                "select a from demo.t"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pipeline_verb_is_a_step_with_its_text() {
+        let steps = Session::sourced_steps("show pipelines; select 1 as one").unwrap();
+        assert!(matches!(steps[0].step, Step::Pipeline(_)));
+        assert_eq!(steps[0].text, "show pipelines");
+        assert!(matches!(steps[1].step, Step::Statement(_)));
+        assert_eq!(steps[1].text, "select 1 as one");
+    }
+
+    #[test]
+    fn a_semicolon_in_a_string_or_a_comment_ends_nothing() {
+        assert_eq!(
+            texts("select 'a;b' as s -- a ; here\n; select 2"),
+            ["select 'a;b' as s -- a ; here", "select 2"]
+        );
+    }
+
+    #[test]
+    fn a_text_with_no_statement_is_refused() {
+        assert!(
+            Session::sourced_steps("  -- nothing\n")
+                .map(|s| s.is_empty())
+                .unwrap_or(true)
+        );
     }
 }

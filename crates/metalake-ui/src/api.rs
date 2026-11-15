@@ -20,6 +20,8 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use futures_util::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
@@ -37,6 +39,39 @@ pub type Answer<'a, T> = Pin<Box<dyn Future<Output = Result<T, Fault>> + Send + 
 /// The lake's marks as they move, for as long as it is read; one that fails ends it.
 pub type Marks = Pin<Box<dyn Stream<Item = Result<Mark, Fault>> + Send>>;
 
+/// A run's statements, each answered as it ends. Dropped, it stops: the statement running then is dropped, and none
+/// after it runs.
+pub type StepAnswers = Pin<Box<dyn Stream<Item = StepAnswer> + Send>>;
+
+/// What one statement of a run came to.
+#[derive(Debug, Clone)]
+pub struct StepAnswer {
+    /// Its place in the text, from 0.
+    pub index: usize,
+    /// The statement, as written.
+    pub sql: String,
+    /// How long it took, from being prepared to its rows read; none for one not run.
+    pub ms: Option<u64>,
+    pub outcome: StepOutcome,
+}
+
+/// How a statement of a run ended.
+#[derive(Debug, Clone)]
+pub enum StepOutcome {
+    /// A read, or what answers rows (`SHOW PIPELINES`): its first rows.
+    Rows(Rows),
+    /// A write: its commit, none when it changed nothing, and how many rows it wrote.
+    Written {
+        commit: Option<i64>,
+        rows: u64,
+    },
+    /// A statement that ran and answers nothing to show: `CREATE`, `DROP`, …
+    Done,
+    Failed(Fault),
+    /// After one that failed: not run.
+    Skipped,
+}
+
 /// What the API asks of a lake. Over a lake it is metalake-client's `Lake` (the feature `lake`); a test gives its own.
 pub trait Backend: Send + Sync + 'static {
     /// What the lake is.
@@ -49,6 +84,12 @@ pub trait Backend: Send + Sync + 'static {
     fn watch(&self) -> Answer<'_, Marks>;
     /// Runs a text's statements, each committed before the next, and answers the first rows of the last.
     fn sql(&self, statement: Statement) -> Answer<'_, Rows>;
+    /// Runs a text's statements on one session, in order, and answers each as it ends: a read's first rows, a write's
+    /// commit, a failure. The first that fails is the last that runs; those after it are answered as not run. A text
+    /// that cannot be split into statements fails as a whole, before any runs.
+    fn run(&self, _statement: Statement) -> Answer<'_, StepAnswers> {
+        Box::pin(async { Err(Detached::fault()) })
+    }
     /// A ref: what it is, what it holds, and its schemas. The Catalog views read these; a lake answers them.
     fn ref_details<'a>(&'a self, _on: &'a str) -> Answer<'a, RefDetails> {
         Box::pin(async { Err(Detached::fault()) })
@@ -394,6 +435,81 @@ pub enum Kind {
     Unknown,
 }
 
+/// One statement of a run, as `POST /api/v1/sql/run` answers it: one line of its NDJSON.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct StepResult {
+    /// Its place in the text, from 0.
+    pub index: usize,
+    /// The statement, as written.
+    pub sql: String,
+    pub state: StepState,
+    /// How long it took; none for one not run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ms: Option<u64>,
+    /// A read's first rows: how many it holds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows: Option<usize>,
+    /// Whether the read answered more than it holds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
+    /// The rows, as an Arrow IPC stream in base64: their schema, then their batches.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arrow: Option<String>,
+    /// What a write did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub written: Option<WrittenResult>,
+    /// Why it failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fault: Option<Fault>,
+}
+
+/// How a statement of a run ended: it ran, it failed, or it was not run, after one that failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum StepState {
+    Ok,
+    Error,
+    Skipped,
+}
+
+/// What a write did: its commit, none when it changed nothing, and how many rows it wrote.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct WrittenResult {
+    pub commit: Option<i64>,
+    pub rows: u64,
+}
+
+impl From<StepAnswer> for StepResult {
+    fn from(answer: StepAnswer) -> Self {
+        let mut result = StepResult {
+            index: answer.index,
+            sql: answer.sql,
+            state: StepState::Ok,
+            ms: answer.ms,
+            rows: None,
+            truncated: None,
+            arrow: None,
+            written: None,
+            fault: None,
+        };
+        match answer.outcome {
+            StepOutcome::Rows(rows) => {
+                result.rows = Some(rows.rows);
+                result.truncated = Some(rows.truncated);
+                result.arrow = Some(BASE64.encode(rows.arrow));
+            }
+            StepOutcome::Written { commit, rows } => result.written = Some(WrittenResult { commit, rows }),
+            StepOutcome::Done => {}
+            StepOutcome::Failed(fault) => {
+                result.state = StepState::Error;
+                result.fault = Some(fault);
+            }
+            StepOutcome::Skipped => result.state = StepState::Skipped,
+        }
+        result
+    }
+}
+
 /// A failure, as the command line's `--format json` says it.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct Fault {
@@ -449,6 +565,7 @@ pub(crate) fn router(backend: Arc<dyn Backend>, notebook: Arc<Notebook>) -> Rout
         .route("/v1/refs/{ref}/tables/{schema}/{table}/snapshots", get(snapshots))
         .route("/v1/events", get(events))
         .route("/v1/sql", post(sql))
+        .route("/v1/sql/run", post(sql_run))
         .fallback(no_route)
         .with_state(backend)
         .merge(notebooks)
@@ -670,6 +787,43 @@ async fn sql(State(backend): State<Arc<dyn Backend>>, body: Bytes) -> Response {
     response
 }
 
+/// Runs a text's statements on one session, as a SQL editor does, and answers each as it ends: one line of NDJSON per
+/// statement, in order, as soon as it is known. A read's first rows come as Arrow IPC in base64, at most as many as
+/// asked. The first statement that fails is the last that runs; each after it is answered as skipped. A text that
+/// cannot be split into statements fails as a whole, before any runs. A request the browser drops stops the run.
+#[utoipa::path(post, path = "/api/v1/sql/run", tag = "sql",
+    request_body(content = Statement, content_type = "application/json"),
+    responses(
+        (status = 200, description = "One line per statement, as each ends", content_type = "application/x-ndjson",
+            body = StepResult),
+        (status = 400, description = "No statement, or a text that cannot be split", body = Fault),
+        (status = 401, description = "Without the run's token", body = Fault),
+        (status = 403, description = "From another origin than the UI's own", body = Fault),
+    ))]
+async fn sql_run(State(backend): State<Arc<dyn Backend>>, body: Bytes) -> Response {
+    let statement: Statement = match serde_json::from_slice(&body) {
+        Ok(statement) => statement,
+        Err(e) => return answer::<()>(Err(Fault::new(Kind::Usage, format!("a request to run is JSON: {e}")))),
+    };
+    if statement.sql.trim().is_empty() {
+        return answer::<()>(Err(Fault::new(Kind::Usage, "no statement to run")));
+    }
+    let answers = match backend.run(statement).await {
+        Ok(answers) => answers,
+        Err(fault) => return answer::<()>(Err(fault)),
+    };
+    let lines = answers.map(|answer| {
+        let mut line = to_json(&StepResult::from(answer));
+        line.push('\n');
+        Ok::<_, Infallible>(Bytes::from(line))
+    });
+    let mut response = Response::new(Body::from_stream(lines));
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/x-ndjson"));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
 fn to_json(value: &impl Serialize) -> String {
     serde_json::to_string(value).expect("the API's types are JSON")
 }
@@ -722,7 +876,7 @@ async fn no_route() -> Response {
     info(title = "MetaLake UI", version = "1", description = "The API of `metalake ui` (ADR 0007 §4.1)"),
     paths(
         version, status, refs, tables, ref_details, commits, schema_details, table_details, snapshots, events, sql,
-        notebook_state, notebook_start
+        sql_run, notebook_state, notebook_start
     ),
     modifiers(&Token),
     security(("token" = []))

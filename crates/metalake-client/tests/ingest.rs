@@ -356,3 +356,28 @@ async fn writer_empty_write_is_heartbeat() {
     assert_eq!(table(&lake).await, pairs(&[(1, "a"), (2, "b")]));
     done(lake, dir).await;
 }
+
+/// A text's steps, one by one on one session, as a face that shows each one's answer runs them: a write runs when
+/// prepared and answers its commit, a read answers its rows, and the read after the write sees it.
+#[tokio::test]
+async fn steps_one_by_one_answer_each_its_own() {
+    let (lake, dir) = lake().await;
+    let session = Session::new(&lake).await.unwrap();
+    let steps =
+        Session::sourced_steps("insert into db.t values (1, 'a'), (2, 'b'); select count(*) as n from db.t").unwrap();
+    assert_eq!(steps[0].text, "insert into db.t values (1, 'a'), (2, 'b')");
+    let mut answers = Vec::new();
+    for sourced in steps {
+        let prepared = session.step(sourced.step).await.unwrap();
+        let batches: Vec<RecordBatch> = prepared.read().unwrap().try_collect().await.unwrap();
+        answers.push((prepared.is_read(), batches));
+    }
+    let (read, written) = &answers[0];
+    assert!(!read, "a write is no read");
+    let commit = written[0].column_by_name("commit").expect("a write answers its commit");
+    assert!(!commit.is_null(0), "and it committed");
+    let (read, counted) = &answers[1];
+    assert!(read);
+    assert_eq!(counted[0].column(0).as_primitive::<Int64Type>().value(0), 2);
+    done(lake, dir).await;
+}

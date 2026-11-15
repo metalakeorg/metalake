@@ -716,6 +716,67 @@
         }
       }
     },
+    "/api/v1/sql/run": {
+      "post": {
+        "tags": [
+          "sql"
+        ],
+        "summary": "Runs a text's statements on one session, as a SQL editor does, and answers each as it ends: one line of NDJSON per\nstatement, in order, as soon as it is known. A read's first rows come as Arrow IPC in base64, at most as many as\nasked. The first statement that fails is the last that runs; each after it is answered as skipped. A text that\ncannot be split into statements fails as a whole, before any runs. A request the browser drops stops the run.",
+        "operationId": "sql_run",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Statement"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "One line per statement, as each ends",
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/StepResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No statement, or a text that cannot be split",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Without the run's token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "From another origin than the UI's own",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fault"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/status": {
       "get": {
         "tags": [
@@ -1316,6 +1377,91 @@
           }
         }
       },
+      "StepResult": {
+        "type": "object",
+        "description": "One statement of a run, as `POST /api/v1/sql/run` answers it: one line of its NDJSON.",
+        "required": [
+          "index",
+          "sql",
+          "state"
+        ],
+        "properties": {
+          "arrow": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The rows, as an Arrow IPC stream in base64: their schema, then their batches."
+          },
+          "fault": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Fault",
+                "description": "Why it failed."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "index": {
+            "type": "integer",
+            "description": "Its place in the text, from 0.",
+            "minimum": 0
+          },
+          "ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How long it took; none for one not run.",
+            "minimum": 0
+          },
+          "rows": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "A read's first rows: how many it holds.",
+            "minimum": 0
+          },
+          "sql": {
+            "type": "string",
+            "description": "The statement, as written."
+          },
+          "state": {
+            "$ref": "#/components/schemas/StepState"
+          },
+          "truncated": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the read answered more than it holds."
+          },
+          "written": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WrittenResult",
+                "description": "What a write did."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "StepState": {
+        "type": "string",
+        "description": "How a statement of a run ended: it ran, it failed, or it was not run, after one that failed.",
+        "enum": [
+          "ok",
+          "error",
+          "skipped"
+        ]
+      },
       "Table": {
         "type": "object",
         "description": "A table of the catalog, by its namespace's parts and its name.",
@@ -1472,6 +1618,27 @@
             "type": "integer",
             "format": "int32",
             "description": "[`VERSION`]: a frontend built for another refuses this server.",
+            "minimum": 0
+          }
+        }
+      },
+      "WrittenResult": {
+        "type": "object",
+        "description": "What a write did: its commit, none when it changed nothing, and how many rows it wrote.",
+        "required": [
+          "rows"
+        ],
+        "properties": {
+          "commit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "rows": {
+            "type": "integer",
+            "format": "int64",
             "minimum": 0
           }
         }
