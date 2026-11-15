@@ -3171,7 +3171,6 @@ dependencies = [
  "futures-util",
  "hmac",
  "metalake",
- "metalake-client",
  "metalake-pg",
  "object_store",
  "parquet",

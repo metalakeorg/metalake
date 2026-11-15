@@ -136,10 +136,18 @@ fn a_trino_named_and_checked_end_to_end() {
         .unwrap();
     let address = line.trim().strip_prefix("listening on ").expect(&line).to_string();
 
-    let profile = ok(
+    // No token here: the profile reads the lake, as `connect` says apart on stderr.
+    let connected = run(
         &dir,
         &["iceberg", "connect", "trino", "--uri", &format!("http://{address}")],
     );
+    assert!(connected.status.success(), "{}", text(&connected.stderr));
+    assert!(
+        text(&connected.stderr).contains("does not write it"),
+        "{}",
+        text(&connected.stderr)
+    );
+    let profile = text(&connected.stdout);
     let catalog = directory();
     fs::write(catalog.join("lake.properties"), profile).unwrap();
     let started = Command::new("docker")
