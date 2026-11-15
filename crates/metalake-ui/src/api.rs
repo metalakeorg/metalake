@@ -37,6 +37,39 @@ pub type Answer<'a, T> = Pin<Box<dyn Future<Output = Result<T, Fault>> + Send + 
 /// The lake's marks as they move, for as long as it is read; one that fails ends it.
 pub type Marks = Pin<Box<dyn Stream<Item = Result<Mark, Fault>> + Send>>;
 
+/// A run's statements, each answered as it ends. Dropped, it stops: the statement running then is dropped, and none
+/// after it runs.
+pub type StepAnswers = Pin<Box<dyn Stream<Item = StepAnswer> + Send>>;
+
+/// What one statement of a run came to.
+#[derive(Debug, Clone)]
+pub struct StepAnswer {
+    /// Its place in the text, from 0.
+    pub index: usize,
+    /// The statement, as written.
+    pub sql: String,
+    /// How long it took, from being prepared to its rows read; none for one not run.
+    pub ms: Option<u64>,
+    pub outcome: StepOutcome,
+}
+
+/// How a statement of a run ended.
+#[derive(Debug, Clone)]
+pub enum StepOutcome {
+    /// A read, or what answers rows (`SHOW PIPELINES`): its first rows.
+    Rows(Rows),
+    /// A write: its commit, none when it changed nothing, and how many rows it wrote.
+    Written {
+        commit: Option<i64>,
+        rows: u64,
+    },
+    /// A statement that ran and answers nothing to show: `CREATE`, `DROP`, …
+    Done,
+    Failed(Fault),
+    /// After one that failed: not run.
+    Skipped,
+}
+
 /// What the API asks of a lake. Over a lake it is metalake-client's `Lake` (the feature `lake`); a test gives its own.
 pub trait Backend: Send + Sync + 'static {
     /// What the lake is.
@@ -49,6 +82,12 @@ pub trait Backend: Send + Sync + 'static {
     fn watch(&self) -> Answer<'_, Marks>;
     /// Runs a text's statements, each committed before the next, and answers the first rows of the last.
     fn sql(&self, statement: Statement) -> Answer<'_, Rows>;
+    /// Runs a text's statements on one session, in order, and answers each as it ends: a read's first rows, a write's
+    /// commit, a failure. The first that fails is the last that runs; those after it are answered as not run. A text
+    /// that cannot be split into statements fails as a whole, before any runs.
+    fn run(&self, _statement: Statement) -> Answer<'_, StepAnswers> {
+        Box::pin(async { Err(Detached::fault()) })
+    }
     /// A ref: what it is, what it holds, and its schemas. The Catalog views read these; a lake answers them.
     fn ref_details<'a>(&'a self, _on: &'a str) -> Answer<'a, RefDetails> {
         Box::pin(async { Err(Detached::fault()) })

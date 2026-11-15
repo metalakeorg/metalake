@@ -36,6 +36,7 @@ jobs:
               CRATE=metalake bash sql/test.sh
               bash sql/commit-time.sh
               CRATE=metalake-client bash sql/test.sh --features distributed
+              CRATE=metalake-ui bash sql/test.sh --test run
           - name: DataFusion, alone and on Ballista
             run: |
               CRATE=metalake-datafusion bash sql/test.sh --features proto

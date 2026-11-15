@@ -1,17 +1,107 @@
 //! The API over a lake: metalake-client's `Lake` is the [`Backend`], so that the UI calls what the command line and
 //! Python call, and only translates its answers (ADR 0007 §3).
 
-use std::time::Duration;
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
-use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::array::{Array, AsArray, RecordBatch};
+use datafusion::arrow::datatypes::{Int64Type, SchemaRef, UInt64Type};
 use datafusion::arrow::ipc::writer::StreamWriter;
-use futures_util::StreamExt;
-use metalake_client::{Lake, Session};
+use futures_util::{StreamExt, TryStreamExt};
+use metalake_client::{Lake, Prepared, Session, SourcedStep, Step};
 
 use crate::api::{
     Answer, Backend, Column, Commit, Fault, IcebergState, Kind, Mark, Marks, Named, Ref, RefDetails, Rows,
-    SchemaDetails, SchemaSummary, Size, Snapshot, Statement, Status, Table, TableDetails, TableSummary,
+    SchemaDetails, SchemaSummary, Size, Snapshot, Statement, Status, StepAnswer, StepAnswers, StepOutcome, Table,
+    TableDetails, TableSummary,
 };
+
+/// A run's state between its statements: the session they share, those left, and whether one failed.
+struct Run {
+    session: Session,
+    steps: VecDeque<SourcedStep>,
+    index: usize,
+    failed: bool,
+    limit: usize,
+}
+
+/// One statement of a run, run and answered: a read's first rows; what ran, by what it answered.
+async fn answer(session: &Session, step: Step, limit: usize) -> Result<StepOutcome, Fault> {
+    let prepared = session.step(step).await?;
+    if prepared.is_read() {
+        return Ok(StepOutcome::Rows(first_rows(&prepared, limit).await?));
+    }
+    let batches: Vec<RecordBatch> = prepared
+        .read()?
+        .try_collect()
+        .await
+        .map_err(metalake_client::Error::from)?;
+    let schema = prepared.schema();
+    // A write answers one row: its commit, none when it changed nothing, and its count.
+    if let (Ok(commit), Ok(count)) = (schema.index_of("commit"), schema.index_of("count"))
+        && let Some(row) = batches.iter().find(|b| b.num_rows() > 0)
+    {
+        let commit = row.column(commit).as_primitive::<Int64Type>();
+        return Ok(StepOutcome::Written {
+            commit: (!commit.is_null(0)).then(|| commit.value(0)),
+            rows: row.column(count).as_primitive::<UInt64Type>().value(0),
+        });
+    }
+    if batches.iter().any(|b| b.num_rows() > 0) {
+        let rows = batches.iter().map(RecordBatch::num_rows).sum();
+        return Ok(StepOutcome::Rows(Rows {
+            arrow: arrow_of(&schema, &batches)?,
+            rows,
+            truncated: false,
+        }));
+    }
+    Ok(StepOutcome::Done)
+}
+
+/// A statement's first rows, at most `limit`: read until the limit, then one batch more, to tell whether there was
+/// more. What is not read is not run.
+async fn first_rows(prepared: &Prepared, limit: usize) -> Result<Rows, Fault> {
+    let schema = prepared.schema();
+    let mut stream = prepared.read()?;
+    let (mut batches, mut rows, mut truncated) = (Vec::<RecordBatch>::new(), 0, false);
+    while let Some(batch) = stream.next().await {
+        let batch = batch.map_err(metalake_client::Error::from)?;
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        if rows == limit {
+            truncated = true;
+            break;
+        }
+        let taken = batch.num_rows().min(limit - rows);
+        truncated = taken < batch.num_rows();
+        batches.push(batch.slice(0, taken));
+        rows += taken;
+        if truncated {
+            break;
+        }
+    }
+    drop(stream);
+    Ok(Rows {
+        arrow: arrow_of(&schema, &batches)?,
+        rows,
+        truncated,
+    })
+}
+
+/// Rows as an Arrow IPC stream: their schema, then their batches.
+fn arrow_of(schema: &SchemaRef, batches: &[RecordBatch]) -> Result<Vec<u8>, Fault> {
+    let mut arrow = Vec::new();
+    let written = (|| {
+        let mut writer = StreamWriter::try_new(&mut arrow, schema)?;
+        for batch in batches {
+            writer.write(batch)?;
+        }
+        writer.finish()
+    })();
+    written.map_err(|e| Fault::new(Kind::Failed, format!("the rows could not be written as Arrow: {e}")))?;
+    Ok(arrow)
+}
 
 /// How often the lake's mark is read again besides its notifications: what tells a deleted ref, which notifies
 /// nothing, and a change while the connection that listens was lost.
@@ -102,38 +192,67 @@ impl Backend for Lake {
                 session.on_ref(branch);
             }
             let prepared = session.run(&statement.sql).await?;
-            let schema = prepared.schema();
-            let mut stream = prepared.read()?;
-            let (mut batches, mut rows, mut truncated) = (Vec::<RecordBatch>::new(), 0, false);
-            // Read until the limit; then one batch more, to tell whether there was more. What is not read is not run.
-            while let Some(batch) = stream.next().await {
-                let batch = batch.map_err(metalake_client::Error::from)?;
-                if batch.num_rows() == 0 {
-                    continue;
-                }
-                if rows == limit {
-                    truncated = true;
-                    break;
-                }
-                let taken = batch.num_rows().min(limit - rows);
-                truncated = taken < batch.num_rows();
-                batches.push(batch.slice(0, taken));
-                rows += taken;
-                if truncated {
-                    break;
-                }
+            first_rows(&prepared, limit).await
+        })
+    }
+
+    fn run(&self, statement: Statement) -> Answer<'_, StepAnswers> {
+        Box::pin(async move {
+            let limit = statement.limit();
+            // A text that cannot be split fails as a whole, before any statement runs.
+            let steps: VecDeque<SourcedStep> = Session::sourced_steps(&statement.sql)?.into();
+            if steps.is_empty() {
+                return Err(Fault::new(Kind::Usage, "no statement to run"));
             }
-            drop(stream);
-            let mut arrow = Vec::new();
-            let written = (|| {
-                let mut writer = StreamWriter::try_new(&mut arrow, &schema)?;
-                for batch in &batches {
-                    writer.write(batch)?;
+            // One session for the run, as a SQL editor's: what a statement sets, the next sees.
+            let session = Session::new(self).await?;
+            if let Some(branch) = &statement.branch {
+                session.on_ref(branch);
+            }
+            let run = Run {
+                session,
+                steps,
+                index: 0,
+                failed: false,
+                limit,
+            };
+            let answers = futures_util::stream::unfold(run, |mut run| async move {
+                let sourced = run.steps.pop_front()?;
+                let index = run.index;
+                run.index += 1;
+                let sql = sourced.text;
+                if run.failed {
+                    let outcome = StepOutcome::Skipped;
+                    return Some((
+                        StepAnswer {
+                            index,
+                            sql,
+                            ms: None,
+                            outcome,
+                        },
+                        run,
+                    ));
                 }
-                writer.finish()
-            })();
-            written.map_err(|e| Fault::new(Kind::Failed, format!("the rows could not be written as Arrow: {e}")))?;
-            Ok(Rows { arrow, rows, truncated })
+                let started = Instant::now();
+                let outcome = match answer(&run.session, sourced.step, run.limit).await {
+                    Ok(outcome) => outcome,
+                    Err(fault) => {
+                        run.failed = true;
+                        StepOutcome::Failed(fault)
+                    }
+                };
+                let ms = Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+                Some((
+                    StepAnswer {
+                        index,
+                        sql,
+                        ms,
+                        outcome,
+                    },
+                    run,
+                ))
+            });
+            Ok(Box::pin(answers) as StepAnswers)
         })
     }
 
