@@ -28,6 +28,10 @@ struct Run {
 /// One statement of a run, run and answered: a read's first rows; what ran, by what it answered.
 async fn answer(session: &Session, step: Step, limit: usize) -> Result<StepOutcome, Fault> {
     let prepared = session.step(step).await?;
+    // DDL runs as it is planned, and is left as a relation with no column: no query answers none.
+    if prepared.schema().fields().is_empty() {
+        return Ok(StepOutcome::Done);
+    }
     if prepared.is_read() {
         return Ok(StepOutcome::Rows(first_rows(&prepared, limit).await?));
     }

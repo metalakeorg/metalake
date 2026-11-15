@@ -154,6 +154,82 @@ export async function run(sql: string, branch: string, signal?: AbortSignal, api
   return decode(data, response.headers.get("metalake-truncated") === "true");
 }
 
+export type StepResult = components["schemas"]["StepResult"];
+export type StepState = components["schemas"]["StepState"];
+export type Written = components["schemas"]["WrittenResult"];
+
+/** A statement of a run, as the page holds it: what it is, how it ended, and its rows read. */
+export interface Step {
+  index: number;
+  /** The statement, as written. */
+  sql: string;
+  state: StepState;
+  /** How long it took; none for one not run. */
+  ms?: number;
+  /** A read's first rows. */
+  result?: Result;
+  /** What a write did: its commit, and how many rows it wrote. */
+  written?: Written;
+  fault?: Fault;
+}
+
+/**
+ * Runs a text's statements on the lake on one session, names that say no ref on `branch`, and gives each statement as
+ * it ends, in order: a line of the server's NDJSON each. An abort of `signal` drops the request, and the server stops
+ * the run. A text the server refuses as a whole, before any statement runs, fails with its fault.
+ */
+export async function* runSteps(
+  sql: string,
+  branch: string,
+  signal?: AbortSignal,
+  api: Client = client(),
+): AsyncGenerator<Step> {
+  const { error, response } = await api.POST("/api/v1/sql/run", {
+    body: { sql, branch, limit: LIMIT },
+    parseAs: "stream",
+    ...(signal ? { signal } : {}),
+  });
+  if (error) throw new Failure(error);
+  if (!response.body) return;
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let held = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      held += value;
+      // A chunk may end within a line: what follows its last newline waits for the next.
+      let end = held.indexOf("\n");
+      while (end >= 0) {
+        const line = held.slice(0, end);
+        held = held.slice(end + 1);
+        if (line.trim()) yield step(JSON.parse(line) as StepResult);
+        end = held.indexOf("\n");
+      }
+    }
+    if (held.trim()) yield step(JSON.parse(held) as StepResult);
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/** A line of a run, its rows decoded from their base64. */
+export function step(line: StepResult): Step {
+  const read: Step = { index: line.index, sql: line.sql, state: line.state };
+  if (line.ms != null) read.ms = line.ms;
+  if (line.arrow != null) read.result = decode(fromBase64(line.arrow), line.truncated === true);
+  if (line.written != null) read.written = line.written;
+  if (line.fault != null) read.fault = line.fault;
+  return read;
+}
+
+function fromBase64(text: string): ArrayBuffer {
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
 export type NotebookState = components["schemas"]["Notebook"];
 
 /** Whether this `metalake` can give a Notebook: a Python, and JupyterLab in it. */
