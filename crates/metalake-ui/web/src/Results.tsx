@@ -4,7 +4,7 @@
 
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ChevronLeft, ChevronRight, CircleCheck, CircleMinus, CircleX } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { type ReactNode, useMemo, useRef, useState } from "react";
 import { Failure, type Fault, LIMIT, type Step } from "./client";
 import { type Result, show, toJson } from "./result";
 
@@ -47,7 +47,7 @@ export function Results({ state }: { state: Run }) {
 
 const QUIET = "p-4 text-zinc-500 dark:text-zinc-400";
 const STATUS =
-  "flex shrink-0 gap-3 border-zinc-200 border-b px-4 py-1.5 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400";
+  "flex shrink-0 items-center gap-3 border-zinc-200 border-b px-4 py-1.5 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400";
 
 function Said({ state }: { state: Run }) {
   switch (state.kind) {
@@ -74,9 +74,10 @@ function Fails({ kind, error }: { kind: string | undefined; error: { message: st
 }
 
 /**
- * A run's statements, one result shown at a time, turned with the arrows of `‹ Result 2 of 5 ›`. Until one is turned to,
- * the one shown follows the run: the latest while it runs, then the statement that failed or the last that ran. One
- * statement alone has no arrows.
+ * A run's statements, one result shown at a time, turned with the arrows of `‹ Result 2 of 5 ›`, which lead the
+ * result's own line: its rows, time and Copy JSON, or its commit. Until one is turned to, the one shown follows the
+ * run: the latest while it runs, then the statement that failed or the last that ran. One statement alone has no
+ * arrows.
  */
 function Steps({ state }: { state: Extract<Run, { steps: Step[] }> }) {
   const { steps } = state;
@@ -91,40 +92,38 @@ function Steps({ state }: { state: Extract<Run, { steps: Step[] }> }) {
         : steps.length
           ? ""
           : "Nothing ran.";
+  const turns =
+    steps.length > 1 && step ? (
+      <nav aria-label="Results of the statements" className="flex items-center gap-1">
+        <button
+          type="button"
+          aria-label="Previous result"
+          onClick={() => setPicked(shown - 1)}
+          disabled={shown === 0}
+          className={TURN}
+        >
+          <ChevronLeft size={14} aria-hidden />
+        </button>
+        <span className="flex items-center gap-1.5 tabular-nums" title={step.sql}>
+          <Ended step={step} />
+          Result {shown + 1} of {steps.length}
+        </span>
+        <button
+          type="button"
+          aria-label="Next result"
+          onClick={() => setPicked(shown + 1)}
+          disabled={shown === steps.length - 1}
+          className={TURN}
+        >
+          <ChevronRight size={14} aria-hidden />
+        </button>
+      </nav>
+    ) : null;
   return (
     <>
-      {steps.length > 1 && step && (
-        <nav
-          aria-label="Results of the statements"
-          className="flex shrink-0 items-center gap-1 border-zinc-200 border-b px-2 py-1 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400"
-        >
-          <button
-            type="button"
-            aria-label="Previous result"
-            onClick={() => setPicked(shown - 1)}
-            disabled={shown === 0}
-            className={TURN}
-          >
-            <ChevronLeft size={14} aria-hidden />
-          </button>
-          <span className="flex items-center gap-1.5 tabular-nums" title={step.sql}>
-            <Ended step={step} />
-            Result {shown + 1} of {steps.length}
-          </span>
-          <button
-            type="button"
-            aria-label="Next result"
-            onClick={() => setPicked(shown + 1)}
-            disabled={shown === steps.length - 1}
-            className={TURN}
-          >
-            <ChevronRight size={14} aria-hidden />
-          </button>
-        </nav>
-      )}
       {step && (
         <div className="flex min-h-0 flex-1 flex-col">
-          <Answer step={step} />
+          <Answer step={step} turns={turns} />
         </div>
       )}
       {tail && (
@@ -149,19 +148,38 @@ function Ended({ step }: { step: Step }) {
   }
 }
 
-/** What one statement came to: its rows, its commit, that it ran, its failure, or that it was not run. */
-function Answer({ step }: { step: Step }) {
+/**
+ * What one statement came to, under its line, which `turns` leads: its rows, its commit, that it ran, its failure, or
+ * that it was not run.
+ */
+function Answer({ step, turns }: { step: Step; turns: ReactNode }) {
   const took = step.ms === undefined ? null : <span>{(step.ms / 1000).toFixed(2)} s</span>;
+  if (step.result) return <Grid result={step.result} ms={step.ms ?? 0} turns={turns} />;
   if (step.state === "skipped") {
-    return <p className={QUIET}>Not run: a statement before it failed.</p>;
+    return (
+      <>
+        {turns && <div className={STATUS}>{turns}</div>}
+        <p className={QUIET}>Not run: a statement before it failed.</p>
+      </>
+    );
   }
   if (step.state === "error") {
     const fault: Fault | undefined = step.fault;
-    return <Fails kind={fault?.kind} error={{ message: fault?.message ?? "it failed" }} />;
+    return (
+      <>
+        {turns && (
+          <div className={STATUS}>
+            {turns}
+            {took}
+          </div>
+        )}
+        <Fails kind={fault?.kind} error={{ message: fault?.message ?? "it failed" }} />
+      </>
+    );
   }
-  if (step.result) return <Grid result={step.result} ms={step.ms ?? 0} />;
   return (
-    <p role="status" className={STATUS}>
+    <div role="status" className={STATUS}>
+      {turns}
       <span className="text-emerald-700 dark:text-emerald-400">OK</span>
       {step.written && (
         <>
@@ -172,11 +190,11 @@ function Answer({ step }: { step: Step }) {
         </>
       )}
       {took}
-    </p>
+    </div>
   );
 }
 
-function Grid({ result, ms }: { result: Result; ms: number }) {
+function Grid({ result, ms, turns }: { result: Result; ms: number; turns?: ReactNode }) {
   const box = useRef<HTMLDivElement>(null);
   // The page is the result's it was turned on: a new result opens on its first page.
   const [at, setAt] = useState({ result, page: 0 });
@@ -204,7 +222,8 @@ function Grid({ result, ms }: { result: Result; ms: number }) {
 
   return (
     <>
-      <p role="status" className={STATUS}>
+      <div role="status" className={STATUS}>
+        {turns}
         <span>
           {count} {result.rows.length === 1 ? "row" : "rows"}
         </span>
@@ -215,7 +234,7 @@ function Grid({ result, ms }: { result: Result; ms: number }) {
           </span>
         )}
         <CopyJson result={result} />
-      </p>
+      </div>
       {pages > 1 && (
         <nav
           aria-label="Pages of rows"

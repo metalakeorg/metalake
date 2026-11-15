@@ -69,9 +69,9 @@ describe("Results' statements", () => {
 
     fireEvent.click(turns().getByRole("button", { name: "Previous result" }));
     expect(turns().getByText(/Result 2 of 4/)).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("OK1 row writtencommit 570.04 s");
+    expect(screen.getByRole("status")).toHaveTextContent(/Result 2 of 4OK1 row writtencommit 570.04 s$/);
     fireEvent.click(turns().getByRole("button", { name: "Previous result" }));
-    expect(screen.getByRole("status")).toHaveTextContent("OK0.41 s");
+    expect(screen.getByRole("status")).toHaveTextContent(/Result 1 of 4OK0.41 s$/);
     expect(turns().getByRole("button", { name: "Previous result" })).toBeDisabled();
 
     fireEvent.click(turns().getByRole("button", { name: "Next result" }));
