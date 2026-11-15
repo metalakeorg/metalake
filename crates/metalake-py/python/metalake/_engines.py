@@ -4,7 +4,10 @@ Each engine is a library of its own, imported only when it is asked for: MetaLak
 the engine's own object, so what one knows of each keeps working.
 """
 
+import threading
+from types import SimpleNamespace
 import warnings
+from typing import Any
 
 from .errors import UsageError
 
@@ -137,17 +140,12 @@ def _same_version(engine, installed, profile, runtime):
 
 # `USING duckdb …` from any face of this process: a connection per lake, made as `lake.iceberg.duckdb()` makes one and
 # kept for the statements after it. One statement at a time on it, as DuckDB's connection is one.
-_local = {}
-_local_lock = None
+_local: dict[tuple[str, ...], Any] = {}
+_local_lock = threading.Lock()
 
 
 def run_local(engine, setup, sql):
     """One statement on a local engine, connected by `setup` the first time: its rows, as Arrow."""
-    import threading
-
-    global _local_lock
-    if _local_lock is None:
-        _local_lock = threading.Lock()
     if engine != "duckdb":
         raise UsageError(f"USING {engine}: the engines that run here are duckdb")
     duckdb_module = _using("duckdb")
@@ -156,11 +154,7 @@ def run_local(engine, setup, sql):
         key = tuple(setup)
         connection = _local.get(key)
         if connection is None:
-
-            class Profile:
-                statements = setup
-
-            connection = duckdb(Profile, duckdb_module.connect())
+            connection = duckdb(SimpleNamespace(statements=setup), duckdb_module.connect())
             _local[key] = connection
         # `sql` runs a statement that answers no rows, as a CREATE or an INSERT, at once, and answers None for it.
         relation = connection.sql(sql)

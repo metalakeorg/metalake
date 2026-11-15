@@ -3,6 +3,22 @@
 What each version published on PyPI as `metalake` brings to whoever installs it. The work behind each line is in its
 pull request; the decisions, in the ADRs.
 
+## 0.6.0
+
+Released on 2026-11-15.
+
+Run SQL on more than one engine from the same query: DuckDB in-process, or engines named once for the lake.
+
+### Query
+
+- **Run several statements in one go.** Each statement gets its own result, browsed with `‹ Result 2 of 5 ›`; a failure stops the run and marks the rest as not run ([#62](https://github.com/metalakeorg/metalake/pull/62))
+
+### Engines
+
+- **Run statements on another engine with `USING`.** `USING duckdb SELECT …` runs one statement on DuckDB; `USING duckdb` alone switches until `USING metalake`. Each result names its engine. Works in Query, `metalake sql` and `lake.sql`; DuckDB runs in-process with `pip install "metalake[duckdb]"` ([#63](https://github.com/metalakeorg/metalake/pull/63))
+- **Name remote engines once in `metalake.toml`.** Manage them with `metalake engine add|list|remove|check` or `lake.engine(name)`, and reach them with `USING <name>`. Secrets are never written to the file, only the variable that holds them ([#61](https://github.com/metalakeorg/metalake/pull/61), [#63](https://github.com/metalakeorg/metalake/pull/63))
+- **Point an engine at an Iceberg server elsewhere** with `metalake iceberg connect <engine> --uri`, or `lake.iceberg.properties(…, uri=)` in Python ([#61](https://github.com/metalakeorg/metalake/pull/61))
+
 ## 0.5.0
 
 ### Upgrading from 0.4.0
