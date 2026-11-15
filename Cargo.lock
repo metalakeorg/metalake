@@ -3110,6 +3110,8 @@ name = "metalake-client"
 version = "0.6.0"
 dependencies = [
  "arrow-schema",
+ "axum",
+ "base64 0.22.1",
  "datafusion",
  "futures-util",
  "metalake",
@@ -3118,11 +3120,13 @@ dependencies = [
  "metalake-local",
  "metalake-pg",
  "object_store",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2",
  "tokio",
  "toml",
+ "toml_edit",
  "url",
  "uuid",
  "windows-sys 0.61.2",
@@ -5256,6 +5260,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

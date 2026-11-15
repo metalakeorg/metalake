@@ -75,11 +75,24 @@ async fn serve(args: &IcebergServe, lake: &Lake) -> Result<(), Error> {
 /// An engine's profile for the lake, printed; where the server runs, said apart, so that the profile alone is what a
 /// redirection writes.
 async fn connect(args: &IcebergConnect, lake: &Lake, out: &Out) -> Result<(), Error> {
-    let profile = lake.iceberg().profile(args.engine.into(), &args.name).await?;
-    eprintln!(
-        "the lake's server runs at {}: `metalake iceberg stop` stops it",
-        profile.target.uri
-    );
+    let iceberg = lake.iceberg();
+    let profile = match &args.uri {
+        Some(uri) => {
+            let profile = iceberg.profile_at(args.engine.into(), &args.name, uri).await?;
+            if profile.target.token.is_none() {
+                eprintln!("no METALAKE_ICEBERG_TOKEN here: the engine reads the lake, and does not write it");
+            }
+            profile
+        }
+        None => {
+            let profile = iceberg.profile(args.engine.into(), &args.name).await?;
+            eprintln!(
+                "the lake's server runs at {}: `metalake iceberg stop` stops it",
+                profile.target.uri
+            );
+            profile
+        }
+    };
     out.value(&profile)
 }
 

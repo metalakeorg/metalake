@@ -5,11 +5,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use metalake_client::{
-    Error, Lake, MaintainRequest, MergeRequest, PipelineOptions, RefKind, Retention, Session, Task, duration,
+    EngineConfig, EngineKind, Error, Lake, MaintainRequest, MergeRequest, PipelineOptions, RefKind, Retention, Session,
+    Task, duration,
 };
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 
+use crate::engine::PyEngine;
 use crate::errors::to_python;
 use crate::iceberg::PyIceberg;
 use crate::info::{History, PyDone, PyMerged, PyRef, PyStatus};
@@ -165,6 +167,63 @@ impl PyLake {
         let found = wait(py, async move { lake.pipeline(&name).await })?;
         let found = found.map_err(|e| to_python(py, e))?;
         Ok(PyPipeline::new(self.owner.clone(), self.lake.clone(), found))
+    }
+
+    /// Names an engine elsewhere in the lake's `metalake.toml`, as a Trino that reaches the lake through its Iceberg
+    /// REST server. It reaches nothing: neither the engine nor the lake's server need run. A secret is never written:
+    /// `token_env` or `password_env` names the variable that holds it.
+    #[pyo3(signature = (name, *, url, user=None, token_env=None, password_env=None, catalog=None, r#type="trino", replace=false))]
+    #[allow(clippy::too_many_arguments)]
+    fn add_engine(
+        &self,
+        py: Python<'_>,
+        name: String,
+        url: String,
+        user: Option<String>,
+        token_env: Option<String>,
+        password_env: Option<String>,
+        catalog: Option<String>,
+        r#type: &str,
+        replace: bool,
+    ) -> PyResult<PyEngine> {
+        self.owner.check(py, "Lake")?;
+        let added = (|| {
+            let config = EngineConfig {
+                kind: EngineKind::parse(r#type)?,
+                url,
+                user,
+                token_env,
+                password_env,
+                catalog,
+            };
+            self.lake.add_engine(&name, &config, replace)?;
+            Ok::<_, Error>(config)
+        })();
+        let config = added.map_err(|e| to_python(py, e))?;
+        Ok(PyEngine::new(self.owner.clone(), self.lake.clone(), name, config))
+    }
+
+    /// An engine the lake's file names.
+    fn engine(&self, py: Python<'_>, name: String) -> PyResult<PyEngine> {
+        self.owner.check(py, "Lake")?;
+        let config = self.lake.engine_config(&name).map_err(|e| to_python(py, e))?;
+        Ok(PyEngine::new(self.owner.clone(), self.lake.clone(), name, config))
+    }
+
+    /// The engines the lake's file names, by name.
+    fn engines(&self, py: Python<'_>) -> PyResult<Vec<PyEngine>> {
+        self.owner.check(py, "Lake")?;
+        let engines = self.lake.engines().map_err(|e| to_python(py, e))?;
+        Ok(engines
+            .into_iter()
+            .map(|(name, config)| PyEngine::new(self.owner.clone(), self.lake.clone(), name, config))
+            .collect())
+    }
+
+    /// Forgets an engine the lake's file names. The engine itself is not touched.
+    fn remove_engine(&self, py: Python<'_>, name: String) -> PyResult<()> {
+        self.owner.check(py, "Lake")?;
+        self.lake.remove_engine(&name).map_err(|e| to_python(py, e))
     }
 
     /// Every pipeline of the lake, by name.

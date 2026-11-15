@@ -77,6 +77,60 @@ pub enum Verb {
         #[command(subcommand)]
         verb: PipelineVerb,
     },
+    /// Engines elsewhere the lake's faces send statements to, as a Trino that reaches the lake through its Iceberg REST
+    /// server. Named once in the lake's metalake.toml: where it answers and who asks, never a secret, only the variable
+    /// of the environment that holds it. Naming one reaches nothing.
+    Engine {
+        #[command(subcommand)]
+        verb: EngineVerb,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum EngineVerb {
+    /// Names an engine in the lake's file. Nothing need run: neither the engine nor the lake's Iceberg server.
+    Add(EngineAdd),
+    /// Lists the engines the lake's file names.
+    List,
+    /// Forgets an engine. The engine itself is not touched.
+    Remove(EngineRef),
+    /// Whether a statement can run on it, each link apart: this side reaches the engine and is let in, and the engine
+    /// reaches the lake, through the lake's Iceberg server, as its catalog. Fails if either does not hold.
+    Check(EngineRef),
+}
+
+#[derive(Debug, Args)]
+pub struct EngineRef {
+    #[arg(value_name = "NAME")]
+    pub name: String,
+}
+
+#[derive(Debug, Args)]
+pub struct EngineAdd {
+    /// How statements name it: lowercase letters, digits and `_`.
+    #[arg(value_name = "NAME")]
+    pub name: String,
+    /// What it is.
+    #[arg(long = "type", value_name = "TYPE", default_value = "trino")]
+    pub kind: String,
+    /// Where it answers: Trino's coordinator, as `https://trino.example:8443`.
+    #[arg(long, value_name = "URL")]
+    pub url: String,
+    /// Who asks, as the engine knows them.
+    #[arg(long, value_name = "USER")]
+    pub user: Option<String>,
+    /// The variable of the environment that holds a bearer token for it. The token itself is never written.
+    #[arg(long, value_name = "VARIABLE", conflicts_with = "password_env")]
+    pub token_env: Option<String>,
+    /// The variable of the environment that holds the user's password for it.
+    #[arg(long, value_name = "VARIABLE")]
+    pub password_env: Option<String>,
+    /// The lake's catalog in the engine, as `metalake iceberg connect --name` named it; `lake` by default.
+    #[arg(long, value_name = "NAME")]
+    pub catalog: Option<String>,
+    /// Replaces an engine of the same name.
+    #[arg(long)]
+    pub replace: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -244,6 +298,11 @@ pub struct IcebergConnect {
     /// The name the lake's catalog takes in the engine, as `lake.db.t`.
     #[arg(long, default_value = "lake")]
     pub name: String,
+    /// Where the engine reaches the lake's server, when it runs elsewhere, as `metalake iceberg serve --listen` on a
+    /// machine the engine reaches: `https://iceberg.example:8181`. Nothing is started here. Run it with the same
+    /// METALAKE_ICEBERG_TOKEN that server was started with, for the engine to write; without it, the engine reads.
+    #[arg(long, value_name = "URI")]
+    pub uri: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

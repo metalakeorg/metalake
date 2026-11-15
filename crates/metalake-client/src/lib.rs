@@ -2,6 +2,7 @@
 //! form, and decides nothing: which lake is meant and what each verb does live here, once.
 
 mod details;
+mod engine;
 mod error;
 mod follow;
 mod hash;
@@ -19,6 +20,7 @@ mod status;
 mod write;
 
 pub use details::{Column, RefDetails, SchemaDetails, SchemaSummary, Size, TableDetails, TableSize, TableSummary};
+pub use engine::{CATALOG, Checked, EngineConfig, EngineKind, Engines, Remote, Trino, check_engine_name, engine_rows};
 pub use error::{Error, Kind, Result};
 pub use follow::{Changes, Follower, StartAt};
 pub use history::duration;
@@ -26,7 +28,7 @@ pub use iceberg::{
     Artifact, Engine, FLINK, HADOOP, ICEBERG_JAVA, Iceberg, IcebergTable, Profile, SCALA, SPARK, Store, Target, profile,
 };
 pub use ingest::{Mode, Writer, WriterOptions, Wrote};
-pub use lake::Lake;
+pub use lake::{Lake, LakeFile};
 pub use maintain::{Done, MaintainRequest, MaintainRun, Task};
 pub use merge::{MergeOutcome, MergeRequest};
 pub use metalake::{Auth, CommitEntry, Mark, Retention, SnapshotEntry, TableName, Watch};
