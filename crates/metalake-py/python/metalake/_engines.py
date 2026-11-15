@@ -162,11 +162,21 @@ def run_local(engine, setup, sql):
 
             connection = duckdb(Profile, duckdb_module.connect())
             _local[key] = connection
-        result = connection.execute(sql)
-        # A statement that answers no rows, as a CREATE, answers an empty table.
-        if result.description is None:
+        # `sql` runs a statement that answers no rows, as a CREATE or an INSERT, at once, and answers None for it.
+        relation = connection.sql(sql)
+        if relation is None:
             return pyarrow.table({})
-        return result.fetch_arrow_table()
+        return _arrow_of(relation)
+
+
+def _arrow_of(relation):
+    """A DuckDB relation's rows as Arrow: by Arrow's own stream interface, else by the name the installed DuckDB gives."""
+    if hasattr(relation, "__arrow_c_stream__"):
+        return relation
+    for name in ("to_arrow_table", "fetch_arrow_table", "arrow"):
+        if hasattr(relation, name):
+            return getattr(relation, name)()
+    raise UsageError("this DuckDB answers no Arrow: pip install -U \"metalake[duckdb]\"")
 
 
 def _using(module):
