@@ -254,21 +254,36 @@ impl Session {
     /// engine whole, as written. A statement for another engine is not parsed: it is that engine's SQL.
     pub fn steps(text: &str) -> Result<Vec<Step>> {
         let pieces = crate::pipeline::sql::pieces(text);
-        let mut verbs = Vec::with_capacity(pieces.len());
+        let mut chosen = None;
+        let mut placed = Vec::with_capacity(pieces.len());
         for piece in &pieces {
-            verbs.push(match crate::using_of(piece)? {
-                Some(using) => Some(Step::Using(using)),
-                None => crate::pipeline::sql::verb_of(piece)?.map(Step::Pipeline),
+            placed.push(crate::engine::place(piece, &mut chosen)?);
+        }
+        // On the lake's engine, a pipeline's verb is the client's; anything else, DataFusion's.
+        let mut verbs = Vec::with_capacity(placed.len());
+        for place in &placed {
+            verbs.push(match place {
+                crate::engine::Placed::Own(sql) => crate::pipeline::sql::verb_of(sql)?,
+                _ => None,
             });
         }
-        if verbs.iter().all(Option::is_none) {
+        // A text that is DataFusion's alone goes to it whole, as written.
+        let all_own = placed.iter().all(|p| matches!(p, crate::engine::Placed::Own(_)));
+        if all_own
+            && verbs.iter().all(Option::is_none)
+            && pieces.iter().all(|p| crate::using_of(p).ok().flatten().is_none())
+        {
             return Ok(Self::parse(text)?.into_iter().map(Step::Statement).collect());
         }
         let mut steps = Vec::new();
-        for (piece, verb) in pieces.iter().zip(verbs) {
-            match verb {
-                Some(step) => steps.push(step),
-                None => steps.extend(Self::parse(piece)?.into_iter().map(Step::Statement)),
+        for (place, verb) in placed.into_iter().zip(verbs) {
+            match (place, verb) {
+                (crate::engine::Placed::Chosen, _) => {}
+                (crate::engine::Placed::Other(using), _) => steps.push(Step::Using(using)),
+                (crate::engine::Placed::Own(_), Some(verb)) => steps.push(Step::Pipeline(verb)),
+                (crate::engine::Placed::Own(sql), None) => {
+                    steps.extend(Self::parse(&sql)?.into_iter().map(Step::Statement))
+                }
             }
         }
         Ok(steps)

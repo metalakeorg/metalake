@@ -19,7 +19,8 @@ mod trino;
 mod using;
 
 pub use trino::Trino;
-pub use using::{Using, using_of};
+pub use using::{OWN, Using, UsingOf, using_of};
+pub(crate) use using::{Placed, place};
 
 /// An engine the lake names, ready to be sent statements.
 #[derive(Debug, Clone)]
@@ -213,6 +214,11 @@ pub type Engines = BTreeMap<String, EngineConfig>;
 
 /// Refuses a name `USING` could not take bare: lowercase letters, digits and `_`, not first a digit.
 pub fn check_engine_name(name: &str) -> Result<()> {
+    if name == using::OWN {
+        return Err(Error::usage(format!(
+            "`{name}` is the lake's own engine, as `USING {name}` names it: an engine takes another name"
+        )));
+    }
     let mut chars = name.chars();
     let first = chars.next().is_some_and(|c| c.is_ascii_lowercase() || c == '_');
     if first && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
@@ -300,7 +306,7 @@ mod tests {
         for good in ["trino_prod", "_t", "t2"] {
             assert!(check_engine_name(good).is_ok(), "{good}");
         }
-        for bad in ["", "2t", "Trino", "trino-prod", "a.b"] {
+        for bad in ["", "2t", "Trino", "trino-prod", "a.b", "metalake"] {
             assert!(check_engine_name(bad).is_err(), "{bad}");
         }
     }
