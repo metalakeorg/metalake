@@ -5,24 +5,19 @@ pull request; the decisions, in the ADRs.
 
 ## 0.6.0
 
+Released on 2026-11-15.
+
+Run SQL on more than one engine from the same query: DuckDB in-process, or engines named once for the lake.
+
 ### Query
 
-- **Several statements in one run**, on one session, as SQL editors do: each statement's result shows as it ends,
-  one at a time, turned with `‹ Result 2 of 5 ›`. A failure ends the run, and the statements after it are shown as not
-  run (#62).
+- **Run several statements in one go.** Each statement gets its own result, browsed with `‹ Result 2 of 5 ›`; a failure stops the run and marks the rest as not run ([#62](https://github.com/metalakeorg/metalake/pull/62))
 
 ### Engines
 
-- **`USING`: statements on another engine**, from Query, `metalake sql` and `lake.sql`. `USING duckdb SELECT …` runs one
-  statement on DuckDB, and `USING duckdb` alone runs the statements after it there, until `USING metalake`. Each result
-  says the engine that ran it. DuckDB runs in this process, connected as `lake.iceberg.duckdb()` connects it:
-  `pip install "metalake[duckdb]"` (#63).
-- **Engines elsewhere, named once** in the lake's `metalake.toml`, as a Trino that reaches the lake through its Iceberg
-  server: `metalake engine add / list / remove / check`, and `lake.add_engine`, `lake.engine(name).sql(…)` and
-  `.check()`. A secret is never written, only the variable that holds it. `USING trino_prod …` sends statements to it
-  (#61, #63).
-- **`metalake iceberg connect <engine> --uri`**, and `lake.iceberg.properties(…, uri=)`: an engine's profile for the
-  lake's server running elsewhere, as `metalake iceberg serve --listen` on a machine a cluster reaches (#61).
+- **Run statements on another engine with `USING`.** `USING duckdb SELECT …` runs one statement on DuckDB; `USING duckdb` alone switches until `USING metalake`. Each result names its engine. Works in Query, `metalake sql` and `lake.sql`; DuckDB runs in-process with `pip install "metalake[duckdb]"` ([#63](https://github.com/metalakeorg/metalake/pull/63))
+- **Name remote engines once in `metalake.toml`.** Manage them with `metalake engine add|list|remove|check` or `lake.engine(name)`, and reach them with `USING <name>`. Secrets are never written to the file, only the variable that holds them ([#61](https://github.com/metalakeorg/metalake/pull/61), [#63](https://github.com/metalakeorg/metalake/pull/63))
+- **Point an engine at an Iceberg server elsewhere** with `metalake iceberg connect <engine> --uri`, or `lake.iceberg.properties(…, uri=)` in Python ([#61](https://github.com/metalakeorg/metalake/pull/61))
 
 ## 0.5.0
 
