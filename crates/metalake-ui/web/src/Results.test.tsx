@@ -54,41 +54,43 @@ describe("Results' pages", () => {
 });
 
 describe("Results' statements", () => {
-  it("has no tabs for one statement alone", () => {
+  const turns = () => within(screen.getByRole("navigation", { name: "Results of the statements" }));
+
+  it("has no arrows for one statement alone", () => {
     render(<Results state={done(read(2))} />);
-    expect(screen.queryByRole("tablist")).toBeNull();
+    expect(screen.queryByRole("navigation", { name: "Results of the statements" })).toBeNull();
     expect(screen.getByRole("table", { name: "Rows" })).toBeInTheDocument();
   });
 
-  it("gives each statement a tab, and opens on the one that failed", () => {
+  it("shows one result at a time, opening on the one that failed, and turns them with the arrows", () => {
     render(<Results state={done(created, write, failed, skipped)} />);
-    const tabs = within(screen.getByRole("tablist", { name: "Statements" })).getAllByRole("tab");
-    expect(tabs.map((tab) => tab.textContent)).toEqual([
-      "1create table t (k int)",
-      "2insert into t values (1)",
-      "3select nope",
-      "4drop table t",
-    ]);
-    expect(tabs[2]).toHaveAttribute("aria-selected", "true");
+    expect(turns().getByText(/Result 3 of 4/)).toHaveAttribute("title", "select nope");
     expect(screen.getByRole("alert")).toHaveTextContent("metalake (usage): no column nope");
 
-    fireEvent.click(tabs[1] as HTMLElement);
-    expect(screen.getByRole("tabpanel")).toHaveTextContent("OK1 row writtencommit 570.04 s");
-    fireEvent.click(tabs[0] as HTMLElement);
-    expect(screen.getByRole("tabpanel")).toHaveTextContent("OK0.41 s");
-    fireEvent.click(tabs[3] as HTMLElement);
-    expect(screen.getByRole("tabpanel")).toHaveTextContent("Not run: a statement before it failed.");
+    fireEvent.click(turns().getByRole("button", { name: "Previous result" }));
+    expect(turns().getByText(/Result 2 of 4/)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("OK1 row writtencommit 570.04 s");
+    fireEvent.click(turns().getByRole("button", { name: "Previous result" }));
+    expect(screen.getByRole("status")).toHaveTextContent("OK0.41 s");
+    expect(turns().getByRole("button", { name: "Previous result" })).toBeDisabled();
+
+    fireEvent.click(turns().getByRole("button", { name: "Next result" }));
+    fireEvent.click(turns().getByRole("button", { name: "Next result" }));
+    fireEvent.click(turns().getByRole("button", { name: "Next result" }));
+    expect(turns().getByText(/Result 4 of 4/)).toBeInTheDocument();
+    expect(screen.getByText("Not run: a statement before it failed.")).toBeInTheDocument();
+    expect(turns().getByRole("button", { name: "Next result" })).toBeDisabled();
   });
 
   it("opens on the last that ran, a read's rows, when none failed", () => {
     render(<Results state={done(created, write, read(3, 2))} />);
-    expect(screen.getAllByRole("tab")[2]).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("tabpanel")).toHaveTextContent("3 rows");
+    expect(turns().getByText(/Result 3 of 3/)).toBeInTheDocument();
+    expect(screen.getByRole("table", { name: "Rows" })).toBeInTheDocument();
   });
 
   it("follows the run while it runs, and says it runs", () => {
     render(<Results state={{ kind: "running", id: 1, steps: [created, write] }} />);
-    expect(screen.getAllByRole("tab")[1]).toHaveAttribute("aria-selected", "true");
+    expect(turns().getByText(/Result 2 of 2/)).toBeInTheDocument();
     expect(screen.getByText("Running…")).toBeInTheDocument();
   });
 });

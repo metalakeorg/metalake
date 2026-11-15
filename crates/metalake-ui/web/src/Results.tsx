@@ -1,9 +1,9 @@
-// What the Query page ran: a tab per statement, each with how it ended: a read's rows in a grid of its columns, a page
+// What the Query page ran: a result per statement, one shown at a time, each with how it ended: a read's rows in a grid of its columns, a page
 // of them at a time, of which only the rows in sight are drawn (TanStack Virtual, ADR 0007 §5.2); a write's commit; a
 // failure; or that it was not run.
 
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { CircleCheck, CircleMinus, CircleX } from "lucide-react";
+import { ChevronLeft, ChevronRight, CircleCheck, CircleMinus, CircleX } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { Failure, type Fault, LIMIT, type Step } from "./client";
 import { type Result, show, toJson } from "./result";
@@ -74,13 +74,14 @@ function Fails({ kind, error }: { kind: string | undefined; error: { message: st
 }
 
 /**
- * A run's statements, a tab each, in order, as they end. Until a tab is picked, the one shown follows the run: the
- * latest while it runs, then the statement that failed or the last that ran. One statement alone has no tabs.
+ * A run's statements, one result shown at a time, turned with the arrows of `‹ Result 2 of 5 ›`. Until one is turned to,
+ * the one shown follows the run: the latest while it runs, then the statement that failed or the last that ran. One
+ * statement alone has no arrows.
  */
 function Steps({ state }: { state: Extract<Run, { steps: Step[] }> }) {
   const { steps } = state;
   const [picked, setPicked] = useState<number | null>(null);
-  const shown = picked ?? (state.kind === "running" ? steps.length - 1 : opened(steps));
+  const shown = Math.min(picked ?? (state.kind === "running" ? steps.length - 1 : opened(steps)), steps.length - 1);
   const step = steps[shown];
   const tail =
     state.kind === "running"
@@ -92,35 +93,37 @@ function Steps({ state }: { state: Extract<Run, { steps: Step[] }> }) {
           : "Nothing ran.";
   return (
     <>
-      {steps.length > 1 && (
-        <div
-          role="tablist"
-          aria-label="Statements"
-          className="flex shrink-0 gap-1 overflow-x-auto border-zinc-200 border-b px-2 pt-1 dark:border-zinc-800"
+      {steps.length > 1 && step && (
+        <nav
+          aria-label="Results of the statements"
+          className="flex shrink-0 items-center gap-1 border-zinc-200 border-b px-2 py-1 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400"
         >
-          {steps.map((s, at) => (
-            <button
-              key={s.index}
-              type="button"
-              role="tab"
-              aria-selected={at === shown}
-              title={s.sql}
-              onClick={() => setPicked(at)}
-              className={`flex max-w-56 shrink-0 items-center gap-1.5 rounded-t border-b-2 px-2 py-1 text-xs ${
-                at === shown
-                  ? "border-zinc-900 text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
-                  : "border-transparent text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-              }`}
-            >
-              <Ended step={s} />
-              <span className="tabular-nums">{s.index + 1}</span>
-              <span className="truncate font-mono">{s.sql}</span>
-            </button>
-          ))}
-        </div>
+          <button
+            type="button"
+            aria-label="Previous result"
+            onClick={() => setPicked(shown - 1)}
+            disabled={shown === 0}
+            className={TURN}
+          >
+            <ChevronLeft size={14} aria-hidden />
+          </button>
+          <span className="flex items-center gap-1.5 tabular-nums" title={step.sql}>
+            <Ended step={step} />
+            Result {shown + 1} of {steps.length}
+          </span>
+          <button
+            type="button"
+            aria-label="Next result"
+            onClick={() => setPicked(shown + 1)}
+            disabled={shown === steps.length - 1}
+            className={TURN}
+          >
+            <ChevronRight size={14} aria-hidden />
+          </button>
+        </nav>
       )}
       {step && (
-        <div role={steps.length > 1 ? "tabpanel" : undefined} className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 flex-1 flex-col">
           <Answer step={step} />
         </div>
       )}

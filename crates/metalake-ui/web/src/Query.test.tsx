@@ -212,15 +212,14 @@ describe("QueryPage", () => {
     expect(asked.at(-1)?.branch).toBe("v1");
   });
 
-  it("runs several statements, a tab each, and opens on the one that failed", async () => {
+  it("runs several statements in one request, a result each, and opens on the one that failed", async () => {
     page();
     write("select 1; fail; select 2");
     fireEvent.click(screen.getByRole("button", { name: "Run" }));
-    const tabs = await screen.findAllByRole("tab");
-    expect(tabs).toHaveLength(3);
-    expect(tabs[1]).toHaveAttribute("aria-selected", "true");
+    const turns = within(await screen.findByRole("navigation", { name: "Results of the statements" }));
+    expect(turns.getByText(/Result 2 of 3/)).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("metalake (conflict): a write conflicts with another");
-    fireEvent.click(tabs[0] as HTMLElement);
+    fireEvent.click(turns.getByRole("button", { name: "Previous result" }));
     expect(screen.getByRole("table", { name: "Rows" })).toBeInTheDocument();
     expect(asked).toHaveLength(1);
   });
