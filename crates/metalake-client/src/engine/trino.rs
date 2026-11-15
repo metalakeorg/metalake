@@ -207,10 +207,7 @@ fn arrow_of(columns: &[Column], rows: &[Vec<Value>]) -> Result<(SchemaRef, Vec<R
     let mut fields = Vec::with_capacity(columns.len());
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(columns.len());
     for (at, column) in columns.iter().enumerate() {
-        let texts: StringArray = rows
-            .iter()
-            .map(|row| row.get(at).and_then(text))
-            .collect();
+        let texts: StringArray = rows.iter().map(|row| row.get(at).and_then(text)).collect();
         let texts: ArrayRef = Arc::new(texts);
         let typed = arrow_type(&column.trino_type).and_then(|to| cast_with_options(&texts, &to, &strict).ok());
         let array = typed.unwrap_or(texts);

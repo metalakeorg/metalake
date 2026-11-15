@@ -293,9 +293,25 @@ fn catalog_name(name: &str) -> Result<&str> {
 impl Iceberg<'_> {
     /// What this lake gives a profile: its server's URI, the server started if it is not, and its warehouse's store.
     pub async fn target(&self) -> Result<Target> {
+        let server = self.ensure().await?;
+        self.target_of(server.url, Some(server.token))
+    }
+
+    /// What this lake gives a profile for its server at `uri`, one that runs elsewhere, as `metalake iceberg serve`
+    /// there: nothing is started here. The token an engine bears to write is the one that server was started with, in
+    /// `METALAKE_ICEBERG_TOKEN`; without it, the engine reads.
+    pub fn target_at(&self, uri: &str) -> Result<Target> {
+        let parsed = url::Url::parse(uri).map_err(|e| Error::usage(format!("the server's uri {uri}: {e}")))?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(Error::usage(format!("the server's uri is http or https, not {uri}")));
+        }
+        let token = std::env::var(crate::SHUTDOWN_TOKEN).ok().filter(|t| !t.is_empty());
+        self.target_of(uri.trim_end_matches('/').to_string(), token)
+    }
+
+    fn target_of(&self, uri: String, token: Option<String>) -> Result<Target> {
         let warehouse = self.lake.warehouse()?;
         let store = Store::of(&warehouse)?;
-        let server = self.ensure().await?;
         let var = |names: &[&str]| {
             names
                 .iter()
@@ -303,10 +319,10 @@ impl Iceberg<'_> {
         };
         let s3 = store == Store::S3;
         Ok(Target {
-            uri: server.url,
+            uri,
             store,
             warehouse,
-            token: Some(server.token),
+            token,
             region: s3.then(|| var(&["AWS_REGION", "AWS_DEFAULT_REGION"]).unwrap_or_else(|| "us-east-1".into())),
             endpoint: s3.then(|| var(&["AWS_ENDPOINT", "AWS_ENDPOINT_URL"])).flatten(),
         })
@@ -316,7 +332,19 @@ impl Iceberg<'_> {
     pub async fn profile(&self, engine: Engine, name: &str) -> Result<Profile> {
         // A name refused before a server is started for it.
         catalog_name(name)?;
-        let profile = profile(engine, name, &self.target().await?)?;
+        let target = self.target().await?;
+        self.profile_for(engine, name, &target).await
+    }
+
+    /// The profile of `engine` for this lake's server at `uri`, which runs elsewhere: nothing is started here.
+    pub async fn profile_at(&self, engine: Engine, name: &str, uri: &str) -> Result<Profile> {
+        catalog_name(name)?;
+        let target = self.target_at(uri)?;
+        self.profile_for(engine, name, &target).await
+    }
+
+    async fn profile_for(&self, engine: Engine, name: &str, target: &Target) -> Result<Profile> {
+        let profile = profile(engine, name, target)?;
         if engine == Engine::Flink {
             jars::fetch(&profile.artifacts).await?;
         }

@@ -100,3 +100,49 @@ fn connect_refuses_bad_names() {
     assert!(!bad.status.success());
     assert!(text(&bad.stderr).contains("catalog's name"), "{}", text(&bad.stderr));
 }
+
+/// For a server elsewhere (`--uri`): the profile names it and starts nothing here, bearing the token that server was
+/// started with when this side has it, and saying the engine only reads when it does not.
+#[test]
+fn connect_profile_for_a_server_elsewhere() {
+    let (dir, _) = lake();
+    let with_token = metalake(&dir)
+        .args(["iceberg", "connect", "trino", "--uri", "https://iceberg.example:8181/"])
+        .env("METALAKE_ICEBERG_TOKEN", "the-servers-token")
+        .output()
+        .unwrap();
+    assert!(with_token.status.success(), "{}", text(&with_token.stderr));
+    let file = text(&with_token.stdout);
+    assert!(
+        file.contains("iceberg.rest-catalog.uri=https://iceberg.example:8181\n"),
+        "{file}"
+    );
+    assert!(
+        file.contains("iceberg.rest-catalog.oauth2.token=the-servers-token\n"),
+        "{file}"
+    );
+    assert!(!text(&with_token.stderr).contains("runs at"), "nothing is started here");
+
+    let without = metalake(&dir)
+        .args(["iceberg", "connect", "trino", "--uri", "https://iceberg.example:8181"])
+        .env_remove("METALAKE_ICEBERG_TOKEN")
+        .output()
+        .unwrap();
+    assert!(without.status.success(), "{}", text(&without.stderr));
+    assert!(
+        !text(&without.stdout).contains("oauth2.token"),
+        "{}",
+        text(&without.stdout)
+    );
+    assert!(
+        text(&without.stderr).contains("does not write it"),
+        "{}",
+        text(&without.stderr)
+    );
+
+    let refused = metalake(&dir)
+        .args(["iceberg", "connect", "trino", "--uri", "ftp://iceberg.example"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+}
