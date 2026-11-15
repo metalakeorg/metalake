@@ -3,7 +3,7 @@
 //! `lake.iceberg.duckdb()`, and nothing else. A `metalake` built alone has no Python, and says so.
 //!
 //! The lake reaches the engine as a notebook's does: its Iceberg server on this machine, started if it is not, and the
-//! engine's profile, which attaches the lake as `lake`; then `USE lake`, so that `demo.t` is the lake's `demo.t`.
+//! engine's profile, which attaches the lake as `lake`; then `USE lake.default`, so that `demo.t` is the lake's `demo.t`.
 
 use std::sync::{Arc, OnceLock};
 
@@ -64,7 +64,9 @@ pub(crate) async fn run_local(lake: &Lake, on: &str, using: &Using) -> Result<Pr
     })?;
     let profile = lake.iceberg().profile(Engine::DuckDb, crate::CATALOG).await?;
     let mut setup = profile.statements();
-    setup.push(format!("USE {}", crate::CATALOG));
+    // `USE lake` alone means its schema `main`, which a lake has none of: `default`, which every lake has, so that a
+    // bare `t` is the lake's `default.t`, and `demo.t` its schema `demo`'s.
+    setup.push(format!("USE {}.default", crate::CATALOG));
     let (engine, sql) = (using.engine.clone(), using.sql.clone());
     let answered = tokio::task::spawn_blocking(move || runner(&engine, &setup, &sql))
         .await
