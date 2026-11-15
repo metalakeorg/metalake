@@ -65,7 +65,8 @@ pub fn using_of(text: &str) -> Result<Option<UsingOf>> {
             ));
         }
     };
-    if engine != OWN {
+    // The lake's own and the local engines are named as they are; any other, as a named engine may be.
+    if engine != OWN && !super::LOCAL.contains(&engine.as_str()) {
         check_engine_name(&engine)?;
     }
     let rest = &tokens[named + 1..];

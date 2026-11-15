@@ -19,7 +19,7 @@ mod local;
 mod trino;
 mod using;
 
-pub(crate) use local::run_local;
+use local::run_local;
 pub use local::{LOCAL, LocalFailure, LocalRunner, set_local_runner};
 pub use trino::Trino;
 pub use using::{OWN, Using, UsingOf, using_of};
@@ -215,8 +215,44 @@ impl EngineConfig {
 /// The engines a lake names, by name.
 pub type Engines = BTreeMap<String, EngineConfig>;
 
+/// One statement `USING` an engine, on `lake`, the session reading `on`: a local engine, run in this process, or one
+/// the lake's file names, sent the statement. A local engine's name is never another's.
+pub(crate) async fn run_using(lake: &crate::Lake, on: &str, using: &Using) -> Result<crate::Prepared> {
+    // An engine sees the lake through its Iceberg server, whose catalog is `main`'s: on another ref, it would answer
+    // for `main` without a word.
+    if on != "main" {
+        return Err(Error::usage(format!(
+            "USING {} reads `main`, and this session is on `{on}`",
+            using.engine
+        )));
+    }
+    if LOCAL.contains(&using.engine.as_str()) {
+        return run_local(lake, using).await;
+    }
+    let engines = lake.engines()?;
+    let Some(config) = engines.get(&using.engine) else {
+        let named: Vec<&str> = engines.keys().map(String::as_str).collect();
+        return Err(Error::usage(format!(
+            "USING {}: no such engine; {} run here, and {}",
+            using.engine,
+            LOCAL.join(", "),
+            match named.as_slice() {
+                [] => "metalake.toml names none: `metalake engine add` names one".to_string(),
+                named => format!("metalake.toml names {}", named.join(", ")),
+            }
+        )));
+    };
+    let (schema, batches) = Remote::new(&using.engine, config)?.sql(&using.sql).await?;
+    crate::Prepared::from_batches(schema, batches)
+}
+
 /// Refuses a name `USING` could not take bare: lowercase letters, digits and `_`, not first a digit.
 pub fn check_engine_name(name: &str) -> Result<()> {
+    if LOCAL.contains(&name) {
+        return Err(Error::usage(format!(
+            "`{name}` is an engine that runs here, as `USING {name}` names it: an engine takes another name"
+        )));
+    }
     if name == using::OWN {
         return Err(Error::usage(format!(
             "`{name}` is the lake's own engine, as `USING {name}` names it: an engine takes another name"
@@ -309,7 +345,7 @@ mod tests {
         for good in ["trino_prod", "_t", "t2"] {
             assert!(check_engine_name(good).is_ok(), "{good}");
         }
-        for bad in ["", "2t", "Trino", "trino-prod", "a.b", "metalake"] {
+        for bad in ["", "2t", "Trino", "trino-prod", "a.b", "metalake", "duckdb"] {
             assert!(check_engine_name(bad).is_err(), "{bad}");
         }
     }

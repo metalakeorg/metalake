@@ -316,7 +316,7 @@ impl Session {
         match step {
             Step::Statement(statement) => self.prepare(statement).await,
             Step::Pipeline(verb) => crate::pipeline::sql::run(&self.lake, verb).await,
-            Step::Using(using) => crate::engine::run_local(&self.lake, &self.current_ref(), &using).await,
+            Step::Using(using) => crate::engine::run_using(&self.lake, &self.current_ref(), &using).await,
         }
     }
 

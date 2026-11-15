@@ -51,8 +51,20 @@ def test_what_duckdb_refuses_is_said_in_its_words(lake):
 
 
 def test_an_engine_that_does_not_run_here_is_refused(lake):
-    with pytest.raises(metalake.UsageError, match="the engines that run here are duckdb"):
+    with pytest.raises(metalake.UsageError, match="no such engine; duckdb run here, and metalake.toml names none"):
         lake.sql("using spark select 1")
+
+
+def test_an_engine_the_lakes_file_names_is_sent_the_statement(lake):
+    """Named, an engine elsewhere is sent what `USING` gives it: here a Trino that is not there, which says so."""
+    lake.add_engine("trino_test", url="http://127.0.0.1:1", user="ana")
+    try:
+        with pytest.raises(metalake.MetaLakeError, match="trino at http://127.0.0.1:1"):
+            lake.sql("using trino_test select 1")
+        with pytest.raises(metalake.UsageError, match="metalake.toml names trino_test"):
+            lake.sql("using nope select 1")
+    finally:
+        lake.remove_engine("trino_test")
 
 
 def test_a_missing_duckdb_says_what_to_install(lake, monkeypatch):

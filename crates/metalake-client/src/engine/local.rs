@@ -40,22 +40,7 @@ pub fn set_local_runner(runner: LocalRunner) {
 }
 
 /// One statement `USING` a local engine, on `lake`, the session reading `on`.
-pub(crate) async fn run_local(lake: &Lake, on: &str, using: &Using) -> Result<Prepared> {
-    if !LOCAL.contains(&using.engine.as_str()) {
-        return Err(Error::usage(format!(
-            "USING {}: no such engine; the engines that run here are {}",
-            using.engine,
-            LOCAL.join(", ")
-        )));
-    }
-    // An engine sees the lake through its Iceberg server, whose catalog is `main`'s: on another ref, it would answer
-    // for `main` without a word.
-    if on != "main" {
-        return Err(Error::usage(format!(
-            "USING {} reads `main`, and this session is on `{on}`",
-            using.engine
-        )));
-    }
+pub(crate) async fn run_local(lake: &Lake, using: &Using) -> Result<Prepared> {
     let runner = RUNNER.get().cloned().ok_or_else(|| {
         Error::usage(format!(
             "USING {} runs in the Python metalake is installed in: pip install \"metalake[{}]\", and run it from there",
