@@ -705,7 +705,10 @@ mod api {
     use axum::http::{Method, StatusCode, header};
 
     use super::{Answer, HOST, Memory, send, send_body};
-    use crate::api::{self, Backend, Detached, Fault, Kind, Mark, Marks, Named, Ref, Rows, Statement, Status, Table};
+    use crate::api::{
+        self, Backend, Detached, Fault, Kind, Mark, Marks, Named, Ref, Rows, Statement, Status, StepAnswer,
+        StepAnswers, StepOutcome, Table,
+    };
     use crate::guard::Access;
     use crate::{Token, router_with};
 
@@ -775,6 +778,52 @@ mod api {
                     rows: 2,
                     truncated: true,
                 })
+            };
+            Box::pin(async move { answer })
+        }
+
+        /// A run of four, one of each way a statement ends: rows that say back the branch and the limit, a write, a
+        /// failure, and one not run. `fail` cannot be split, as a text the lake cannot read.
+        fn run(&self, statement: Statement) -> api::Answer<'_, StepAnswers> {
+            let answer = if statement.sql == "fail" {
+                Err(Fault::new(Kind::Usage, "the text cannot be read"))
+            } else {
+                let said = format!("{:?}|{}", statement.branch, statement.limit());
+                let step = |index: usize, sql: &str, ms: Option<u64>, outcome: StepOutcome| StepAnswer {
+                    index,
+                    sql: sql.into(),
+                    ms,
+                    outcome,
+                };
+                let answers = vec![
+                    step(
+                        0,
+                        "select 1",
+                        Some(3),
+                        StepOutcome::Rows(Rows {
+                            arrow: said.into_bytes(),
+                            rows: 2,
+                            truncated: true,
+                        }),
+                    ),
+                    step(
+                        1,
+                        "insert into t values (1)",
+                        Some(40),
+                        StepOutcome::Written {
+                            commit: Some(57),
+                            rows: 1,
+                        },
+                    ),
+                    step(
+                        2,
+                        "select nope",
+                        Some(1),
+                        StepOutcome::Failed(Fault::new(Kind::Usage, "no column nope")),
+                    ),
+                    step(3, "drop table t", None, StepOutcome::Skipped),
+                ];
+                self.or(Box::pin(futures_util::stream::iter(answers)) as StepAnswers)
             };
             Box::pin(async move { answer })
         }
@@ -1055,6 +1104,84 @@ mod api {
     async fn sql_from_other_origin_forbidden() {
         for origin in [None, Some("http://evil.example")] {
             let answer = run(r#"{"sql":"select 1"}"#, origin).await;
+            assert_eq!(answer.status, StatusCode::FORBIDDEN, "{origin:?}");
+        }
+    }
+
+    async fn run_all(body: &str, origin: Option<&str>) -> Answer {
+        let bearer = format!("Bearer {SECRET}");
+        let mut headers = vec![(header::HOST, HOST), (header::AUTHORIZATION, bearer.as_str())];
+        headers.extend(origin.map(|origin| (header::ORIGIN, origin)));
+        send_body(over(Given::lake()), Method::POST, "/api/v1/sql/run", &headers, body).await
+    }
+
+    /// A run answers a line of JSON per statement, in order: each with its text, state and time, and what it came to.
+    #[tokio::test]
+    async fn run_answers_a_line_per_statement() {
+        use base64::Engine;
+        let answer = run_all(r#"{"sql":"select 1; …","branch":"dev","limit":5}"#, Some(ORIGIN)).await;
+        assert_eq!(answer.status, StatusCode::OK);
+        assert_eq!(answer.header(header::CONTENT_TYPE), Some("application/x-ndjson"));
+        assert_eq!(answer.header(header::CACHE_CONTROL), Some("no-store"));
+        let text = String::from_utf8(answer.body.clone()).unwrap();
+        assert!(text.ends_with('\n'));
+        let lines: Vec<serde_json::Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(lines.len(), 4);
+
+        let read = &lines[0];
+        assert_eq!(
+            (read["index"].as_u64(), read["sql"].as_str()),
+            (Some(0), Some("select 1"))
+        );
+        assert_eq!((read["state"].as_str(), read["ms"].as_u64()), (Some("ok"), Some(3)));
+        assert_eq!(
+            (read["rows"].as_u64(), read["truncated"].as_bool()),
+            (Some(2), Some(true))
+        );
+        let arrow = base64::engine::general_purpose::STANDARD
+            .decode(read["arrow"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(arrow, br#"Some("dev")|5"#);
+
+        let write = &lines[1];
+        assert_eq!(write["state"], "ok");
+        assert_eq!(
+            (write["written"]["commit"].as_i64(), write["written"]["rows"].as_u64()),
+            (Some(57), Some(1))
+        );
+        assert!(write.get("arrow").is_none() && write.get("rows").is_none());
+
+        let failed = &lines[2];
+        assert_eq!(failed["state"], "error");
+        assert_eq!(failed["fault"]["message"], "no column nope");
+
+        let skipped = &lines[3];
+        assert_eq!(
+            (skipped["state"].as_str(), skipped["index"].as_u64()),
+            (Some("skipped"), Some(3))
+        );
+        assert!(skipped.get("ms").is_none());
+    }
+
+    #[tokio::test]
+    async fn run_refuses_what_it_cannot_run() {
+        let cases = [
+            ("not json", "is JSON"),
+            (r#"{"sql":"  "}"#, "no statement"),
+            (r#"{"sql":"fail"}"#, "cannot be read"),
+        ];
+        for (body, said) in cases {
+            let answer = run_all(body, Some(ORIGIN)).await;
+            assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{body}");
+            assert!(json(&answer)["message"].as_str().unwrap().contains(said), "{body}");
+        }
+    }
+
+    /// A run may write: it comes from the UI's own pages alone.
+    #[tokio::test]
+    async fn run_from_other_origin_forbidden() {
+        for origin in [None, Some("http://evil.example")] {
+            let answer = run_all(r#"{"sql":"select 1"}"#, origin).await;
             assert_eq!(answer.status, StatusCode::FORBIDDEN, "{origin:?}");
         }
     }

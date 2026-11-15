@@ -3,6 +3,8 @@
 //!
 //!     CRATE=metalake-ui bash sql/test.sh --test run
 
+#![cfg(feature = "lake")]
+
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use futures_util::StreamExt;
