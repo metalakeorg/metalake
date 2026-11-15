@@ -28,6 +28,18 @@ pub async fn run(verb: &EngineVerb, dir: Option<&Path>, out: &Out) -> Result<(),
             file.remove_engine(&engine.name)?;
             return Ok(());
         }
+        EngineVerb::Check(engine) => {
+            let checked = file.engine(&engine.name)?.check().await;
+            let (schema, batch) = checked.rows(&engine.name)?;
+            out.rows(Prepared::from_batches(schema, vec![batch])?.read()?).await?;
+            if checked.holds() {
+                return Ok(());
+            }
+            return Err(Error::failed(format!(
+                "the engine `{}` cannot run a statement on the lake: a link does not hold",
+                engine.name
+            )));
+        }
     };
     let (schema, batch) = engine_rows(&shown)?;
     out.rows(Prepared::from_batches(schema, vec![batch])?.read()?).await

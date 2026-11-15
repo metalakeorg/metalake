@@ -8,12 +8,112 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use datafusion::arrow::array::{ArrayRef, RecordBatch, StringArray};
+use datafusion::arrow::array::{ArrayRef, BooleanArray, RecordBatch, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::{Error, Result};
+
+mod trino;
+
+pub use trino::Trino;
+
+/// An engine the lake names, ready to be sent statements.
+#[derive(Debug, Clone)]
+pub enum Remote {
+    Trino(Trino),
+}
+
+impl Remote {
+    /// The engine `config` names: its secret is read from the environment now, and nothing is sent yet.
+    pub fn new(name: &str, config: &EngineConfig) -> Result<Self> {
+        match config.kind {
+            EngineKind::Trino => Ok(Self::Trino(Trino::new(name, config)?)),
+        }
+    }
+
+    /// Runs one statement on it, and answers its rows.
+    pub async fn sql(&self, text: &str) -> Result<(SchemaRef, Vec<RecordBatch>)> {
+        match self {
+            Self::Trino(trino) => trino.sql(text).await,
+        }
+    }
+
+    /// The lake's catalog in it.
+    pub fn catalog(&self) -> &str {
+        match self {
+            Self::Trino(trino) => trino.catalog(),
+        }
+    }
+
+    /// Whether each of the two links a statement takes holds, apart: this side reaches the engine and is let in, and
+    /// the engine reaches the lake, through the lake's Iceberg server, as its catalog. The second is not asked when
+    /// the first fails.
+    pub async fn check(&self) -> Checked {
+        let engine = self
+            .sql("select 1")
+            .await
+            .map(|_| "answers, and lets this side in".to_string());
+        let lake = match &engine {
+            Err(_) => Err("not asked: the engine is not reached".to_string()),
+            Ok(_) => match self.sql(&format!("show schemas from {}", self.catalog())).await {
+                Ok((_, batches)) => {
+                    let schemas: usize = batches.iter().map(RecordBatch::num_rows).sum();
+                    Ok(format!("sees the lake as `{}`: {schemas} schemas", self.catalog()))
+                }
+                Err(e) => Err(e.to_string()),
+            },
+        };
+        Checked {
+            engine: engine.map_err(|e| e.to_string()),
+            lake,
+        }
+    }
+}
+
+/// What `check` found of each link: what holds, or why not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checked {
+    /// This side → the engine.
+    pub engine: std::result::Result<String, String>,
+    /// The engine → the lake, through its Iceberg server.
+    pub lake: std::result::Result<String, String>,
+}
+
+impl Checked {
+    pub fn holds(&self) -> bool {
+        self.engine.is_ok() && self.lake.is_ok()
+    }
+
+    /// As rows: a link each, whether it holds, and what was found.
+    pub fn rows(&self, name: &str) -> Result<(SchemaRef, RecordBatch)> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("link", DataType::Utf8, false),
+            Field::new("holds", DataType::Boolean, false),
+            Field::new("said", DataType::Utf8, false),
+        ]));
+        let links = [
+            (format!("metalake -> {name}"), &self.engine),
+            (format!("{name} -> lake"), &self.lake),
+        ];
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(links.iter().map(|(l, _)| Some(l.clone())).collect::<StringArray>()),
+            Arc::new(links.iter().map(|(_, r)| Some(r.is_ok())).collect::<BooleanArray>()),
+            Arc::new(
+                links
+                    .iter()
+                    .map(|(_, r)| {
+                        Some(match r {
+                            Ok(s) | Err(s) => s.clone(),
+                        })
+                    })
+                    .collect::<StringArray>(),
+            ),
+        ];
+        Ok((schema.clone(), RecordBatch::try_new(schema, columns)?))
+    }
+}
 
 /// The catalog the lake is in an engine, unless its entry names another: what `metalake iceberg connect` names it.
 pub const CATALOG: &str = "lake";

@@ -3110,6 +3110,8 @@ name = "metalake-client"
 version = "0.6.0"
 dependencies = [
  "arrow-schema",
+ "axum",
+ "base64 0.22.1",
  "datafusion",
  "futures-util",
  "metalake",
@@ -3118,6 +3120,7 @@ dependencies = [
  "metalake-local",
  "metalake-pg",
  "object_store",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2",
@@ -3168,6 +3171,7 @@ dependencies = [
  "futures-util",
  "hmac",
  "metalake",
+ "metalake-client",
  "metalake-pg",
  "object_store",
  "parquet",

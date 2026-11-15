@@ -30,6 +30,9 @@ serde.workspace = true
 sha2 = "0.11"
 serde_json.workspace = true
 tokio = { workspace = true, features = ["time"] }
+# Engines elsewhere, as Trino, sent statements by their HTTP protocol.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json"] }
+base64 = "0.22"
 uuid.workspace = true
 toml = "1"
 # A lake's file edited in place, its comments kept.
@@ -47,3 +50,5 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 [dev-dependencies]
 arrow-schema.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# A Trino that answers as the tests say, to send statements to.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }

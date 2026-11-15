@@ -94,6 +94,9 @@ pub enum EngineVerb {
     List,
     /// Forgets an engine. The engine itself is not touched.
     Remove(EngineRef),
+    /// Whether a statement can run on it, each link apart: this side reaches the engine and is let in, and the engine
+    /// reaches the lake, through the lake's Iceberg server, as its catalog. Fails if either does not hold.
+    Check(EngineRef),
 }
 
 #[derive(Debug, Args)]

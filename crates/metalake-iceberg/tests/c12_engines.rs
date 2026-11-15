@@ -261,3 +261,88 @@ async fn duckdb_insert() -> Result<(), Failure> {
     assert_eq!(said["rows"], json!([0, 2, 3, 4, 10, 11, 12, 40, 41]), "{said}");
     Ok(())
 }
+
+/// A Trino the lake names, as its faces send it statements (`metalake engine check`, `lake.engine(…)`): both links hold
+/// once Trino runs with the lake as its catalog, its rows come back as Arrow, and a catalog it does not have is the
+/// second link failing alone.
+#[tokio::test]
+// One engine at a time, as `run` holds it: the container is named, and the other Trino test takes its port.
+#[allow(clippy::await_holding_lock)]
+async fn trino_named_engine() -> Result<(), Failure> {
+    use arrow_array::cast::AsArray;
+    use arrow_array::types::Int32Type;
+    use metalake_client::{EngineConfig, EngineKind, Remote};
+
+    if !wanted("trino") {
+        return Ok(());
+    }
+    let _alone = ONE_ENGINE.lock().unwrap_or_else(PoisonError::into_inner);
+    let schema = fresh_schema();
+    let directory = wide(&schema).await?;
+    let (_server, uri) = server(&schema)?;
+    let catalog = std::env::temp_dir().join(format!("{schema}_trino"));
+    std::fs::create_dir_all(&catalog)?;
+    std::fs::write(
+        catalog.join("lake.properties"),
+        format!(
+            "connector.name=iceberg
+iceberg.catalog.type=rest
+iceberg.rest-catalog.uri={uri}
+fs.hadoop.enabled=true
+"
+        ),
+    )?;
+    let started = Command::new("docker")
+        .args([
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            "metalake-trino",
+            "--network",
+            "host",
+            "--user",
+            "root",
+            "-v",
+        ])
+        .arg(format!("{}:/etc/trino/catalog", catalog.display()))
+        .args(["-v", "/tmp:/tmp", "trinodb/trino:484"])
+        .output()?;
+    assert!(started.status.success(), "{}", String::from_utf8_lossy(&started.stderr));
+
+    let config = |catalog: &str| EngineConfig {
+        kind: EngineKind::Trino,
+        url: "http://127.0.0.1:8080".into(),
+        user: Some("metalake".into()),
+        token_env: None,
+        password_env: None,
+        catalog: Some(catalog.into()),
+    };
+    let trino = Remote::new("trino_test", &config("lake"))?;
+    let outcome = async {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+        let mut checked = trino.check().await;
+        while !checked.holds() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            checked = trino.check().await;
+        }
+        assert!(checked.holds(), "{checked:?}");
+
+        let (_, batches) = trino.sql("select k from db.wide order by k").await?;
+        let keys: Vec<i32> = batches
+            .iter()
+            .flat_map(|b| b.column(0).as_primitive::<Int32Type>().values().to_vec())
+            .collect();
+        assert_eq!(keys, [0, 2, 3, 4, 10, 11, 12]);
+
+        let elsewhere = Remote::new("trino_test", &config("elsewhere"))?.check().await;
+        assert!(elsewhere.engine.is_ok(), "{elsewhere:?}");
+        assert!(elsewhere.lake.is_err(), "{elsewhere:?}");
+        Ok::<_, Failure>(())
+    }
+    .await;
+    let _ = Command::new("docker").args(["rm", "-f", "metalake-trino"]).output();
+    let _ = std::fs::remove_dir_all(&catalog);
+    let _ = std::fs::remove_dir_all(&directory);
+    outcome
+}

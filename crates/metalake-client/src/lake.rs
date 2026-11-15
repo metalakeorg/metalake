@@ -287,6 +287,11 @@ impl LakeFile {
     pub fn remove_engine(&self, name: &str) -> Result<()> {
         remove_engine_in(&self.path, name)
     }
+
+    /// One engine it names, ready to be sent statements: its secret is read from the environment now.
+    pub fn engine(&self, name: &str) -> Result<crate::Remote> {
+        crate::Remote::new(name, &named_engine(self.engines()?, name)?)
+    }
 }
 
 /// One engine of `engines`, or why there is none.
@@ -367,6 +372,11 @@ impl Lake {
     /// One engine the lake's file names.
     pub fn engine_config(&self, name: &str) -> Result<EngineConfig> {
         named_engine(self.engines()?, name)
+    }
+
+    /// An engine the lake's file names, ready to be sent statements: its secret is read from the environment now.
+    pub fn engine(&self, name: &str) -> Result<crate::Remote> {
+        crate::Remote::new(name, &self.engine_config(name)?)
     }
 
     /// Names an engine in the lake's file. It reaches nothing: the engine need not run, nor reach the lake, until a

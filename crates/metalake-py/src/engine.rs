@@ -4,15 +4,17 @@
 
 use std::sync::Arc;
 
-use metalake_client::{EngineConfig, Lake};
+use metalake_client::{EngineConfig, Lake, Prepared};
 use pyo3::prelude::*;
 
+use crate::errors::to_python;
 use crate::owner::Owner;
+use crate::result::QueryResult;
+use crate::runtime::wait;
 
 /// An engine the lake names: where it answers and who asks.
 #[pyclass(name = "Engine", module = "metalake", frozen)]
 pub struct PyEngine {
-    #[allow(dead_code)]
     owner: Owner,
     #[allow(dead_code)]
     lake: Arc<Lake>,
@@ -33,6 +35,34 @@ impl PyEngine {
 
 #[pymethods]
 impl PyEngine {
+    /// Runs one statement on the engine, in its own SQL, with the lake's catalog as the session's: `demo.t` is the
+    /// lake's `demo.t`. Its rows come back as a `Result`, as `lake.sql` answers.
+    fn sql(&self, py: Python<'_>, text: String) -> PyResult<QueryResult> {
+        self.owner.check(py, "Lake")?;
+        let remote = metalake_client::Remote::new(&self.name, &self.config).map_err(|e| to_python(py, e))?;
+        let answered = wait(py, async move { remote.sql(&text).await })?;
+        let (schema, batches) = answered.map_err(|e| to_python(py, e))?;
+        let prepared = Prepared::from_batches(schema, batches).map_err(|e| to_python(py, e))?;
+        Ok(QueryResult::new(prepared, self.owner.clone()))
+    }
+
+    /// Whether a statement can run on it, each link apart: `engine`, this side reaches it and is let in; `lake`, it
+    /// reaches the lake through the lake's Iceberg server. Each is whether it holds, and what was found.
+    fn check(&self, py: Python<'_>) -> PyResult<std::collections::BTreeMap<String, (bool, String)>> {
+        self.owner.check(py, "Lake")?;
+        let remote = metalake_client::Remote::new(&self.name, &self.config).map_err(|e| to_python(py, e))?;
+        let checked = wait(py, async move { remote.check().await })?;
+        let link = |r: &Result<String, String>| match r {
+            Ok(said) => (true, said.clone()),
+            Err(said) => (false, said.clone()),
+        };
+        Ok([
+            ("engine".to_string(), link(&checked.engine)),
+            ("lake".to_string(), link(&checked.lake)),
+        ]
+        .into())
+    }
+
     #[getter]
     fn name(&self) -> &str {
         &self.name
