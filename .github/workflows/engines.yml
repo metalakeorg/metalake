@@ -8,6 +8,7 @@ on:
     branches: [main]
     paths:
       - crates/metalake-iceberg/**
+      - crates/metalake-cli/**
       - crates/metalake-client/**
       - crates/metalake-py/**
       - crates/metalake/**
@@ -18,6 +19,7 @@ on:
     branches: [main]
     paths:
       - crates/metalake-iceberg/**
+      - crates/metalake-cli/**
       - crates/metalake-client/**
       - crates/metalake-py/**
       - crates/metalake/**
@@ -67,6 +69,8 @@ jobs:
           curl -fsSLO "$maven/hadoop/hadoop-client-runtime/$HADOOP/hadoop-client-runtime-$HADOOP.jar"
       - name: The engines
         run: CRATE=metalake-iceberg bash sql/test.sh --test c12_engines
+      - name: A Trino the lake names
+        run: CRATE=metalake-cli bash sql/test.sh --test c20_engines
 
   # The extension, built once, in its debug profile, with Rust's cache: the Python jobs below install its wheel rather
   # than each building it again in release, which took them twelve minutes of their thirteen.

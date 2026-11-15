@@ -42,6 +42,4 @@ sha2 = "0.11"
 
 [dev-dependencies]
 metalake-pg.workspace = true
-# A Trino the lake names, sent statements as the lake's faces send them.
-metalake-client = { path = "../metalake-client" }
 tokio = { workspace = true, features = ["io-util", "sync", "time"] }
