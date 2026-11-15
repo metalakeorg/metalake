@@ -72,6 +72,15 @@ jobs:
           - { runner: macos-15, target: x86_64-apple-darwin }
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
+      RUSTC_WRAPPER: ${{ secrets.R2_ACCESS_KEY_ID != '' && 'sccache' || '' }}
+      SCCACHE_BUCKET: metalake-sccache
+      SCCACHE_ENDPOINT: https://${{ vars.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      SCCACHE_REGION: auto
+      SCCACHE_S3_USE_SSL: "true"
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      SCCACHE_R2_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      SCCACHE_R2_SECRET: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -100,6 +109,12 @@ jobs:
       - name: LLVM, for Windows's wheel
         if: runner.os == 'Linux' && contains(matrix.target, 'windows')
         run: sudo apt-get install -y --no-install-recommends clang lld llvm
+      # What compiled before comes from a bucket in Cloudflare's R2, which charges nothing for reads: only what changed
+      # since a build that saw it compiles again. maturin's own `sccache` would keep it in the Actions cache, whose 10 GB
+      # the other jobs fill. Without the bucket's key (a fork, a call that passes no secrets), the build compiles all.
+      - name: sccache
+        if: env.RUSTC_WRAPPER == 'sccache'
+        run: python -m pip install --quiet "sccache>=0.10.0"
       - name: Build the wheel
         uses: PyO3/maturin-action@v1
         with:
@@ -107,6 +122,15 @@ jobs:
           manylinux: ${{ matrix.manylinux || 'auto' }}
           container: ${{ matrix.container || '' }}
           args: --release --out dist -m crates/metalake-py/Cargo.toml
+          # maturin's container sees only the variables it allows, `SCCACHE_*` among them: the key reaches it so.
+          before-script-linux: |
+            if [ "$RUSTC_WRAPPER" = sccache ]; then
+              command -v sccache >/dev/null || python3 -m pip install --quiet "sccache>=0.10.0" || uv tool install "sccache>=0.10.0"
+              export AWS_ACCESS_KEY_ID="$SCCACHE_R2_KEY_ID" AWS_SECRET_ACCESS_KEY="$SCCACHE_R2_SECRET"
+            fi
+      - name: What the cache held
+        if: env.RUSTC_WRAPPER == 'sccache' && (runner.os != 'Linux' || matrix.container == 'off')
+        run: sccache --show-stats
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ matrix.target }}
