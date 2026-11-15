@@ -34,6 +34,7 @@ jobs:
     needs: built
     if: needs.built.outputs.run == ''
     uses: ./.github/workflows/wheels.yml
+    secrets: inherit
 
   testpypi:
     needs: [built, wheels]
@@ -73,19 +74,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      # TestPyPI's index lists a new version some time after the upload: asked until it does, for ten minutes at most.
+      # TestPyPI's index lists a new version some time after the upload: asked until it does, for twenty minutes at most.
       - name: The version, once TestPyPI's index lists it
         shell: bash
         run: |
           version=${GITHUB_REF_NAME#v}
-          for _ in $(seq 20); do
+          for _ in $(seq 40); do
             if python -m pip download --quiet --no-deps --dest "$RUNNER_TEMP/listed" \
                  --index-url https://test.pypi.org/simple/ "metalake==$version"; then
               exit 0
             fi
             sleep 30
           done
-          echo "TestPyPI does not list metalake $version after ten minutes" && exit 1
+          echo "TestPyPI does not list metalake $version after twenty minutes" && exit 1
       - name: Install from TestPyPI and run what a person would
         shell: bash
         run: bash packaging/e2e.sh "metalake==${GITHUB_REF_NAME#v}" --index-url https://test.pypi.org/simple/
