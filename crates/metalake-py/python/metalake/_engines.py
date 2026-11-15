@@ -166,7 +166,7 @@ def run_local(engine, setup, sql):
         # A statement that answers no rows, as a CREATE, answers an empty table.
         if result.description is None:
             return pyarrow.table({})
-        return result.arrow()
+        return result.fetch_arrow_table()
 
 
 def _using(module):
