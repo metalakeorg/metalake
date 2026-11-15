@@ -53,20 +53,23 @@ jobs:
           path: crates/metalake-ui/web/dist
           if-no-files-found: error
 
+  # Each target's wheel, built where it builds fastest: macOS's Intel wheel on the ARM runner, which compiles it in less
+  # than half the time of the Intel one, and Windows's on Linux, with the Windows SDK that maturin fetches (cargo-xwin).
+  # Tested below, each on its own platform.
   wheel:
     name: ${{ matrix.target }}
     needs: frontend
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 120
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { runner: windows-latest, target: x86_64-pc-windows-msvc }
+          - { runner: ubuntu-latest, target: x86_64-pc-windows-msvc, container: "off" }
           - { runner: ubuntu-latest, target: x86_64-unknown-linux-gnu, manylinux: "2_34" }
           - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, manylinux: "2_34" }
           - { runner: macos-15, target: aarch64-apple-darwin }
-          - { runner: macos-15-intel, target: x86_64-apple-darwin }
+          - { runner: macos-15, target: x86_64-apple-darwin }
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
@@ -93,33 +96,74 @@ jobs:
           test -f crates/metalake-ui/web/dist/index.html
           mkdir -p crates/metalake-py/python/metalake/licenses
           cp crates/metalake-ui/web/dist/licenses.txt crates/metalake-py/python/metalake/licenses/ui.txt
+      # Windows's C, compiled and linked on Linux: clang-cl, lld-link and llvm-lib.
+      - name: LLVM, for Windows's wheel
+        if: runner.os == 'Linux' && contains(matrix.target, 'windows')
+        run: sudo apt-get install -y --no-install-recommends clang lld llvm
       - name: Build the wheel
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'auto' }}
+          container: ${{ matrix.container || '' }}
           args: --release --out dist -m crates/metalake-py/Cargo.toml
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ matrix.target }}
           path: dist/*.whl
+          if-no-files-found: error
+
+  # Each wheel's tests, on its own platform and in three groups at once: the wheel's time is its build and its longest
+  # group, not the sum of them.
+  test:
+    name: ${{ matrix.platform.target }} · ${{ matrix.group }}
+    needs: wheel
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - { runner: windows-latest, target: x86_64-pc-windows-msvc }
+          - { runner: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { runner: macos-15, target: aarch64-apple-darwin }
+          - { runner: macos-15-intel, target: x86_64-apple-darwin }
+        # `install`: what a person would, the API with no pyarrow, and a lake's own Postgres. `current` and `oldest`:
+        # the API with today's libraries, and with the oldest Python and libraries it promises.
+        group: [install, current, oldest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.group == 'oldest' && '3.11' || '3.12' }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel-${{ matrix.platform.target }}
+          path: dist
       - name: Run what a person would
+        if: matrix.group == 'install'
         shell: bash
         run: bash packaging/e2e.sh dist/*.whl
       - name: The Python API, with no pyarrow
+        if: matrix.group == 'install'
         shell: bash
         run: bash packaging/python_tests.sh dist/*.whl bare
       - name: The Python API, with today's libraries
+        if: matrix.group == 'current'
         shell: bash
         run: bash packaging/python_tests.sh dist/*.whl current
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
       - name: The Python API, on the oldest Python and libraries it promises
+        if: matrix.group == 'oldest'
         shell: bash
         run: bash packaging/python_tests.sh dist/*.whl oldest
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Prepare Postgres
+        if: matrix.group == 'install'
+        run: python packaging/postgres.py ${{ matrix.platform.target }}
+      - if: matrix.group == 'install'
+        uses: dtolnay/rust-toolchain@stable
       - name: Test a lake's own Postgres
+        if: matrix.group == 'install'
         run: cargo test -p metalake-local
         env:
           # What was prepared above: the release listing is rate limited on a runner's shared address.
