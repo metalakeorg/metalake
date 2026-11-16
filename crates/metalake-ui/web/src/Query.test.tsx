@@ -74,9 +74,9 @@ async function runs(request: Request): Promise<Response> {
       return { index, sql, state: "error", ms: 1, fault, ref: on };
     }
     const used = /^use (?:branch|tag) (\S+)$/i.exec(sql);
-    if (used) on = used[1];
+    if (used?.[1]) on = used[1];
     const created = /^create branch (\S+)$/i.exec(sql);
-    if (created) made.push(created[1]);
+    if (created?.[1]) made.push(created[1]);
     return { index, sql, state: "ok", ms: 2, rows: 2, truncated: true, arrow, ref: on };
   });
   const body = lines
@@ -244,7 +244,7 @@ describe("QueryPage", () => {
     write("select 2");
     fireEvent.click(screen.getByRole("button", { name: "Run" }));
     await vi.waitFor(() => expect(asked).toHaveLength(2));
-    expect(asked[1].branch).toBe("dev");
+    expect(asked[1]?.branch).toBe("dev");
   });
 
   it("follows a branch the same run made, once the refs are read again", async () => {

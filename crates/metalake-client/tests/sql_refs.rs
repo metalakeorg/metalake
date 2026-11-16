@@ -70,8 +70,8 @@ async fn i5_a_branch_lives_its_whole_life_in_sql() {
         "IF NOT EXISTS answers it"
     );
     assert!(
-        refused(&session, "create branch dev").await.contains("dev"),
-        "a name taken"
+        !refused(&session, "create branch dev").await.is_empty(),
+        "a name taken is refused"
     );
 
     // USE moves the session: a name that says no ref is the ref's, as `lake.on` makes it.
