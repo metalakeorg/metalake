@@ -388,7 +388,9 @@ mod tests {
         assert!(matches!(verb("show log"), RefVerb::Log { on: None, limit: LOG }));
         assert!(matches!(verb("show log dev limit 5"), RefVerb::Log { on: Some(on), limit: 5 } if on == "dev"));
         assert!(matches!(verb("show log limit 3"), RefVerb::Log { on: None, limit: 3 }));
-        assert!(matches!(verb("use branch dev"), RefVerb::Use { kind: RefKind::Branch, name, at: None } if name == "dev"));
+        assert!(
+            matches!(verb("use branch dev"), RefVerb::Use { kind: RefKind::Branch, name, at: None } if name == "dev")
+        );
         assert!(matches!(verb("use tag v1"), RefVerb::Use { kind: RefKind::Tag, .. }));
         assert!(matches!(verb("use branch dev as of 12"), RefVerb::Use { at: Some(at), .. } if at == "12"));
         assert!(matches!(

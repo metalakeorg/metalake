@@ -92,7 +92,10 @@ async fn has_catalog(state: &State, on: &str, catalog: &str) -> Result<(), Failu
         Err(e) => return Err(e.into()),
     };
     let namespaces = found.namespaces().await?;
-    if namespaces.iter().any(|n| n.namespace.len() == 1 && n.namespace[0] == catalog) {
+    if namespaces
+        .iter()
+        .any(|n| n.namespace.len() == 1 && n.namespace[0] == catalog)
+    {
         return Ok(());
     }
     Err(Failure::no_catalog(catalog, on))

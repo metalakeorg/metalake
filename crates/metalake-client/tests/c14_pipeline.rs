@@ -88,11 +88,7 @@ async fn c14_pipeline_lifecycle() {
         .unwrap_err();
     assert!(other.message.contains("has rows"), "{}", other.message);
 
-    sql(
-        &session,
-        "insert into shop.orders values (5, 'bo', 15), (6, 'dee', 30)",
-    )
-    .await;
+    sql(&session, "insert into shop.orders values (5, 'bo', 15), (6, 'dee', 30)").await;
     settled(&session, "inserts").await;
     sql(&session, "delete from shop.orders where customer = 'cy'").await;
     settled(&session, "a customer gone").await;
@@ -100,11 +96,7 @@ async fn c14_pipeline_lifecycle() {
     // Suspended with a checkpoint; what comes meanwhile comes once it is resumed.
     let suspended = lake.suspend_pipeline("totals").await.unwrap();
     assert_eq!(suspended.state, PipelineState::Suspended);
-    sql(
-        &session,
-        "insert into shop.orders values (7, 'ana', 1), (8, 'eve', 2)",
-    )
-    .await;
+    sql(&session, "insert into shop.orders values (7, 'ana', 1), (8, 'eve', 2)").await;
     let resumed = lake.resume_pipeline("totals").await.unwrap();
     assert_eq!(resumed.state, PipelineState::Running, "{:?}", resumed.state);
     settled(&session, "resumed from its checkpoint").await;

@@ -141,11 +141,7 @@ fn merge_unions_vectors() {
 #[test]
 fn merge_selected_table() {
     let dir = table();
-    sql(
-        &dir,
-        "create table db.u (k int); insert into db.u values (1)",
-        "csv",
-    );
+    sql(&dir, "create table db.u (k int); insert into db.u values (1)", "csv");
     ok(&dir, &["branch", "create", "dev"]);
     sql(&dir, "use branch dev; insert into db.t values (3, 'c', 2.5)", "csv");
     sql(&dir, "use branch dev; insert into db.u values (2)", "csv");
@@ -169,11 +165,7 @@ fn merge_selected_table() {
 #[test]
 fn mrg7_cross_table_commit_requires_split() {
     let dir = table();
-    sql(
-        &dir,
-        "create table db.u (k int); insert into db.u values (1)",
-        "csv",
-    );
+    sql(&dir, "create table db.u (k int); insert into db.u values (1)", "csv");
     ok(&dir, &["branch", "create", "dev"]);
     ok(&dir, &["branch", "create", "sub", "--from", "dev"]);
     sql(&dir, "use branch sub; insert into db.t values (3, 'c', 2.5)", "csv");

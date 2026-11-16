@@ -164,8 +164,14 @@ pub(crate) async fn create(
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let storage_credentials =
-        credentials_for(&state, caller, asked, &location, Some(renewal(&on, &catalog, &namespace, &name))).await?;
+    let storage_credentials = credentials_for(
+        &state,
+        caller,
+        asked,
+        &location,
+        Some(renewal(&on, &catalog, &namespace, &name)),
+    )
+    .await?;
     let table = create::create(&state, &on, &wanted, &name, new).await.map_err(|e| {
         let failure = Failure::from(e);
         if failure.is_conflict() {
@@ -284,13 +290,19 @@ pub(crate) async fn commit_transaction(
 }
 
 /// `HEAD /v1/namespaces/{namespace}/tables/{table}`, which generates nothing, unlike a load.
-pub(crate) async fn exists(On(on, catalog): On, Path((namespace, name)): Path<(String, String)>) -> Result<StatusCode, Failure> {
+pub(crate) async fn exists(
+    On(on, catalog): On,
+    Path((namespace, name)): Path<(String, String)>,
+) -> Result<StatusCode, Failure> {
     found(&on, &strs(&inside(&catalog, &namespace)), &name).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// `DELETE /v1/namespaces/{namespace}/tables/{table}`. `purgeRequested` changes nothing (REST-8), so it is not read.
-pub(crate) async fn drop(On(on, catalog): On, Path((namespace, name)): Path<(String, String)>) -> Result<StatusCode, Failure> {
+pub(crate) async fn drop(
+    On(on, catalog): On,
+    Path((namespace, name)): Path<(String, String)>,
+) -> Result<StatusCode, Failure> {
     let table = found(&on, &strs(&inside(&catalog, &namespace)), &name).await?;
     ddl::drop_table(&on, &table).await?;
     Ok(StatusCode::NO_CONTENT)

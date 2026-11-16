@@ -34,7 +34,11 @@ async fn lake() -> (Lake, PathBuf) {
     .await
     .expect("a lake");
     let main = lake.catalog.branch("main").await.unwrap();
-    main.transaction().create_namespace(&["default", "db"]).commit().await.unwrap();
+    main.transaction()
+        .create_namespace(&["default", "db"])
+        .commit()
+        .await
+        .unwrap();
     let shape = Arc::new(Schema::new(vec![
         Field::new("k", DataType::Int64, false),
         Field::new("v", DataType::Utf8, true),

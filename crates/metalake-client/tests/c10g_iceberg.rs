@@ -28,7 +28,11 @@ async fn lake(names: &[&str]) -> (Lake, PathBuf) {
     .await
     .expect("a lake");
     let main = lake.catalog.branch("main").await.unwrap();
-    main.transaction().create_namespace(&["default", "db"]).commit().await.unwrap();
+    main.transaction()
+        .create_namespace(&["default", "db"])
+        .commit()
+        .await
+        .unwrap();
     let shape = Schema::new(vec![Field::new("k", DataType::Int64, false)]);
     for name in names {
         let (tx, _) = main
@@ -138,7 +142,12 @@ async fn rest6_status_reports_unwritten_commits() {
 
     // a metadata file that serves the head, as the service writes it: nothing behind
     let main = lake.catalog.branch("main").await.unwrap();
-    let location = main.table(&["default", "db"], "a").await.unwrap().location().to_string();
+    let location = main
+        .table(&["default", "db"], "a")
+        .await
+        .unwrap()
+        .location()
+        .to_string();
     let local = location.trim_start_matches("file://").trim_start_matches('/');
     let local = if cfg!(windows) {
         local.to_string()

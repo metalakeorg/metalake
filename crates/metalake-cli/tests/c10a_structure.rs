@@ -221,10 +221,7 @@ fn sql_script_stops_on_failure() {
     let dir = table();
     let output = run(
         &dir,
-        &[
-            "sql",
-            "select nope from db.t; insert into db.t values (3, 'c', 2.5)",
-        ],
+        &["sql", "select nope from db.t; insert into db.t values (3, 'c', 2.5)"],
     );
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());

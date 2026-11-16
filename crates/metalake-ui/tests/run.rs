@@ -31,7 +31,11 @@ async fn lake() -> (Lake, std::path::PathBuf) {
     .await
     .expect("a lake");
     let main = lake.catalog.branch("main").await.unwrap();
-    main.transaction().create_namespace(&["default", "db"]).commit().await.unwrap();
+    main.transaction()
+        .create_namespace(&["default", "db"])
+        .commit()
+        .await
+        .unwrap();
     (lake, dir)
 }
 

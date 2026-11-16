@@ -128,7 +128,12 @@ fn parquet(dir: &Path) -> usize {
 /// The count on `on`, a branch or a tag the session uses: a name says no ref (I7).
 fn count(dir: &Path, on: &str) -> String {
     let kind = if on == "q3" { "tag" } else { "branch" };
-    sql_on(dir, &format!("use {kind} {on}"), "select count(*) as n, max(k) as m from db.t", "csv")
+    sql_on(
+        dir,
+        &format!("use {kind} {on}"),
+        "select count(*) as n, max(k) as m from db.t",
+        "csv",
+    )
 }
 
 fn maintain(dir: &Path, args: &[&str]) -> Vec<Value> {

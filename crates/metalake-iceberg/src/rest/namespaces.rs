@@ -67,7 +67,9 @@ pub(crate) async fn create(On(on, catalog): On, body: Bytes) -> Result<Json<Valu
 /// `GET /v1/namespaces/{namespace}`.
 pub(crate) async fn load(On(on, catalog): On, Path(namespace): Path<String>) -> Result<Json<Value>, Failure> {
     let row = found(&on, &strs(&inside(&catalog, &namespace))).await?;
-    Ok(Json(json!({"namespace": levels(&namespace), "properties": row.properties})))
+    Ok(Json(
+        json!({"namespace": levels(&namespace), "properties": row.properties}),
+    ))
 }
 
 /// `HEAD /v1/namespaces/{namespace}`.
@@ -77,7 +79,11 @@ pub(crate) async fn exists(On(on, catalog): On, Path(namespace): Path<String>) -
 }
 
 /// `POST /v1/namespaces/{namespace}/properties`.
-pub(crate) async fn update(On(on, catalog): On, Path(namespace): Path<String>, body: Bytes) -> Result<Json<Value>, Failure> {
+pub(crate) async fn update(
+    On(on, catalog): On,
+    Path(namespace): Path<String>,
+    body: Bytes,
+) -> Result<Json<Value>, Failure> {
     let full = inside(&catalog, &namespace);
     let wanted = strs(&full);
     let request: UpdateNamespaceRequest = decoded(&body)?;

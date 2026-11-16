@@ -93,11 +93,7 @@ fn log_merge_author_and_branch_commits() {
 #[test]
 fn log_table_filter() {
     let dir = table();
-    sql(
-        &dir,
-        "create table db.u (k int); insert into db.u values (1)",
-        "csv",
-    );
+    sql(&dir, "create table db.u (k int); insert into db.u values (1)", "csv");
     sql(&dir, "insert into db.t values (3, 'c', 2.5)", "csv");
 
     let of_u = log(&dir, &["--table", "db.u"]);

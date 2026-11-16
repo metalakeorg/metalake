@@ -140,10 +140,16 @@ mod tests {
 
     #[test]
     fn i7_parse_defaults_and_levels() {
-        assert_eq!(TablePath::parse("t").unwrap(), name("main", &["default", "default"], "t"));
+        assert_eq!(
+            TablePath::parse("t").unwrap(),
+            name("main", &["default", "default"], "t")
+        );
         assert_eq!(TablePath::parse("s.t").unwrap(), name("main", &["default", "s"], "t"));
         assert_eq!(TablePath::parse("c.s.t").unwrap(), name("main", &["c", "s"], "t"));
-        assert_eq!(TablePath::parse("c.a.b.t").unwrap(), name("main", &["c", "a", "b"], "t"));
+        assert_eq!(
+            TablePath::parse("c.a.b.t").unwrap(),
+            name("main", &["c", "a", "b"], "t")
+        );
         assert_eq!(TablePath::parse("c.a.b.t").unwrap().to_string(), "c.a.b.t");
         assert_eq!(TablePath::parse("t").unwrap().to_string(), "default.default.t");
     }
@@ -155,8 +161,14 @@ mod tests {
             TablePath::parse_on("t", "dev").unwrap(),
             name("dev", &["default", "default"], "t")
         );
-        assert_eq!(TablePath::parse_on("s.t", "dev").unwrap(), name("dev", &["default", "s"], "t"));
-        assert_eq!(TablePath::parse_on("c.s.t", "dev").unwrap(), name("dev", &["c", "s"], "t"));
+        assert_eq!(
+            TablePath::parse_on("s.t", "dev").unwrap(),
+            name("dev", &["default", "s"], "t")
+        );
+        assert_eq!(
+            TablePath::parse_on("c.s.t", "dev").unwrap(),
+            name("dev", &["c", "s"], "t")
+        );
     }
 
     #[test]
@@ -169,7 +181,10 @@ mod tests {
 
     #[test]
     fn i7_from_parts_as_parse() {
-        assert_eq!(TablePath::from_parts("main", None, None, "t"), TablePath::parse("t").unwrap());
+        assert_eq!(
+            TablePath::from_parts("main", None, None, "t"),
+            TablePath::parse("t").unwrap()
+        );
         assert_eq!(
             TablePath::from_parts("main", None, Some("s"), "t"),
             TablePath::parse("s.t").unwrap()

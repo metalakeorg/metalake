@@ -18,7 +18,12 @@ fn objects(dir: &Path, args: &[&str]) -> Vec<Value> {
 /// The count on `on`, a branch or the tag `q3`, which the session uses: a name says no ref (I7).
 fn count(dir: &Path, on: &str) -> String {
     let kind = if on == "q3" { "tag" } else { "branch" };
-    let counted = sql_on(dir, &format!("use {kind} {on}"), "select count(*) as n from db.t", "csv");
+    let counted = sql_on(
+        dir,
+        &format!("use {kind} {on}"),
+        "select count(*) as n from db.t",
+        "csv",
+    );
     counted.lines().nth(1).unwrap().to_string()
 }
 

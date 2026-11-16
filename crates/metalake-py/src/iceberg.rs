@@ -68,12 +68,16 @@ impl PyIceberg {
         let profile = match pinned {
             Some(on) => {
                 let on = on.to_string();
-                wait(py, async move { lake.iceberg().profile_on(engine, &name, &on, &catalog).await })?
+                wait(py, async move {
+                    lake.iceberg().profile_on(engine, &name, &on, &catalog).await
+                })?
             }
             None => {
                 let (id, on) = (self.following.id.clone(), self.session.current_ref());
                 let profile = wait(py, async move {
-                    lake.iceberg().profile_in_session(engine, &name, &id, &on, &catalog).await
+                    lake.iceberg()
+                        .profile_in_session(engine, &name, &id, &on, &catalog)
+                        .await
                 })?;
                 if profile.is_ok() {
                     self.following.engaged.store(true, Ordering::SeqCst);

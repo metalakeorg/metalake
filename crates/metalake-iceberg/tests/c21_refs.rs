@@ -87,10 +87,7 @@ async fn i7_config_hands_the_prefix_of_the_catalog_and_ref_a_warehouse_names() -
         let (status, body) = get(&uri, &format!("/v1/config?warehouse={warehouse}"))?;
         assert_eq!(status, 400, "{warehouse}: {body}");
         assert!(
-            body["error"]["message"]
-                .as_str()
-                .unwrap_or_default()
-                .starts_with(said),
+            body["error"]["message"].as_str().unwrap_or_default().starts_with(said),
             "{warehouse}: {body}"
         );
     }

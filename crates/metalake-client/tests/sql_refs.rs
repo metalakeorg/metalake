@@ -85,9 +85,7 @@ async fn i5_a_branch_lives_its_whole_life_in_sql() {
     assert!(used.contains("| 3 "), "{used}");
     assert_eq!(session.current_ref(), "dev");
     assert!(
-        sql(&on_main, "select count(*) as n from demo.t")
-            .await
-            .contains("| 2 "),
+        sql(&on_main, "select count(*) as n from demo.t").await.contains("| 2 "),
         "main untouched"
     );
     assert!(refused(&session, "use tag dev").await.contains("no tag dev"));
@@ -103,17 +101,13 @@ async fn i5_a_branch_lives_its_whole_life_in_sql() {
     let check = sql(&session, "merge branch dev dry run").await;
     assert!(check.contains("would merge"), "{check}");
     assert!(
-        sql(&on_main, "select count(*) as n from demo.t")
-            .await
-            .contains("| 2 "),
+        sql(&on_main, "select count(*) as n from demo.t").await.contains("| 2 "),
         "a dry run merges nothing"
     );
     let merged = sql(&session, "merge branch dev message 'from sql' author 'ana'").await;
     assert!(merged.contains("merged") && merged.contains("demo.t"), "{merged}");
     assert!(
-        sql(&on_main, "select count(*) as n from demo.t")
-            .await
-            .contains("| 3 "),
+        sql(&on_main, "select count(*) as n from demo.t").await.contains("| 3 "),
         "merged into main"
     );
 

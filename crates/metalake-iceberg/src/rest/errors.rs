@@ -122,9 +122,8 @@ impl Failure {
 
     /// A warehouse that names a catalog the ref has not (I7): `catalog`, `catalog@ref` or `catalog@session:<id>`.
     pub(crate) fn no_catalog(catalog: &str, on: &str) -> Self {
-        let message = format!(
-            "no catalog {catalog} on {on}: the warehouse is catalog, catalog@ref or catalog@session:<id>"
-        );
+        let message =
+            format!("no catalog {catalog} on {on}: the warehouse is catalog, catalog@ref or catalog@session:<id>");
         Self::new(StatusCode::BAD_REQUEST, "BadRequestException", message)
     }
 }

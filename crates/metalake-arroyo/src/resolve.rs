@@ -107,7 +107,12 @@ fn relations(statement: &Statement) -> anyhow::Result<Vec<TableReference>> {
 /// MetaLake's name of a table, from the parts the planner split it into.
 fn path_of(reference: &TableReference) -> TablePath {
     // Compared by its catalog, schema and name: the ref is the pipeline's, which `resolve` gives it (I7).
-    TablePath::from_parts(metalake::path::MAIN, reference.catalog(), reference.schema(), reference.table())
+    TablePath::from_parts(
+        metalake::path::MAIN,
+        reference.catalog(),
+        reference.schema(),
+        reference.table(),
+    )
 }
 
 /// Where the catalog is, as the process that plans a pipeline reaches it: what a client reaches it by, from the same

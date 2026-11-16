@@ -180,7 +180,10 @@ impl PyLake {
         };
         // On the ref `lake` is on, as a statement of it would be (I7).
         let on = self.session.current_ref();
-        let created = wait(py, async move { lake.create_pipeline(&name, &query, options, &on).await })?;
+        let created = wait(
+            py,
+            async move { lake.create_pipeline(&name, &query, options, &on).await },
+        )?;
         let created = created.map_err(|e| to_python(py, e))?;
         Ok(PyPipeline::new(self.owner.clone(), self.lake.clone(), created))
     }

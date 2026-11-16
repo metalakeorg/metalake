@@ -378,7 +378,8 @@ impl Iceberg<'_> {
     /// The profile of `engine` for this lake on `main`, its catalog named `name`, with the jars it is given as files
     /// fetched.
     pub async fn profile(&self, engine: Engine, name: &str) -> Result<Profile> {
-        self.profile_on(engine, name, crate::MAIN, metalake::path::DEFAULT_CATALOG).await
+        self.profile_on(engine, name, crate::MAIN, metalake::path::DEFAULT_CATALOG)
+            .await
     }
 
     /// The same, on the ref `on`, seeing the lake's catalog `catalog`: the engine reads and writes that catalog's
@@ -559,10 +560,18 @@ mod tests {
             catalog: None,
         };
         assert_eq!(target.clone().in_catalog("ventas").asks().as_deref(), Some("ventas"));
-        assert_eq!(target.clone().on("dev").in_catalog("ventas").asks().as_deref(), Some("ventas@dev"));
-        assert_eq!(target.clone().in_session("k1").in_catalog("ventas").asks().as_deref(), Some("ventas@session:k1"));
+        assert_eq!(
+            target.clone().on("dev").in_catalog("ventas").asks().as_deref(),
+            Some("ventas@dev")
+        );
+        assert_eq!(
+            target.clone().in_session("k1").in_catalog("ventas").asks().as_deref(),
+            Some("ventas@session:k1")
+        );
         assert_eq!(target.clone().in_catalog("default").asks(), None);
-        let duckdb = profile(Engine::DuckDb, "lake", &target.in_catalog("ventas")).unwrap().render();
+        let duckdb = profile(Engine::DuckDb, "lake", &target.in_catalog("ventas"))
+            .unwrap()
+            .render();
         assert!(duckdb.contains("ATTACH 'ventas' AS lake ("), "{duckdb}");
     }
 

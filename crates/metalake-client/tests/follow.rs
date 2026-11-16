@@ -38,7 +38,11 @@ async fn lake(names: &[&str]) -> (Lake, PathBuf) {
     .await
     .expect("a lake");
     let main = lake.catalog.branch("main").await.unwrap();
-    main.transaction().create_namespace(&["default", "db"]).commit().await.unwrap();
+    main.transaction()
+        .create_namespace(&["default", "db"])
+        .commit()
+        .await
+        .unwrap();
     for name in names {
         let (tx, _) = main
             .transaction()

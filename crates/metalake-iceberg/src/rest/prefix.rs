@@ -206,7 +206,9 @@ mod tests {
             assert_eq!((named, seen), (Named::Ref("dev".into()), Catalog(catalog.into())));
             assert_eq!(path, "/v1/namespaces/eu/tables");
         }
-        let uri: Uri = format!("/v1/{}/namespaces", session_prefix("k1", "ventas")).parse().unwrap();
+        let uri: Uri = format!("/v1/{}/namespaces", session_prefix("k1", "ventas"))
+            .parse()
+            .unwrap();
         let (named, seen, _) = unprefixed(&uri).unwrap();
         assert_eq!((named, seen), (Named::Session("k1".into()), Catalog("ventas".into())));
         let ventas = Catalog("ventas".into());
@@ -220,7 +222,9 @@ mod tests {
     #[test]
     fn a_sessions_id_is_one_segment_of_its_prefix() {
         let id = "9f0c/kernel 1";
-        let uri: Uri = format!("/v1/{}/namespaces", session_prefix(id, DEFAULT_CATALOG)).parse().unwrap();
+        let uri: Uri = format!("/v1/{}/namespaces", session_prefix(id, DEFAULT_CATALOG))
+            .parse()
+            .unwrap();
         let (named, _, path) = unprefixed(&uri).unwrap();
         assert_eq!(named, Named::Session(id.to_string()));
         assert_eq!(path, "/v1/namespaces");

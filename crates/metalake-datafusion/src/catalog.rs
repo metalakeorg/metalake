@@ -153,7 +153,11 @@ impl MetaLake {
 
     /// The ref the session of `context` reads and writes on: `main` until [`MetaLake::on_ref`] says another.
     pub fn current_ref(context: &SessionContext) -> String {
-        session_lake(context).on.read().expect("a ref is replaced whole").clone()
+        session_lake(context)
+            .on
+            .read()
+            .expect("a ref is replaced whole")
+            .clone()
     }
 
     /// Runs one statement in a session of this catalog, as `context.sql` would; what creates a namespace or a table as
