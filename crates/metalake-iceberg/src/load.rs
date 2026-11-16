@@ -21,6 +21,9 @@ use crate::project::metadata::{
     Expiry, Rows, adds_only, expiry, manifest_target_size, metadata, previous_versions, schema,
 };
 use crate::state::State;
+
+/// Iceberg's branch of a table's current snapshot, and the lake's first ref.
+const MAIN: &str = "main";
 use crate::wire::metadata::{LoadTableResult, TableMetadata};
 
 /// Objects written at once when a snapshot is generated, and snapshots generated before what they wrote is written.
@@ -58,18 +61,27 @@ fn known<'a>(refs: &'a [Ref], name: &str) -> Result<&'a Ref> {
         .ok_or_else(|| Error::NotFound(format!("ref {name}")))
 }
 
-/// The rows of `table`, on `main`, and only the snapshots served (REST-5).
-async fn rows(state: &State, table: &Table) -> Result<Rows> {
-    let main = state.main();
-    let definition = main.definition(table, None).await?;
+/// The rows of `table`, on the ref `served` a client is connected to, and only the snapshots served (REST-5).
+///
+/// Iceberg's own branch `main` is the table's current snapshot, as its clients hold it to be and write to it by that
+/// name: on a ref of the lake other than `main`, Iceberg's `main` is that ref, and the lake's `main` is not served by
+/// name. Every other ref of the lake is a ref of the table, by its own name (I6). The snapshots served are those of
+/// every ref of the lake, `main` among them, so that what one connection prunes another still finds.
+async fn rows(state: &State, served: &Ref, table: &Table) -> Result<Rows> {
+    let definition = served.definition(table, None).await?;
     let mut refs = Vec::new();
+    let mut heads = Vec::new();
     let live = state.catalog().refs().await?;
     for on in &live {
         let seen = on.definition(table, None).await.ok();
         let current = seen.and_then(|d| d["snapshot_id"].as_i64());
-        refs.push((on.name().to_string(), on.kind().to_string(), current));
+        heads.extend(current);
+        if on.name() == served.name() {
+            refs.push((MAIN.to_string(), "branch".to_string(), current));
+        } else if on.name() != MAIN {
+            refs.push((on.name().to_string(), on.kind().to_string(), current));
+        }
     }
-    let heads: Vec<i64> = refs.iter().filter_map(|(.., current)| *current).collect();
     let Expiry { keep, max_age_ms } = expiry(&definition);
     let snapshots = state.catalog().ancestors(table, &heads, keep, Some(max_age_ms)).await?;
     let mut schemas = BTreeMap::new();
@@ -537,8 +549,8 @@ fn writable_by_clients(location: &str) {
 
 /// `loadTable`. Its metadata file is written last, so finding it says that every file it names is there, and a load of
 /// what has not changed asks nothing else (REST-6). An engine reads that file itself for its metadata tables, as Trino does.
-pub(crate) async fn load(state: &State, table: &Table) -> Result<LoadTableResult> {
-    let rows = rows(state, table).await?;
+pub(crate) async fn load(state: &State, served: &Ref, table: &Table) -> Result<LoadTableResult> {
+    let rows = rows(state, served, table).await?;
     let storage = state.storage()?;
     let location = table.location();
     writable_by_clients(location);

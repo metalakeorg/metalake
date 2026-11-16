@@ -1,18 +1,30 @@
 //! A lake's refs through the Iceberg service (I6), end to end: the server, as a process. `GET /v1/config` hands a
 //! client that asks for a warehouse the prefix of the ref of that name, whatever its characters; a request under a
-//! prefix is on that ref, and one under a prefix no ref has is refused before anything reads.
+//! prefix is on that ref, and one under a prefix no ref has is refused before anything reads. Under a prefix, every
+//! name is the ref's: its namespaces, its tables, its current snapshot, which is Iceberg's `main`; what is created or
+//! dropped there is the ref's alone; and a tag takes no commit.
 
 mod common;
 
 use std::io::{Read, Write};
 
-use common::{Failure, fresh_schema, local_catalog, server};
+use common::{Failure, append, create, fresh_schema, local_catalog, server};
 use serde_json::{Value, json};
 
 /// A `GET` to the server at `uri`, and its status and body.
 fn get(uri: &str, path: &str) -> Result<(u16, Value), Failure> {
+    request(uri, "GET", path, None)
+}
+
+/// A request to the server at `uri`, and its status and body.
+fn request(uri: &str, method: &str, path: &str, body: Option<Value>) -> Result<(u16, Value), Failure> {
     let address = uri.trim_start_matches("http://");
-    let sent = format!("GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n");
+    let body = body.map(|b| b.to_string()).unwrap_or_default();
+    let sent = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
     let mut stream = std::net::TcpStream::connect(address)?;
     stream.write_all(sent.as_bytes())?;
     let mut answer = String::new();
@@ -78,5 +90,122 @@ async fn i6_a_request_under_a_prefix_is_routed_and_one_under_no_ref_refused() ->
     assert_eq!(body["error"]["type"], "NotFoundException", "{body}");
     let (status, _) = get(&uri, "/v1/refs/dev")?;
     assert_eq!(status, 404, "a prefix alone is no route");
+    Ok(())
+}
+
+/// `db.t` on `main` with one append; `dev` from it, where `t` has one more and `db.only_dev` is created; tag `v1` of
+/// `main`. The server on it.
+async fn written() -> Result<(common::Running, String), Failure> {
+    let schema = fresh_schema();
+    let (catalog, storage, _) = local_catalog(&schema).await?;
+    let main = catalog.branch("main").await?;
+    main.transaction().create_namespace(&["db"]).commit().await?;
+    create(&catalog.branch("main").await?, "t", "0", vec![]).await?;
+    append(&catalog, &catalog.branch("main").await?, &storage, "t", 0..2).await?;
+    let main = catalog.branch("main").await?;
+    main.create_branch("dev").await?;
+    main.create_tag("v1").await?;
+    append(&catalog, &catalog.branch("dev").await?, &storage, "t", 2..3).await?;
+    create(&catalog.branch("dev").await?, "only_dev", "0", vec![]).await?;
+    server(&schema)
+}
+
+fn names(body: &Value) -> Vec<String> {
+    let mut names: Vec<String> = body["identifiers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|i| i["name"].as_str().map(String::from))
+        .collect();
+    names.sort();
+    names
+}
+
+#[tokio::test]
+async fn i6_reads_under_a_prefix_are_the_refs() -> Result<(), Failure> {
+    let (_server, uri) = written().await?;
+    let (_, bare) = get(&uri, "/v1/namespaces/db/tables")?;
+    let (_, dev) = get(&uri, "/v1/refs/dev/namespaces/db/tables")?;
+    assert_eq!(names(&bare), ["t"]);
+    assert_eq!(names(&dev), ["only_dev", "t"]);
+    assert_eq!(get(&uri, "/v1/namespaces/db/tables/only_dev")?.0, 404);
+    assert_eq!(get(&uri, "/v1/refs/dev/namespaces/db/tables/only_dev")?.0, 200);
+
+    let (status, main_t) = get(&uri, "/v1/namespaces/db/tables/t")?;
+    assert_eq!(status, 200, "{main_t}");
+    let (status, dev_t) = get(&uri, "/v1/refs/dev/namespaces/db/tables/t")?;
+    assert_eq!(status, 200, "{dev_t}");
+    let current = |loaded: &Value| loaded["metadata"]["current-snapshot-id"].as_i64();
+    let refs = |loaded: &Value| loaded["metadata"]["refs"].clone();
+    assert_ne!(current(&main_t), current(&dev_t), "each its ref's current snapshot");
+    assert_eq!(
+        refs(&dev_t)["main"]["snapshot-id"].as_i64(),
+        current(&dev_t),
+        "Iceberg's main is dev"
+    );
+    assert!(refs(&dev_t).get("dev").is_none(), "dev is not served twice");
+    assert_eq!(
+        refs(&main_t)["dev"]["snapshot-id"].as_i64(),
+        current(&dev_t),
+        "on main, dev is a ref of the table"
+    );
+    assert_eq!(refs(&main_t)["main"]["snapshot-id"].as_i64(), current(&main_t));
+
+    // Loads of either ref, one after another, each finds its metadata file: what one prunes, the other does not need.
+    for path in ["/v1/namespaces/db/tables/t", "/v1/refs/dev/namespaces/db/tables/t"].repeat(3) {
+        let (status, loaded) = get(&uri, path)?;
+        assert_eq!(status, 200, "{path}");
+        let location = loaded["metadata-location"].as_str().unwrap_or_default();
+        let file = url::Url::parse(location)?.to_file_path().map_err(|_| "not a file")?;
+        assert!(file.exists(), "{path}: {location}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn i6_writes_under_a_prefix_are_the_refs_alone_and_a_tag_takes_none() -> Result<(), Failure> {
+    let (_server, uri) = written().await?;
+    let schema = json!({"type": "struct", "fields": [{"id": 1, "name": "k", "type": "long", "required": false}]});
+    let created = request(
+        &uri,
+        "POST",
+        "/v1/refs/dev/namespaces/db/tables",
+        Some(json!({"name": "made_on_dev", "schema": schema})),
+    )?;
+    assert_eq!(created.0, 200, "{}", created.1);
+    assert_eq!(
+        names(&get(&uri, "/v1/refs/dev/namespaces/db/tables")?.1),
+        ["made_on_dev", "only_dev", "t"]
+    );
+    assert_eq!(
+        names(&get(&uri, "/v1/namespaces/db/tables")?.1),
+        ["t"],
+        "main is untouched"
+    );
+
+    let dropped = request(&uri, "DELETE", "/v1/refs/dev/namespaces/db/tables/t", None)?;
+    assert_eq!(dropped.0, 204, "{}", dropped.1);
+    assert_eq!(get(&uri, "/v1/refs/dev/namespaces/db/tables/t")?.0, 404);
+    assert_eq!(get(&uri, "/v1/namespaces/db/tables/t")?.0, 200, "main keeps t");
+
+    let namespace = request(
+        &uri,
+        "POST",
+        "/v1/refs/dev/namespaces",
+        Some(json!({"namespace": ["dev_only"]})),
+    )?;
+    assert_eq!(namespace.0, 200, "{}", namespace.1);
+    assert_eq!(get(&uri, "/v1/refs/dev/namespaces/dev_only")?.0, 200);
+    assert_eq!(get(&uri, "/v1/namespaces/dev_only")?.0, 404);
+
+    let on_tag = request(
+        &uri,
+        "POST",
+        "/v1/refs/v1/namespaces/db/tables",
+        Some(json!({"name": "no", "schema": schema})),
+    )?;
+    assert_eq!(on_tag.0, 403, "{}", on_tag.1);
+    assert_eq!(on_tag.1["error"]["type"], "ForbiddenException");
+    assert_eq!(get(&uri, "/v1/refs/v1/namespaces/db/tables/t")?.0, 200, "a tag is read");
     Ok(())
 }

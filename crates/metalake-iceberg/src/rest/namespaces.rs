@@ -2,16 +2,16 @@
 
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path, Query, State as Shared};
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
-use metalake::NamespaceRow;
+use metalake::{NamespaceRow, Ref};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::errors::Failure;
+use super::prefix::On;
 use super::tables::{decoded, levels};
 use crate::apply::ddl;
-use crate::state::State;
 use crate::wire::commit::{CreateNamespaceRequest, UpdateNamespaceRequest};
 
 /// How the OpenAPI joins the levels of a namespace in a query.
@@ -32,25 +32,25 @@ fn children<'a>(all: &'a [Vec<String>], parent: &[&str]) -> Option<Vec<&'a [Stri
 }
 
 /// `GET /v1/namespaces`.
-pub(crate) async fn list(Shared(state): Shared<State>, Query(listing): Query<Listing>) -> Result<Json<Value>, Failure> {
+pub(crate) async fn list(On(on): On, Query(listing): Query<Listing>) -> Result<Json<Value>, Failure> {
     let parent: Vec<&str> = listing.parent.iter().flat_map(|p| p.split(SEPARATOR)).collect();
-    let namespaces = state.main().namespaces().await?;
+    let namespaces = on.namespaces().await?;
     let names: Vec<Vec<String>> = namespaces.into_iter().map(|n| n.namespace).collect();
     let found = children(&names, &parent).ok_or_else(|| Failure::no_namespace(&parent.join(".")))?;
     Ok(Json(json!({"namespaces": found})))
 }
 
-/// A namespace of `main`, or a 404.
-async fn found(state: &State, wanted: &[&str]) -> Result<NamespaceRow, Failure> {
-    let namespaces = state.main().namespaces().await?;
+/// A namespace of the ref, or a 404.
+async fn found(on: &Ref, wanted: &[&str]) -> Result<NamespaceRow, Failure> {
+    let namespaces = on.namespaces().await?;
     let row = namespaces.into_iter().find(|n| n.namespace.iter().eq(wanted));
     row.ok_or_else(|| Failure::no_namespace(&wanted.join(".")))
 }
 
 /// `POST /v1/namespaces`.
-pub(crate) async fn create(Shared(state): Shared<State>, body: Bytes) -> Result<Json<Value>, Failure> {
+pub(crate) async fn create(On(on): On, body: Bytes) -> Result<Json<Value>, Failure> {
     let request: CreateNamespaceRequest = decoded(&body)?;
-    ddl::create_namespace(&state, &request.namespace, &request.properties)
+    ddl::create_namespace(&on, &request.namespace, &request.properties)
         .await
         .map_err(|e| match Failure::from(e) {
             failure if failure.is_conflict() => Failure::namespace_exists(&request.namespace.join(".")),
@@ -62,28 +62,24 @@ pub(crate) async fn create(Shared(state): Shared<State>, body: Bytes) -> Result<
 }
 
 /// `GET /v1/namespaces/{namespace}`.
-pub(crate) async fn load(Shared(state): Shared<State>, Path(namespace): Path<String>) -> Result<Json<Value>, Failure> {
-    let row = found(&state, &levels(&namespace)).await?;
+pub(crate) async fn load(On(on): On, Path(namespace): Path<String>) -> Result<Json<Value>, Failure> {
+    let row = found(&on, &levels(&namespace)).await?;
     Ok(Json(json!({"namespace": row.namespace, "properties": row.properties})))
 }
 
 /// `HEAD /v1/namespaces/{namespace}`.
-pub(crate) async fn exists(Shared(state): Shared<State>, Path(namespace): Path<String>) -> Result<StatusCode, Failure> {
-    found(&state, &levels(&namespace)).await?;
+pub(crate) async fn exists(On(on): On, Path(namespace): Path<String>) -> Result<StatusCode, Failure> {
+    found(&on, &levels(&namespace)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /v1/namespaces/{namespace}/properties`.
-pub(crate) async fn update(
-    Shared(state): Shared<State>,
-    Path(namespace): Path<String>,
-    body: Bytes,
-) -> Result<Json<Value>, Failure> {
+pub(crate) async fn update(On(on): On, Path(namespace): Path<String>, body: Bytes) -> Result<Json<Value>, Failure> {
     let wanted = levels(&namespace);
     let request: UpdateNamespaceRequest = decoded(&body)?;
-    let row = found(&state, &wanted).await?;
+    let row = found(&on, &wanted).await?;
     let changes = ddl::property_changes(&request.updates, &request.removals)?;
-    ddl::update_namespace(&state, &wanted, changes).await?;
+    ddl::update_namespace(&on, &wanted, changes).await?;
     Ok(Json(ddl::update_summary(
         &row.properties,
         &request.updates,
@@ -92,10 +88,10 @@ pub(crate) async fn update(
 }
 
 /// `DELETE /v1/namespaces/{namespace}`. Refused while it holds a table or a namespace (NS-3).
-pub(crate) async fn drop(Shared(state): Shared<State>, Path(namespace): Path<String>) -> Result<StatusCode, Failure> {
+pub(crate) async fn drop(On(on): On, Path(namespace): Path<String>) -> Result<StatusCode, Failure> {
     let wanted = levels(&namespace);
-    found(&state, &wanted).await?;
-    ddl::drop_namespace(&state, &wanted)
+    found(&on, &wanted).await?;
+    ddl::drop_namespace(&on, &wanted)
         .await
         .map_err(|e| match Failure::from(e) {
             failure if failure.is_conflict() => Failure::namespace_not_empty(&wanted.join(".")),

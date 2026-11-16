@@ -130,6 +130,7 @@ impl From<Refused> for Failure {
         match refused {
             Refused::Invalid(message) => Self::new(StatusCode::BAD_REQUEST, "BadRequestException", message),
             Refused::Conflict(message) => Self::new(StatusCode::CONFLICT, "CommitFailedException", message),
+            Refused::ReadOnly(message) => Self::new(StatusCode::FORBIDDEN, "ForbiddenException", message),
         }
     }
 }
