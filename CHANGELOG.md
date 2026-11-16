@@ -7,7 +7,7 @@ pull request; the decisions, in the ADRs.
 
 ### Engines
 
-- **Run DuckDB in a process of its own.** `USING duckdb` sends each statement to a worker process; if DuckDB crashes there (a CPU it was not built for, a bad extension), only that statement fails, saying how DuckDB ended, and the UI, `metalake sql` or your Python keep running. The next `USING duckdb` starts it again (PR_LINK)
+- **Run DuckDB in a process of its own.** `USING duckdb` sends each statement to a worker process; if DuckDB crashes there (a CPU it was not built for, a bad extension), only that statement fails, saying how DuckDB ended, and the UI, `metalake sql` or your Python keep running. The next `USING duckdb` starts it again ([#66](https://github.com/metalakeorg/metalake/pull/66))
 
 ## 0.6.0
 
