@@ -17,6 +17,7 @@ mod refs;
 pub mod server;
 mod session;
 mod status;
+mod words;
 mod write;
 
 /// The ref a lake starts on, and a session reads and writes unless told another.
