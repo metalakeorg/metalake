@@ -3092,7 +3092,7 @@ dependencies = [
 
 [[package]]
 name = "metalake-cli"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "clap",
  "datafusion",
@@ -3107,7 +3107,7 @@ dependencies = [
 
 [[package]]
 name = "metalake-client"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "arrow-schema",
  "axum",
@@ -3236,7 +3236,7 @@ dependencies = [
 
 [[package]]
 name = "metalake-py"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "datafusion",
  "futures-util",
