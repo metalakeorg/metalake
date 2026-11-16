@@ -7,7 +7,7 @@ pull request; the decisions, in the ADRs.
 
 ### Query
 
-- **See MetaLake's verbs coloured in the editor.** `BRANCH`, `TAG`, `MERGE`, `SHOW`, `USE`, `LOG`, `RETAIN`, `GRACE`, `PIPELINE`, `SUSPEND`, `RESUME`, `USING` and the rest of a ref's, a pipeline's and an engine's words are keywords, as `SELECT` is (PR_LINK)
+- **See MetaLake's verbs coloured in the editor.** `BRANCH`, `TAG`, `MERGE`, `SHOW`, `USE`, `LOG`, `RETAIN`, `GRACE`, `PIPELINE`, `SUSPEND`, `RESUME`, `USING` and the rest of a ref's, a pipeline's and an engine's words are keywords, as `SELECT` is ([#72](https://github.com/metalakeorg/metalake/pull/72))
 
 ## 0.7.0
 
