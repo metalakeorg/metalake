@@ -81,14 +81,16 @@ pub fn set_local_runner(runner: LocalRunner) {
 }
 
 /// One statement `USING` a local engine, on `lake`, the session reading `on`.
-pub(crate) async fn run_local(lake: &Lake, using: &Using) -> Result<Prepared> {
+pub(crate) async fn run_local(lake: &Lake, on: &str, using: &Using) -> Result<Prepared> {
     let runner = RUNNER.get().cloned().ok_or_else(|| {
         Error::usage(format!(
             "USING {} runs in the Python metalake is installed in: pip install \"metalake[{}]\", and run it from there",
             using.engine, using.engine
         ))
     })?;
-    let profile = lake.iceberg().profile(Engine::DuckDb, crate::CATALOG).await?;
+    // On the session's ref: its namespaces and tables, as the selector of whatever face runs it says (I6). The
+    // worker keeps a connection per setup, and the ref is part of it, so that one ref's connection is never another's.
+    let profile = lake.iceberg().profile_on(Engine::DuckDb, crate::CATALOG, on).await?;
     let mut setup = profile.statements();
     // `USE lake` alone means its schema `main`, which a lake has none of: `default`, which every lake has, so that a
     // bare `t` is the lake's `default.t`, and `demo.t` its schema `demo`'s.

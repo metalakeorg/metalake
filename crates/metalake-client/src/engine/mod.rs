@@ -215,19 +215,20 @@ impl EngineConfig {
 /// The engines a lake names, by name.
 pub type Engines = BTreeMap<String, EngineConfig>;
 
-/// One statement `USING` an engine, on `lake`, the session reading `on`: a local engine, run in a process of its own, or
-/// one the lake's file names, sent the statement. A local engine's name is never another's.
+/// One statement `USING` an engine, on `lake`, the session reading `on`: a local engine, run in a process of its own and
+/// connected to `on` (I6), or one the lake's file names, sent the statement. A local engine's name is never another's.
 pub(crate) async fn run_using(lake: &crate::Lake, on: &str, using: &Using) -> Result<crate::Prepared> {
-    // An engine sees the lake through its Iceberg server, whose catalog is `main`'s: on another ref, it would answer
-    // for `main` without a word.
-    if on != "main" {
+    if LOCAL.contains(&using.engine.as_str()) {
+        return run_local(lake, on, using).await;
+    }
+    // An engine the lake's file names was connected to the lake's catalog by whoever runs it, on the ref they chose
+    // (`metalake iceberg connect --ref`): MetaLake cannot move it, and on another ref than `main` it would answer for
+    // that one without a word.
+    if on != crate::MAIN {
         return Err(Error::usage(format!(
-            "USING {} reads `main`, and this session is on `{on}`",
+            "USING {} reads the ref its own catalog is connected to, which is not this session's `{on}`:              connect it with `metalake iceberg connect <engine> --ref {on}`",
             using.engine
         )));
-    }
-    if LOCAL.contains(&using.engine.as_str()) {
-        return run_local(lake, using).await;
     }
     let engines = lake.engines()?;
     let Some(config) = engines.get(&using.engine) else {
