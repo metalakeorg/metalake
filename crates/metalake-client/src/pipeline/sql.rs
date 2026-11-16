@@ -9,7 +9,7 @@
 //! ```
 //!
 //! Each is a text of its own, and answers a table as any statement does. Each is a call of the client's own, which every
-//! face makes the same.
+//! face makes the same. A ref's verbs are read beside them, the same way ([`crate::refs_sql`]).
 
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;

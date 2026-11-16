@@ -467,6 +467,8 @@ export interface components {
              * @description How long it took; none for one not run.
              */
             ms?: number | null;
+            /** @description The ref the run is on once it ran, which `USE BRANCH` moves; none for one not run. */
+            ref?: string | null;
             /** @description A read's first rows: how many it holds. */
             rows?: number | null;
             /** @description The statement, as written. */

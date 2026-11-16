@@ -1,7 +1,7 @@
 // The ref a page shows, a branch or a tag, and what the lake says of its refs and of the tables on it, kept as it is
 // (ADR 0007): the Query and Catalog pages pick one each, `main` at first, and no tag.
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { refDetails, refs, type Table, tables } from "./client";
 import { CATALOG } from "./live";
@@ -20,6 +20,11 @@ export interface Picked {
   pickBranch: (branch: string) => void;
   /** Picks a tag of the branch, or none: the branch again. */
   pickTag: (tag: string | null) => void;
+  /**
+   * Picks the ref a run ended on, which `USE BRANCH` or `USE TAG` moved it to: a branch, or a tag and its branch. A ref
+   * the page does not know yet, made by the same run, is picked once the refs are read again (I5).
+   */
+  follow: (ref: string) => void;
   branches: string[];
   /** The tags made from the branch picked: each the branch as it was at a commit of it. */
   tags: string[];
@@ -35,7 +40,10 @@ export interface Picked {
 export function usePicked(): Picked {
   const [branch, setBranch] = useState(MAIN);
   const [tag, setTag] = useState<string | null>(null);
+  // A ref to follow, and when it was asked for: picked once the refs read since say what it is.
+  const [pending, setPending] = useState<{ ref: string; since: number } | null>(null);
   const ref = tag ?? branch;
+  const client = useQueryClient();
   const known = useQuery({ queryKey: [...CATALOG, "refs"], queryFn: () => refs() });
   const branches = known.data?.filter((r) => r.kind === "branch").map((r) => r.name) ?? [MAIN];
   const allTags = known.data?.filter((r) => r.kind === "tag") ?? [];
@@ -52,6 +60,21 @@ export function usePicked(): Picked {
   useEffect(() => {
     if (tagGone) setTag(null);
   }, [tagGone]);
+  useEffect(() => {
+    if (pending === null || known.data === undefined) return;
+    const found = known.data.find((r) => r.name === pending.ref);
+    if (found?.kind === "branch") {
+      setBranch(found.name);
+      setTag(null);
+    } else if (found?.kind === "tag") {
+      setBranch(found.parent ?? MAIN);
+      setTag(found.name);
+    } else if (known.dataUpdatedAt < pending.since) {
+      // Not known yet: the refs read again will say.
+      return;
+    }
+    setPending(null);
+  }, [pending, known.data, known.dataUpdatedAt]);
   return {
     ref,
     branch,
@@ -61,6 +84,11 @@ export function usePicked(): Picked {
       setTag(null);
     },
     pickTag: setTag,
+    follow: (next) => {
+      if (next === ref) return;
+      setPending({ ref: next, since: Date.now() });
+      void client.invalidateQueries({ queryKey: [...CATALOG, "refs"] });
+    },
     branches,
     tags,
     tagged: tag !== null,

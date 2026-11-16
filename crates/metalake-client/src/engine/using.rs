@@ -13,8 +13,8 @@
 //!
 //! An engine is chosen before the statements it runs, as `USE` chooses a catalog, and for one run of a text alone: the
 //! next starts on the lake's own engine. A statement for an engine is in its own SQL, and goes to it as written. No
-//! statement of SQL starts with `USING`, so a text that does is this and nothing else. A pipeline's verbs stay the
-//! client's whatever engine is chosen: they are MetaLake's, not SQL.
+//! statement of SQL starts with `USING`, so a text that does is this and nothing else. A pipeline's verbs, and a ref's,
+//! stay the client's whatever engine is chosen: they are MetaLake's, not SQL.
 
 use datafusion::sql::sqlparser::dialect::GenericDialect;
 use datafusion::sql::sqlparser::tokenizer::{Token, Tokenizer};

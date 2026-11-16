@@ -795,6 +795,8 @@ mod api {
                     // The second statement as another engine's, the rest the lake's own.
                     engine: (index == 1).then(|| "duckdb".to_string()),
                     ms,
+                    // The second statement moved the run to `dev`, as `USE BRANCH dev` does; one not run says none.
+                    on: ms.map(|_| if index == 0 { "main" } else { "dev" }.to_string()),
                     outcome,
                 };
                 let answers = vec![
@@ -1165,6 +1167,10 @@ mod api {
             (Some("skipped"), Some(3))
         );
         assert!(skipped.get("ms").is_none());
+
+        // The ref the run is on once each ran, which the page's selector follows (I5).
+        let on: Vec<Option<&str>> = lines.iter().map(|l| l["ref"].as_str()).collect();
+        assert_eq!(on, [Some("main"), Some("dev"), Some("dev"), None]);
     }
 
     #[tokio::test]

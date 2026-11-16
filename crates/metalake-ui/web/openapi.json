@@ -1425,6 +1425,13 @@
             "description": "How long it took; none for one not run.",
             "minimum": 0
           },
+          "ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The ref the run is on once it ran, which `USE BRANCH` moves; none for one not run."
+          },
           "rows": {
             "type": [
               "integer",
