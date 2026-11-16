@@ -57,6 +57,9 @@ async fn i6_config_hands_the_prefix_of_the_ref_a_warehouse_names() -> Result<(),
         ("?warehouse=main", json!({"prefix": "refs/main"})),
         ("?warehouse=v1", json!({"prefix": "refs/v1"})),
         ("?warehouse=feature%2Fx", json!({"prefix": "refs/feature%2Fx"})),
+        // A location, as Iceberg's Java catalogs set `warehouse`: `main`, as before refs were served.
+        ("?warehouse=%2Ftmp%2Fwarehouse", json!({})),
+        ("?warehouse=s3%3A%2F%2Fbucket%2Fwh", json!({})),
     ] {
         let (status, body) = get(&uri, &format!("/v1/config{warehouse}"))?;
         assert_eq!(status, 200, "{warehouse}: {body}");

@@ -34,13 +34,21 @@ pub(crate) struct Asked {
     warehouse: Option<String>,
 }
 
+/// Whether a warehouse a client asks for is a place, as Iceberg's Java catalogs mostly mean it (`s3://b/w`, `/tmp/w`),
+/// rather than a ref's name: such a client is on `main`, as before refs were served.
+fn is_a_location(warehouse: &str) -> bool {
+    warehouse.contains("://") || warehouse.starts_with('/')
+}
+
 /// What a client is told to connect to the warehouse it asks for: the ref of that name, by its prefix in `overrides`,
-/// so that the client's own configuration does not override it (I6). None asked for, `main`, under no prefix.
+/// so that the client's own configuration does not override it (I6). None asked for, or a location that names no
+/// ref, `main`, under no prefix; any other name that is no ref is refused, rather than read as `main`.
 pub(crate) async fn config(Shared(state): Shared<State>, Query(asked): Query<Asked>) -> Result<Json<Value>, Failure> {
     let overrides = match asked.warehouse.as_deref().filter(|w| !w.is_empty()) {
         None => json!({}),
         Some(name) => match state.named(name).await {
             Ok(_) => json!({"prefix": prefix_of(name)}),
+            Err(Error::NotFound(_)) if is_a_location(name) => json!({}),
             Err(Error::NotFound(_)) => return Err(Failure::no_warehouse(name)),
             Err(e) => return Err(e.into()),
         },

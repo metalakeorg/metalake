@@ -35,7 +35,7 @@ def test_duckdb_is_on_the_ref_lake_is_on(lake):
     pytest.importorskip("duckdb")
     lake.on("ventas_ana")
     con = lake.iceberg.duckdb()
-    assert con.sql("select count(*) from lake.demo.t").fetchone()[0] == 3
+    assert con.sql("select count(*) from lake.demo.t").fetchall()[0][0] == 3
     assert con.sql("select k from lake.demo.only_there").fetchall() == [(9,)]
     con.sql("insert into lake.demo.t values (4)")
     assert count(lake, "ventas_ana.demo.t") == 4
@@ -43,8 +43,8 @@ def test_duckdb_is_on_the_ref_lake_is_on(lake):
 
     lake.on("main")
     on_main = lake.iceberg.duckdb()
-    assert on_main.sql("select count(*) from lake.demo.t").fetchone()[0] == 2
-    assert con.sql("select count(*) from lake.demo.t").fetchone()[0] == 4, "one connected stays on its ref"
+    assert on_main.sql("select count(*) from lake.demo.t").fetchall()[0][0] == 2
+    assert con.sql("select count(*) from lake.demo.t").fetchall()[0][0] == 4, "one connected stays on its ref"
 
 
 def test_two_refs_in_one_duckdb_connection(lake):
