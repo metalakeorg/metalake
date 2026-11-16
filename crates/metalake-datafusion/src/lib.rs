@@ -38,5 +38,6 @@ pub use catalog::{MetaLake, Source};
 pub use codec::{MetaLakeLogicalCodec, MetaLakePhysicalCodec};
 pub use measure::{Measure, measure};
 pub use options::{Engine, MetaLakeOptions};
-pub use written::{WrittenRow, written_schema};
+pub use point::at as ref_at;
 pub use table::MetaTable;
+pub use written::{WrittenRow, written_schema};

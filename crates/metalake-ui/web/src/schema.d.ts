@@ -429,8 +429,8 @@ export interface components {
         /** @description What to run: a text of statements, in order, each committed before the next, as `metalake sql` runs one. */
         Statement: {
             /**
-             * @description The branch a name that says no ref reads and writes on: `default.t` is `dev.default.t` on `dev`. By default,
-             *     `main`.
+             * @description The branch every name reads and writes on, which no name says (I7): `demo.t` is `default.demo.t` on it. By
+             *     default, `main`.
              */
             branch?: string | null;
             /** @description How many rows of the last statement to answer, at most [`MOST`]; by default [`LIMIT`]. */

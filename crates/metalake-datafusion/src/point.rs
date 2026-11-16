@@ -33,8 +33,8 @@ pub(crate) struct StatementPoint {
     pub points: OnceCell<LatestPoints>,
 }
 
-/// `on`, read at the point `name` carries after its `@`.
-pub(crate) fn at(on: Ref, point: &str) -> metalake::Result<Ref> {
+/// `on`, read at the point `name` carries after its `@`: a commit sequence or a time.
+pub fn at(on: Ref, point: &str) -> metalake::Result<Ref> {
     if let Ok(seq) = point.parse() {
         return Ok(on.at(seq));
     }

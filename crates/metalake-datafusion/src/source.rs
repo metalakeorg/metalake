@@ -159,7 +159,10 @@ impl FileSource for MetaLakeSource {
         Ok(pushed.map(|parquet| self.wrap(parquet)))
     }
 
-    fn reorder_files(&self, files: Vec<datafusion::datasource::listing::PartitionedFile>) -> Vec<datafusion::datasource::listing::PartitionedFile> {
+    fn reorder_files(
+        &self,
+        files: Vec<datafusion::datasource::listing::PartitionedFile>,
+    ) -> Vec<datafusion::datasource::listing::PartitionedFile> {
         self.parquet.reorder_files(files)
     }
 

@@ -75,8 +75,9 @@ impl Lake {
         Ok(self.catalog.refs().await?.iter().any(|r| r.name() == name))
     }
 
-    /// A ref by its name, which must exist; or at a commit sequence, `name@1234`, as `USE BRANCH … AS OF` leaves a
-    /// session (I7). A ref's own name, `@` included, comes first.
+    /// A ref by its name, which must exist; or at a point, a commit sequence or a time (`name@1234`,
+    /// `name@2026-11-04T10:00:00Z`), as `USE BRANCH … AS OF` leaves a session (I7). A ref's own name, `@` included,
+    /// comes first.
     pub async fn find_ref(&self, name: &str) -> Result<Ref> {
         let refs = self.catalog.refs().await?;
         let named = |name: &str| refs.iter().find(|r| r.name() == name).cloned();
@@ -86,10 +87,8 @@ impl Lake {
         if let Some((on, at)) = name.split_once('@')
             && let Some(found) = named(on)
         {
-            let seq = at
-                .parse()
-                .map_err(|_| Error::usage(format!("{name}: a table is opened at a commit sequence, AS OF 1234")))?;
-            return Ok(found.at(seq));
+            // As the engine reads the point `AS OF` gives.
+            return Ok(metalake_datafusion::ref_at(found, at)?);
         }
         Err(Error::failed(format!("no ref {name}")))
     }

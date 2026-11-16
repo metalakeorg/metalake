@@ -44,11 +44,11 @@ use uuid::Uuid;
 
 use crate::adapter::ByFieldId;
 use crate::changes::{ChangesExec, ChangesTable};
-use crate::source::{self, MetaLakeSource};
 use crate::merge::Merge;
 use crate::point::StatementPoint;
 use crate::read::TaskReaders;
 use crate::sink::{Delete, Insert, Selection, Update, session};
+use crate::source::{self, MetaLakeSource};
 use crate::table::MetaTable;
 use crate::written::MetaWriteExec;
 
@@ -744,7 +744,9 @@ impl MetaLakePhysicalCodec {
         }
         // DataFusion's own encoding of the scan, over the Parquet source inside: groups and ranges, predicate,
         // projection, limit, statistics.
-        let parquet = FileScanConfigBuilder::from(config.clone()).with_source(Arc::clone(scan.parquet())).build();
+        let parquet = FileScanConfigBuilder::from(config.clone())
+            .with_source(Arc::clone(scan.parquet()))
+            .build();
         let parquet: Arc<dyn ExecutionPlan> = DataSourceExec::from_data_source(parquet);
         let standard = physical_plan_to_bytes_with_extension_codec(parquet, self.inner.as_ref())?;
         let bytes = ScanBytes {
