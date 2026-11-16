@@ -3,6 +3,12 @@
 What each version published on PyPI as `metalake` brings to whoever installs it. The work behind each line is in its
 pull request; the decisions, in the ADRs.
 
+## 0.8.0
+
+### Query
+
+- **See MetaLake's verbs coloured in the editor.** `BRANCH`, `TAG`, `MERGE`, `SHOW`, `USE`, `LOG`, `RETAIN`, `GRACE`, `PIPELINE`, `SUSPEND`, `RESUME`, `USING` and the rest of a ref's, a pipeline's and an engine's words are keywords, as `SELECT` is (PR_LINK)
+
 ## 0.7.0
 
 Released on 2026-11-16.
