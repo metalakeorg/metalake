@@ -261,7 +261,8 @@ fn say(uri: &str, id: &str, on: &str, token: Option<&str>) -> Result<(u16, Value
 
 /// A client connected to a session, rather than to a ref, follows the ref the session says it is on, request by
 /// request, by the same prefix: as `HEAD` follows the branch checked out.
-#[tokio::test]
+// Multi-threaded: the server runs in this process, and the test's requests block a thread of their own.
+#[tokio::test(flavor = "multi_thread")]
 async fn i6_a_session_prefix_follows_the_ref_the_session_is_on() -> Result<(), Failure> {
     let uri = with_token().await?;
     assert_eq!(

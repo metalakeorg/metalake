@@ -1,6 +1,7 @@
 """The engines `lake.iceberg` connects follow the ref `lake` is on (I6): `lake.on`, which a notebook's selector calls,
 moves them as it moves `lake.sql`, at their next statement, with no new connection. Given `ref=`, one stays on it. A
-table already loaded is a snapshot: written after a move, its commit conflicts, rather than landing on the other ref."""
+table already loaded is a snapshot: written after a move, its commit conflicts, and a client that tries again lands it
+on the ref the session is on now, never on the one it was loaded from."""
 
 import pytest
 
@@ -71,18 +72,18 @@ def test_one_pyiceberg_catalog_follows_lake_on(lake):
     assert ("demo", "only_there") not in catalog.list_tables("demo"), "the same catalog, now on main"
 
 
-def test_a_table_loaded_before_a_move_conflicts_rather_than_lands_elsewhere(lake):
+def test_a_table_loaded_before_a_move_never_lands_on_the_ref_it_was_loaded_from(lake):
+    """Its commit conflicts on the ref the session is on now; PyIceberg, as Iceberg's clients do, then loads the table
+    again, through the same session, and applies the append there: never on the ref the table was loaded from."""
     pytest.importorskip("pyiceberg")
     pa = pytest.importorskip("pyarrow")
-    from pyiceberg.exceptions import CommitFailedException
-
     lake.on("ventas_ana")
     t = lake.iceberg.pyiceberg().load_table("demo.t")
-    main_rows = count(lake, "main.demo.t")
+    main_rows, ventas_rows = count(lake, "main.demo.t"), count(lake, "ventas_ana.demo.t")
     lake.on("main")
-    with pytest.raises(CommitFailedException):
-        t.append(pa.table({"k": pa.array([77], pa.int64())}))
-    assert count(lake, "main.demo.t") == main_rows
+    t.append(pa.table({"k": pa.array([77], pa.int64())}))
+    assert count(lake, "ventas_ana.demo.t") == ventas_rows, "not on the ref it was loaded from"
+    assert count(lake, "main.demo.t") == main_rows + 1, "on the ref the session is on"
 
 
 def test_the_profile_names_the_ref(lake):
