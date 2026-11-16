@@ -48,6 +48,16 @@ pub struct PyLake {
 }
 
 impl PyLake {
+    /// Tells the lake's Iceberg server the ref `lake` is on now, once an engine follows it (I6).
+    fn tell_iceberg(&self, py: Python<'_>) -> PyResult<()> {
+        if !self.following.engaged.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(());
+        }
+        let (lake, id, name) = (self.lake.clone(), self.following.id.clone(), self.session.current_ref());
+        let told = wait(py, async move { lake.iceberg().follow(&id, &name).await })?;
+        told.map_err(|e| to_python(py, e))
+    }
+
     /// A new ref, which `information_schema` shows at once.
     fn create_ref(&self, py: Python<'_>, kind: RefKind, name: String, start: Option<String>) -> PyResult<PyRef> {
         let (lake, session) = (self.lake.clone(), self.session.clone());
@@ -101,10 +111,15 @@ impl PyLake {
 
     /// Runs statements in order, each committed before the next, and answers the rows of the last. A read waits to be
     /// read, at the point of this call; anything else has happened when this returns.
+    /// A `USE BRANCH` or `USE TAG` among them moves `lake`, and the engines `lake.iceberg` connected, as `lake.on` does.
     fn sql(&self, py: Python<'_>, text: String) -> PyResult<QueryResult> {
         self.owner.check(py, "Lake")?;
-        let session = self.session.clone();
+        let (session, before) = (self.session.clone(), self.session.current_ref());
         let prepared = wait(py, async move { session.run(&text).await })?;
+        // Told even when a later statement failed: the session moved all the same.
+        if self.session.current_ref() != before {
+            self.tell_iceberg(py)?;
+        }
         Ok(QueryResult::new(
             prepared.map_err(|e| to_python(py, e))?,
             self.owner.clone(),
@@ -259,12 +274,7 @@ impl PyLake {
             return Err(to_python(py, Error::usage(format!("no ref {}", r#ref))));
         }
         self.session.on_ref(&r#ref);
-        if self.following.engaged.load(std::sync::atomic::Ordering::SeqCst) {
-            let (lake, id, name) = (self.lake.clone(), self.following.id.clone(), r#ref.clone());
-            let told = wait(py, async move { lake.iceberg().follow(&id, &name).await })?;
-            told.map_err(|e| to_python(py, e))?;
-        }
-        Ok(())
+        self.tell_iceberg(py)
     }
 
     /// The ref names that say none read and write on.

@@ -235,6 +235,7 @@ impl Backend for Lake {
                             engine,
                             ms: None,
                             outcome,
+                            on: None,
                         },
                         run,
                     ));
@@ -248,6 +249,8 @@ impl Backend for Lake {
                     }
                 };
                 let ms = Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+                // Where the run is now: a `USE BRANCH` moved it, and the page's selector follows.
+                let on = Some(run.session.current_ref());
                 Some((
                     StepAnswer {
                         index,
@@ -255,6 +258,7 @@ impl Backend for Lake {
                         engine,
                         ms,
                         outcome,
+                        on,
                     },
                     run,
                 ))

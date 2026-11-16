@@ -9,7 +9,7 @@
 //! ```
 //!
 //! Each is a text of its own, and answers a table as any statement does. Each is a call of the client's own, which every
-//! face makes the same.
+//! face makes the same. A ref's verbs are read beside them, the same way ([`crate::refs_sql`]).
 
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
@@ -17,9 +17,10 @@ use std::time::UNIX_EPOCH;
 use datafusion::arrow::array::{ArrayRef, Int64Array, RecordBatch, StringArray, TimestampSecondArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::sql::sqlparser::dialect::GenericDialect;
-use datafusion::sql::sqlparser::tokenizer::{Token, Tokenizer, Whitespace};
+use datafusion::sql::sqlparser::tokenizer::{Token, Tokenizer};
 
 use super::{Pipeline, PipelineOptions, PipelineState};
+use crate::words::Words;
 use crate::{Error, Lake, Prepared, Result};
 
 /// A pipeline's verb, as a statement says it.
@@ -66,18 +67,17 @@ pub fn pieces(text: &str) -> Vec<String> {
 
 /// The pipeline verb a text says, if it says one: none for every other statement.
 pub fn verb_of(text: &str) -> Result<Option<Verb>> {
-    let Ok(tokens) = Tokenizer::new(&GenericDialect {}, text).tokenize() else {
+    let Some(mut words) = Words::of(text) else {
         return Ok(None);
     };
-    let mut words = Words::new(tokens);
     let (first, second) = (words.keyword(), words.keyword());
     let verb = match (first.as_deref(), second.as_deref()) {
         (Some("CREATE"), Some("PIPELINE")) => {
-            let name = words.name()?;
+            let name = words.name("a pipeline")?;
             let mut options = PipelineOptions::default();
             if words.peek_keyword().as_deref() == Some("WITH") {
                 words.keyword();
-                words.options(&mut options)?;
+                pipeline_options(&mut words, &mut options)?;
             }
             if words.keyword().as_deref() != Some("AS") {
                 return Err(Error::usage("CREATE PIPELINE name [WITH (…)] AS INSERT INTO …"));
@@ -86,9 +86,9 @@ pub fn verb_of(text: &str) -> Result<Option<Verb>> {
             Verb::Create { name, query, options }
         }
         (Some("SHOW"), Some("PIPELINES")) => Verb::Show,
-        (Some("DESCRIBE"), Some("PIPELINE")) => Verb::Describe(words.name()?),
+        (Some("DESCRIBE"), Some("PIPELINE")) => Verb::Describe(words.name("a pipeline")?),
         (Some("ALTER"), Some("PIPELINE")) => {
-            let name = words.name()?;
+            let name = words.name("a pipeline")?;
             match words.keyword().as_deref() {
                 Some("SUSPEND") => Verb::Suspend(name),
                 Some("RESUME") => Verb::Resume(name),
@@ -104,7 +104,7 @@ pub fn verb_of(text: &str) -> Result<Option<Verb>> {
                 }
             }
             Verb::Drop {
-                name: words.name()?,
+                name: words.name("a pipeline")?,
                 if_exists,
             }
         }
@@ -116,118 +116,48 @@ pub fn verb_of(text: &str) -> Result<Option<Verb>> {
     Ok(Some(verb))
 }
 
-/// The tokens of a statement, past whitespace and comments.
-struct Words {
-    tokens: Vec<Token>,
-    at: usize,
-}
-
-impl Words {
-    fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, at: 0 }
+/// A pipeline's options, `(name = value, …)`.
+fn pipeline_options(words: &mut Words, options: &mut PipelineOptions) -> Result<()> {
+    if words.next() != Some(Token::LParen) {
+        return Err(Error::usage("WITH (parallelism = 2, empty_target = true)"));
     }
-
-    fn skip(&mut self) {
-        while let Some(Token::Whitespace(_)) = self.tokens.get(self.at) {
-            self.at += 1;
+    loop {
+        let key = words
+            .keyword()
+            .ok_or_else(|| Error::usage("an option is `name = value`"))?;
+        if words.next() != Some(Token::Eq) {
+            return Err(Error::usage(format!("{} = value", key.to_ascii_lowercase())));
         }
-    }
-
-    fn next(&mut self) -> Option<Token> {
-        self.skip();
-        let token = self.tokens.get(self.at).cloned();
-        self.at += 1;
-        token
-    }
-
-    fn peek_keyword(&mut self) -> Option<String> {
-        self.skip();
-        match self.tokens.get(self.at) {
-            Some(Token::Word(w)) if w.quote_style.is_none() => Some(w.value.to_ascii_uppercase()),
-            _ => None,
-        }
-    }
-
-    fn keyword(&mut self) -> Option<String> {
-        match self.next() {
-            Some(Token::Word(w)) if w.quote_style.is_none() => Some(w.value.to_ascii_uppercase()),
-            _ => None,
-        }
-    }
-
-    /// A pipeline's name: unquoted, it is lowercase as SQL folds it; quoted, as written.
-    fn name(&mut self) -> Result<String> {
-        match self.next() {
-            Some(Token::Word(w)) if w.quote_style.is_none() => Ok(w.value.to_ascii_lowercase()),
-            Some(Token::Word(w)) => Ok(w.value),
-            _ => Err(Error::usage("a pipeline's name is missing")),
-        }
-    }
-
-    /// `(name = value, …)`.
-    fn options(&mut self, options: &mut PipelineOptions) -> Result<()> {
-        if self.next() != Some(Token::LParen) {
-            return Err(Error::usage("WITH (parallelism = 2, empty_target = true)"));
-        }
-        loop {
-            let key = self
-                .keyword()
-                .ok_or_else(|| Error::usage("an option is `name = value`"))?;
-            if self.next() != Some(Token::Eq) {
-                return Err(Error::usage(format!("{} = value", key.to_ascii_lowercase())));
+        let value = match words.next() {
+            Some(Token::Number(n, _)) => n,
+            Some(Token::Word(w)) => w.value.to_ascii_lowercase(),
+            Some(Token::SingleQuotedString(s)) => s.to_ascii_lowercase(),
+            _ => return Err(Error::usage(format!("{} has no value", key.to_ascii_lowercase()))),
+        };
+        match key.as_str() {
+            "PARALLELISM" => {
+                options.parallelism = value
+                    .parse()
+                    .map_err(|_| Error::usage(format!("parallelism is a whole number, not {value}")))?;
             }
-            let value = match self.next() {
-                Some(Token::Number(n, _)) => n,
-                Some(Token::Word(w)) => w.value.to_ascii_lowercase(),
-                Some(Token::SingleQuotedString(s)) => s.to_ascii_lowercase(),
-                _ => return Err(Error::usage(format!("{} has no value", key.to_ascii_lowercase()))),
-            };
-            match key.as_str() {
-                "PARALLELISM" => {
-                    options.parallelism = value
-                        .parse()
-                        .map_err(|_| Error::usage(format!("parallelism is a whole number, not {value}")))?;
-                }
-                "EMPTY_TARGET" => {
-                    options.empty_target = match value.as_str() {
-                        "true" => true,
-                        "false" => false,
-                        _ => return Err(Error::usage(format!("empty_target is true or false, not {value}"))),
-                    };
-                }
-                other => {
-                    return Err(Error::usage(format!(
-                        "a pipeline has no option {}: parallelism, empty_target",
-                        other.to_ascii_lowercase()
-                    )));
-                }
+            "EMPTY_TARGET" => {
+                options.empty_target = match value.as_str() {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err(Error::usage(format!("empty_target is true or false, not {value}"))),
+                };
             }
-            match self.next() {
-                Some(Token::Comma) => continue,
-                Some(Token::RParen) => return Ok(()),
-                _ => return Err(Error::usage("options are separated by `,` and closed by `)`")),
+            other => {
+                return Err(Error::usage(format!(
+                    "a pipeline has no option {}: parallelism, empty_target",
+                    other.to_ascii_lowercase()
+                )));
             }
         }
-    }
-
-    /// What follows, as written, with no `;` at its end.
-    fn rest(&mut self) -> String {
-        let text: String = self.tokens[self.at.min(self.tokens.len())..]
-            .iter()
-            .map(ToString::to_string)
-            .collect();
-        text.trim().trim_end_matches(';').trim().to_string()
-    }
-
-    /// Nothing but a `;` and whitespace is left.
-    fn end(&mut self) -> Result<()> {
-        loop {
-            match self.next() {
-                None => return Ok(()),
-                Some(Token::SemiColon) => continue,
-                Some(Token::Whitespace(Whitespace::Newline)) => continue,
-                Some(other) => return Err(Error::usage(format!("{other} where the statement ends"))),
-            }
+        match words.next() {
+            Some(Token::Comma) => continue,
+            Some(Token::RParen) => return Ok(()),
+            _ => return Err(Error::usage("options are separated by `,` and closed by `)`")),
         }
     }
 }

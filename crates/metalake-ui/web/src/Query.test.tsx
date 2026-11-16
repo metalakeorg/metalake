@@ -45,9 +45,13 @@ const LAKE: Record<string, unknown> = {
 /** What each `POST /api/v1/sql/run` asked. */
 let asked: { sql: string; branch: string; limit: number }[] = [];
 
+/** The branches a run made, with `create branch x`, which `/api/v1/refs` then lists. */
+let made: string[] = [];
+
 /**
  * A run's lines, a statement each, split at `;`: a read of `k` 1 and 2, and more it left. A statement that says `fail`
- * fails, as a write that conflicts; those after it are not run. `refuse` is refused as a whole.
+ * fails, as a write that conflicts; those after it are not run. `refuse` is refused as a whole. Each that ran says the
+ * ref the run is on: `use branch x` and `use tag x` move it, and `create branch x` makes `x`, as the lake does.
  */
 async function runs(request: Request): Promise<Response> {
   const statement = (await request.json()) as { sql: string; branch: string; limit: number };
@@ -60,15 +64,20 @@ async function runs(request: Request): Promise<Response> {
   const bytes = tableToIPC(table, { format: "stream" }) as Uint8Array;
   const arrow = btoa(String.fromCharCode(...bytes));
   let failed = false;
+  let on = statement.branch;
   const lines = statement.sql.split(";").map((sql, index) => {
     sql = sql.trim();
     if (failed) return { index, sql, state: "skipped" };
     if (sql === "fail") {
       failed = true;
       const fault = { kind: "conflict", message: "a write conflicts with another", retryable: true };
-      return { index, sql, state: "error", ms: 1, fault };
+      return { index, sql, state: "error", ms: 1, fault, ref: on };
     }
-    return { index, sql, state: "ok", ms: 2, rows: 2, truncated: true, arrow };
+    const used = /^use (?:branch|tag) (\S+)$/i.exec(sql);
+    if (used?.[1]) on = used[1];
+    const created = /^create branch (\S+)$/i.exec(sql);
+    if (created?.[1]) made.push(created[1]);
+    return { index, sql, state: "ok", ms: 2, rows: 2, truncated: true, arrow, ref: on };
   });
   const body = lines
     .map(
@@ -81,9 +90,19 @@ async function runs(request: Request): Promise<Response> {
 
 beforeEach(() => {
   asked = [];
+  made = [];
   vi.stubGlobal("fetch", async (request: Request) => {
     if (request.method === "POST") return runs(request);
-    const body = LAKE[new URL(request.url).pathname];
+    const path = new URL(request.url).pathname;
+    const branches = made.map((name) => ({
+      name,
+      kind: "branch",
+      parent: "main",
+      fork_seq: 9,
+      created_seq: 10,
+      protected: false,
+    }));
+    const body = path === "/api/v1/refs" ? [...(LAKE[path] as unknown[]), ...branches] : LAKE[path];
     return new Response(JSON.stringify(body ?? { kind: "usage", message: "no such path", retryable: false }), {
       status: body ? 200 : 404,
       headers: { "content-type": "application/json" },
@@ -210,6 +229,44 @@ describe("QueryPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Run" }));
     await screen.findByRole("table", { name: "Rows" });
     expect(asked.at(-1)?.branch).toBe("v1");
+  });
+
+  it("follows the ref a run ends on, by USE BRANCH, and runs the next there", async () => {
+    page();
+    const assets = within(screen.getByRole("complementary", { name: "Assets" }));
+    await assets.findByRole("option", { name: "dev" });
+    expect(assets.getByRole("combobox", { name: "Branch" })).toHaveValue("main");
+    write("use branch dev; select 1");
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    await screen.findByRole("table", { name: "Rows" });
+    await vi.waitFor(() => expect(assets.getByRole("combobox", { name: "Branch" })).toHaveValue("dev"));
+
+    write("select 2");
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    await vi.waitFor(() => expect(asked).toHaveLength(2));
+    expect(asked[1]?.branch).toBe("dev");
+  });
+
+  it("follows a branch the same run made, once the refs are read again", async () => {
+    page();
+    const assets = within(screen.getByRole("complementary", { name: "Assets" }));
+    await assets.findByRole("option", { name: "dev" });
+    write("create branch fresh; use branch fresh");
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    await vi.waitFor(() => expect(assets.getByRole("combobox", { name: "Branch" })).toHaveValue("fresh"));
+    expect(assets.getByRole("option", { name: "fresh" })).toBeInTheDocument();
+  });
+
+  it("follows a tag a run ends on, with its branch", async () => {
+    page();
+    const assets = within(screen.getByRole("complementary", { name: "Assets" }));
+    await assets.findByRole("option", { name: "dev" });
+    fireEvent.change(assets.getByRole("combobox", { name: "Branch" }), { target: { value: "dev" } });
+    write("use tag v1");
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    await vi.waitFor(() => expect(assets.getByRole("combobox", { name: "Tag" })).toHaveValue("v1"));
+    expect(assets.getByRole("combobox", { name: "Branch" })).toHaveValue("main");
+    expect(screen.getByRole("region", { name: "Query" })).toHaveTextContent("tag · read only");
   });
 
   it("runs several statements in one request, a result each, and opens on the one that failed", async () => {

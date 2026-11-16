@@ -72,6 +72,13 @@ jobs:
       # The lake's refs through the server (I6): `protocol` runs every server test on main, this one on pull requests.
       - name: Refs through the server
         run: CRATE=metalake-iceberg bash sql/test.sh --test c21_refs
+      # A ref's verbs in SQL (I5): `protocol` runs the client's and the command line's tests on main, these on pull
+      # requests.
+      - name: Ref verbs in SQL
+        run: |
+          cargo test -p metalake-client --lib -- words:: refs_sql:: engine::using:: pipeline::sql::
+          CRATE=metalake-client bash sql/test.sh --test sql_refs
+          CRATE=metalake-cli bash sql/test.sh --test c10b_refs
       - name: A Trino the lake names
         run: CRATE=metalake-cli bash sql/test.sh --test c20_engines
 
@@ -146,7 +153,7 @@ jobs:
         run: |
           python -m pip install --quiet "pyiceberg[pyarrow]==0.12.0"
           cd "$RUNNER_TEMP"
-          python -m pytest "$GITHUB_WORKSPACE/crates/metalake-py/tests/test_iceberg_refs.py" -q --tb=short -p no:cacheprovider -rs
+          python -m pytest "$GITHUB_WORKSPACE/crates/metalake-py/tests/test_iceberg_refs.py" "$GITHUB_WORKSPACE/crates/metalake-py/tests/test_sql_refs.py" -q --tb=short -p no:cacheprovider -rs
 
   # Credentials vended for a table's files on S3 (REST-11), on MinIO, whose token service answers AssumeRole with a
   # session policy: PyIceberg, Spark and Trino, connected by the lake's profiles with no key of their own, read and write

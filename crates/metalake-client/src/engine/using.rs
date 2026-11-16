@@ -13,8 +13,8 @@
 //!
 //! An engine is chosen before the statements it runs, as `USE` chooses a catalog, and for one run of a text alone: the
 //! next starts on the lake's own engine. A statement for an engine is in its own SQL, and goes to it as written. No
-//! statement of SQL starts with `USING`, so a text that does is this and nothing else. A pipeline's verbs stay the
-//! client's whatever engine is chosen: they are MetaLake's, not SQL.
+//! statement of SQL starts with `USING`, so a text that does is this and nothing else. A pipeline's verbs, and a ref's,
+//! stay the client's whatever engine is chosen: they are MetaLake's, not SQL.
 
 use datafusion::sql::sqlparser::dialect::GenericDialect;
 use datafusion::sql::sqlparser::tokenizer::{Token, Tokenizer};
@@ -99,9 +99,9 @@ pub(crate) fn place(piece: &str, chosen: &mut Option<String>) -> Result<Placed> 
         }
         Some(UsingOf::Statement { engine, sql }) if engine == OWN => Ok(Placed::Own(sql)),
         Some(UsingOf::Statement { engine, sql }) => Ok(Placed::Other(Using { engine, sql })),
-        // A pipeline's verb stays the client's, whatever engine is chosen.
+        // A pipeline's verb, or a ref's, stays the client's, whatever engine is chosen.
         None => Ok(match chosen {
-            Some(engine) if crate::pipeline::sql::verb_of(piece)?.is_none() => Placed::Other(Using {
+            Some(engine) if crate::session::client_verb(piece)?.is_none() => Placed::Other(Using {
                 engine: engine.clone(),
                 sql: piece.trim().to_string(),
             }),
@@ -184,6 +184,7 @@ mod tests {
             .map(|step| match step {
                 Step::Statement(_) => "metalake".to_string(),
                 Step::Pipeline(_) => "pipeline".to_string(),
+                Step::Ref(_) => "ref".to_string(),
                 Step::Using(using) => using.engine.clone(),
                 Step::Choose(engine) => format!("choose {engine}"),
             })
@@ -217,6 +218,11 @@ mod tests {
             engines("using duckdb; using metalake select 1; select 2; show pipelines"),
             ["choose duckdb", "metalake", "duckdb", "pipeline"],
             "the lake's own by name, for one statement; a pipeline's verbs stay the client's"
+        );
+        assert_eq!(
+            engines("using duckdb; show branches; use branch dev; select 1"),
+            ["choose duckdb", "ref", "ref", "duckdb"],
+            "a ref's verbs stay the client's under USING, as a pipeline's do"
         );
     }
 

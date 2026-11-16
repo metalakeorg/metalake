@@ -25,11 +25,14 @@ use metalake_datafusion::{MetaLake, MetaLakeOptions, Source, WrittenRow};
 use crate::write::{Details, TablePath, Written};
 use crate::{Error, Lake, Result};
 
-/// One statement of a text: the engine's, a pipeline's verb, which is the client's, or one for another engine.
+/// One statement of a text: the engine's, a pipeline's or a ref's verb, which are the client's, or one for another
+/// engine.
 #[derive(Debug)]
 pub enum Step {
     Statement(Statement),
     Pipeline(crate::pipeline::Verb),
+    /// A ref's verb (I5): `CREATE BRANCH`, `MERGE BRANCH`, `USE BRANCH`…
+    Ref(crate::refs_sql::RefVerb),
     /// `USING <engine> <statement>`: the statement is the engine's, sent to it as written.
     Using(crate::Using),
     /// `USING <engine>` alone: runs nothing, and chooses the engine for the statements after it. A step of its own, so
@@ -41,7 +44,7 @@ impl Step {
     /// The engine that runs it, when not the lake's own: what a face says beside its answer.
     pub fn engine(&self) -> Option<&str> {
         match self {
-            Step::Statement(_) | Step::Pipeline(_) => None,
+            Step::Statement(_) | Step::Pipeline(_) | Step::Ref(_) => None,
             Step::Using(using) => Some(&using.engine),
             Step::Choose(engine) => (engine != crate::OWN).then_some(engine.as_str()),
         }
@@ -54,6 +57,14 @@ impl Step {
 pub struct SourcedStep {
     pub text: String,
     pub step: Step,
+}
+
+/// The client's own step a text says, if it says one: a pipeline's verb or a ref's, which DataFusion never sees.
+pub(crate) fn client_verb(text: &str) -> Result<Option<Step>> {
+    if let Some(verb) = crate::pipeline::sql::verb_of(text)? {
+        return Ok(Some(Step::Pipeline(verb)));
+    }
+    Ok(crate::refs_sql::ref_verb_of(text)?.map(Step::Ref))
 }
 
 /// The engine over a lake, and a session of it.
@@ -280,9 +291,9 @@ impl Session {
         let mut placed = Vec::with_capacity(pieces.len());
         for piece in &pieces {
             let place = crate::engine::place(piece, &mut chosen)?;
-            // On the lake's engine, a pipeline's verb is the client's; anything else, DataFusion's.
+            // On the lake's engine, a pipeline's verb or a ref's is the client's; anything else, DataFusion's.
             let verb = match &place {
-                Placed::Own(sql) => crate::pipeline::sql::verb_of(sql)?,
+                Placed::Own(sql) => client_verb(sql)?,
                 _ => None,
             };
             placed.push((piece.trim().to_string(), place, verb));
@@ -319,10 +330,7 @@ impl Session {
                     text: piece,
                     step: Step::Using(using),
                 }),
-                (Placed::Own(_), Some(verb)) => steps.push(SourcedStep {
-                    text: piece,
-                    step: Step::Pipeline(verb),
-                }),
+                (Placed::Own(_), Some(step)) => steps.push(SourcedStep { text: piece, step }),
                 (Placed::Own(sql), None) => {
                     let statements = Self::parse(&sql)?;
                     let one = statements.len() == 1;
@@ -341,10 +349,81 @@ impl Session {
         match step {
             Step::Statement(statement) => self.prepare(statement).await,
             Step::Pipeline(verb) => crate::pipeline::sql::run(&self.lake, verb).await,
+            Step::Ref(verb) => self.run_ref(verb).await,
             Step::Using(using) => crate::engine::run_using(&self.lake, &self.current_ref(), &using).await,
             // It ran nothing: an answer with no column, as a statement that leaves nothing to show.
             Step::Choose(_) => {
                 Prepared::from_batches(Arc::new(datafusion::arrow::datatypes::Schema::empty()), Vec::new())
+            }
+        }
+    }
+
+    /// Runs a ref's verb with what the command line and Python run, and answers its rows (I5). Whatever changes the refs
+    /// takes a new picture of `information_schema`, which then shows them; `USE` moves the session, as `lake.on` does.
+    async fn run_ref(&self, verb: crate::refs_sql::RefVerb) -> Result<Prepared> {
+        use crate::refs_sql::{RefVerb, dropped_rows, log_rows, merge_rows, ref_rows, retain_rows};
+        let lake = &self.lake;
+        let named = |refs: Vec<crate::refs::RefInfo>, name: &str| -> Vec<crate::refs::RefInfo> {
+            refs.into_iter().filter(|r| r.name == name).collect()
+        };
+        match verb {
+            RefVerb::Create {
+                kind,
+                name,
+                from,
+                if_not_exists,
+            } => {
+                if if_not_exists && lake.has_ref(&name).await? {
+                    return ref_rows(&named(lake.refs(Some(kind)).await?, &name));
+                }
+                let created = lake.create_ref(kind, &name, from.as_deref()).await?;
+                self.refresh().await?;
+                ref_rows(&[created])
+            }
+            RefVerb::Drop { kind, name, if_exists } => {
+                if name == self.current_ref() {
+                    return Err(Error::usage(format!(
+                        "{name} is the ref this session is on: USE another before dropping it"
+                    )));
+                }
+                if if_exists && named(lake.refs(Some(kind)).await?, &name).is_empty() {
+                    return dropped_rows(None);
+                }
+                lake.delete_ref(kind, &name).await?;
+                self.refresh().await?;
+                dropped_rows(Some(&name))
+            }
+            RefVerb::Merge(request) => {
+                let outcome = lake.merge(&request).await?;
+                if !request.check {
+                    self.refresh().await?;
+                }
+                merge_rows(&outcome)
+            }
+            RefVerb::Show(kind) => ref_rows(&lake.refs(Some(kind)).await?),
+            RefVerb::Log { on, limit } => {
+                let on = on.unwrap_or_else(|| self.current_ref());
+                log_rows(&lake.commits(&on, limit).await?)
+            }
+            RefVerb::Use { kind, name } => {
+                let found = named(lake.refs(Some(kind)).await?, &name);
+                if found.is_empty() {
+                    let kind = match kind {
+                        crate::refs::RefKind::Branch => "branch",
+                        crate::refs::RefKind::Tag => "tag",
+                    };
+                    return Err(Error::usage(format!("no {kind} {name}")));
+                }
+                self.on_ref(&name);
+                ref_rows(&found)
+            }
+            RefVerb::Retain { name, retention, .. } => {
+                lake.retain(&name, &retention).await?;
+                retain_rows(Some(&name), &retention, None)
+            }
+            RefVerb::Grace(grace) => {
+                lake.set_grace(grace).await?;
+                retain_rows(None, &metalake::Retention::default(), Some(grace))
             }
         }
     }

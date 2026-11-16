@@ -168,6 +168,8 @@ export interface Step {
   engine?: string;
   /** How long it took; none for one not run. */
   ms?: number;
+  /** The ref the run is on once it ran, which `USE BRANCH` and `USE TAG` move: what the next run starts on. */
+  ref?: string;
   /** A read's first rows. */
   result?: Result;
   /** What a write did: its commit, and how many rows it wrote. */
@@ -220,6 +222,7 @@ export function step(line: StepResult): Step {
   const read: Step = { index: line.index, sql: line.sql, state: line.state };
   if (line.ms != null) read.ms = line.ms;
   if (line.engine != null) read.engine = line.engine;
+  if (line.ref != null) read.ref = line.ref;
   if (line.arrow != null) read.result = decode(fromBase64(line.arrow), line.truncated === true);
   if (line.written != null) read.written = line.written;
   if (line.fault != null) read.fault = line.fault;

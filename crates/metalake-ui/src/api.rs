@@ -55,6 +55,9 @@ pub struct StepAnswer {
     /// How long it took, from being prepared to its rows read; none for one not run.
     pub ms: Option<u64>,
     pub outcome: StepOutcome,
+    /// The ref the run is on once it ran, which `USE BRANCH` moves: what the next statement, and the next run, start on
+    /// (I5). None for one not run.
+    pub on: Option<String>,
 }
 
 /// How a statement of a run ended.
@@ -451,6 +454,9 @@ pub struct StepResult {
     /// How long it took; none for one not run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ms: Option<u64>,
+    /// The ref the run is on once it ran, which `USE BRANCH` moves; none for one not run.
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub on: Option<String>,
     /// A read's first rows: how many it holds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rows: Option<usize>,
@@ -492,6 +498,7 @@ impl From<StepAnswer> for StepResult {
             state: StepState::Ok,
             engine: answer.engine,
             ms: answer.ms,
+            on: answer.on,
             rows: None,
             truncated: None,
             arrow: None,

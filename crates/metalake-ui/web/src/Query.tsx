@@ -19,7 +19,8 @@ export function QueryPage() {
   const picked = usePicked();
   const { ref: branch, tagged } = picked;
 
-  const { state, start, cancel } = useRun();
+  // A run that ends on another ref, by `USE BRANCH` or `USE TAG`, moves the picker there, and the next run starts there.
+  const { state, start, cancel } = useRun(picked.follow);
   const insert = useRef<Insert | null>(null);
 
   return (
@@ -69,8 +70,11 @@ export function QueryPage() {
   );
 }
 
-/** A statement's run: started, cancelled, and what it came to. One at a time: a new one cancels the last. */
-function useRun() {
+/**
+ * A statement's run: started, cancelled, and what it came to. One at a time: a new one cancels the last. The ref the
+ * run is on after its last statement that ran goes to `moved`.
+ */
+function useRun(moved: (ref: string) => void) {
   const [state, setState] = useState<Run>({ kind: "idle" });
   const current = useRef<AbortController | null>(null);
   const runs = useRef(0);
@@ -88,18 +92,26 @@ function useRun() {
     current.current = stop;
     const id = ++runs.current;
     const steps: Step[] = [];
+    let on: string | undefined;
+    // Where the run ended, which the picker follows: a run cancelled or failed moved all the same.
+    const ended = () => {
+      if (on !== undefined && current.current === stop) moved(on);
+    };
     setState({ kind: "running", id, steps: [] });
     // Each statement shows as it ends: the run's state is replaced with each, so that it draws again.
     (async () => {
       for await (const step of runSteps(sql, branch, stop.signal)) {
         steps.push(step);
+        if (step.ref !== undefined) on = step.ref;
         if (current.current === stop) setState({ kind: "running", id, steps: [...steps] });
       }
     })().then(
       () => {
+        ended();
         if (current.current === stop) setState({ kind: "done", id, steps: [...steps] });
       },
       (error: unknown) => {
+        ended();
         if (current.current !== stop) return;
         if (stop.signal.aborted) setState({ kind: "cancelled", id, steps: [...steps] });
         else if (steps.length) setState({ kind: "done", id, steps: [...steps] });
