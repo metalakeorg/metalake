@@ -109,11 +109,15 @@ enum Answer {
     Refused(LocalFailure),
 }
 
-/// One statement on a local engine, in the worker: started if there is none, or none of the module asked for.
+/// One statement on a local engine, in the worker: started if there is none, none of the module asked for, or one
+/// that ended after its last answer (an engine can fail as it closes what failed).
 pub fn run(engine: &str, setup: &[String], sql: &str) -> Result<(SchemaRef, Vec<RecordBatch>), LocalFailure> {
     let module = std::env::var(WORKER_VAR).unwrap_or_else(|_| WORKER.to_string());
     let mut running = RUNNING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    if running.as_ref().is_some_and(|worker| worker.module != module) {
+    if running
+        .as_mut()
+        .is_some_and(|worker| worker.module != module || !matches!(worker.child.try_wait(), Ok(None)))
+    {
         let _ = running.take().map(Worker::ended);
     }
     if running.is_none() {
