@@ -115,6 +115,17 @@ pub struct Target {
     /// says: what an engine that reads the store itself, as Trino, is told besides its credentials.
     pub region: Option<String>,
     pub endpoint: Option<String>,
+    /// The ref of the lake the engine is connected to, by the `warehouse` it asks the server for (I6): none for `main`,
+    /// which a client that asks for no warehouse is on.
+    pub on: Option<String>,
+}
+
+impl Target {
+    /// This target, on the ref `on`: `main` asks for no warehouse, so that its profile is what it always was.
+    pub fn on(mut self, on: &str) -> Target {
+        self.on = (on != crate::MAIN).then(|| on.to_string());
+        self
+    }
 }
 
 /// A library of Iceberg's an engine loads, by its Maven coordinates.
@@ -325,21 +336,29 @@ impl Iceberg<'_> {
             token,
             region: s3.then(|| var(&["AWS_REGION", "AWS_DEFAULT_REGION"]).unwrap_or_else(|| "us-east-1".into())),
             endpoint: s3.then(|| var(&["AWS_ENDPOINT", "AWS_ENDPOINT_URL"])).flatten(),
+            on: None,
         })
     }
 
-    /// The profile of `engine` for this lake, its catalog named `name`, with the jars it is given as files fetched.
+    /// The profile of `engine` for this lake on `main`, its catalog named `name`, with the jars it is given as files
+    /// fetched.
     pub async fn profile(&self, engine: Engine, name: &str) -> Result<Profile> {
+        self.profile_on(engine, name, crate::MAIN).await
+    }
+
+    /// The same, on the ref `on`: the engine reads and writes that ref's namespaces and tables (I6).
+    pub async fn profile_on(&self, engine: Engine, name: &str, on: &str) -> Result<Profile> {
         // A name refused before a server is started for it.
         catalog_name(name)?;
-        let target = self.target().await?;
+        let target = self.target().await?.on(on);
         self.profile_for(engine, name, &target).await
     }
 
-    /// The profile of `engine` for this lake's server at `uri`, which runs elsewhere: nothing is started here.
-    pub async fn profile_at(&self, engine: Engine, name: &str, uri: &str) -> Result<Profile> {
+    /// The profile of `engine` for this lake's server at `uri`, which runs elsewhere, on the ref `on`: nothing is started
+    /// here.
+    pub async fn profile_at(&self, engine: Engine, name: &str, uri: &str, on: &str) -> Result<Profile> {
         catalog_name(name)?;
-        let target = self.target_at(uri)?;
+        let target = self.target_at(uri)?.on(on);
         self.profile_for(engine, name, &target).await
     }
 
@@ -403,5 +422,41 @@ mod tests {
             "https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-3.5_2.12/1.11.0/\
              iceberg-spark-runtime-3.5_2.12-1.11.0.jar"
         );
+    }
+
+    /// On a ref other than `main`, each engine asks the server for it as its warehouse, in its own words (I6); on
+    /// `main`, its profile is what it always was.
+    #[test]
+    fn i6_each_engine_asks_for_the_ref_as_its_warehouse() {
+        let target = Target {
+            uri: "http://127.0.0.1:8181".into(),
+            store: Store::Gcs,
+            warehouse: "gs://bucket/lake".into(),
+            token: None,
+            region: None,
+            endpoint: None,
+            on: None,
+        };
+        let asked = [
+            (Engine::PyIceberg, "warehouse: \"ventas_ana\""),
+            (Engine::DuckDb, "ATTACH 'ventas_ana' AS lake ("),
+            (Engine::Spark, "spark.sql.catalog.lake.warehouse ventas_ana"),
+            (Engine::Flink, "'warehouse' = 'ventas_ana'"),
+            (Engine::Trino, "iceberg.rest-catalog.warehouse=ventas_ana"),
+        ];
+        for (engine, said) in asked {
+            let on = profile(engine, "lake", &target.clone().on("ventas_ana"))
+                .unwrap()
+                .render();
+            assert!(on.contains(said), "{engine:?}: {on}");
+            let main = profile(engine, "lake", &target.clone().on("main")).unwrap().render();
+            assert_eq!(main, profile(engine, "lake", &target).unwrap().render(), "{engine:?}");
+            assert!(
+                !main.contains("ventas_ana") && !main.contains("warehouse"),
+                "{engine:?}: {main}"
+            );
+        }
+        let quoted = profile(Engine::DuckDb, "lake", &target.on("ana's")).unwrap().render();
+        assert!(quoted.contains("ATTACH 'ana''s' AS lake"), "{quoted}");
     }
 }

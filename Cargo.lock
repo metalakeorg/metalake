@@ -3174,6 +3174,7 @@ dependencies = [
  "metalake-pg",
  "object_store",
  "parquet",
+ "percent-encoding",
  "reqwest 0.12.28",
  "ring",
  "serde",

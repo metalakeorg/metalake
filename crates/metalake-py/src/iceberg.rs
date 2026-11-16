@@ -4,23 +4,25 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use metalake_client::{Engine, IcebergTable, Lake, Profile};
+use metalake_client::{Engine, IcebergTable, Lake, Profile, Session};
 use pyo3::prelude::*;
 
 use crate::errors::to_python;
 use crate::owner::Owner;
 use crate::runtime::wait;
 
-/// The lake's Iceberg face, from `lake.iceberg`.
+/// The lake's Iceberg face, from `lake.iceberg`. The engines it connects are on the ref `lake` is on as each is asked
+/// for (`lake.ref`, which a notebook's selector sets): one already connected stays on its own (I6).
 #[pyclass(name = "Iceberg", module = "metalake", frozen)]
 pub struct PyIceberg {
     owner: Owner,
     lake: Arc<Lake>,
+    session: Arc<Session>,
 }
 
 impl PyIceberg {
-    pub fn new(owner: Owner, lake: Arc<Lake>) -> Self {
-        Self { owner, lake }
+    pub fn new(owner: Owner, lake: Arc<Lake>, session: Arc<Session>) -> Self {
+        Self { owner, lake, session }
     }
 }
 
@@ -98,11 +100,11 @@ impl PyIceberg {
         self.owner.check(py, "Lake")?;
         let engine: Engine = engine.parse().map_err(|e| to_python(py, e))?;
         let lake = self.lake.clone();
-        let (name, uri) = (name.to_string(), uri.map(str::to_string));
+        let (name, uri, on) = (name.to_string(), uri.map(str::to_string), self.session.current_ref());
         let profile = wait(py, async move {
             match uri {
-                Some(uri) => lake.iceberg().profile_at(engine, &name, &uri).await,
-                None => lake.iceberg().profile(engine, &name).await,
+                Some(uri) => lake.iceberg().profile_at(engine, &name, &uri, &on).await,
+                None => lake.iceberg().profile_on(engine, &name, &on).await,
             }
         })?;
         Ok(PyProfile::from(profile.map_err(|e| to_python(py, e))?))

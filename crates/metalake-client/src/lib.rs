@@ -19,6 +19,9 @@ mod session;
 mod status;
 mod write;
 
+/// The ref a lake starts on, and a session reads and writes unless told another.
+pub const MAIN: &str = "main";
+
 pub use details::{Column, RefDetails, SchemaDetails, SchemaSummary, Size, TableDetails, TableSize, TableSummary};
 pub use engine::{
     CATALOG, Checked, EngineConfig, EngineKind, Engines, LOCAL, LocalFailure, LocalRunner, OWN, Remote, Trino, Using,

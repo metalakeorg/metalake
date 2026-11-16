@@ -34,6 +34,9 @@ pub(super) fn profile(name: &str, target: &Target) -> Profile {
     if let Some(token) = &target.token {
         set("token", token);
     }
+    if let Some(on) = &target.on {
+        set("warehouse", on);
+    }
     if target.store.bundle().is_some() {
         set(DELEGATION.0, DELEGATION.1);
     }
@@ -63,6 +66,7 @@ mod tests {
             token: None,
             region: None,
             endpoint: None,
+            on: None,
         }
     }
 

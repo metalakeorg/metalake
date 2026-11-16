@@ -5,8 +5,13 @@ pull request; the decisions, in the ADRs.
 
 ## 0.7.0
 
+### Iceberg
+
+- **Connect any Iceberg engine to a branch or tag of the lake.** The engine sees that ref's namespaces and tables and writes there, with no ref named in a statement; a tag is read only. In Python, `lake.iceberg.duckdb()`, `pyiceberg()`, `spark()` and `flink()` follow `lake.on(…)` and the notebook's Ref selector; elsewhere, `metalake iceberg connect <engine> --ref <ref>`. Under the hood, the engine asks the lake's server for the ref as its Iceberg `warehouse` ([#67](https://github.com/metalakeorg/metalake/pull/67))
+
 ### Engines
 
+- **Run `USING duckdb` on the ref the session is on.** With Query's branch selector on `dev`, `USING duckdb` reads and writes `dev`, tables only there included. Engines named in `metalake.toml` still read the ref their own catalog is connected to ([#67](https://github.com/metalakeorg/metalake/pull/67))
 - **Run DuckDB in a process of its own.** `USING duckdb` sends each statement to a worker process; if DuckDB crashes there (a CPU it was not built for, a bad extension), only that statement fails, saying how DuckDB ended, and the UI, `metalake sql` or your Python keep running. The next `USING duckdb` starts it again ([#66](https://github.com/metalakeorg/metalake/pull/66))
 
 ## 0.6.0

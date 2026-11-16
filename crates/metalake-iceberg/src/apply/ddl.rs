@@ -3,20 +3,20 @@
 
 use std::collections::BTreeMap;
 
-use metalake::Table;
+use metalake::{Ref, Table};
 use serde_json::{Map, Value, json};
 
-use super::{ApplyError, Refused};
-use crate::state::State;
+use super::{ApplyError, Refused, writable};
 
 /// Creates a namespace with its properties (NS-1).
 pub async fn create_namespace(
-    state: &State,
+    on: &Ref,
     namespace: &[String],
     properties: &BTreeMap<String, String>,
 ) -> Result<(), ApplyError> {
     let change = json!({"namespace": namespace, "create": true, "properties": properties});
-    let transaction = state.main().transaction().change_namespace(change);
+    writable(on)?;
+    let transaction = on.transaction().change_namespace(change);
     transaction.author("iceberg").commit().await?;
     Ok(())
 }
@@ -44,39 +44,39 @@ pub fn update_summary(current: &Value, updates: &BTreeMap<String, String>, remov
 }
 
 /// Applies property changes to a namespace, unless there are none.
-pub async fn update_namespace(
-    state: &State,
-    namespace: &[&str],
-    changes: Map<String, Value>,
-) -> Result<(), ApplyError> {
+pub async fn update_namespace(on: &Ref, namespace: &[&str], changes: Map<String, Value>) -> Result<(), ApplyError> {
     if changes.is_empty() {
         return Ok(());
     }
     let change = json!({"namespace": namespace, "properties": changes});
-    let transaction = state.main().transaction().change_namespace(change);
+    writable(on)?;
+    let transaction = on.transaction().change_namespace(change);
     transaction.author("iceberg").commit().await?;
     Ok(())
 }
 
 /// Drops a namespace. One that is not empty is a conflict the protocol raises (NS-3).
-pub async fn drop_namespace(state: &State, namespace: &[&str]) -> Result<(), ApplyError> {
+pub async fn drop_namespace(on: &Ref, namespace: &[&str]) -> Result<(), ApplyError> {
     let change = json!({"namespace": namespace, "drop": true});
-    let transaction = state.main().transaction().change_namespace(change);
+    writable(on)?;
+    let transaction = on.transaction().change_namespace(change);
     transaction.author("iceberg").commit().await?;
     Ok(())
 }
 
-/// Drops a table on `main`. A purge changes nothing: its objects are retention's (REST-8).
-pub async fn drop_table(state: &State, table: &Table) -> Result<(), ApplyError> {
-    let transaction = state.main().transaction().define(table.id(), json!({"drop": true}));
+/// Drops a table on `on`. A purge changes nothing: its objects are retention's (REST-8).
+pub async fn drop_table(on: &Ref, table: &Table) -> Result<(), ApplyError> {
+    writable(on)?;
+    let transaction = on.transaction().define(table.id(), json!({"drop": true}));
     transaction.author("iceberg").commit().await?;
     Ok(())
 }
 
-/// Renames a table on `main`, which moves no data.
-pub async fn rename_table(state: &State, table: &Table, namespace: &[String], name: &str) -> Result<(), ApplyError> {
+/// Renames a table on `on`, which moves no data.
+pub async fn rename_table(on: &Ref, table: &Table, namespace: &[String], name: &str) -> Result<(), ApplyError> {
     let rename = json!({"rename": {"namespace": namespace, "name": name}});
-    let transaction = state.main().transaction().define(table.id(), rename);
+    writable(on)?;
+    let transaction = on.transaction().define(table.id(), rename);
     transaction.author("iceberg").commit().await?;
     Ok(())
 }

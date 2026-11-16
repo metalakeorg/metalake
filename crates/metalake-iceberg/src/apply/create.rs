@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use metalake::Table;
+use metalake::{Ref, Table};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
@@ -297,9 +297,15 @@ pub fn requested(state: &State, namespace: &[&str], request: CreateTableRequest)
     })
 }
 
-/// Commits a `createTable` that is not staged.
-pub async fn create(state: &State, namespace: &[&str], name: &str, new: Requested) -> Result<Table, ApplyError> {
-    let main = state.main();
+/// Commits a `createTable` that is not staged, on `main`, the ref the client is connected to.
+pub async fn create(
+    state: &State,
+    main: &Ref,
+    namespace: &[&str],
+    name: &str,
+    new: Requested,
+) -> Result<Table, ApplyError> {
+    super::writable(main)?;
     let marks = new.definition["properties"].get(ICEBERG_METADATA).is_some();
     let transaction = main
         .transaction()

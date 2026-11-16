@@ -86,8 +86,9 @@ impl State {
         let load = move |table: uuid::Uuid| {
             let state = serving.clone();
             async move {
+                // What it materializes is `main`'s (REST-6).
                 let table = state.main().table_with_id(table).await?;
-                load(&state, &table).await.map(|_| ())
+                load(&state, state.main(), &table).await.map(|_| ())
             }
         };
         self.materializer = Some(Materializer::start(self.catalog.clone(), load));

@@ -69,6 +69,9 @@ jobs:
           curl -fsSLO "$maven/hadoop/hadoop-client-runtime/$HADOOP/hadoop-client-runtime-$HADOOP.jar"
       - name: The engines
         run: CRATE=metalake-iceberg bash sql/test.sh --test c12_engines
+      # The lake's refs through the server (I6): `protocol` runs every server test on main, this one on pull requests.
+      - name: Refs through the server
+        run: CRATE=metalake-iceberg bash sql/test.sh --test c21_refs
       - name: A Trino the lake names
         run: CRATE=metalake-cli bash sql/test.sh --test c20_engines
 
@@ -137,6 +140,13 @@ jobs:
         run: |
           cd "$RUNNER_TEMP"
           python -m pytest "$GITHUB_WORKSPACE/crates/metalake-py/tests/test_using.py" -q --tb=short -p no:cacheprovider -rs
+      # The engines `lake.iceberg` connects follow the ref `lake` is on, as a notebook's selector sets it (I6).
+      - name: Engines on the session's ref
+        if: matrix.engine == 'duckdb'
+        run: |
+          python -m pip install --quiet "pyiceberg[pyarrow]==0.12.0"
+          cd "$RUNNER_TEMP"
+          python -m pytest "$GITHUB_WORKSPACE/crates/metalake-py/tests/test_iceberg_refs.py" -q --tb=short -p no:cacheprovider -rs
 
   # Credentials vended for a table's files on S3 (REST-11), on MinIO, whose token service answers AssumeRole with a
   # session policy: PyIceberg, Spark and Trino, connected by the lake's profiles with no key of their own, read and write

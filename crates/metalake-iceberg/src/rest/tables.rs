@@ -6,12 +6,13 @@ use axum::body::Bytes;
 use axum::extract::{Path, State as Shared};
 use axum::http::{HeaderMap, StatusCode};
 use axum::{Extension, Json};
-use metalake::{Error, Table};
+use metalake::{Error, Ref, Table};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use super::errors::Failure;
 use super::namespaces::SEPARATOR;
+use super::prefix::{On, prefix_of};
 
 use crate::apply::commit::Target;
 use crate::apply::update::{Change, asserted_uuid, change, check_uuid};
@@ -35,16 +36,27 @@ fn asks(headers: &HeaderMap) -> bool {
         .any(|mode| mode.trim().eq_ignore_ascii_case("vended-credentials"))
 }
 
-/// The credentials for a table at `location`, named `name` in `namespace` as its route names them (REST-11): none when
-/// they are not asked for or its files are local; a writer's when its token says so; refused when it bears none.
+/// The endpoint a client renews a table's credentials at: under the prefix of the ref it is connected to, so that it
+/// renews them for the same table (I6).
+fn renewal(on: &Ref, namespace: &str, name: &str) -> String {
+    match on.name() {
+        "main" => refresh_path(namespace, name),
+        other => format!(
+            "v1/{}/{}",
+            prefix_of(other),
+            &refresh_path(namespace, name)["v1/".len()..]
+        ),
+    }
+}
+
+/// The credentials for a table at `location` (REST-11): none when they are not asked for or its files are local; a
+/// writer's when its token says so; refused when it bears none. `refresh` is the endpoint that renews them, if any.
 async fn credentials_for(
     state: &State,
     caller: Option<Caller>,
     asked: bool,
     location: &str,
-    namespace: &str,
-    name: &str,
-    renewable: bool,
+    refresh: Option<String>,
 ) -> Result<Vec<StorageCredential>, Failure> {
     if !asked || !state.vendor().serves(location) {
         return Ok(Vec::new());
@@ -53,7 +65,6 @@ async fn credentials_for(
         Caller::Writer => Access::ReadWrite,
         Caller::Anonymous => return Err(Failure::credentials_refused()),
     };
-    let refresh = renewable.then(|| refresh_path(namespace, name));
     state
         .vendor()
         .vend(location, access, refresh.as_deref())
@@ -66,13 +77,13 @@ pub(super) fn levels(namespace: &str) -> Vec<&str> {
 }
 
 /// `GET /v1/namespaces/{namespace}/tables`.
-pub(crate) async fn list(Shared(state): Shared<State>, Path(namespace): Path<String>) -> Result<Json<Value>, Failure> {
+pub(crate) async fn list(On(on): On, Path(namespace): Path<String>) -> Result<Json<Value>, Failure> {
     let wanted = levels(&namespace);
-    let names = state.main().namespaces().await?;
+    let names = on.namespaces().await?;
     if !names.iter().any(|n| n.namespace.iter().eq(&wanted)) {
         return Err(Failure::no_namespace(&wanted.join(".")));
     }
-    let tables = state.main().tables().await?;
+    let tables = on.tables().await?;
     let here = tables.iter().filter(|t| t.namespace.iter().eq(&wanted));
     let identifiers: Vec<Value> = here
         .map(|t| json!({"namespace": t.namespace, "name": t.name}))
@@ -86,9 +97,9 @@ fn qualified<S: AsRef<str>>(namespace: &[S], name: &str) -> String {
     format!("{}.{name}", levels.join("."))
 }
 
-/// The table a client names on `main`, or Iceberg's `NoSuchTableException` naming it.
-async fn found(state: &State, namespace: &[&str], name: &str) -> Result<Table, Failure> {
-    state.main().table(namespace, name).await.map_err(|e| match e {
+/// The table a client names on the ref, or Iceberg's `NoSuchTableException` naming it.
+async fn found(on: &Ref, namespace: &[&str], name: &str) -> Result<Table, Failure> {
+    on.table(namespace, name).await.map_err(|e| match e {
         Error::NotFound(_) => Failure::no_table(&qualified(namespace, name)),
         other => other.into(),
     })
@@ -103,6 +114,7 @@ pub(super) fn decoded<T: DeserializeOwned>(body: &Bytes) -> Result<T, Failure> {
 /// later brings the definition back whole.
 pub(crate) async fn create(
     Shared(state): Shared<State>,
+    On(on): On,
     Path(namespace): Path<String>,
     caller: Option<Extension<Caller>>,
     headers: HeaderMap,
@@ -112,11 +124,11 @@ pub(crate) async fn create(
     let wanted = levels(&namespace);
     let request: CreateTableRequest = decoded(&body)?;
     let name = request.name.clone();
-    let namespaces = state.main().namespaces().await?;
+    let namespaces = on.namespaces().await?;
     if !namespaces.iter().any(|n| n.namespace.iter().eq(&wanted)) {
         return Err(Failure::no_namespace(&wanted.join(".")));
     }
-    if state.main().table(&wanted, &name).await.is_ok() {
+    if on.table(&wanted, &name).await.is_ok() {
         return Err(Failure::already_exists(&qualified(&wanted, &name)));
     }
     let new = create::requested(&state, &wanted, request)?;
@@ -125,8 +137,7 @@ pub(crate) async fn create(
         let metadata = staged(new.table_id.to_string(), described);
         // A staged table's files are written before its commit: its client is given credentials for them now. They
         // name no endpoint to refresh them, as `loadCredentials` finds only a table committed.
-        let storage_credentials =
-            credentials_for(&state, caller, asked, &metadata.location, &namespace, &name, false).await?;
+        let storage_credentials = credentials_for(&state, caller, asked, &metadata.location, None).await?;
         return Ok(Json(LoadTableResult {
             metadata_location: None,
             metadata,
@@ -140,8 +151,9 @@ pub(crate) async fn create(
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let storage_credentials = credentials_for(&state, caller, asked, &location, &namespace, &name, true).await?;
-    let table = create::create(&state, &wanted, &name, new).await.map_err(|e| {
+    let storage_credentials =
+        credentials_for(&state, caller, asked, &location, Some(renewal(&on, &namespace, &name))).await?;
+    let table = create::create(&state, &on, &wanted, &name, new).await.map_err(|e| {
         let failure = Failure::from(e);
         if failure.is_conflict() {
             Failure::already_exists(&qualified(&wanted, &name))
@@ -149,7 +161,7 @@ pub(crate) async fn create(
             failure
         }
     })?;
-    let mut loaded = load(&state, &table).await?;
+    let mut loaded = load(&state, &on, &table).await?;
     loaded.storage_credentials = storage_credentials;
     Ok(Json(loaded))
 }
@@ -157,21 +169,20 @@ pub(crate) async fn create(
 /// `GET /v1/namespaces/{namespace}/tables/{table}`.
 pub(crate) async fn get(
     Shared(state): Shared<State>,
+    On(on): On,
     Path((namespace, name)): Path<(String, String)>,
     caller: Option<Extension<Caller>>,
     headers: HeaderMap,
 ) -> Result<Json<LoadTableResult>, Failure> {
-    let table = found(&state, &levels(&namespace), &name).await?;
-    let mut loaded = load(&state, &table).await?;
+    let table = found(&on, &levels(&namespace), &name).await?;
+    let mut loaded = load(&state, &on, &table).await?;
     let caller = caller.map(|Extension(c)| c);
     loaded.storage_credentials = credentials_for(
         &state,
         caller,
         asks(&headers),
         table.location(),
-        &namespace,
-        &name,
-        true,
+        Some(renewal(&on, &namespace, &name)),
     )
     .await?;
     Ok(Json(loaded))
@@ -181,23 +192,26 @@ pub(crate) async fn get(
 /// as a client asks when its own expire (REST-11). Asking is what it is: none for a table whose files are local.
 pub(crate) async fn credentials(
     Shared(state): Shared<State>,
+    On(on): On,
     Path((namespace, name)): Path<(String, String)>,
     caller: Option<Extension<Caller>>,
 ) -> Result<Json<LoadCredentialsResponse>, Failure> {
-    let table = found(&state, &levels(&namespace), &name).await?;
+    let table = found(&on, &levels(&namespace), &name).await?;
     let caller = caller.map(|Extension(c)| c);
-    let storage_credentials = credentials_for(&state, caller, true, table.location(), &namespace, &name, true).await?;
+    let storage_credentials = credentials_for(
+        &state,
+        caller,
+        true,
+        table.location(),
+        Some(renewal(&on, &namespace, &name)),
+    )
+    .await?;
     Ok(Json(LoadCredentialsResponse { storage_credentials }))
 }
 
 /// What a commit asks of one table. Refused, it answers first that the table is not the one the client asserts, if so
 /// (REST-3): reading the table is left to that case alone.
-async fn checked(
-    state: &State,
-    namespace: &[String],
-    name: &str,
-    request: CommitTableRequest,
-) -> Result<Change, Failure> {
+async fn checked(on: &Ref, namespace: &[String], name: &str, request: CommitTableRequest) -> Result<Change, Failure> {
     let asserted = asserted_uuid(&request);
     let refused = match change(request) {
         Ok(change) => return Ok(change),
@@ -205,7 +219,7 @@ async fn checked(
     };
     if asserted.is_some() {
         let levels: Vec<&str> = namespace.iter().map(String::as_str).collect();
-        if let Ok(table) = state.main().table(&levels, name).await {
+        if let Ok(table) = on.table(&levels, name).await {
             check_uuid(asserted.as_deref(), &table.id().to_string())?;
         }
     }
@@ -215,69 +229,68 @@ async fn checked(
 /// `POST /v1/namespaces/{namespace}/tables/{table}`: `updateTable`, one commit (ICE-6).
 pub(crate) async fn update(
     Shared(state): Shared<State>,
+    On(on): On,
     Path((namespace, name)): Path<(String, String)>,
     body: Bytes,
 ) -> Result<Json<LoadTableResult>, Failure> {
     let request: CommitTableRequest = decoded(&body)?;
     let namespace: Vec<String> = levels(&namespace).iter().map(|l| l.to_string()).collect();
-    let change = checked(&state, &namespace, &name, request).await?;
+    let change = checked(&on, &namespace, &name, request).await?;
     let target = Target {
         namespace,
         name,
         change,
     };
-    let tables = commit::apply(&state, std::slice::from_ref(&target)).await?;
-    Ok(Json(load(&state, &tables[0]).await?))
+    let tables = commit::apply(&state, &on, std::slice::from_ref(&target)).await?;
+    Ok(Json(load(&state, &on, &tables[0]).await?))
 }
 
 /// `POST /v1/transactions/commit`: one commit of several tables, on one ref (REST-9).
-pub(crate) async fn commit_transaction(Shared(state): Shared<State>, body: Bytes) -> Result<StatusCode, Failure> {
+pub(crate) async fn commit_transaction(
+    Shared(state): Shared<State>,
+    On(on): On,
+    body: Bytes,
+) -> Result<StatusCode, Failure> {
     let request: CommitTransactionRequest = decoded(&body)?;
     let mut targets = Vec::with_capacity(request.table_changes.len());
     for mut entry in request.table_changes {
         let identifier = entry.identifier.take();
         let identifier = identifier.ok_or_else(|| Refused::Invalid("a table change names no table".into()))?;
-        let change = checked(&state, &identifier.namespace, &identifier.name, entry).await?;
+        let change = checked(&on, &identifier.namespace, &identifier.name, entry).await?;
         targets.push(Target {
             namespace: identifier.namespace,
             name: identifier.name,
             change,
         });
     }
-    commit::apply(&state, &targets).await?;
+    commit::apply(&state, &on, &targets).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// `HEAD /v1/namespaces/{namespace}/tables/{table}`, which generates nothing, unlike a load.
-pub(crate) async fn exists(
-    Shared(state): Shared<State>,
-    Path((namespace, name)): Path<(String, String)>,
-) -> Result<StatusCode, Failure> {
-    found(&state, &levels(&namespace), &name).await?;
+pub(crate) async fn exists(On(on): On, Path((namespace, name)): Path<(String, String)>) -> Result<StatusCode, Failure> {
+    found(&on, &levels(&namespace), &name).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// `DELETE /v1/namespaces/{namespace}/tables/{table}`. `purgeRequested` changes nothing (REST-8), so it is not read.
-pub(crate) async fn drop(
-    Shared(state): Shared<State>,
-    Path((namespace, name)): Path<(String, String)>,
-) -> Result<StatusCode, Failure> {
-    let table = found(&state, &levels(&namespace), &name).await?;
-    ddl::drop_table(&state, &table).await?;
+pub(crate) async fn drop(On(on): On, Path((namespace, name)): Path<(String, String)>) -> Result<StatusCode, Failure> {
+    let table = found(&on, &levels(&namespace), &name).await?;
+    ddl::drop_table(&on, &table).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /v1/tables/rename`.
-pub(crate) async fn rename(Shared(state): Shared<State>, body: Bytes) -> Result<StatusCode, Failure> {
+pub(crate) async fn rename(On(on): On, body: Bytes) -> Result<StatusCode, Failure> {
     let request: RenameTableRequest = decoded(&body)?;
     let source: Vec<&str> = request.source.namespace.iter().map(String::as_str).collect();
-    let table = found(&state, &source, &request.source.name).await?;
+    let table = found(&on, &source, &request.source.name).await?;
     let destination = &request.destination;
-    let namespaces = state.main().namespaces().await?;
+    let namespaces = on.namespaces().await?;
     if !namespaces.iter().any(|n| n.namespace == destination.namespace) {
         return Err(Failure::no_namespace(&destination.namespace.join(".")));
     }
-    ddl::rename_table(&state, &table, &destination.namespace, &destination.name)
+    ddl::rename_table(&on, &table, &destination.namespace, &destination.name)
         .await
         .map_err(|e| match Failure::from(e) {
             failure if failure.is_conflict() => {

@@ -111,14 +111,19 @@ async fn resolve(on: &Ref, target: &Target) -> Result<(Uuid, Option<Table>), App
 }
 
 /// Holds what a change asserts of the table's definition to the table on the ref, as a load would serve it (REST-12).
-/// The definition is `main`'s, as a load serves it whatever the ref a client writes to (ICE-1). Answers the snapshot of
-/// `main` it was held at, which a commit to `main` then expects, so that a definition changed in between conflicts under
-/// the commit's lock rather than slipping past the check.
-async fn check_asserted(state: &State, change: &Change, table: &Table) -> Result<Option<i64>, ApplyError> {
+/// The definition is that of the ref the client is connected to, `served`, as a load serves it whatever the ref a client
+/// writes to (ICE-1, I6). Answers the snapshot of `served` it was held at, which a commit to `served` then expects, so
+/// that a definition changed in between conflicts under the commit's lock rather than slipping past the check.
+async fn check_asserted(
+    served: &Ref,
+    state: &State,
+    change: &Change,
+    table: &Table,
+) -> Result<Option<i64>, ApplyError> {
     if change.asserted.is_empty() {
         return Ok(None);
     }
-    let definition = state.main().definition(table, None).await?;
+    let definition = served.definition(table, None).await?;
     let head = definition["snapshot_id"].as_i64();
     let heads: Vec<i64> = head.into_iter().collect();
     let found = state.catalog().ancestors(table, &heads, 1, None).await?;
@@ -143,6 +148,7 @@ async fn base_of_unwritten(state: &State, table: &Table) -> Result<Option<i64>, 
 /// The files of a change, and its definition: what a stage-create sends back, or the properties it changes.
 async fn prepare(
     state: &State,
+    served: &Ref,
     on: &Ref,
     target: &Target,
     table_id: Uuid,
@@ -150,7 +156,7 @@ async fn prepare(
 ) -> Result<Prepared, ApplyError> {
     let change = &target.change;
     let held = match &table {
-        Some(table) => check_asserted(state, change, table).await?,
+        Some(table) => check_asserted(served, state, change, table).await?,
         None => None,
     };
     let definition = match &change.creation {
@@ -189,7 +195,7 @@ async fn prepare(
         (None, _) => None,
         (Some(table), Some(None)) => Some(base_of_unwritten(state, table).await?),
         // What the requirements were held at, when the client expects nothing of the ref (REST-12).
-        (Some(_), None) if on.name() == state.main().name() => held.map(Some),
+        (Some(_), None) if on.name() == served.name() => held.map(Some),
         (Some(_), expected) => expected,
     };
     Ok(Prepared {
@@ -214,14 +220,21 @@ fn commit_key(targets: &[Target], ids: &[Uuid]) -> Option<String> {
     keys.min()
 }
 
-/// Commits the changes of several tables as one commit on one ref (ICE-6, REST-9). A key already applied answers at once,
-/// whatever the client has since done with its files (REST-3).
-pub async fn apply(state: &State, targets: &[Target]) -> Result<Vec<Table>, ApplyError> {
+/// Commits the changes of several tables as one commit on one ref (ICE-6, REST-9), for a client connected to `served`.
+/// A key already applied answers at once, whatever the client has since done with its files (REST-3).
+///
+/// Iceberg's `main`, which a client writes to unless told another branch, is `served` (I6); any other name, the lake's
+/// ref of that name.
+pub async fn apply(state: &State, served: &Ref, targets: &[Target]) -> Result<Vec<Table>, ApplyError> {
     let ref_name = one_ref(targets.iter().map(|t| &t.change))?;
-    let on = state.named(ref_name).await.map_err(|e| match e {
-        Error::NotFound(_) => ApplyError::from(Refused::Invalid(format!("no ref {ref_name}"))),
-        other => other.into(),
-    })?;
+    let on = match ref_name {
+        "main" => served.clone(),
+        other => state.named(other).await.map_err(|e| match e {
+            Error::NotFound(_) => ApplyError::from(Refused::Invalid(format!("no ref {other}"))),
+            other => other.into(),
+        })?,
+    };
+    super::writable(&on)?;
     let mut resolved = Vec::with_capacity(targets.len());
     for target in targets {
         resolved.push(resolve(&on, target).await?);
@@ -231,7 +244,7 @@ pub async fn apply(state: &State, targets: &[Target]) -> Result<Vec<Table>, Appl
     if !was_applied(&on, key.as_deref()).await? {
         let mut prepared = Vec::with_capacity(targets.len());
         for (target, (id, table)) in targets.iter().zip(resolved) {
-            match prepare(state, &on, target, id, table).await {
+            match prepare(state, served, &on, target, id, table).await {
                 Ok(one) => prepared.push(one),
                 // The files may be gone because a first attempt of this commit took them, after the check above.
                 Err(ApplyError::Refused(Refused::Conflict(_))) if was_applied(&on, key.as_deref()).await? => {

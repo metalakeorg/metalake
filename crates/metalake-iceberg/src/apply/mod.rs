@@ -13,6 +13,19 @@ pub enum Refused {
     Invalid(String),
     /// The table is not as the client saw it: it may read the table again and rebuild its commit.
     Conflict(String),
+    /// A write on a tag, which no commit moves (I6).
+    ReadOnly(String),
+}
+
+/// That `on` takes commits: a branch does, a tag does not.
+pub fn writable(on: &metalake::Ref) -> Result<(), Refused> {
+    match on.kind() {
+        "tag" => Err(Refused::ReadOnly(format!(
+            "{} is a tag, which no commit moves: connect to a branch to write",
+            on.name()
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// A failure of applying a request.

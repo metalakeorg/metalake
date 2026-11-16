@@ -37,7 +37,12 @@ pub(super) fn statements(profile: &Profile) -> Vec<String> {
     vec![
         "INSTALL iceberg".into(),
         "LOAD iceberg".into(),
-        format!("ATTACH '' AS {} ({options})", profile.name),
+        // The warehouse the catalog asks the server for: the ref it is on, or none for `main` (I6).
+        format!(
+            "ATTACH {} AS {} ({options})",
+            literal(profile.target.on.as_deref().unwrap_or_default()),
+            profile.name
+        ),
     ]
 }
 
@@ -67,6 +72,7 @@ mod tests {
             token: None,
             region: None,
             endpoint: None,
+            on: None,
         }
     }
 

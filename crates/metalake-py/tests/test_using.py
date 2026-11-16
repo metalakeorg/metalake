@@ -103,3 +103,52 @@ def test_an_engine_that_fails_as_native_code_fails_ends_its_process_not_this_one
         lake.sql("using duckdb select 1")
     monkeypatch.delenv("METALAKE_LOCAL_WORKER")
     assert one(lake.sql("using duckdb select count(*) as n from demo.t")) == {"n": 3}
+
+
+@pytest.fixture
+def on_a_branch(lake):
+    """`lake` on branch `ventas`, where `demo.t` has a row more and `demo.only_there` is: back on `main` after."""
+    if "ventas" not in [r.name for r in lake.refs()]:
+        lake.branch("ventas")
+        lake.sql(
+            "insert into ventas.demo.t values (40); "
+            "create table ventas.demo.only_there (k int); insert into ventas.demo.only_there values (9)"
+        )
+    lake.on("ventas")
+    yield lake
+    lake.on("main")
+
+
+def test_using_runs_on_the_ref_the_session_is_on(on_a_branch):
+    """As the selector of Query or of a notebook sets it (I6): DuckDB reads and writes that ref, with no ref named."""
+    lake = on_a_branch
+    main_rows = one(lake.sql("select count(*) as n from main.demo.t"))["n"]
+    assert one(lake.sql("using duckdb select k from demo.only_there")) == {"k": 9}
+    before = one(lake.sql("using duckdb select count(*) as n from demo.t"))["n"]
+    assert before == one(lake.sql("select count(*) as n from demo.t"))["n"], "DuckDB and the lake see the same ref"
+    lake.sql("using duckdb; insert into demo.t values (41); using metalake")
+    assert one(lake.sql("select count(*) as n from ventas.demo.t"))["n"] == before + 1
+    assert one(lake.sql("select count(*) as n from main.demo.t"))["n"] == main_rows, "main is untouched"
+
+
+def test_using_on_a_tag_reads_it_and_writes_nothing(lake):
+    lake.tag("frozen")
+    lake.on("frozen")
+    try:
+        frozen = one(lake.sql("select count(*) as n from demo.t"))["n"]
+        assert one(lake.sql("using duckdb select count(*) as n from demo.t"))["n"] == frozen
+        with pytest.raises(metalake.MetaLakeError, match="tag"):
+            lake.sql("using duckdb insert into demo.t values (99)")
+    finally:
+        lake.on("main")
+
+
+def test_an_engine_the_lakes_file_names_is_refused_on_another_ref(on_a_branch):
+    """Its catalog is connected where whoever runs it chose: MetaLake does not move it, and says how to."""
+    lake = on_a_branch
+    lake.add_engine("trino_test", url="http://127.0.0.1:1", user="ana")
+    try:
+        with pytest.raises(metalake.UsageError, match=r"metalake iceberg connect <engine> --ref ventas"):
+            lake.sql("using trino_test select 1")
+    finally:
+        lake.remove_engine("trino_test")
