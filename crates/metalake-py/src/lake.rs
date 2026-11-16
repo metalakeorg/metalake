@@ -112,7 +112,11 @@ impl PyLake {
     #[getter]
     fn iceberg(&self, py: Python<'_>) -> PyResult<PyIceberg> {
         self.owner.check(py, "Lake")?;
-        Ok(PyIceberg::new(self.owner.clone(), self.lake.clone()))
+        Ok(PyIceberg::new(
+            self.owner.clone(),
+            self.lake.clone(),
+            self.session.clone(),
+        ))
     }
 
     /// A table by the name a statement would use: `t`, `namespace.t` or `ref.namespace.t`.

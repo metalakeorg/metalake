@@ -78,14 +78,16 @@ async fn connect(args: &IcebergConnect, lake: &Lake, out: &Out) -> Result<(), Er
     let iceberg = lake.iceberg();
     let profile = match &args.uri {
         Some(uri) => {
-            let profile = iceberg.profile_at(args.engine.into(), &args.name, uri).await?;
+            let profile = iceberg
+                .profile_at(args.engine.into(), &args.name, uri, &args.on)
+                .await?;
             if profile.target.token.is_none() {
                 eprintln!("no METALAKE_ICEBERG_TOKEN here: the engine reads the lake, and does not write it");
             }
             profile
         }
         None => {
-            let profile = iceberg.profile(args.engine.into(), &args.name).await?;
+            let profile = iceberg.profile_on(args.engine.into(), &args.name, &args.on).await?;
             eprintln!(
                 "the lake's server runs at {}: `metalake iceberg stop` stops it",
                 profile.target.uri

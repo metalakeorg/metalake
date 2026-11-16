@@ -13,6 +13,9 @@ pub(super) fn profile(name: &str, target: &Target) -> Profile {
     set("connector.name", "iceberg");
     set("iceberg.catalog.type", "rest");
     set("iceberg.rest-catalog.uri", &target.uri);
+    if let Some(on) = &target.on {
+        set("iceberg.rest-catalog.warehouse", on);
+    }
     if let Some(token) = &target.token {
         set("iceberg.rest-catalog.security", "OAUTH2");
         set("iceberg.rest-catalog.oauth2.token", token);
@@ -76,6 +79,7 @@ mod tests {
             token: None,
             region: None,
             endpoint: None,
+            on: None,
         }
     }
 

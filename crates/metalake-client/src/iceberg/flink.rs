@@ -42,6 +42,9 @@ pub(super) fn profile(name: &str, target: &Target) -> Result<Profile> {
     if let Some(token) = &target.token {
         profile.properties.insert("token".into(), token.clone());
     }
+    if let Some(on) = &target.on {
+        profile.properties.insert("warehouse".into(), on.clone());
+    }
     if target.store.bundle().is_some() {
         profile.properties.insert(DELEGATION.0.into(), DELEGATION.1.into());
     }
@@ -93,6 +96,7 @@ mod tests {
             token: None,
             region: None,
             endpoint: None,
+            on: None,
         }
     }
 

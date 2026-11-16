@@ -10,6 +10,9 @@ pub(super) fn profile(name: &str, target: &Target) -> Profile {
     if let Some(token) = &target.token {
         profile.properties.insert("token".into(), token.clone());
     }
+    if let Some(on) = &target.on {
+        profile.properties.insert("warehouse".into(), on.clone());
+    }
     // PyArrow's file IO, PyIceberg's default, reads `file:///C:/…` as the path `/C:/…`, which Windows refuses; fsspec's
     // reads a drive's path as it is.
     if target.store == Store::Local && on_a_drive(&target.warehouse) {
@@ -49,6 +52,7 @@ mod tests {
             token: None,
             region: None,
             endpoint: None,
+            on: None,
         }
     }
 

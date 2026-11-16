@@ -69,6 +69,8 @@ ELSEWHERE = {
     ("ingest", "batch-lines"): metalake.Writer.write,
     # A program has its query in hand: from a file, it reads it itself.
     ("pipeline", "file"): Lake.create_pipeline,
+    # An engine Python connects is on the ref `lake` is on, which `lake.on` sets, as a notebook's selector does.
+    ("iceberg", "ref"): Lake.on,
 }
 
 

@@ -303,6 +303,10 @@ pub struct IcebergConnect {
     /// METALAKE_ICEBERG_TOKEN that server was started with, for the engine to write; without it, the engine reads.
     #[arg(long, value_name = "URI")]
     pub uri: Option<String>,
+    /// The branch or tag the engine reads and writes: its namespaces and tables, with no ref named in a statement. On
+    /// a tag, it reads.
+    #[arg(long = "ref", value_name = "REF", default_value = "main")]
+    pub on: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
