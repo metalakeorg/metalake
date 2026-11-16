@@ -82,6 +82,7 @@ pub async fn run(on: &Ref, verb: CatalogVerb) -> Result<Prepared> {
     match verb {
         CatalogVerb::Show => rows("name", catalogs(on).await?),
         CatalogVerb::Create { name, if_not_exists } => {
+            check_name(&name)?;
             if catalogs(on).await?.contains(&name) {
                 if if_not_exists {
                     return rows("name", vec![name]);
@@ -115,6 +116,16 @@ pub async fn run(on: &Ref, verb: CatalogVerb) -> Result<Prepared> {
             rows("deleted", vec![name])
         }
     }
+}
+
+/// A catalog's name holds no `@`, which an Iceberg warehouse puts between it and its ref (`ventas@dev`).
+pub(crate) fn check_name(name: &str) -> Result<()> {
+    if name.contains('@') {
+        return Err(Error::usage(format!(
+            "{name}: a catalog's name holds no @, which an Iceberg warehouse puts between a catalog and its ref"
+        )));
+    }
+    Ok(())
 }
 
 /// One column of names, as rows.

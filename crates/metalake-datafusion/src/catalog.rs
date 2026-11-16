@@ -109,6 +109,10 @@ impl MetaLake {
         let mut listing = Listing::new();
         for on in self.shared.catalog.refs().await? {
             let namespaces = listing.entry(on.name().to_string()).or_default();
+            // A catalog or a schema with no table yet is listed too, as `CREATE CATALOG` leaves one (I7).
+            for row in on.namespaces().await? {
+                namespaces.entry(row.namespace.join(".")).or_default();
+            }
             for table in on.tables().await? {
                 namespaces
                     .entry(table.namespace.join("."))
@@ -191,6 +195,13 @@ impl MetaLake {
                 let mut namespace = levels(&create.schema_name);
                 if namespace.len() == 1 {
                     namespace.insert(0, DEFAULT_CATALOG.to_string());
+                }
+                // An Iceberg warehouse puts `@` between a catalog and its ref (`ventas@dev`): no catalog holds one.
+                if namespace[0].contains('@') {
+                    return Err(external(Error::Invalid(format!(
+                        "{}: a catalog's name holds no @, which an Iceberg warehouse puts between a catalog and its ref",
+                        namespace[0]
+                    ))));
                 }
                 let on = self.shared.named(&on).await?;
                 ddl::create_schema(&on, &namespace, create.if_not_exists).await?;

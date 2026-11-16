@@ -197,6 +197,18 @@ impl Session {
         MetaLake::current_ref(&self.context)
     }
 
+    /// Refuses `what` in a session read at a point (`USE BRANCH … AS OF`): it would act on the branch as it is now.
+    fn live(&self, what: &str) -> Result<()> {
+        if self.current_ref() == self.current_ref_name() {
+            return Ok(());
+        }
+        Err(Error::usage(format!(
+            "{what} is on a branch as it is now, and this session reads {} at a point: USE BRANCH {} first",
+            self.current_ref_name(),
+            self.current_ref_name()
+        )))
+    }
+
     /// The name of the ref the session is on, without the point `USE … AS OF` reads it at.
     fn current_ref_name(&self) -> String {
         let on = self.current_ref();
@@ -377,10 +389,18 @@ impl Session {
     pub async fn step(&self, step: Step) -> Result<Prepared> {
         match step {
             Step::Statement(statement) => self.prepare(statement).await,
-            Step::Pipeline(verb) => crate::pipeline::sql::run(&self.lake, verb, &self.current_ref_name()).await,
+            Step::Pipeline(verb) => {
+                if matches!(verb, crate::pipeline::Verb::Create { .. }) {
+                    self.live("CREATE PIPELINE")?;
+                }
+                crate::pipeline::sql::run(&self.lake, verb, &self.current_ref_name()).await
+            }
             Step::Ref(verb) => self.run_ref(verb).await,
             Step::Catalog(verb) => {
-                let on = self.lake.find_ref(&self.current_ref_name()).await?;
+                if !matches!(verb, crate::catalogs_sql::CatalogVerb::Show) {
+                    self.live("a catalog's change")?;
+                }
+                let on = self.lake.find_ref(&self.current_ref()).await?;
                 let answer = crate::catalogs_sql::run(&on, verb).await;
                 self.engine.refresh().await?;
                 answer
