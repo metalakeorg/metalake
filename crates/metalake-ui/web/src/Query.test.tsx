@@ -5,17 +5,17 @@ import { columnFromArray, int64, tableFromColumns, tableToIPC } from "@uwdata/fl
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryPage } from "./Query";
 
-/** A lake of two branches: `main` with `sales.orders`, `dev` with `default.t` too. */
+/** A lake of two branches: `main` with `default.sales.orders`, `dev` with `default.default.t` too (I7). */
 const LAKE: Record<string, unknown> = {
   "/api/v1/refs": [
     { name: "main", kind: "branch", parent: null, fork_seq: null, created_seq: 1, protected: true },
     { name: "dev", kind: "branch", parent: "main", fork_seq: 3, created_seq: 4, protected: false },
     { name: "v1", kind: "tag", parent: "main", fork_seq: 3, created_seq: 5, protected: false },
   ],
-  "/api/v1/refs/main/tables": [{ namespace: ["sales"], name: "orders" }],
-  "/api/v1/refs/v1/tables": [{ namespace: ["sales"], name: "orders_then" }],
-  "/api/v1/refs/main/tables/sales/orders": {
-    namespace: ["sales"],
+  "/api/v1/refs/main/tables": [{ namespace: ["default", "sales"], name: "orders" }],
+  "/api/v1/refs/v1/tables": [{ namespace: ["default", "sales"], name: "orders_then" }],
+  "/api/v1/refs/main/tables/default%1Fsales/orders": {
+    namespace: ["default", "sales"],
     name: "orders",
     id: "0e0c4a",
     location: "file:///lake/data/sales/orders",
@@ -37,8 +37,8 @@ const LAKE: Record<string, unknown> = {
     iceberg: null,
   },
   "/api/v1/refs/dev/tables": [
-    { namespace: ["sales"], name: "orders" },
-    { namespace: ["default"], name: "t" },
+    { namespace: ["default", "sales"], name: "orders" },
+    { namespace: ["default", "default"], name: "t" },
   ],
 };
 
@@ -159,11 +159,11 @@ describe("QueryPage", () => {
     expect(await assets.findByRole("option", { name: "dev" })).toBeInTheDocument();
     const branch = within(assets.getByRole("combobox", { name: "Branch" }));
     expect(branch.queryByRole("option", { name: "v1" })).toBeNull();
-    expect(await assets.findByRole("list", { name: "sales" })).toHaveTextContent("orders");
-    expect(assets.queryByRole("list", { name: "default" })).toBeNull();
+    expect(await assets.findByRole("list", { name: "default.sales" })).toHaveTextContent("orders");
+    expect(assets.queryByRole("list", { name: "default.default" })).toBeNull();
 
     fireEvent.change(assets.getByRole("combobox", { name: "Branch" }), { target: { value: "dev" } });
-    expect(await assets.findByRole("list", { name: "default" })).toHaveTextContent("t");
+    expect(await assets.findByRole("list", { name: "default.default" })).toHaveTextContent("t");
     // v1 was made from main: dev has no tags.
     const tag = assets.getByRole("combobox", { name: "Tag" });
     expect(within(tag).queryByRole("option", { name: "v1" })).toBeNull();
@@ -173,7 +173,7 @@ describe("QueryPage", () => {
   it("unfolds a table on its columns, each with its type, a nested one below its column", async () => {
     page();
     const assets = within(screen.getByRole("complementary", { name: "Assets" }));
-    const sales = within(await assets.findByRole("list", { name: "sales" }));
+    const sales = within(await assets.findByRole("list", { name: "default.sales" }));
     expect(assets.queryByRole("list", { name: "Columns of orders" })).toBeNull();
     fireEvent.click(sales.getByText("orders"));
     const columns = within(await assets.findByRole("list", { name: "Columns of orders" }));
@@ -183,15 +183,15 @@ describe("QueryPage", () => {
   it("puts a table's path and a column's name in the editor, from the arrow of its row", async () => {
     page();
     const assets = within(screen.getByRole("complementary", { name: "Assets" }));
-    await assets.findByRole("list", { name: "sales" });
+    await assets.findByRole("list", { name: "default.sales" });
     write("select ");
     fireEvent.click(assets.getByRole("button", { name: "Put orders in the editor" }));
-    expect(text()).toBe("select main.sales.orders");
-    fireEvent.click(within(assets.getByRole("list", { name: "sales" })).getByText("orders"));
+    expect(text()).toBe("select default.sales.orders");
+    fireEvent.click(within(assets.getByRole("list", { name: "default.sales" })).getByText("orders"));
     await assets.findByRole("list", { name: "Columns of orders" });
     fireEvent.click(assets.getByRole("button", { name: "Put id in the editor" }));
     fireEvent.click(assets.getByRole("button", { name: "Put city in the editor" }));
-    expect(text()).toBe("select main.sales.orders id ship['city']");
+    expect(text()).toBe("select default.sales.orders id ship['city']");
   });
 
   it("runs the statement on the branch picked, and shows its rows", async () => {
@@ -222,7 +222,7 @@ describe("QueryPage", () => {
     expect(tag).toHaveValue("");
     fireEvent.change(tag, { target: { value: "v1" } });
     expect(tag).toHaveValue("v1");
-    expect(await assets.findByRole("list", { name: "sales" })).toHaveTextContent("orders_then");
+    expect(await assets.findByRole("list", { name: "default.sales" })).toHaveTextContent("orders_then");
     expect(screen.getByRole("region", { name: "Query" })).toHaveTextContent("tag · read only");
 
     write("select 1");

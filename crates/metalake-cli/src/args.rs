@@ -56,7 +56,7 @@ pub enum Verb {
     Stop,
     /// Serves the lake's UI on this machine, on the loopback, and opens it in the browser, until Ctrl-C.
     Ui(Ui),
-    /// Lists a ref's own commits, the latest first; their sequences read the past as `"main@1234"`.
+    /// Lists a ref's own commits, the latest first; their sequences read the past as `USE BRANCH main AS OF 1234`.
     Log(Log),
     /// When Iceberg clients find each table's metadata written: when one loads it, or after each commit.
     Iceberg {
@@ -171,7 +171,8 @@ pub struct PipelineCreate {
     pub parallelism: u32,
     /// Empties the tables it writes first, when they have rows: they then hold what the query gives.
     #[arg(long)]
-    pub empty_target: bool,    /// The ref it is on: no table's name says one.
+    pub empty_target: bool,
+    /// The ref it is on: no table's name says one.
     #[arg(long = "ref", value_name = "REF", default_value = "main")]
     pub on: String,
 }

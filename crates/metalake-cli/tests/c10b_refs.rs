@@ -4,7 +4,7 @@ mod common;
 
 use std::path::Path;
 
-use common::{ok, run, sql, table, text};
+use common::{ok, run, sql, sql_on, table, text};
 use serde_json::Value;
 
 /// The rows `args` prints, in `json`.
@@ -15,9 +15,11 @@ fn objects(dir: &Path, args: &[&str]) -> Vec<Value> {
     lines.lines().map(|l| serde_json::from_str(l).unwrap()).collect()
 }
 
+/// The count on `on`, a branch or the tag `q3`, which the session uses: a name says no ref (I7).
 fn count(dir: &Path, on: &str) -> String {
-    let select = format!("select count(*) as n from \"{on}\".db.t");
-    sql(dir, &select, "csv").lines().nth(1).unwrap().to_string()
+    let kind = if on == "q3" { "tag" } else { "branch" };
+    let counted = sql_on(dir, &format!("use {kind} {on}"), "select count(*) as n from db.t", "csv");
+    counted.lines().nth(1).unwrap().to_string()
 }
 
 #[test]
@@ -29,7 +31,7 @@ fn branch_isolation() {
     assert_eq!(created[0]["kind"], "branch");
     assert_eq!(created[0]["parent"], "main");
 
-    sql(&dir, "insert into dev.db.t values (3, 'c', 2.5)", "csv");
+    sql(&dir, "use branch dev; insert into db.t values (3, 'c', 2.5)", "csv");
     assert_eq!(count(&dir, "dev"), "3");
     assert_eq!(count(&dir, "main"), "2");
 
@@ -52,11 +54,11 @@ fn tag_immutable() {
     let dir = table();
     let tag = &objects(&dir, &["tag", "create", "q3"])[0];
     assert_eq!(tag["kind"], "tag");
-    sql(&dir, "insert into main.db.t values (3, 'c', 2.5)", "csv");
+    sql(&dir, "insert into db.t values (3, 'c', 2.5)", "csv");
     assert_eq!(count(&dir, "main"), "3");
     assert_eq!(count(&dir, "q3"), "2");
 
-    let refused = run(&dir, &["sql", "insert into q3.db.t values (4, 'd', 3.5)"]);
+    let refused = run(&dir, &["sql", "use tag q3; insert into db.t values (4, 'd', 3.5)"]);
     assert_eq!(refused.status.code(), Some(1));
     assert_eq!(count(&dir, "q3"), "2");
 
@@ -71,7 +73,7 @@ fn ref_from_sequence() {
     let mark = objects(&dir, &["tag", "create", "mark"])[0]["created_seq"]
         .as_i64()
         .unwrap();
-    sql(&dir, "insert into main.db.t values (3, 'c', 2.5)", "csv");
+    sql(&dir, "insert into db.t values (3, 'c', 2.5)", "csv");
 
     // A ref starts only from a snapshot its parent keeps (RET-6): a tag's own sequence is none, and is refused.
     let refused = run(&dir, &["branch", "create", "old", "--from", &format!("main@{mark}")]);

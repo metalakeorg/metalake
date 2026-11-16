@@ -42,11 +42,11 @@ async fn lake() -> (Arc<Lake>, PathBuf) {
     .await
     .expect("a lake");
     let main = lake.catalog.branch("main").await.unwrap();
-    main.transaction().create_namespace(&["db"]).commit().await.unwrap();
+    main.transaction().create_namespace(&["default", "db"]).commit().await.unwrap();
     let (tx, _) = main
         .transaction()
         .create_table(NewTable {
-            namespace: &["db"],
+            namespace: &["default", "db"],
             name: "t",
             schema: &shape(),
             location: None,

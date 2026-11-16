@@ -73,6 +73,11 @@ def test_duckdb_reads_and_writes(lake):
     assert lake.iceberg.duckdb(own, name="other") is own
     assert own.sql("select max(k) from other.default.t").fetchall()[0][0] == 10
 
+    # Another of the lake's catalogs, attached as another name: its schemas are DuckDB's (I7).
+    lake.sql("create schema ventas.eu; create table ventas.eu.p (k bigint); insert into ventas.eu.p values (5)")
+    lake.iceberg.duckdb(own, name="v", catalog="ventas")
+    assert own.sql("select k from v.eu.p").fetchall() == [(5,)]
+
 
 @pytest.fixture(scope="module")
 def spark_session(lake):

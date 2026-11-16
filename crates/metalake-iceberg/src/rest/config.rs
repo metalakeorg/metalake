@@ -58,6 +58,8 @@ pub(crate) async fn config(Shared(state): Shared<State>, Query(asked): Query<Ask
         Some(warehouse) => {
             let (catalog, on) = match warehouse.split_once('@') {
                 Some((catalog, on)) => (catalog, on),
+                // A session asked for as before catalogs (I6): in the catalog `default`.
+                None if warehouse.starts_with(SESSION) => ("", warehouse),
                 None => (warehouse, MAIN),
             };
             let catalog = if catalog.is_empty() { DEFAULT_CATALOG } else { catalog };

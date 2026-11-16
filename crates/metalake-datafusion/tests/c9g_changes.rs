@@ -34,9 +34,10 @@ async fn lake() -> Lake {
     ]);
     let (tx, _) = main
         .transaction()
-        .create_namespace(&["db"])
+        .create_namespace(&["default"])
+        .create_namespace(&["default", "db"])
         .create_table(NewTable {
-            namespace: &["db"],
+            namespace: &["default", "db"],
             name: "t",
             schema: &shape,
             location: None,
@@ -83,7 +84,7 @@ fn row(what: &str, key: i64, seq: i64) -> (String, i64, i64) {
 /// The commit a statement made, once a second old, as the feed delivers it (CHG-1).
 async fn committed(lake: &Lake, sql: &str) -> i64 {
     lake.run(sql).await.unwrap();
-    let t = lake.main.table(&["db"], "t").await.unwrap();
+    let t = lake.main.table(&["default", "db"], "t").await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(1150)).await;
     t.snapshot_id().expect("a commit")
 }
@@ -101,7 +102,7 @@ async fn chg3_table_changes_range() {
         [row("insert", 3, two)]
     );
     assert_eq!(
-        lake.rows(&format!("select * from table_changes('main.db.t', {two})"))
+        lake.rows(&format!("select * from table_changes('default.db.t', {two})"))
             .await,
         [row("delete", 1, three)]
     );

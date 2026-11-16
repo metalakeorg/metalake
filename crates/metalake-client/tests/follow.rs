@@ -38,12 +38,12 @@ async fn lake(names: &[&str]) -> (Lake, PathBuf) {
     .await
     .expect("a lake");
     let main = lake.catalog.branch("main").await.unwrap();
-    main.transaction().create_namespace(&["db"]).commit().await.unwrap();
+    main.transaction().create_namespace(&["default", "db"]).commit().await.unwrap();
     for name in names {
         let (tx, _) = main
             .transaction()
             .create_table(NewTable {
-                namespace: &["db"],
+                namespace: &["default", "db"],
                 name,
                 schema: &shape(),
                 location: None,
@@ -305,7 +305,7 @@ async fn wait_takes_commit_when_it_comes() {
 /// Changes the columns of `db.t` on `main` in one commit, as the specification's `fields` says (§6).
 async fn define(lake: &Lake, fields: Vec<serde_json::Value>) {
     let main = lake.catalog.branch("main").await.unwrap();
-    let t = main.table(&["db"], "t").await.unwrap();
+    let t = main.table(&["default", "db"], "t").await.unwrap();
     main.transaction()
         .define(t.id(), serde_json::json!({ "fields": fields }))
         .commit()
@@ -316,7 +316,7 @@ async fn define(lake: &Lake, fields: Vec<serde_json::Value>) {
 /// A new id for a field of `db.t`.
 async fn field_id(lake: &Lake) -> i32 {
     let main = lake.catalog.branch("main").await.unwrap();
-    let t = main.table(&["db"], "t").await.unwrap();
+    let t = main.table(&["default", "db"], "t").await.unwrap();
     let pool = metalake_pg::Pool::new(&url(), 1).unwrap();
     let session = pool.get().await.unwrap();
     metalake_pg::Protocol::new(lake.schema())
@@ -400,7 +400,7 @@ async fn follow_stops_at_renamed_column() {
     let at = follower.position().unwrap();
 
     let main = lake.catalog.branch("main").await.unwrap();
-    let k = main.table(&["db"], "t").await.unwrap().fields()[0].clone();
+    let k = main.table(&["default", "db"], "t").await.unwrap().fields()[0].clone();
     define(
         &lake,
         vec![

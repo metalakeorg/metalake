@@ -333,7 +333,7 @@ impl Lake {
             return Err(Error::usage(format!("a key of {on:?} is there more than once")));
         }
         let text = merge_text(&path.quoted(), &source.name(), &schema, on);
-        session.merge(&text, details).await
+        session.merge(&text, &path.on, details).await
     }
 
     /// A table as it is now, on its ref, which Postgres says. A write takes it anew, so that it sees the table's schema

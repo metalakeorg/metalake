@@ -21,8 +21,8 @@ def lake(directory):
     lake.sql("create schema demo; create table demo.t (k bigint); insert into demo.t values (1), (2)")
     lake.branch("ventas_ana")
     lake.sql(
-        "insert into ventas_ana.demo.t values (3); "
-        "create table ventas_ana.demo.only_there (k bigint); insert into ventas_ana.demo.only_there values (9)"
+        "use branch ventas_ana; insert into demo.t values (3); "
+        "create table demo.only_there (k bigint); insert into demo.only_there values (9); use branch main"
     )
     yield lake
     lake.on("main")
@@ -39,10 +39,10 @@ def test_one_duckdb_connection_follows_lake_on(lake):
     assert con.sql("select count(*) from lake.demo.t").fetchall()[0][0] == 3
     assert con.sql("select k from lake.demo.only_there").fetchall() == [(9,)]
     con.sql("insert into lake.demo.t values (4)")
-    assert count(lake, "ventas_ana.demo.t") == 4
-    assert count(lake, "main.demo.t") == 2, "main is untouched"
+    assert count(lake, "demo.t") == 4
 
     lake.on("main")
+    assert count(lake, "demo.t") == 2, "main is untouched"
     assert con.sql("select count(*) from lake.demo.t").fetchall()[0][0] == 2, "the same connection, now on main"
     lake.on("ventas_ana")
     assert con.sql("select count(*) from lake.demo.t").fetchall()[0][0] == 4, "and back"
@@ -65,9 +65,9 @@ def test_one_pyiceberg_catalog_follows_lake_on(lake):
     lake.on("ventas_ana")
     catalog = lake.iceberg.pyiceberg()
     assert ("demo", "only_there") in catalog.list_tables("demo")
-    before = count(lake, "ventas_ana.demo.only_there")
+    before = count(lake, "demo.only_there")
     catalog.load_table("demo.only_there").append(pa.table({"k": pa.array([10], pa.int64())}))
-    assert count(lake, "ventas_ana.demo.only_there") == before + 1
+    assert count(lake, "demo.only_there") == before + 1
     lake.on("main")
     assert ("demo", "only_there") not in catalog.list_tables("demo"), "the same catalog, now on main"
 
@@ -79,16 +79,22 @@ def test_a_table_loaded_before_a_move_never_lands_on_the_ref_it_was_loaded_from(
     pa = pytest.importorskip("pyarrow")
     lake.on("ventas_ana")
     t = lake.iceberg.pyiceberg().load_table("demo.t")
-    main_rows, ventas_rows = count(lake, "main.demo.t"), count(lake, "ventas_ana.demo.t")
+    ventas_rows = count(lake, "demo.t")
     lake.on("main")
+    main_rows = count(lake, "demo.t")
     t.append(pa.table({"k": pa.array([77], pa.int64())}))
-    assert count(lake, "ventas_ana.demo.t") == ventas_rows, "not on the ref it was loaded from"
-    assert count(lake, "main.demo.t") == main_rows + 1, "on the ref the session is on"
-
-
-def test_the_profile_names_the_ref(lake):
+    assert count(lake, "demo.t") == main_rows + 1, "on the ref the session is on"
     lake.on("ventas_ana")
-    assert lake.iceberg.properties("pyiceberg")["warehouse"] == "ventas_ana"
-    assert any("ATTACH 'ventas_ana'" in s for s in lake.iceberg.profile("duckdb").statements)
+    assert count(lake, "demo.t") == ventas_rows, "not on the ref it was loaded from"
+    lake.on("main")
+
+
+def test_the_profile_names_the_catalog_and_the_ref(lake):
+    """The warehouse is `catalog@ref` (I7); `default` on `main` asks for none."""
+    lake.on("ventas_ana")
+    assert lake.iceberg.properties("pyiceberg")["warehouse"] == "default@ventas_ana"
+    assert any("ATTACH 'default@ventas_ana'" in s for s in lake.iceberg.profile("duckdb").statements)
+    assert lake.iceberg.properties("pyiceberg", catalog="ventas")["warehouse"] == "ventas@ventas_ana"
     lake.on("main")
     assert "warehouse" not in lake.iceberg.properties("pyiceberg")
+    assert lake.iceberg.properties("pyiceberg", catalog="ventas")["warehouse"] == "ventas"

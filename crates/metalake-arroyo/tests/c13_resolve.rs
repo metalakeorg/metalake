@@ -22,7 +22,7 @@ async fn with_totals(lake: &Lake) {
         .main
         .transaction()
         .create_table(NewTable {
-            namespace: &["shop"],
+            namespace: &["default", "shop"],
             name: "totals",
             schema: &schema,
             location: None,
@@ -85,7 +85,7 @@ async fn resolve_leaves_unknown_and_known() {
     let lake = Lake::new().await;
     let env = environment(&lake, &[]);
 
-    // A table no ref has, and a ref the catalog does not have, are the planner's to report.
+    // A table the ref has not, and a catalog the lake has not (`nobranch`, no ref now: I7), are the planner's to report.
     let query = "INSERT INTO shop.missing SELECT * FROM shop.orders UNION ALL SELECT * FROM nobranch.shop.orders";
     let tables = resolve(query, |_| false, &env).await.unwrap();
     assert_eq!(

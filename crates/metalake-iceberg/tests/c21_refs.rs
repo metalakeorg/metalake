@@ -1,6 +1,6 @@
 //! A lake's refs through the Iceberg service (I6), end to end: the server, as a process. `GET /v1/config` hands a
-//! client that asks for a warehouse the prefix of the ref of that name, whatever its characters; a request under a
-//! prefix is on that ref, and one under a prefix no ref has is refused before anything reads. Under a prefix, every
+//! client that asks for a warehouse, `catalog@ref` (I7), the prefix of that ref and catalog, whatever its characters; a
+//! request under a prefix is on that ref, in that catalog, and one under a prefix no ref has is refused before anything reads. Under a prefix, every
 //! name is the ref's: its namespaces, its tables, its current snapshot, which is Iceberg's `main`; what is created or
 //! dropped there is the ref's alone; and a tag takes no commit.
 
@@ -34,12 +34,18 @@ fn request(uri: &str, method: &str, path: &str, body: Option<Value>) -> Result<(
     Ok((status, serde_json::from_str(payload).unwrap_or(Value::Null)))
 }
 
-/// A catalog with namespace `db` on `main`, branches `dev` and `feature/x` and tag `v1` from it, and the server on it.
+/// A lake with schema `db` of the catalog `default` and catalog `ventas` with schema `eu` on `main`, branches `dev` and
+/// `feature/x` and tag `v1` from it, and the server on it.
 async fn served() -> Result<(common::Running, String), Failure> {
     let schema = fresh_schema();
     let (catalog, _, _) = local_catalog(&schema).await?;
     let main = catalog.branch("main").await?;
-    main.transaction().create_namespace(&["db"]).commit().await?;
+    main.transaction()
+        .create_namespace(&["default", "db"])
+        .create_namespace(&["ventas"])
+        .create_namespace(&["ventas", "eu"])
+        .commit()
+        .await?;
     let main = catalog.branch("main").await?;
     main.create_branch("dev").await?;
     main.create_branch("feature/x").await?;
@@ -48,15 +54,21 @@ async fn served() -> Result<(common::Running, String), Failure> {
 }
 
 #[tokio::test]
-async fn i6_config_hands_the_prefix_of_the_ref_a_warehouse_names() -> Result<(), Failure> {
+async fn i7_config_hands_the_prefix_of_the_catalog_and_ref_a_warehouse_names() -> Result<(), Failure> {
     let (_server, uri) = served().await?;
     for (warehouse, overrides) in [
         ("", json!({})),
         ("?warehouse=", json!({})),
-        ("?warehouse=dev", json!({"prefix": "refs/dev"})),
-        ("?warehouse=main", json!({"prefix": "refs/main"})),
-        ("?warehouse=v1", json!({"prefix": "refs/v1"})),
-        ("?warehouse=feature%2Fx", json!({"prefix": "refs/feature%2Fx"})),
+        // The catalog `default` on `main` is what no warehouse is: no prefix.
+        ("?warehouse=default", json!({})),
+        ("?warehouse=default@main", json!({})),
+        ("?warehouse=default@dev", json!({"prefix": "refs/dev"})),
+        ("?warehouse=@dev", json!({"prefix": "refs/dev"})),
+        ("?warehouse=default@v1", json!({"prefix": "refs/v1"})),
+        ("?warehouse=default@feature%2Fx", json!({"prefix": "refs/feature%2Fx"})),
+        // Another catalog, on `main` or on a ref.
+        ("?warehouse=ventas", json!({"prefix": "refs/main/catalogs/ventas"})),
+        ("?warehouse=ventas@dev", json!({"prefix": "refs/dev/catalogs/ventas"})),
         // A location, as Iceberg's Java catalogs set `warehouse`: `main`, as before refs were served.
         ("?warehouse=%2Ftmp%2Fwarehouse", json!({})),
         ("?warehouse=s3%3A%2F%2Fbucket%2Fwh", json!({})),
@@ -66,15 +78,22 @@ async fn i6_config_hands_the_prefix_of_the_ref_a_warehouse_names() -> Result<(),
         assert_eq!(body["overrides"], overrides, "{warehouse}");
         assert_eq!(body["defaults"], json!({}), "{warehouse}");
     }
-    let (status, body) = get(&uri, "/v1/config?warehouse=nope")?;
-    assert_eq!(status, 400, "{body}");
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .starts_with("no ref nope"),
-        "{body}"
-    );
+    // A bare name is a catalog now, on `main`: `dev` is no catalog; a ref the lake has not is refused as before.
+    for (warehouse, said) in [
+        ("dev", "no catalog dev on main"),
+        ("nope", "no catalog nope on main"),
+        ("ventas@nope", "no ref nope"),
+    ] {
+        let (status, body) = get(&uri, &format!("/v1/config?warehouse={warehouse}"))?;
+        assert_eq!(status, 400, "{warehouse}: {body}");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with(said),
+            "{warehouse}: {body}"
+        );
+    }
     Ok(())
 }
 
@@ -87,6 +106,12 @@ async fn i6_a_request_under_a_prefix_is_routed_and_one_under_no_ref_refused() ->
         let (status, body) = get(&uri, &format!("/v1/{prefix}/namespaces"))?;
         assert_eq!(status, 200, "{prefix}: {body}");
         assert_eq!(body["namespaces"], json!([["db"]]), "{prefix}");
+    }
+    // Under a catalog's prefix, its schemas are the namespaces (I7).
+    for prefix in ["refs/main/catalogs/ventas", "refs/dev/catalogs/ventas"] {
+        let (status, body) = get(&uri, &format!("/v1/{prefix}/namespaces"))?;
+        assert_eq!(status, 200, "{prefix}: {body}");
+        assert_eq!(body["namespaces"], json!([["eu"]]), "{prefix}");
     }
     let (status, body) = get(&uri, "/v1/refs/nope/namespaces")?;
     assert_eq!(status, 404, "{body}");
@@ -102,7 +127,7 @@ async fn written() -> Result<(common::Running, String), Failure> {
     let schema = fresh_schema();
     let (catalog, storage, _) = local_catalog(&schema).await?;
     let main = catalog.branch("main").await?;
-    main.transaction().create_namespace(&["db"]).commit().await?;
+    main.transaction().create_namespace(&["default", "db"]).commit().await?;
     create(&catalog.branch("main").await?, "t", "0", vec![]).await?;
     append(&catalog, &catalog.branch("main").await?, &storage, "t", 0..2).await?;
     let main = catalog.branch("main").await?;
@@ -220,7 +245,7 @@ async fn with_token() -> Result<String, Failure> {
     let schema = fresh_schema();
     let (catalog, storage, _) = local_catalog(&schema).await?;
     let main = catalog.branch("main").await?;
-    main.transaction().create_namespace(&["db"]).commit().await?;
+    main.transaction().create_namespace(&["default", "db"]).commit().await?;
     create(&catalog.branch("main").await?, "t", "0", vec![]).await?;
     append(&catalog, &catalog.branch("main").await?, &storage, "t", 0..2).await?;
     catalog.branch("main").await?.create_branch("dev").await?;
@@ -272,13 +297,13 @@ async fn i6_a_session_prefix_follows_the_ref_the_session_is_on() -> Result<(), F
     );
     assert_eq!(say(&uri, "k1", "nope", Some(TOKEN))?.0, 404, "a ref the lake has not");
     assert_eq!(
-        get(&uri, "/v1/config?warehouse=session:k1")?.0,
+        get(&uri, "/v1/config?warehouse=default@session:k1")?.0,
         400,
         "a session that has said no ref"
     );
     assert_eq!(say(&uri, "k1", "main", Some(TOKEN))?.0, 200);
 
-    let (status, config) = get(&uri, "/v1/config?warehouse=session:k1")?;
+    let (status, config) = get(&uri, "/v1/config?warehouse=default@session:k1")?;
     assert_eq!(status, 200, "{config}");
     assert_eq!(config["overrides"]["prefix"], "sessions/k1");
 

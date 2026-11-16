@@ -40,12 +40,12 @@ def test_create_use_merge_drop_from_lake_sql(lake):
     lake.sql("use branch py_dev; insert into demo.t values (3)")
     assert lake.ref == "py_dev", "USE moves lake, as lake.on does"
     assert count(lake, "demo.t") == 3
-    assert count(lake, "main.demo.t") == 2
 
     lake.on("main")
+    assert count(lake, "demo.t") == 2
     merged = rows(lake.sql("merge branch py_dev"))
     assert merged[0]["outcome"] == "merged"
-    assert count(lake, "main.demo.t") == 3
+    assert count(lake, "demo.t") == 3
 
     with pytest.raises(metalake.UsageError, match="FORCE"):
         lake.sql("drop branch py_dev")
@@ -61,10 +61,23 @@ def test_show_and_log(lake):
 def test_use_in_lake_sql_moves_the_engines_lake_iceberg_connected(lake):
     pytest.importorskip("duckdb")
     lake.sql("create branch if not exists py_side")
-    lake.sql("insert into py_side.demo.t values (40)")
+    lake.sql("use branch py_side; insert into demo.t values (40); use branch main")
     con = lake.iceberg.duckdb()
     on_main = con.sql("select count(*) from lake.demo.t").fetchall()[0][0]
     lake.sql("use branch py_side")
     assert con.sql("select count(*) from lake.demo.t").fetchall()[0][0] == on_main + 1, "the same connection moved"
     lake.sql("use branch main")
     assert con.sql("select count(*) from lake.demo.t").fetchall()[0][0] == on_main
+
+
+def test_catalogs_from_lake_sql(lake):
+    """A lake's catalogs (I7), the level above a schema, on the ref the session is on."""
+    assert rows(lake.sql("create catalog ventas")) == [{"name": "ventas"}]
+    lake.sql("create schema ventas.eu; create table ventas.eu.t (k bigint); insert into ventas.eu.t values (1)")
+    assert {r["name"] for r in rows(lake.sql("show catalogs"))} >= {"default", "ventas"}
+    assert count(lake, "ventas.eu.t") == 1
+    with pytest.raises(metalake.UsageError, match="holds schemas"):
+        lake.sql("drop catalog ventas")
+    assert rows(lake.sql("create catalog if not exists ventas")) == [{"name": "ventas"}]
+    lake.sql("create catalog bare")
+    assert rows(lake.sql("drop catalog bare")) == [{"deleted": "bare"}]

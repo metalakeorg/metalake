@@ -35,15 +35,15 @@ def test_task_order(lake):
     tasks = [d.task for d in done]
     assert list(dict.fromkeys(tasks)) == ["times", "flush", "compact", "footers", "expire", "sweep", "orphans"]
     flush = next(d for d in done if d.task == "flush")
-    assert flush.on == "main" and flush.table == "default.small"
+    assert flush.on == "main" and flush.table == "default.default.small"
     assert "flush" in repr(flush)
 
 
 def test_strays_requires_table(lake):
     with pytest.raises(metalake.UsageError, match="name the table"):
         lake.maintain("strays")
-    done = lake.maintain("strays", table="default.small")
-    assert [(d.task, d.table, d.result) for d in done] == [("strays", "default.small", 0)]
+    done = lake.maintain("strays", table="default.default.small")
+    assert [(d.task, d.table, d.result) for d in done] == [("strays", "default.default.small", 0)]
     assert "strays" not in [d.task for d in lake.maintain()]
 
 
@@ -58,8 +58,8 @@ def test_unknown_task_raises(lake):
 
 def test_compact_ref_and_table_filter(lake):
     lake.sql("create table other (k bigint)")
-    done = lake.maintain("compact", table="default.small")
-    assert {d.table for d in done} == {"default.small"}
+    done = lake.maintain("compact", table="default.default.small")
+    assert {d.table for d in done} == {"default.default.small"}
     lake.branch("narrow")
     assert {d.on for d in lake.maintain("compact", on="narrow")} == {"narrow"}
 
@@ -67,16 +67,16 @@ def test_compact_ref_and_table_filter(lake):
 def test_compact_table_on_some_branches(lake):
     lake.branch("before_it")
     lake.sql("create table later (k bigint)")
-    assert {d.on for d in lake.maintain("compact", table="default.later")} == {"main"}
+    assert {d.on for d in lake.maintain("compact", table="default.default.later")} == {"main"}
     with pytest.raises(metalake.MetaLakeError, match="later"):
-        lake.maintain("compact", table="default.later", on="before_it")
-    with pytest.raises(metalake.MetaLakeError, match="no branch has the table default.nowhere"):
-        lake.maintain("compact", table="default.nowhere")
+        lake.maintain("compact", table="default.default.later", on="before_it")
+    with pytest.raises(metalake.MetaLakeError, match="no branch has the table default.default.nowhere"):
+        lake.maintain("compact", table="default.default.nowhere")
 
 
 def test_filter_limited_to_rewrites(lake):
     with pytest.raises(metalake.UsageError, match="flush, compact, footers and strays"):
-        lake.maintain("expire", table="default.small")
+        lake.maintain("expire", table="default.default.small")
     with pytest.raises(metalake.UsageError, match="flush, compact, footers and strays"):
         lake.maintain(on="main")
 
@@ -91,7 +91,7 @@ def test_compaction_preserves_rows(lake, directory):
     t = lake.table("joined")
     t.append(big())
     t.append(big(100_000))
-    done = lake.maintain("compact", table="default.joined")
+    done = lake.maintain("compact", table="default.default.joined")
     assert done[0].result, "it wrote a commit"
     assert lake.log()[0].operation == "replace"
     frame = lake.sql("select count(*) as n, sum(k) as s from joined").to_polars()

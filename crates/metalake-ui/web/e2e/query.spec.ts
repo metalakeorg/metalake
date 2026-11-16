@@ -30,7 +30,7 @@ test("beside the editor, the assets of a branch, picked above them", async ({ pa
   await page.goto(`/#token=${TOKEN}`);
   const assets = page.getByRole("complementary", { name: "Assets" });
   await expect(assets.getByRole("combobox", { name: "Branch" })).toHaveValue("main");
-  // The branch's catalog heads the tree, whatever the lake behind it holds.
+  // The branch heads the tree, its catalogs below it, whatever the lake behind it holds (I7).
   await expect(assets.locator("summary").first()).toContainText("main");
   const panel = await assets.boundingBox();
   const editor = await page.getByRole("textbox", { name: "SQL" }).boundingBox();

@@ -212,9 +212,31 @@ impl Session {
         Ok(statements.into())
     }
 
+    /// A context of this session's engine on the ref `on`: this session's own when it is on it, else one apart, so that
+    /// a statement for a table opened on `on` reads and writes there whatever ref the session moved to (I7).
+    fn context_on(&self, on: &str) -> Result<SessionContext> {
+        if self.current_ref() == on {
+            return Ok(self.context.clone());
+        }
+        let context = self.engine.context()?;
+        MetaLake::on_ref(&context, on);
+        Ok(context)
+    }
+
     /// Prepares one statement, and runs it if it does more than read.
     pub async fn prepare(&self, statement: Statement) -> Result<Prepared> {
-        let frame = self.engine.execute(&self.context, statement).await?;
+        self.prepare_in(&self.context.clone(), statement).await
+    }
+
+    /// Prepares one statement of text on the ref `on`, whatever ref the session is on: a table's own reads.
+    pub async fn prepare_on(&self, text: &str, on: &str) -> Result<Prepared> {
+        let [statement] = <[Statement; 1]>::try_from(Self::parse(text)?)
+            .map_err(|_| Error::failed("one statement is prepared on a ref"))?;
+        self.prepare_in(&self.context_on(on)?, statement).await
+    }
+
+    async fn prepare_in(&self, context: &SessionContext, statement: Statement) -> Result<Prepared> {
+        let frame = self.engine.execute(context, statement).await?;
         let task = Arc::new(frame.task_ctx());
         let read = is_read(frame.logical_plan());
         let plan = frame.create_physical_plan().await?;
@@ -227,14 +249,14 @@ impl Session {
         Ok(Prepared { plan, task, read })
     }
 
-    /// Deletes the rows of a table that a filter matches, in one commit. The filter is SQL, so what it makes is looked at
-    /// and not its text: one `delete`, of this table, and nothing else.
+    /// Deletes the rows of a table that a filter matches, in one commit, on the table's ref. The filter is SQL, so what it
+    /// makes is looked at and not its text: one `delete`, of this table, and nothing else.
     pub async fn delete(&self, path: &TablePath, filter: &str, details: Details) -> Result<Written> {
         let text = format!("delete from {} where {filter}", path.quoted());
         let statements = Self::parse(&text).map_err(|e| Error::usage(format!("{filter}: {e}")))?;
         let [statement] = <[Statement; 1]>::try_from(statements)
             .map_err(|_| Error::usage(format!("{filter}: a filter is one expression")))?;
-        let frame = self.engine.execute(&self.context, statement).await?;
+        let frame = self.engine.execute(&self.context_on(&path.on)?, statement).await?;
         let LogicalPlan::Dml(delete) = frame.logical_plan() else {
             return Err(Error::usage(format!("{filter}: a filter is one expression")));
         };
@@ -272,11 +294,11 @@ impl Session {
         Ok(frame.limit(0, Some(1))?.count().await? > 0)
     }
 
-    /// Runs one `merge into`, and says how many rows it inserted and updated.
-    pub(crate) async fn merge(&self, text: &str, details: Details) -> Result<Written> {
+    /// Runs one `merge into` on the ref `on`, and says how many rows it inserted and updated.
+    pub(crate) async fn merge(&self, text: &str, on: &str, details: Details) -> Result<Written> {
         let [statement] =
             <[Statement; 1]>::try_from(Self::parse(text)?).map_err(|_| Error::failed("a merge is one statement"))?;
-        let frame = self.engine.execute(&self.context, statement).await?;
+        let frame = self.engine.execute(&self.context_on(on)?, statement).await?;
         let row = self.run_with(frame, details).await?;
         Ok(Written::of_statement(row.outcome, row.count).merged(row.inserted, row.updated))
     }

@@ -121,11 +121,12 @@ def test_commit_author_and_message(lake, table, directory, capfd):
     assert "the sync" in said and "ana" in said
 
 
-def test_branch_isolation(lake, table, directory):
+def test_branch_isolation(lake, table, directory, on_ref):
     metalake._cli(["metalake", "--lake", str(directory), "branch", "create", f"{table}_dev"])
-    lake.table(f"{table}_dev.default.{table}").upsert(frame((1, 11, "x")), on=["id"])
+    with on_ref(lake, f"{table}_dev"):
+        lake.table(table).upsert(frame((1, 11, "x")), on=["id"])
+        assert (1, 11, "x") in rows(lake, table)
     assert rows(lake, table) == [(1, 10, "a"), (2, 20, "b")]
-    assert (1, 11, "x") in rows(lake, f'"{table}_dev".default.{table}')
 
 
 def test_quoted_identifiers(lake):

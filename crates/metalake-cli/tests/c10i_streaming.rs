@@ -54,8 +54,8 @@ fn changes(json: &str) -> Vec<(String, i64)> {
 #[test]
 fn changes_prints_range() {
     let dir = table();
-    sql(&dir, "insert into main.db.t values (3, 'c', 2.5)", "csv");
-    sql(&dir, "delete from main.db.t where k = 1", "csv");
+    sql(&dir, "insert into db.t values (3, 'c', 2.5)", "csv");
+    sql(&dir, "delete from db.t where k = 1", "csv");
     settle();
     let seqs = commits(&dir);
     let (deleted, added) = (seqs[seqs.len() - 1], seqs[seqs.len() - 2]);
@@ -135,7 +135,7 @@ fn follow_keeps_position_file() {
     let kept: i64 = std::fs::read_to_string(&file).unwrap().trim().parse().unwrap();
 
     // Started again with the file, it prints only what came after.
-    sql(&dir, "insert into main.db.t values (3, 'c', 2.5)", "csv");
+    sql(&dir, "insert into db.t values (3, 'c', 2.5)", "csv");
     let (printed, _) = stopped(
         follow(&dir, &["db.t", "--position-file", &file_arg, "--interval", "100ms"]),
         Duration::from_secs(4),
@@ -173,7 +173,7 @@ fn ingest(dir: &Path, args: &[&str], input: &str) -> std::process::Output {
 }
 
 fn keys(dir: &Path) -> Vec<i64> {
-    let csv = sql(dir, "select k from main.db.t order by k", "csv");
+    let csv = sql(dir, "select k from db.t order by k", "csv");
     csv.lines().skip(1).map(|l| l.parse().unwrap()).collect()
 }
 
@@ -218,7 +218,7 @@ fn ingest_upsert_by_key() {
         "{\"k\": 1, \"s\": \"one\"}\n{\"k\": 3}\n",
     );
     assert!(output.status.success(), "{}", text(&output.stderr));
-    let rows = sql(&dir, "select k, s from main.db.t order by k", "csv");
+    let rows = sql(&dir, "select k, s from db.t order by k", "csv");
     assert_eq!(rows.lines().skip(1).collect::<Vec<_>>(), ["1,one", "2,", "3,"]);
 }
 
@@ -289,7 +289,7 @@ fn ingest_version_spanning_batches_whole() {
         ],
     );
     assert!(output.status.success(), "{}", text(&output.stderr));
-    let rows = sql(&dir, "select k, s from main.db.t where k > 2 order by k, s", "csv");
+    let rows = sql(&dir, "select k, s from db.t where k > 2 order by k, s", "csv");
     assert_eq!(
         rows.lines().skip(1).collect::<Vec<_>>(),
         ["7,a", "7,b", "8,c"],

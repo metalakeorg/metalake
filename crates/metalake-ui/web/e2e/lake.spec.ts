@@ -22,9 +22,9 @@ test("a table made on the lake is listed at once, and a branch made is in the se
   const assets = page.getByRole("complementary", { name: "Assets" });
   await expect(assets.getByRole("combobox", { name: "Branch" })).toHaveValue("main");
   const name = `live_${Date.now()}`;
-  execSync(`${lake} sql "create schema main.${name}; create table main.${name}.t (k bigint)"`);
-  // No reload: the lake's event makes the page read its catalog again.
-  await expect(assets.getByRole("list", { name })).toContainText("t");
+  execSync(`${lake} sql "create schema ${name}; create table ${name}.t (k bigint)"`);
+  // No reload: the lake's event makes the page read its catalog again. The schema is in the catalog `default` (I7).
+  await expect(assets.getByRole("list", { name: `default.${name}` })).toContainText("t");
   execSync(`${lake} branch create ${name}`);
   await expect(assets.getByRole("option", { name })).toBeAttached({ timeout: 15_000 });
 });
@@ -50,7 +50,8 @@ test("the editor reads the lake, and a table it writes is in the tree at once", 
     page,
     `create schema ${name}; create table ${name}.t (k bigint); insert into ${name}.t values (1), (2)`,
   );
-  await expect(page.getByRole("complementary", { name: "Assets" }).getByRole("list", { name })).toContainText("t");
+  const assets = page.getByRole("complementary", { name: "Assets" });
+  await expect(assets.getByRole("list", { name: `default.${name}` })).toContainText("t");
   await runInEditor(page, `select count(*) as n from ${name}.t`);
   await expect(page.getByRole("table", { name: "Rows" }).getByRole("cell", { name: "2" })).toBeVisible();
 });

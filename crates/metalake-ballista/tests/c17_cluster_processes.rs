@@ -69,7 +69,7 @@ async fn rows(context: &SessionContext, sql: &str) -> Result<String, Box<dyn std
 
 #[tokio::test(flavor = "multi_thread")]
 async fn binaries_answer_as_a_local_session() -> Result<(), Box<dyn std::error::Error>> {
-    // A lake on disk: `main.db.t`, four files of 25 rows.
+    // A lake on disk: `db.t`, four files of 25 rows.
     let schema = fresh_schema();
     let dir = std::env::temp_dir().join(&schema);
     std::fs::create_dir_all(&dir)?;
@@ -78,17 +78,21 @@ async fn binaries_answer_as_a_local_session() -> Result<(), Box<dyn std::error::
     let storage = Storage::new(&warehouse, storage_options(std::env::vars_os()))?;
     let main = catalog.branch("main").await?;
     let shape = batch(0..1).schema();
-    let (tx, _) = main.transaction().create_namespace(&["db"]).create_table(NewTable {
-        namespace: &["db"],
-        name: "t",
-        schema: &shape,
-        location: None,
-        cluster_key: vec!["k"],
-        partitioning: vec![],
-        properties: vec![("inline.max-bytes", "0")],
-    })?;
+    let (tx, _) = main
+        .transaction()
+        .create_namespace(&["default"])
+        .create_namespace(&["default", "db"])
+        .create_table(NewTable {
+            namespace: &["default", "db"],
+            name: "t",
+            schema: &shape,
+            location: None,
+            cluster_key: vec!["k"],
+            partitioning: vec![],
+            properties: vec![("inline.max-bytes", "0")],
+        })?;
     tx.commit().await?;
-    let t = main.table(&["db"], "t").await?;
+    let t = main.table(&["default", "db"], "t").await?;
     for at in 0..4 {
         let mut writer = TableWriter::new(&catalog, &t, storage.clone(), WriteOptions::default())?;
         writer.write(&batch(at * 25..at * 25 + 25)).await?;
@@ -136,8 +140,8 @@ async fn binaries_answer_as_a_local_session() -> Result<(), Box<dyn std::error::
     let cluster = metalake_ballista::session(&client, &format!("df://127.0.0.1:{scheduler}")).await?;
     cluster.sql("set metalake.engine = 'cluster'").await?.collect().await?;
     for sql in [
-        "select k, s from main.db.t where k % 10 = 3 order by k",
-        "select k % 4 as g, count(*) as c, sum(k) as s from main.db.t group by 1 order by 1",
+        "select k, s from db.t where k % 10 = 3 order by k",
+        "select k % 4 as g, count(*) as c, sum(k) as s from db.t group by 1 order by 1",
     ] {
         let (here, there) = (rows(&local, sql).await?, rows(&cluster, sql).await?);
         assert_eq!(here, there, "{sql}");

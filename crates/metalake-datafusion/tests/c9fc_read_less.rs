@@ -46,15 +46,19 @@ async fn lake() -> Result<Lake, Box<dyn std::error::Error>> {
     let store = Arc::new(Counting::default());
     let storage = Storage::from_store("memory:///wh", store.clone())?;
     let shape = batch(0..1).schema();
-    let (tx, _) = main.transaction().create_namespace(&["db"]).create_table(NewTable {
-        namespace: &["db"],
-        name: "t",
-        schema: &shape,
-        location: None,
-        cluster_key: vec!["k"],
-        partitioning: vec![],
-        properties: vec![("inline.max-bytes", "0")],
-    })?;
+    let (tx, _) = main
+        .transaction()
+        .create_namespace(&["default"])
+        .create_namespace(&["default", "db"])
+        .create_table(NewTable {
+            namespace: &["default", "db"],
+            name: "t",
+            schema: &shape,
+            location: None,
+            cluster_key: vec!["k"],
+            partitioning: vec![],
+            properties: vec![("inline.max-bytes", "0")],
+        })?;
     tx.commit().await?;
     let context = MetaLake::new(catalog.clone(), storage.clone()).await?.context()?;
     Ok(Lake {
@@ -68,7 +72,7 @@ async fn lake() -> Result<Lake, Box<dyn std::error::Error>> {
 
 impl Lake {
     async fn table(&self) -> Result<Table, metalake::Error> {
-        self.main.table(&["db"], "t").await
+        self.main.table(&["default", "db"], "t").await
     }
 
     async fn write(&self, keys: std::ops::Range<i64>, row_group_rows: usize) -> Result<(), metalake::Error> {
@@ -91,7 +95,7 @@ impl Lake {
     async fn rows(&self) -> Result<Vec<(i64, i32)>, Box<dyn std::error::Error>> {
         let batches = self
             .context
-            .sql("select k, n from main.db.t order by k, n")
+            .sql("select k, n from db.t order by k, n")
             .await?
             .collect()
             .await?;
@@ -111,7 +115,7 @@ async fn merge_into_prunes_files() -> Result<(), Box<dyn std::error::Error>> {
     for at in 0..20 {
         lake.write(at * 1000..at * 1000 + 100, 1024).await?;
     }
-    let sql = "merge into main.db.t t using (select 7050 as k union all select 7051 union all select 7052) c
+    let sql = "merge into db.t t using (select 7050 as k union all select 7051 union all select 7052) c
                on t.k = c.k when matched then update set n = -1";
     lake.store.take();
     assert_eq!(lake.run(sql).await?, 3);
@@ -130,8 +134,8 @@ async fn merge_into_row_positions() -> Result<(), Box<dyn std::error::Error>> {
     lake.write(0..100, 10).await?;
 
     // A row deleted before it, and one in a row group of its own that the reader skips: the position stays the file's.
-    assert_eq!(lake.run("delete from main.db.t where k = 3").await?, 1);
-    let sql = "merge into main.db.t t using (select 55 as k, 500 as n) c on t.k = c.k
+    assert_eq!(lake.run("delete from db.t where k = 3").await?, 1);
+    let sql = "merge into db.t t using (select 55 as k, 500 as n) c on t.k = c.k
                when matched then update set n = c.n";
     assert_eq!(lake.run(sql).await?, 1);
     let mut want: Vec<(i64, i32)> = (0..100).filter(|k| *k != 3).map(|k| (k, k as i32)).collect();
@@ -139,7 +143,7 @@ async fn merge_into_row_positions() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(lake.rows().await?, want);
 
     // A row deleted is not there to match: it is new.
-    let sql = "merge into main.db.t t using (select 3 as k, 300 as n) c on t.k = c.k
+    let sql = "merge into db.t t using (select 3 as k, 300 as n) c on t.k = c.k
                when matched then update set n = 0
                when not matched then insert (k, n) values (c.k, c.n)";
     assert_eq!(lake.run(sql).await?, 1);
@@ -148,7 +152,7 @@ async fn merge_into_row_positions() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(lake.rows().await?, want);
 
     // A delete by merge, in the last row group, and a source row with nothing to match.
-    let sql = "merge into main.db.t t using (select 99 as k union all select 1000) c on t.k = c.k
+    let sql = "merge into db.t t using (select 99 as k union all select 1000) c on t.k = c.k
                when matched then delete";
     assert_eq!(lake.run(sql).await?, 1);
     want.pop();

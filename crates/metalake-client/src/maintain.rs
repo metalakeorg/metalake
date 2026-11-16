@@ -199,7 +199,9 @@ impl Lake {
 async fn tables(request: &MaintainRequest, on: &Ref) -> Result<Vec<Table>> {
     if let Some(name) = &request.table {
         // Over every branch, a table need not be on each. On a branch that was named, it must.
-        let here = |t: &TableName| format!("{}.{}", t.namespace.join("."), t.name) == *name;
+        // As every face reads a name (I7): `demo.t` is `default.demo.t`.
+        let wanted = crate::TablePath::parse_on(name, on.name())?;
+        let here = |t: &TableName| t.namespace == wanted.namespace && t.name == wanted.name;
         if request.on.is_none() && !on.tables().await?.iter().any(here) {
             return Ok(vec![]);
         }

@@ -64,14 +64,22 @@ pub fn sql(dir: &Path, statements: &str, format: &str) -> String {
     ok(dir, &["sql", statements, "--format", format])
 }
 
+/// `metalake sql` after `on` (`use branch dev`, `use tag v1`, `use branch main as of 3`), for what the statements after
+/// it answer: a name says no ref (I7). The USE's own answer, a header and its ref's row, is left out (csv or json).
+pub fn sql_on(dir: &Path, on: &str, statements: &str, format: &str) -> String {
+    let all = sql(dir, &format!("{on}; {statements}"), format);
+    let skip = if format == "json" { 1 } else { 2 };
+    all.split_inclusive('\n').skip(skip).collect()
+}
+
 /// A lake with a table of two rows, one with a null, which small enough stay in the catalog.
 pub fn table() -> PathBuf {
     let (dir, _) = lake();
     sql(
         &dir,
-        "create schema main.db;
-         create table main.db.t (k bigint not null, s varchar, f double);
-         insert into main.db.t values (1, 'a', 0.5), (2, null, 1.5);",
+        "create schema db;
+         create table db.t (k bigint not null, s varchar, f double);
+         insert into db.t values (1, 'a', 0.5), (2, null, 1.5);",
         "csv",
     );
     dir

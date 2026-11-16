@@ -39,9 +39,9 @@ async fn rest6_concurrent_first_load_cost() -> Result<(), Failure> {
     let schema = fresh_schema();
     let (catalog, storage, directory) = local_catalog(&schema).await?;
     let main = catalog.branch("main").await?;
-    main.transaction().create_namespace(&["db"]).commit().await?;
+    main.transaction().create_namespace(&["default", "db"]).commit().await?;
     create(&main, "long", "0", vec![]).await?;
-    let t = main.table(&["db"], "long").await?;
+    let t = main.table(&["default", "db"], "long").await?;
     let window = json!({"properties": {"history.expire.min-snapshots-to-keep": SNAPSHOTS.to_string()}});
     main.transaction().define(t.id(), window).commit().await?;
     for at in 0..SNAPSHOTS {

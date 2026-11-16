@@ -318,13 +318,12 @@ impl CatalogProviderList for SessionLake {
     /// The first levels of the namespaces the session's ref has tables in.
     fn catalog_names(&self) -> Vec<String> {
         let on = self.on();
-        let mut names: Vec<String> = self.shared.listed(|l| {
+        let names: std::collections::BTreeSet<String> = self.shared.listed(|l| {
             l.get(&on)
                 .map(|n| n.keys().filter_map(|k| levels(k).into_iter().next()).collect())
                 .unwrap_or_default()
         });
-        names.dedup();
-        names
+        names.into_iter().collect()
     }
 
     /// Any name, on the session's ref as it is now: whether it holds the table is a question for the protocol.

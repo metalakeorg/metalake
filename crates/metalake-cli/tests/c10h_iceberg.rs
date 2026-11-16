@@ -26,7 +26,7 @@ fn rest9_iceberg_on_commit_on_load_status() {
 
     let status = json(&ok(&dir, &["iceberg", "status", "--format", "json"]));
     let tables: Vec<&str> = status.iter().map(|t| t["table"].as_str().unwrap()).collect();
-    assert_eq!(tables, ["default.a", "default.b"]);
+    assert_eq!(tables, ["default.default.a", "default.default.b"]);
     assert!(
         status
             .iter()

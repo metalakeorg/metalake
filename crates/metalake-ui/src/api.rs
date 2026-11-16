@@ -385,8 +385,8 @@ pub struct Mark {
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct Statement {
     pub sql: String,
-    /// The branch a name that says no ref reads and writes on: `default.t` is `dev.default.t` on `dev`. By default,
-    /// `main`.
+    /// The branch every name reads and writes on, which no name says (I7): `demo.t` is `default.demo.t` on it. By
+    /// default, `main`.
     #[serde(default)]
     pub branch: Option<String>,
     /// How many rows of the last statement to answer, at most [`MOST`]; by default [`LIMIT`].

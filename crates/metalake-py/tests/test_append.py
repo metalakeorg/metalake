@@ -162,17 +162,18 @@ def test_commit_author_and_message(lake, table, directory, capfd):
     assert "the load" in said and "ana" in said
 
 
-def test_tag_raises(lake, table, directory):
+def test_tag_raises(lake, table, directory, on_ref):
     metalake._cli(["metalake", "--lake", str(directory), "tag", "create", f"{table}_v1"])
-    with pytest.raises(metalake.MetaLakeError):
-        lake.table(f"{table}_v1.default.{table}").append(pl.DataFrame({"k": [1], "s": ["a"]}))
+    with on_ref(lake, f"{table}_v1"), pytest.raises(metalake.MetaLakeError):
+        lake.table(table).append(pl.DataFrame({"k": [1], "s": ["a"]}))
 
 
-def test_branch_isolation(lake, table, directory):
+def test_branch_isolation(lake, table, directory, on_ref):
     metalake._cli(["metalake", "--lake", str(directory), "branch", "create", f"{table}_dev"])
-    lake.table(f"{table}_dev.default.{table}").append(pl.DataFrame({"k": [1], "s": ["a"]}))
+    with on_ref(lake, f"{table}_dev"):
+        lake.table(table).append(pl.DataFrame({"k": [1], "s": ["a"]}))
+        assert rows(lake, table) == [(1, "a")]
     assert rows(lake, table) == []
-    assert rows(lake, f'"{table}_dev".default.{table}') == [(1, "a")]
 
 
 def test_python_stream(lake, table):

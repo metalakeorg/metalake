@@ -235,8 +235,9 @@ impl PyTable {
         let name = self.path.to_string().replace('\'', "''");
         let until = until.map(|until| format!(", {until}")).unwrap_or_default();
         let text = format!("select * from table_changes('{name}', {after}{until})");
-        let session = self.session.clone();
-        let prepared = wait(py, async move { session.run(&text).await })?;
+        // On the table's ref, whatever ref `lake` moved to since it was opened (I7).
+        let (session, on) = (self.session.clone(), self.path.on.clone());
+        let prepared = wait(py, async move { session.prepare_on(&text, &on).await })?;
         Ok(QueryResult::new(
             prepared.map_err(|e| to_python(py, e))?,
             self.owner.clone(),

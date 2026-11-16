@@ -25,16 +25,24 @@ def lake(directory):
 
 
 def test_table_path_parse(lake):
-    assert lake.table("t").name == "main.default.t"
-    assert lake.table("ventas.pedidos").name == "main.ventas.pedidos"
-    assert lake.table("dev.ventas.pedidos").name == "dev.ventas.pedidos"
+    """`[[catalog.]schema.]table`, on the ref `lake` is on: no name says its ref (I7)."""
+    assert lake.table("t").name == "default.default.t"
+    assert lake.table("ventas.pedidos").name == "default.ventas.pedidos"
+    assert lake.table("default.ventas.pedidos").name == "default.ventas.pedidos"
+    assert lake.table("t").ref == "main"
+    lake.on("dev")
+    try:
+        on_dev = lake.table("ventas.pedidos")
+        assert (on_dev.name, on_dev.ref) == ("default.ventas.pedidos", "dev")
+    finally:
+        lake.on("main")
 
 
 def test_table_columns(lake):
     table = lake.table("t")
     assert isinstance(table, metalake.Table)
     assert table.columns == ["k", "s"]
-    assert repr(table) == 'Table("main.default.t")'
+    assert repr(table) == 'Table("default.default.t")'
 
 
 def test_table_arrow_schema(lake):
@@ -47,7 +55,7 @@ def test_table_arrow_schema(lake):
 def test_missing_table_raises(lake):
     with pytest.raises(metalake.MetaLakeError, match="nowhere"):
         lake.table("nowhere")
-    with pytest.raises(metalake.MetaLakeError, match="no ref"):
+    with pytest.raises(metalake.MetaLakeError, match="nobody"):
         lake.table("nobody.ventas.pedidos")
 
 

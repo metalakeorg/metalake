@@ -111,8 +111,8 @@ def on_a_branch(lake):
     if "ventas" not in [r.name for r in lake.refs()]:
         lake.branch("ventas")
         lake.sql(
-            "insert into ventas.demo.t values (40); "
-            "create table ventas.demo.only_there (k int); insert into ventas.demo.only_there values (9)"
+            "use branch ventas; insert into demo.t values (40); "
+            "create table demo.only_there (k int); insert into demo.only_there values (9); use branch main"
         )
     lake.on("ventas")
     yield lake
@@ -122,13 +122,16 @@ def on_a_branch(lake):
 def test_using_runs_on_the_ref_the_session_is_on(on_a_branch):
     """As the selector of Query or of a notebook sets it (I6): DuckDB reads and writes that ref, with no ref named."""
     lake = on_a_branch
-    main_rows = one(lake.sql("select count(*) as n from main.demo.t"))["n"]
+    lake.on("main")
+    main_rows = one(lake.sql("select count(*) as n from demo.t"))["n"]
+    lake.on("ventas")
     assert one(lake.sql("using duckdb select k from demo.only_there")) == {"k": 9}
     before = one(lake.sql("using duckdb select count(*) as n from demo.t"))["n"]
     assert before == one(lake.sql("select count(*) as n from demo.t"))["n"], "DuckDB and the lake see the same ref"
     lake.sql("using duckdb; insert into demo.t values (41); using metalake")
-    assert one(lake.sql("select count(*) as n from ventas.demo.t"))["n"] == before + 1
-    assert one(lake.sql("select count(*) as n from main.demo.t"))["n"] == main_rows, "main is untouched"
+    assert one(lake.sql("select count(*) as n from demo.t"))["n"] == before + 1
+    lake.on("main")
+    assert one(lake.sql("select count(*) as n from demo.t"))["n"] == main_rows, "main is untouched"
 
 
 def test_using_on_a_tag_reads_it_and_writes_nothing(lake):

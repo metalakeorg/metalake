@@ -38,7 +38,7 @@ fn simple(keys: std::ops::Range<i64>) -> RecordBatch {
 
 fn new_table<'a>(name: &'a str, schema: &'a Schema, properties: Vec<(&'a str, &'a str)>) -> NewTable<'a> {
     NewTable {
-        namespace: &["db"],
+        namespace: &["default", "db"],
         name,
         schema,
         location: None,
@@ -69,7 +69,7 @@ async fn write(
     Ok(())
 }
 
-/// `sql` over `main.db.t` through DataFusion, and over the rows `Scan::read` gives, as `main_db_t` in memory.
+/// `sql` over `db.t` through DataFusion, and over the rows `Scan::read` gives, as `oracle` in memory.
 async fn same(
     catalog: &Catalog,
     t: &Table,
@@ -82,7 +82,7 @@ async fn same(
     let oracle = SessionContext::new();
     let schema = t.schema().clone();
     oracle.register_table("oracle", Arc::new(MemTable::try_new(schema, vec![batches])?))?;
-    let theirs = oracle.sql(&sql.replace("main.db.t", "oracle")).await?.collect().await?;
+    let theirs = oracle.sql(&sql.replace("db.t", "oracle")).await?.collect().await?;
     let ours = context.sql(sql).await?.collect().await?;
     let (ours, theirs) = (pretty_format_batches(&ours)?, pretty_format_batches(&theirs)?);
     assert_eq!(ours.to_string(), theirs.to_string(), "{sql}");
@@ -100,13 +100,13 @@ async fn scan_matches_core_with_vectors_and_inline() -> Result<(), Box<dyn std::
     let store = Arc::new(Counting::default());
     let (catalog, main, storage, _) = lake(store.clone()).await?;
     let shape = simple(0..1).schema();
-    let (tx, _) = main.transaction().create_namespace(&["db"]).create_table(new_table(
-        "t",
-        &shape,
-        vec![("inline.max-bytes", "1024")],
-    ))?;
+    let (tx, _) = main
+        .transaction()
+        .create_namespace(&["default"])
+        .create_namespace(&["default", "db"])
+        .create_table(new_table("t", &shape, vec![("inline.max-bytes", "1024")]))?;
     tx.commit().await?;
-    let t = main.table(&["db"], "t").await?;
+    let t = main.table(&["default", "db"], "t").await?;
     // A file of four row groups, one small enough to be inline, and a third with no vector.
     let groups = WriteOptions {
         row_group_rows: 25,
@@ -123,7 +123,7 @@ async fn scan_matches_core_with_vectors_and_inline() -> Result<(), Box<dyn std::
         WriteOptions::default(),
     )
     .await?;
-    let t = main.table(&["db"], "t").await?;
+    let t = main.table(&["default", "db"], "t").await?;
     let tasks: Vec<_> = Scan::new(&catalog, &t).plan().await?.try_collect().await?;
     let stored = tasks
         .iter()
@@ -140,19 +140,19 @@ async fn scan_matches_core_with_vectors_and_inline() -> Result<(), Box<dyn std::
     }
     deletes.insert(inline.file_id, 1);
     main.transaction().delete(&t, &storage, deletes).commit().await?;
-    let t = main.table(&["db"], "t").await?;
+    let t = main.table(&["default", "db"], "t").await?;
 
     let context = MetaLake::new(catalog.clone(), storage.clone()).await?.context()?;
     for sql in [
-        "select * from main.db.t order by k",
-        "select s from main.db.t order by s",
-        "select count(*) as c from main.db.t",
-        "select count(s) as c, min(k) as l, max(s) as h from main.db.t",
-        "select k from main.db.t where k > 40 and k < 60 order by k",
-        "select k from main.db.t where s = 's501'",
-        "select k from main.db.t where k = 25",
-        "select k from main.db.t where 60 > k order by k",
-        "select sum(k) as c from main.db.t where k >= 1000",
+        "select * from db.t order by k",
+        "select s from db.t order by s",
+        "select count(*) as c from db.t",
+        "select count(s) as c, min(k) as l, max(s) as h from db.t",
+        "select k from db.t where k > 40 and k < 60 order by k",
+        "select k from db.t where s = 's501'",
+        "select k from db.t where k = 25",
+        "select k from db.t where 60 > k order by k",
+        "select sum(k) as c from db.t where k >= 1000",
     ] {
         same(&catalog, &t, &storage, &context, sql).await?;
     }
@@ -160,10 +160,7 @@ async fn scan_matches_core_with_vectors_and_inline() -> Result<(), Box<dyn std::
     // Footers come from the catalog: a read of the first file's rows asks only for its row groups.
     let cold = MetaLake::new(catalog, storage).await?.context()?;
     store.take();
-    cold.sql("select k from main.db.t where k >= 1000")
-        .await?
-        .collect()
-        .await?;
+    cold.sql("select k from db.t where k >= 1000").await?.collect().await?;
     assert_eq!(store.take(), 1, "the one row group of one file");
     Ok(())
 }
@@ -216,13 +213,13 @@ fn field(f: &metalake::Field, name: &str, ty: &str) -> Value {
 async fn schema_evolution_old_files() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, main, storage, schema) = lake(Arc::default()).await?;
     let first = before();
-    let (tx, table_id) = main.transaction().create_namespace(&["db"]).create_table(new_table(
-        "t",
-        first.schema_ref(),
-        vec![("inline.max-bytes", "0")],
-    ))?;
+    let (tx, table_id) = main
+        .transaction()
+        .create_namespace(&["default"])
+        .create_namespace(&["default", "db"])
+        .create_table(new_table("t", first.schema_ref(), vec![("inline.max-bytes", "0")]))?;
     tx.commit().await?;
-    let t = main.table(&["db"], "t").await?;
+    let t = main.table(&["default", "db"], "t").await?;
     write(&catalog, &main, &storage, &t, first, WriteOptions::default()).await?;
 
     // A rename, three promotions, one of them inside a list, a drop, a column with a default, one without, one with
@@ -273,17 +270,17 @@ async fn schema_evolution_old_files() -> Result<(), Box<dyn std::error::Error>> 
     };
     p.commit(&session, &again).await?;
 
-    let now = main.table(&["db"], "t").await?;
+    let now = main.table(&["default", "db"], "t").await?;
     let context = MetaLake::new(catalog.clone(), storage.clone()).await?.context()?;
     for sql in [
-        "select * from main.db.t order by k",
-        "select label, extra, note from main.db.t order by k",
-        "select k from main.db.t where label = 's3'",
-        "select k from main.db.t where n > 7 order by k",
-        "select k from main.db.t where extra = 7 order by k limit 2",
-        "select gone from main.db.t limit 1",
-        "select count(*) as c from main.db.t where extra = 8",
-        "select max(n) as n, max(day) as d, min(label) as l from main.db.t",
+        "select * from db.t order by k",
+        "select label, extra, note from db.t order by k",
+        "select k from db.t where label = 's3'",
+        "select k from db.t where n > 7 order by k",
+        "select k from db.t where extra = 7 order by k limit 2",
+        "select gone from db.t limit 1",
+        "select count(*) as c from db.t where extra = 8",
+        "select max(n) as n, max(day) as d, min(label) as l from db.t",
     ] {
         same(&catalog, &now, &storage, &context, sql).await?;
     }
@@ -295,22 +292,22 @@ async fn filter_pushdown_and_dynamic_join_filter() -> Result<(), Box<dyn std::er
     let store = Arc::new(Counting::default());
     let (catalog, main, storage, _) = lake(store.clone()).await?;
     let shape = simple(0..1).schema();
-    let (tx, _) = main.transaction().create_namespace(&["db"]).create_table(new_table(
-        "big",
-        &shape,
-        vec![("inline.max-bytes", "0")],
-    ))?;
+    let (tx, _) = main
+        .transaction()
+        .create_namespace(&["default"])
+        .create_namespace(&["default", "db"])
+        .create_table(new_table("big", &shape, vec![("inline.max-bytes", "0")]))?;
     tx.commit().await?;
     let (tx, _) = main
         .transaction()
         .create_table(new_table("small", &shape, vec![("inline.max-bytes", "0")]))?;
     tx.commit().await?;
-    let big = main.table(&["db"], "big").await?;
+    let big = main.table(&["default", "db"], "big").await?;
     for at in 0..6 {
         let keys = at * 100..at * 100 + 50;
         write(&catalog, &main, &storage, &big, simple(keys), WriteOptions::default()).await?;
     }
-    let small = main.table(&["db"], "small").await?;
+    let small = main.table(&["default", "db"], "small").await?;
     write(
         &catalog,
         &main,
@@ -323,19 +320,19 @@ async fn filter_pushdown_and_dynamic_join_filter() -> Result<(), Box<dyn std::er
 
     // A range on the cluster key: the plan holds the files it can match, before anything is read.
     let context = MetaLake::new(catalog, storage).await?.context()?;
-    let filtered = plan(&context, "select s from main.db.big where k >= 210 and k < 220").await?;
+    let filtered = plan(&context, "select s from db.big where k >= 210 and k < 220").await?;
     assert!(filtered.contains("file_groups={1 group"), "{filtered}");
-    let on_s = plan(&context, "select k from main.db.big where s = 's210'").await?;
+    let on_s = plan(&context, "select k from db.big where s = 's210'").await?;
     // Every file, in as many groups as the machine has cores.
     assert_eq!(on_s.matches(".parquet").count(), 6, "only the cluster key: {on_s}");
     assert!(
-        plan(&context, "select s from main.db.big where 210 = k")
+        plan(&context, "select s from db.big where 210 = k")
             .await?
             .contains("{1 group")
     );
 
     // The small side tells the big one what to skip.
-    let join = "select big.k, big.s from main.db.big join main.db.small on big.k = small.k order by 1";
+    let join = "select big.k, big.s from db.big join db.small on big.k = small.k order by 1";
     store.take();
     let rows = context.sql(join).await?.collect().await?;
     let with = store.take();
@@ -359,23 +356,31 @@ async fn filter_pushdown_and_dynamic_join_filter() -> Result<(), Box<dyn std::er
 async fn measure_after_pruning() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, main, storage, _) = lake(Arc::new(Counting::default())).await?;
     let shape = simple(0..1).schema();
-    let (tx, _) = main.transaction().create_namespace(&["db"]).create_table(new_table(
-        "big",
-        &shape,
-        vec![("inline.max-bytes", "0")],
-    ))?;
+    let (tx, _) = main
+        .transaction()
+        .create_namespace(&["default"])
+        .create_namespace(&["default", "db"])
+        .create_table(new_table("big", &shape, vec![("inline.max-bytes", "0")]))?;
     tx.commit().await?;
     let (tx, _) = main
         .transaction()
         .create_table(new_table("small", &shape, vec![("inline.max-bytes", "0")]))?;
     tx.commit().await?;
-    let big = main.table(&["db"], "big").await?;
+    let big = main.table(&["default", "db"], "big").await?;
     for at in 0..6 {
         let keys = at * 100..at * 100 + 50;
         write(&catalog, &main, &storage, &big, simple(keys), WriteOptions::default()).await?;
     }
-    let small = main.table(&["db"], "small").await?;
-    write(&catalog, &main, &storage, &small, simple(210..212), WriteOptions::default()).await?;
+    let small = main.table(&["default", "db"], "small").await?;
+    write(
+        &catalog,
+        &main,
+        &storage,
+        &small,
+        simple(210..212),
+        WriteOptions::default(),
+    )
+    .await?;
     let context = MetaLake::new(catalog, storage).await?.context()?;
     for set in [
         "set datafusion.execution.target_partitions = 4",
@@ -393,40 +398,37 @@ async fn measure_after_pruning() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let all = measured("select s from main.db.big").await?;
+    let all = measured("select s from db.big").await?;
     assert_eq!((all.scans, all.rows, all.shuffle), (1, Some(300), false));
     assert!(all.bytes > 0);
-    let one = measured("select s from main.db.big where k >= 210 and k < 220").await?;
+    let one = measured("select s from db.big where k >= 210 and k < 220").await?;
     assert_eq!((one.rows, one.shuffle), (Some(50), false));
     assert!(one.bytes * 4 < all.bytes, "{one:?} of {all:?}");
 
-    let grouped = measured("select k % 3, count(*) from main.db.big group by 1").await?;
+    let grouped = measured("select k % 3, count(*) from db.big group by 1").await?;
     assert!(grouped.shuffle, "{grouped:?}");
-    let joined = measured("select b.s from main.db.big b join main.db.small s on b.k = s.k").await?;
+    let joined = measured("select b.s from db.big b join db.small s on b.k = s.k").await?;
     assert_eq!((joined.scans, joined.rows, joined.shuffle), (2, Some(302), true));
 
     // A write's reads are in its sink, not the plan's children: measured all the same.
-    let deleted = measured("delete from main.db.big where k >= 210 and k < 220").await?;
+    let deleted = measured("delete from db.big where k >= 210 and k < 220").await?;
     assert_eq!((deleted.scans, deleted.rows, deleted.shuffle), (1, Some(50), false));
     assert!(deleted.bytes > 0);
-    let updated = measured("update main.db.big set s = 'x' where k >= 210 and k < 220").await?;
+    let updated = measured("update db.big set s = 'x' where k >= 210 and k < 220").await?;
     assert_eq!((updated.scans, updated.rows), (1, Some(50)));
-    let merged = measured(
-        "merge into main.db.big t using main.db.small s on t.k = s.k when matched then delete",
-    )
-    .await?;
+    let merged = measured("merge into db.big t using db.small s on t.k = s.k when matched then delete").await?;
     assert_eq!((merged.scans, merged.rows, merged.shuffle), (2, Some(302), true));
 
     // Measured, then run: the delete reads the files its measure planned, and deletes their rows.
     let plan = context
-        .sql("delete from main.db.big where k >= 210 and k < 220")
+        .sql("delete from db.big where k >= 210 and k < 220")
         .await?
         .create_physical_plan()
         .await?;
     assert_eq!(measure(&plan).await?.rows, Some(50));
     let answer = datafusion::physical_plan::collect(plan, context.task_ctx()).await?;
     assert_eq!(WrittenRow::of(&answer[0])?.count, 10);
-    let left = context.sql("select count(*) from main.db.big").await?.collect().await?;
+    let left = context.sql("select count(*) from db.big").await?.collect().await?;
     assert_eq!(pretty_format_batches(&left)?.to_string().matches("| 290 ").count(), 1);
     Ok(())
 }

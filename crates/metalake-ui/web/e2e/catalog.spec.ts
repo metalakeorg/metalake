@@ -21,14 +21,17 @@ test("a table's view: its columns, rows, sample and snapshots, and a commit seen
   const catalog = page.getByRole("region", { name: "Branch main" });
   await expect(catalog.getByRole("table", { name: "Schemas" })).toContainText(name);
 
-  // The schema, then its table, from the tree.
+  // The schema, then its table, from the tree: in the catalog `default` (I7).
   const assets = page.getByRole("complementary", { name: "Assets" });
   await assets.getByRole("button", { name, exact: true }).click();
   await expect(
-    page.getByRole("region", { name: `Schema ${name}` }).getByRole("table", { name: "Tables" }),
+    page.getByRole("region", { name: `Schema default.${name}` }).getByRole("table", { name: "Tables" }),
   ).toContainText("t");
-  await assets.getByRole("list", { name }).getByRole("button", { name: "t", exact: true }).click();
-  const table = page.getByRole("region", { name: `Table ${name}.t` });
+  await assets
+    .getByRole("list", { name: `default.${name}` })
+    .getByRole("button", { name: "t", exact: true })
+    .click();
+  const table = page.getByRole("region", { name: `Table default.${name}.t` });
   await expect(table.getByRole("table", { name: "Columns" })).toContainText("k");
 
   await table.getByRole("tab", { name: "Sample data" }).click();

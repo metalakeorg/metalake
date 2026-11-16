@@ -58,10 +58,10 @@ async fn c14_pipeline_lifecycle() {
     .expect("a lake");
     let session = Session::new(&lake).await.unwrap();
     for statement in [
-        "create schema main.shop",
-        "create table main.shop.orders (id bigint, customer varchar, amount double)",
-        "create table main.shop.totals (customer varchar, orders bigint, amount double)",
-        "insert into main.shop.orders values (1, 'ana', 10), (2, 'ana', 20), (3, 'bo', 5), (4, 'cy', 7)",
+        "create schema shop",
+        "create table shop.orders (id bigint, customer varchar, amount double)",
+        "create table shop.totals (customer varchar, orders bigint, amount double)",
+        "insert into shop.orders values (1, 'ana', 10), (2, 'ana', 20), (3, 'bo', 5), (4, 'cy', 7)",
     ] {
         sql(&session, statement).await;
     }
@@ -90,11 +90,11 @@ async fn c14_pipeline_lifecycle() {
 
     sql(
         &session,
-        "insert into main.shop.orders values (5, 'bo', 15), (6, 'dee', 30)",
+        "insert into shop.orders values (5, 'bo', 15), (6, 'dee', 30)",
     )
     .await;
     settled(&session, "inserts").await;
-    sql(&session, "delete from main.shop.orders where customer = 'cy'").await;
+    sql(&session, "delete from shop.orders where customer = 'cy'").await;
     settled(&session, "a customer gone").await;
 
     // Suspended with a checkpoint; what comes meanwhile comes once it is resumed.
@@ -102,13 +102,13 @@ async fn c14_pipeline_lifecycle() {
     assert_eq!(suspended.state, PipelineState::Suspended);
     sql(
         &session,
-        "insert into main.shop.orders values (7, 'ana', 1), (8, 'eve', 2)",
+        "insert into shop.orders values (7, 'ana', 1), (8, 'eve', 2)",
     )
     .await;
     let resumed = lake.resume_pipeline("totals").await.unwrap();
     assert_eq!(resumed.state, PipelineState::Running, "{:?}", resumed.state);
     settled(&session, "resumed from its checkpoint").await;
-    sql(&session, "delete from main.shop.orders where customer = 'dee'").await;
+    sql(&session, "delete from shop.orders where customer = 'dee'").await;
     settled(&session, "after resuming").await;
 
     let listed = lake.pipelines().await.unwrap();

@@ -22,7 +22,9 @@ def lake(directory):
     made = metalake.init(directory / "lake")
     made.sql("create table t (k bigint); insert into t values (1)")
     made.branch("dev")
-    made.table("dev.default.t").delete("k = 1")
+    made.on("dev")
+    made.table("t").delete("k = 1")
+    made.on("main")
     made.table("t").overwrite(pl.DataFrame({"k": [7]}))
     return made
 

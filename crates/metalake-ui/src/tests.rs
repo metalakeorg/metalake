@@ -755,8 +755,9 @@ mod api {
         }
 
         fn tables<'a>(&'a self, on: &'a str) -> api::Answer<'a, Vec<Table>> {
+            // A namespace is the catalog, then the schema (I7).
             let table = |namespace: &str, name: &str| Table {
-                namespace: vec![namespace.into()],
+                namespace: vec!["default".into(), namespace.into()],
                 name: name.into(),
             };
             let answer = match on {
@@ -989,7 +990,7 @@ mod api {
     #[tokio::test]
     async fn tables_of_ref() {
         let main = json(&ask(over(Given::lake()), "/api/v1/refs/main/tables").await);
-        assert_eq!(main[0]["namespace"], serde_json::json!(["sales"]));
+        assert_eq!(main[0]["namespace"], serde_json::json!(["default", "sales"]));
         assert_eq!(main[0]["name"], "orders");
         let dev = ask(over(Given::lake()), "/api/v1/refs/dev%2F1/tables").await;
         assert_eq!(dev.status, StatusCode::OK);

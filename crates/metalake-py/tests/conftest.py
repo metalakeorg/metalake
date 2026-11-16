@@ -10,6 +10,25 @@ import pytest
 
 
 @pytest.fixture
+def on_ref():
+    """`with on_ref(lake, "dev"):` reads and writes on `dev` (at `at`, a commit sequence), then `lake` is back on
+    `main`: no name says its ref (I7), the session does."""
+
+    @contextlib.contextmanager
+    def on(lake, ref, at=None):
+        if at is None:
+            lake.on(ref)
+        else:
+            lake.sql(f"use branch {ref} as of {at}")
+        try:
+            yield
+        finally:
+            lake.on("main")
+
+    return on
+
+
+@pytest.fixture
 def interrupt_polars():
     """Interrupts, after a second, what Polars reads in the `with` it opens.
 

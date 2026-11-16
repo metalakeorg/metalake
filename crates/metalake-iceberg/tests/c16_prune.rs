@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 const SOON: Duration = Duration::from_secs(10);
 
 fn table_dir(directory: &Path) -> PathBuf {
-    let found = std::fs::read_dir(directory.join("db"))
+    let found = std::fs::read_dir(directory.join("default").join("db"))
         .into_iter()
         .flatten()
         .flatten()
@@ -70,7 +70,7 @@ fn rows(uri: &str) -> Result<Value, Failure> {
 }
 
 async fn delete_key(catalog: &Catalog, on: &Ref, storage: &Storage, k: i64) -> Result<(), Failure> {
-    let t = on.table(&["db"], "plain").await?;
+    let t = on.table(&["default", "db"], "plain").await?;
     let scan = Scan::new(catalog, &t).with_positions();
     let batches: Vec<RecordBatch> = scan.read(scan.plan().await?, storage).try_collect().await?;
     let mut deletes = Deletes::new();
@@ -87,7 +87,7 @@ async fn delete_key(catalog: &Catalog, on: &Ref, storage: &Storage, k: i64) -> R
 
 /// Keeps the last `keep` snapshots of the table, whatever their age: a commit of the definition, which is a snapshot.
 async fn keep(main: &Ref, keep: usize) -> Result<(), Failure> {
-    let t = main.table(&["db"], "plain").await?;
+    let t = main.table(&["default", "db"], "plain").await?;
     let properties = json!({"properties": {
         "history.expire.min-snapshots-to-keep": keep.to_string(),
         "history.expire.max-snapshot-age-ms": "1",
@@ -117,7 +117,7 @@ async fn history(grace: Option<Duration>) -> Result<(String, Catalog, Ref, PathB
         catalog.set_collect_grace(grace).await?;
     }
     let main = catalog.branch("main").await?;
-    main.transaction().create_namespace(&["db"]).commit().await?;
+    main.transaction().create_namespace(&["default", "db"]).commit().await?;
     create(&main, "plain", "0", vec![]).await?;
     let (_server, uri) = server(&schema)?;
     append(&catalog, &main, &storage, "plain", 10..13).await?;

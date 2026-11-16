@@ -57,8 +57,8 @@ struct Lakes {
     before: i64,
 }
 
-/// A lake with `main.db.t`, keys 0..10 in an object, its `s` then renamed `label`, then key 3 deleted; and
-/// `main.db.u`, keys 5..15 in an inline file.
+/// A lake with `db.t`, keys 0..10 in an object, its `s` then renamed `label`, then key 3 deleted; and
+/// `db.u`, keys 5..15 in an inline file.
 async fn lakes() -> Result<Lakes, Box<dyn std::error::Error>> {
     let schema = fresh_schema();
     let catalog = Catalog::init(CatalogConfig::new(url(), &schema).warehouse("memory:///wh"), None).await?;
@@ -66,7 +66,7 @@ async fn lakes() -> Result<Lakes, Box<dyn std::error::Error>> {
     let main = catalog.branch("main").await?;
     let shape = shape();
     let new = |name, properties| NewTable {
-        namespace: &["db"],
+        namespace: &["default", "db"],
         name,
         schema: &shape,
         location: None,
@@ -76,20 +76,21 @@ async fn lakes() -> Result<Lakes, Box<dyn std::error::Error>> {
     };
     let (tx, t_id) = main
         .transaction()
-        .create_namespace(&["db"])
+        .create_namespace(&["default"])
+        .create_namespace(&["default", "db"])
         .create_table(new("t", vec![("inline.max-bytes", "0")]))?;
     tx.commit().await?;
     let (tx, _) = main.transaction().create_table(new("u", vec![]))?;
     tx.commit().await?;
     for (name, keys) in [("t", 0..10), ("u", 5..15)] {
-        let table = main.table(&["db"], name).await?;
+        let table = main.table(&["default", "db"], name).await?;
         let mut writer = TableWriter::new(&catalog, &table, storage.clone(), WriteOptions::default())?;
         writer.write(&batch(keys)).await?;
         main.transaction().append(writer.finish().await?).commit().await?;
     }
 
     // `s` becomes `label`: the same field id, the files keep their old name.
-    let t = main.table(&["db"], "t").await?;
+    let t = main.table(&["default", "db"], "t").await?;
     let s = t.fields().iter().find(|f| f.name == "s").unwrap();
     let renamed = json!({"field_id": s.field_id, "parent_field_id": s.parent_field_id, "position": s.position,
                          "name": "label", "type": "string", "required": s.required});
@@ -101,11 +102,11 @@ async fn lakes() -> Result<Lakes, Box<dyn std::error::Error>> {
         ..Default::default()
     };
     Protocol::new(&schema).commit(&pool.get().await?, &commit).await?;
-    let before = main.table(&["db"], "t").await?.seq();
+    let before = main.table(&["default", "db"], "t").await?.seq();
 
     let here = MetaLake::new(catalog, storage.clone()).await?;
     here.context()?
-        .sql("delete from main.db.t where k = 3")
+        .sql("delete from db.t where k = 3")
         .await?
         .collect()
         .await?;
@@ -119,23 +120,25 @@ async fn lakes() -> Result<Lakes, Box<dyn std::error::Error>> {
     })
 }
 
-/// A session of `lake`, with `settings` run first.
-async fn session(lake: &MetaLake, settings: &[&str]) -> Result<SessionContext, Box<dyn std::error::Error>> {
+/// A session of `lake` on the ref `on`, with `settings` run first.
+async fn session(lake: &MetaLake, on: &str, settings: &[&str]) -> Result<SessionContext, Box<dyn std::error::Error>> {
     let context = lake.context()?;
+    MetaLake::on_ref(&context, on);
     for setting in settings {
         context.sql(setting).await?.collect().await?;
     }
     Ok(context)
 }
 
-/// The rows of `sql` read here; the rows it reads after crossing to a scheduler and to an executor; and the plan the
-/// executor decoded.
+/// The rows of `sql` read here, on the ref `on`; the rows it reads after crossing to a scheduler and to an executor; and
+/// the plan the executor decoded.
 async fn both(
     lakes: &Lakes,
+    on: &str,
     sql: &str,
     settings: &[&str],
 ) -> Result<(String, String, String), Box<dyn std::error::Error>> {
-    let context = session(&lakes.here, settings).await?;
+    let context = session(&lakes.here, on, settings).await?;
     let direct = context.sql(sql).await?.collect().await?;
 
     // The client: its optimized logical plan.
@@ -144,7 +147,7 @@ async fn both(
     let logical = logical_plan_to_bytes_with_extension_codec(&plan, &client)?;
 
     // The scheduler: plans it with its own catalog, and encodes the physical plan.
-    let remote = session(&lakes.there, settings).await?;
+    let remote = session(&lakes.there, on, settings).await?;
     let scheduler = lakes.there.logical_codec(Arc::new(DefaultLogicalExtensionCodec {}));
     let decoded = logical_plan_from_bytes_with_extension_codec(&logical, &remote.task_ctx(), &scheduler)?;
     let physical = remote.state().create_physical_plan(&decoded).await?;
@@ -188,8 +191,8 @@ fn scan_statistics(plan: &Arc<dyn ExecutionPlan>) -> Vec<Statistics> {
 #[tokio::test]
 async fn round_trip_vector_inline_rename() -> Result<(), Box<dyn std::error::Error>> {
     let lakes = lakes().await?;
-    let sql = "select t.k, t.label, u.s from main.db.t join main.db.u on t.k = u.k where t.k < 9 order by 1";
-    let (direct, travelled, shown) = both(&lakes, sql, &[]).await?;
+    let sql = "select t.k, t.label, u.s from db.t join db.u on t.k = u.k where t.k < 9 order by 1";
+    let (direct, travelled, shown) = both(&lakes, "main", sql, &[]).await?;
     assert_eq!(direct, travelled);
     assert!(direct.contains("| 8 | s8    | s8 |"), "{direct}");
     assert!(!direct.contains("| 3 |"), "{direct}");
@@ -201,8 +204,8 @@ async fn round_trip_vector_inline_rename() -> Result<(), Box<dyn std::error::Err
 #[tokio::test]
 async fn round_trip_partition_statistics() -> Result<(), Box<dyn std::error::Error>> {
     let lakes = lakes().await?;
-    let sql = "select k, s from main.db.u order by k";
-    let (direct, travelled, _) = both(&lakes, sql, &[]).await?;
+    let sql = "select k, s from db.u order by k";
+    let (direct, travelled, _) = both(&lakes, "main", sql, &[]).await?;
     assert_eq!(direct, travelled);
     let context = lakes.here.context()?;
     let plan = context.sql(sql).await?.create_physical_plan().await?;
@@ -218,9 +221,9 @@ async fn round_trip_partition_statistics() -> Result<(), Box<dyn std::error::Err
 #[tokio::test]
 async fn round_trip_at_point() -> Result<(), Box<dyn std::error::Error>> {
     let lakes = lakes().await?;
-    // Before the delete: key 3 is there, at the sequence the statement named, wherever it is read.
-    let sql = format!("select k, label from \"main@{}\".db.t where k = 3", lakes.before);
-    let (direct, travelled, _) = both(&lakes, &sql, &[]).await?;
+    // Before the delete: key 3 is there, at the sequence the session is on, wherever it is read.
+    let on = format!("main@{}", lakes.before);
+    let (direct, travelled, _) = both(&lakes, &on, "select k, label from db.t where k = 3", &[]).await?;
     assert_eq!(direct, travelled);
     assert!(direct.contains("| 3 | s3    |"), "{direct}");
     Ok(())
@@ -233,8 +236,8 @@ async fn round_trip_file_in_ranges() -> Result<(), Box<dyn std::error::Error>> {
         "set datafusion.optimizer.repartition_file_min_size = 1",
         "set datafusion.execution.target_partitions = 4",
     ];
-    let sql = "select count(*) as c, sum(k) as s from main.db.t where label <> 'x'";
-    let (direct, travelled, shown) = both(&lakes, sql, &settings).await?;
+    let sql = "select count(*) as c, sum(k) as s from db.t where label <> 'x'";
+    let (direct, travelled, shown) = both(&lakes, "main", sql, &settings).await?;
     assert_eq!(direct, travelled);
     assert!(direct.contains("| 9 | 42 |"), "{direct}");
     assert!(shown.matches(".parquet:").count() >= 2, "one file in ranges: {shown}");
@@ -251,12 +254,16 @@ async fn encode_writes() -> Result<(), Box<dyn std::error::Error>> {
     let reader = MetaLakePhysicalCodec::new(lakes.storage.clone(), Arc::new(DefaultPhysicalExtensionCodec {}));
     let writer = lakes.there.physical_codec(Arc::new(DefaultPhysicalExtensionCodec {}));
     let task = SessionContext::new().task_ctx();
-    context.sql("set datafusion.execution.target_partitions = 16").await?.collect().await?;
+    context
+        .sql("set datafusion.execution.target_partitions = 16")
+        .await?
+        .collect()
+        .await?;
     for sql in [
-        "insert into main.db.t select k, s from main.db.u",
-        "delete from main.db.t where k = 4",
-        "update main.db.t set label = 'x' where k = 5",
-        "merge into main.db.t t using main.db.u u on t.k = u.k when matched then delete",
+        "insert into db.t select k, s from db.u",
+        "delete from db.t where k = 4",
+        "update db.t set label = 'x' where k = 5",
+        "merge into db.t t using db.u u on t.k = u.k when matched then delete",
     ] {
         let plan = context.sql(sql).await?.create_physical_plan().await?;
         // The sink right under the write's row, however many partitions: no repartition between them.
@@ -266,7 +273,11 @@ async fn encode_writes() -> Result<(), Box<dyn std::error::Error>> {
         assert!(refused.to_string().contains("no catalog"), "{sql}: {refused}");
         // Around its sink, the write's row, which crosses with it.
         let decoded = physical_plan_from_bytes_with_extension_codec(&bytes, &task, &writer)?;
-        assert_eq!((decoded.name(), decoded.schema()), ("MetaWriteExec", written_schema()), "{sql}");
+        assert_eq!(
+            (decoded.name(), decoded.schema()),
+            ("MetaWriteExec", written_schema()),
+            "{sql}"
+        );
     }
     Ok(())
 }
@@ -295,7 +306,7 @@ async fn round_trip_table_changes() -> Result<(), Box<dyn std::error::Error>> {
     let lakes = lakes().await?;
     let context = lakes.here.context()?;
     context
-        .sql("insert into main.db.t values (50, 'x')")
+        .sql("insert into db.t values (50, 'x')")
         .await?
         .collect()
         .await?;
@@ -303,7 +314,7 @@ async fn round_trip_table_changes() -> Result<(), Box<dyn std::error::Error>> {
     // With no end, the range reaches the last commit a second old (CHG-1).
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let sql = format!(
-        "select k, _change_type from table_changes('main.db.t', {}) order by k, _change_type",
+        "select k, _change_type from table_changes('db.t', {}) order by k, _change_type",
         lakes.before
     );
     let statement = || DFParser::parse_sql(&sql).map(|mut s| s.pop_front().unwrap());

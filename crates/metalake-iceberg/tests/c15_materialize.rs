@@ -23,7 +23,7 @@ const TAKEOVER: Duration = Duration::from_secs(40);
 
 /// The directory of table `name`.
 fn table_dir(directory: &Path, name: &str) -> PathBuf {
-    let found = std::fs::read_dir(directory.join("db"))
+    let found = std::fs::read_dir(directory.join("default").join("db"))
         .into_iter()
         .flatten()
         .flatten()
@@ -81,7 +81,7 @@ async fn eventually(within: Duration, done: impl Fn() -> bool) -> bool {
 }
 
 async fn mark(on: &Ref, name: &str, value: &str) -> Result<(), Failure> {
-    let t = on.table(&["db"], name).await?;
+    let t = on.table(&["default", "db"], name).await?;
     let marked = json!({"properties": {KEY: value}});
     on.transaction().define(t.id(), marked).commit().await?;
     Ok(())
@@ -90,7 +90,11 @@ async fn mark(on: &Ref, name: &str, value: &str) -> Result<(), Failure> {
 /// Appends a row to table `name` on `on`, and answers its commit's sequence, the snapshot's id.
 async fn commit(catalog: &Catalog, on: &Ref, storage: &Storage, name: &str, k: i64) -> Result<i64, Failure> {
     append(catalog, on, storage, name, k..k + 1).await?;
-    Ok(on.table(&["db"], name).await?.snapshot_id().expect("a snapshot"))
+    Ok(on
+        .table(&["default", "db"], name)
+        .await?
+        .snapshot_id()
+        .expect("a snapshot"))
 }
 
 /// A catalog with tables `names` in `db`, on local disk.
@@ -98,7 +102,7 @@ async fn lake(names: &[&str]) -> Result<(String, Catalog, Ref, Storage, PathBuf)
     let schema = fresh_schema();
     let (catalog, storage, directory) = local_catalog(&schema).await?;
     let main = catalog.branch("main").await?;
-    main.transaction().create_namespace(&["db"]).commit().await?;
+    main.transaction().create_namespace(&["default", "db"]).commit().await?;
     for name in names {
         create(&main, name, "0", vec![]).await?;
     }

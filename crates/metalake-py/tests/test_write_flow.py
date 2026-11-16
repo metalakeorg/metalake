@@ -44,7 +44,9 @@ def test_write_sequence(directory, capfd):
 
     before = t.overwrite(pedidos((9, 1.0, "z"))).commit
     assert rows(lake) == [(9, 1.0, "z")]
-    assert rows(lake, f'"main@{before - 1}".default.pedidos') == [(1, 10.0, "b"), (3, 7.0, "c")]
+    lake.sql(f"use branch main as of {before - 1}")
+    assert rows(lake) == [(1, 10.0, "b"), (3, 7.0, "c")]
+    lake.on("main")
 
     capfd.readouterr()
     metalake._cli(["metalake", "--lake", str(directory), "log", "--format", "json"])

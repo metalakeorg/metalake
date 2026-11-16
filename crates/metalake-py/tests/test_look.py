@@ -64,9 +64,10 @@ def test_log_order(lake):
     assert latest.operation and "the cleaning" in repr(latest)
 
 
-def test_read_at_commit_sequence(lake):
+def test_read_at_commit_sequence(lake, on_ref):
     point = lake.log()[1].seq
-    assert pl.DataFrame(lake.sql(f'select k from "main@{point}".default.t')).height == 1
+    with on_ref(lake, "main", at=point):
+        assert pl.DataFrame(lake.sql("select k from t")).height == 1
 
 
 def test_log_limit(lake):

@@ -15,7 +15,7 @@ fn url() -> String {
     std::env::var("DATABASE_URL").expect("DATABASE_URL: run CRATE=metalake-ui bash sql/test.sh")
 }
 
-/// A lake on the tests' Postgres, in a directory of its own, with the namespace `db`.
+/// A lake on the tests' Postgres, in a directory of its own, with the schema `db` of the catalog `default`.
 async fn lake() -> (Lake, std::path::PathBuf) {
     static NEXT: AtomicU32 = AtomicU32::new(0);
     let schema = format!("ui_run_{}_{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
@@ -31,7 +31,7 @@ async fn lake() -> (Lake, std::path::PathBuf) {
     .await
     .expect("a lake");
     let main = lake.catalog.branch("main").await.unwrap();
-    main.transaction().create_namespace(&["db"]).commit().await.unwrap();
+    main.transaction().create_namespace(&["default", "db"]).commit().await.unwrap();
     (lake, dir)
 }
 

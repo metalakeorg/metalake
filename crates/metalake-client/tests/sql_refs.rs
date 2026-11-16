@@ -57,6 +57,8 @@ async fn refused(session: &Session, text: &str) -> String {
 async fn i5_a_branch_lives_its_whole_life_in_sql() {
     let lake = lake().await;
     let session = Session::new(&lake).await.unwrap();
+    // A second session stays on `main`: no name says its ref (I7).
+    let on_main = Session::new(&lake).await.unwrap();
 
     let created = sql(&session, "create branch dev").await;
     assert!(
@@ -83,7 +85,7 @@ async fn i5_a_branch_lives_its_whole_life_in_sql() {
     assert!(used.contains("| 3 "), "{used}");
     assert_eq!(session.current_ref(), "dev");
     assert!(
-        sql(&session, "select count(*) as n from main.demo.t")
+        sql(&on_main, "select count(*) as n from demo.t")
             .await
             .contains("| 2 "),
         "main untouched"
@@ -101,7 +103,7 @@ async fn i5_a_branch_lives_its_whole_life_in_sql() {
     let check = sql(&session, "merge branch dev dry run").await;
     assert!(check.contains("would merge"), "{check}");
     assert!(
-        sql(&session, "select count(*) as n from main.demo.t")
+        sql(&on_main, "select count(*) as n from demo.t")
             .await
             .contains("| 2 "),
         "a dry run merges nothing"
@@ -109,7 +111,7 @@ async fn i5_a_branch_lives_its_whole_life_in_sql() {
     let merged = sql(&session, "merge branch dev message 'from sql' author 'ana'").await;
     assert!(merged.contains("merged") && merged.contains("demo.t"), "{merged}");
     assert!(
-        sql(&session, "select count(*) as n from main.demo.t")
+        sql(&on_main, "select count(*) as n from demo.t")
             .await
             .contains("| 3 "),
         "merged into main"
