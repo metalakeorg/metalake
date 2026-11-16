@@ -16,7 +16,7 @@ pull request; the decisions, in the ADRs.
 
 ### Iceberg
 
-- **Connect an engine to one catalog of the lake.** `metalake iceberg connect duckdb --catalog ventas`, or `lake.iceberg.duckdb(catalog="ventas")`: the engine sees that catalog's schemas as its own, `lake.eu.orders`, on the ref it follows ([#73](https://github.com/metalakeorg/metalake/pull/73))
+- **Connect an engine to one catalog of the lake.** `metalake iceberg connect <engine> --catalog ventas --ref dev`, or `catalog="ventas"` in `lake.iceberg`: the engine sees that catalog's schemas on that ref as its own, `lake.eu.orders` ([#73](https://github.com/metalakeorg/metalake/pull/73))
 
 ### Query
 
