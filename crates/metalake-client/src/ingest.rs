@@ -96,7 +96,10 @@ impl Lake {
                 if let Some(unknown) = keys.iter().find(|k| table.schema().column_with_name(k).is_none()) {
                     return Err(Error::usage(format!("{unknown} is not a column of {path}")));
                 }
-                Some(Session::new(self).await?)
+                // The merge names the table without its ref (I7): its session is on it.
+                let session = Session::new(self).await?;
+                session.on_ref(&path.on);
+                Some(session)
             }
         };
         let version = match &options.app_id {

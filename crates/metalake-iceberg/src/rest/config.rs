@@ -3,6 +3,7 @@
 use axum::Json;
 use axum::extract::{Query, State as Shared};
 use metalake::Error;
+use metalake::path::{DEFAULT_CATALOG, MAIN};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -43,30 +44,56 @@ fn is_a_location(warehouse: &str) -> bool {
     warehouse.contains("://") || warehouse.starts_with('/')
 }
 
-/// What a client is told to connect to the warehouse it asks for: the ref of that name, by its prefix in `overrides`,
-/// so that the client's own configuration does not override it (I6). None asked for, or a location that names no
-/// ref, `main`, under no prefix; any other name that is no ref is refused, rather than read as `main`.
+/// What a client is told to connect to the warehouse it asks for (I7): `catalog`, `catalog@ref` or
+/// `catalog@session:<id>`, by its prefix in `overrides`, so that the client's own configuration does not override it
+/// (I6). None asked for, or a location, is the catalog `default` on `main`, under no prefix; a catalog the ref has not,
+/// or a ref the lake has not, is refused rather than read as another.
 pub(crate) async fn config(Shared(state): Shared<State>, Query(asked): Query<Asked>) -> Result<Json<Value>, Failure> {
-    let overrides = match asked.warehouse.as_deref().filter(|w| !w.is_empty()) {
+    let asked = asked
+        .warehouse
+        .as_deref()
+        .filter(|w| !w.is_empty() && !is_a_location(w));
+    let overrides = match asked {
         None => json!({}),
-        Some(name) => match state.named(name).await {
-            Ok(_) => json!({"prefix": prefix_of(name)}),
+        Some(warehouse) => {
+            let (catalog, on) = match warehouse.split_once('@') {
+                Some((catalog, on)) => (catalog, on),
+                None => (warehouse, MAIN),
+            };
+            let catalog = if catalog.is_empty() { DEFAULT_CATALOG } else { catalog };
             // A session, which follows the ref it says it is on; one that has said none is not known here yet.
-            Err(Error::NotFound(_)) if name.starts_with(SESSION) => {
-                let id = &name[SESSION.len()..];
-                if state.session(id).is_none() {
+            if let Some(id) = on.strip_prefix(SESSION) {
+                let Some(name) = state.session(id) else {
                     return Err(Failure::no_session(id, axum::http::StatusCode::BAD_REQUEST));
+                };
+                has_catalog(&state, &name, catalog).await?;
+                json!({"prefix": session_prefix(id, catalog)})
+            } else {
+                has_catalog(&state, on, catalog).await?;
+                match (on, catalog) {
+                    (MAIN, DEFAULT_CATALOG) => json!({}),
+                    _ => json!({"prefix": prefix_of(on, catalog)}),
                 }
-                json!({"prefix": session_prefix(id)})
             }
-            Err(Error::NotFound(_)) if is_a_location(name) => json!({}),
-            Err(Error::NotFound(_)) => return Err(Failure::no_warehouse(name)),
-            Err(e) => return Err(e.into()),
-        },
+        }
     };
     Ok(Json(
         json!({"defaults": {}, "overrides": overrides, "endpoints": ENDPOINTS}),
     ))
+}
+
+/// Refuses a ref the lake has not, or a catalog the ref has not.
+async fn has_catalog(state: &State, on: &str, catalog: &str) -> Result<(), Failure> {
+    let found = match state.named(on).await {
+        Ok(found) => found,
+        Err(Error::NotFound(_)) => return Err(Failure::no_warehouse(on)),
+        Err(e) => return Err(e.into()),
+    };
+    let namespaces = found.namespaces().await?;
+    if namespaces.iter().any(|n| n.namespace.len() == 1 && n.namespace[0] == catalog) {
+        return Ok(());
+    }
+    Err(Failure::no_catalog(catalog, on))
 }
 
 #[cfg(test)]

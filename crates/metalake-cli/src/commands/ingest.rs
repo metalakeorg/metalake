@@ -33,7 +33,7 @@ enum Read {
 }
 
 pub async fn run(args: &Ingest, lake: Arc<Lake>) -> Result<(), Error> {
-    let path = TablePath::parse(&args.table)?;
+    let path = TablePath::parse_on(&args.table, &args.on)?;
     let (_, table) = lake.table(&path).await?;
     let options = WriterOptions {
         app_id: args.app_id.clone(),

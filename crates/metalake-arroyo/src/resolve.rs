@@ -106,7 +106,8 @@ fn relations(statement: &Statement) -> anyhow::Result<Vec<TableReference>> {
 
 /// MetaLake's name of a table, from the parts the planner split it into.
 fn path_of(reference: &TableReference) -> TablePath {
-    TablePath::from_parts(reference.catalog(), reference.schema(), reference.table())
+    // Compared by its catalog, schema and name: the ref is the pipeline's, which `resolve` gives it (I7).
+    TablePath::from_parts(metalake::path::MAIN, reference.catalog(), reference.schema(), reference.table())
 }
 
 /// Where the catalog is, as the process that plans a pipeline reaches it: what a client reaches it by, from the same
@@ -120,6 +121,8 @@ pub struct Environment {
     pub auth: Option<String>,
     /// The object store's variables set here, by name.
     pub storage: Vec<String>,
+    /// The ref the pipeline's tables are on: no name says it (I7).
+    pub on: String,
 }
 
 impl Environment {
@@ -139,6 +142,7 @@ impl Environment {
                 .ok()
                 .filter(|a| !a.trim().is_empty()),
             storage,
+            on: std::env::var(environment::REF).unwrap_or_else(|_| metalake::path::MAIN.to_string()),
         })
     }
 
@@ -166,6 +170,10 @@ pub async fn resolve(query: &str, known: impl Fn(&str) -> bool, env: &Environmen
     let wanted: Vec<Named> = names_of(query)?
         .into_iter()
         .filter(|n| !known(&n.reference.to_string()))
+        .map(|mut n| {
+            n.path.on = env.on.clone();
+            n
+        })
         .collect();
     if wanted.is_empty() {
         return Ok(Vec::new());
@@ -248,6 +256,7 @@ mod tests {
             schema: "lake".into(),
             auth: auth.map(str::to_string),
             storage: vec!["GOOGLE_APPLICATION_CREDENTIALS".into()],
+            on: "main".into(),
         };
         let gcp = env(Some("gcp-iam")).profile();
         assert_eq!(gcp.auth.as_deref(), Some("gcp-iam"));

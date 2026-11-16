@@ -1,7 +1,9 @@
-//! Refs as catalogs, namespaces as schemas (`main.db.events`). DataFusion finds a table asynchronously, so a table is
-//! always looked up in the protocol; it lists names synchronously, which Postgres cannot answer, so listings come from
-//! a picture taken when [`MetaLake`] is built and on [`MetaLake::refresh`].
+//! A lake's catalogs as DataFusion's, on the ref a session is on (I7): a namespace's first level is the catalog, the
+//! levels after it the schema (`ventas.eu.orders`), and the ref is the session's, which no name says. DataFusion finds a
+//! table asynchronously, so a table is always looked up in the protocol; it lists names synchronously, which Postgres
+//! cannot answer, so listings come from a picture taken when [`MetaLake`] is built and on [`MetaLake::refresh`].
 
+use std::any::Any;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,7 +19,7 @@ use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion::sql::parser::Statement;
 use datafusion::sql::planner::object_name_to_table_reference;
 use datafusion::sql::sqlparser::ast::Statement as SqlStatement;
-use metalake::path::{DEFAULT_NAMESPACE, MAIN, NAMESPACE_SEPARATOR};
+use metalake::path::{DEFAULT_CATALOG, DEFAULT_NAMESPACE, MAIN, NAMESPACE_SEPARATOR, levels};
 use metalake::{Catalog, Error, Ref, Result, Storage, TablePath};
 
 use crate::options::MetaLakeOptions;
@@ -118,18 +120,23 @@ impl MetaLake {
         Ok(())
     }
 
-    /// A session over this catalog, with `information_schema`, and reading unqualified tables from `main.default`.
+    /// A session over this catalog, with `information_schema`, on `main` until [`MetaLake::on_ref`] says another, and
+    /// reading unqualified tables from `default.default`.
     pub fn context(&self) -> Result<SessionContext, DataFusionError> {
-        // The catalogs are the refs: DataFusion makes none of its own, here or in a session rebuilt from this one.
+        // The catalogs are the lake's, on the session's ref: DataFusion makes none of its own, here or in a session
+        // rebuilt from this one.
         let mut config = SessionConfig::new()
             .with_information_schema(true)
-            .with_default_catalog_and_schema(MAIN, DEFAULT_NAMESPACE)
+            .with_default_catalog_and_schema(DEFAULT_CATALOG, DEFAULT_NAMESPACE)
             .with_create_default_catalog_and_schema(false);
         // `varchar` is a table's string, which has no view.
         config.options_mut().sql_parser.map_string_types_to_utf8view = false;
         let config = MetaLakeOptions::register(config);
         let context = SessionContext::new_with_config(config);
-        context.register_catalog_list(Arc::new(self.clone()));
+        context.register_catalog_list(Arc::new(SessionLake {
+            shared: self.shared.clone(),
+            on: Arc::new(RwLock::new(MAIN.to_string())),
+        }));
         context.add_analyzer_rule(Arc::new(OnePoint));
         // A write on a table answers its row, what came of its commit with its count.
         context.add_analyzer_rule(Arc::new(Written));
@@ -138,9 +145,22 @@ impl MetaLake {
         Ok(context)
     }
 
+    /// Has the session of `context` read and write on the ref `name` (or `name@point`), from its next statement: every
+    /// table it names is on it (I7).
+    pub fn on_ref(context: &SessionContext, name: &str) {
+        *session_lake(context).on.write().expect("a ref is replaced whole") = name.to_string();
+    }
+
+    /// The ref the session of `context` reads and writes on: `main` until [`MetaLake::on_ref`] says another.
+    pub fn current_ref(context: &SessionContext) -> String {
+        session_lake(context).on.read().expect("a ref is replaced whole").clone()
+    }
+
     /// Runs one statement in a session of this catalog, as `context.sql` would; what creates a namespace or a table as
     /// a commit, which `context.sql` cannot do; and what reads `table_changes(…)`, which it does not know.
     pub async fn execute(&self, context: &SessionContext, mut statement: Statement) -> DataFusionResult<DataFrame> {
+        // Every name is on the session's ref, which none says.
+        let on = Self::current_ref(context);
         // The ranges it reads live as sources until its plan holds them.
         if let Statement::Statement(inner) = &statement
             && let SqlStatement::AlterTable(alter) = inner.as_ref()
@@ -149,7 +169,7 @@ impl MetaLake {
             let normalize = context.state().config().options().sql_parser.enable_ident_normalization;
             let name = object_name_to_table_reference(alter.name.clone(), normalize)?
                 .resolve(&defaults.default_catalog, &defaults.default_schema);
-            let path = TablePath::from_parts(Some(&name.catalog), Some(&name.schema), &name.table);
+            let path = TablePath::from_parts(&on, Some(&name.catalog), Some(&name.schema), &name.table);
             let on = self.shared.named(&path.on).await?;
             ddl::alter_table(&on, &path, alter, context).await?;
             self.refresh().await.map_err(external)?;
@@ -157,28 +177,26 @@ impl MetaLake {
             return context.execute_logical_plan(done).await;
         }
         let state = context.state();
-        let _ranges = self
-            .table_changes(&mut statement, &state.config().options().catalog.default_catalog)
-            .await?;
+        let _ranges = self.table_changes(&mut statement, &on).await?;
         let plan = state.statement_to_plan(statement).await?;
-        // A name that says no ref is the session's default ref's, as a read's and a write's are: `main` unless the
-        // session says another.
         let defaults = &state.config().options().catalog;
         match plan {
+            // `create schema demo` is `default.demo`; `create schema ventas.eu` is in the catalog `ventas`, made with it
+            // if it is not there.
             LogicalPlan::Ddl(DdlStatement::CreateCatalogSchema(create)) => {
-                let (on, namespace) = match create.schema_name.split_once(NAMESPACE_SEPARATOR) {
-                    Some((on, namespace)) => (on, namespace),
-                    None => (defaults.default_catalog.as_str(), create.schema_name.as_str()),
-                };
-                let on = self.shared.named(on).await?;
-                ddl::create_schema(&on, &[namespace], create.if_not_exists).await?;
+                let mut namespace = levels(&create.schema_name);
+                if namespace.len() == 1 {
+                    namespace.insert(0, DEFAULT_CATALOG.to_string());
+                }
+                let on = self.shared.named(&on).await?;
+                ddl::create_schema(&on, &namespace, create.if_not_exists).await?;
             }
             LogicalPlan::Ddl(DdlStatement::CreateMemoryTable(create)) => {
                 let name = create
                     .name
                     .clone()
                     .resolve(&defaults.default_catalog, &defaults.default_schema);
-                let path = TablePath::from_parts(Some(&name.catalog), Some(&name.schema), &name.table);
+                let path = TablePath::from_parts(&on, Some(&name.catalog), Some(&name.schema), &name.table);
                 let on = self.shared.named(&path.on).await?;
                 let namespace: Vec<&str> = path.namespace.iter().map(String::as_str).collect();
                 let writing = ddl::Writing {
@@ -266,46 +284,92 @@ impl Drop for Source {
     }
 }
 
-impl CatalogProviderList for MetaLake {
+/// A session's catalogs: the lake's, on the ref the session is on, which [`MetaLake::on_ref`] changes.
+struct SessionLake {
+    shared: Arc<Shared>,
+    on: Arc<RwLock<String>>,
+}
+
+impl fmt::Debug for SessionLake {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SessionLake").finish_non_exhaustive()
+    }
+}
+
+/// The catalogs of a session a [`MetaLake`] made.
+fn session_lake(context: &SessionContext) -> Arc<SessionLake> {
+    let list = context.state().catalog_list().clone();
+    let any: Arc<dyn Any + Send + Sync> = list;
+    any.downcast::<SessionLake>()
+        .unwrap_or_else(|_| panic!("a MetaLake session's catalogs are the lake's"))
+}
+
+impl SessionLake {
+    fn on(&self) -> String {
+        self.on.read().expect("a ref is replaced whole").clone()
+    }
+}
+
+impl CatalogProviderList for SessionLake {
     fn register_catalog(&self, name: String, _: Arc<dyn CatalogProvider>) -> Option<Arc<dyn CatalogProvider>> {
-        panic!("{name}: the catalogs of a MetaLake session are its refs")
+        panic!("{name}: the catalogs of a MetaLake session are the lake's")
     }
 
+    /// The first levels of the namespaces the session's ref has tables in.
     fn catalog_names(&self) -> Vec<String> {
-        self.shared.listed(|l| l.keys().cloned().collect())
+        let on = self.on();
+        let mut names: Vec<String> = self.shared.listed(|l| {
+            l.get(&on)
+                .map(|n| n.keys().filter_map(|k| levels(k).into_iter().next()).collect())
+                .unwrap_or_default()
+        });
+        names.dedup();
+        names
     }
 
-    /// Any name: whether it is a ref is a question for the protocol, which a table's lookup asks.
+    /// Any name, on the session's ref as it is now: whether it holds the table is a question for the protocol.
     fn catalog(&self, name: &str) -> Option<Arc<dyn CatalogProvider>> {
-        Some(Arc::new(RefCatalog {
+        Some(Arc::new(LakeCatalog {
             shared: self.shared.clone(),
+            on: self.on(),
             name: name.to_string(),
         }))
     }
 }
 
-struct RefCatalog {
+/// A catalog of the lake on a ref: the namespaces whose first level is its name.
+struct LakeCatalog {
     shared: Arc<Shared>,
+    on: String,
     name: String,
 }
 
-impl fmt::Debug for RefCatalog {
+impl fmt::Debug for LakeCatalog {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RefCatalog").field("name", &self.name).finish()
+        write!(f, "LakeCatalog({} on {})", self.name, self.on)
     }
 }
 
-impl CatalogProvider for RefCatalog {
+impl CatalogProvider for LakeCatalog {
+    /// The levels past this catalog of each namespace in it, joined by dots: a schema of several levels is one name.
     fn schema_names(&self) -> Vec<String> {
+        let prefix = format!("{}{NAMESPACE_SEPARATOR}", self.name);
         self.shared
-            .listed(|l| l.get(&self.name).map(|n| n.keys().cloned().collect()))
+            .listed(|l| {
+                l.get(&self.on).map(|n| {
+                    n.keys()
+                        .filter_map(|k| k.strip_prefix(&prefix).map(str::to_string))
+                        .collect()
+                })
+            })
             .unwrap_or_default()
     }
 
     fn schema(&self, name: &str) -> Option<Arc<dyn SchemaProvider>> {
         Some(Arc::new(Namespace {
             shared: self.shared.clone(),
-            on: self.name.clone(),
+            on: self.on.clone(),
+            catalog: self.name.clone(),
             name: name.to_string(),
         }))
     }
@@ -314,33 +378,35 @@ impl CatalogProvider for RefCatalog {
 struct Namespace {
     shared: Arc<Shared>,
     on: String,
+    catalog: String,
     name: String,
 }
 
 impl fmt::Debug for Namespace {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Namespace({}.{})", self.on, self.name)
+        write!(f, "Namespace({}.{} on {})", self.catalog, self.name, self.on)
     }
 }
 
 #[async_trait]
 impl SchemaProvider for Namespace {
     fn table_names(&self) -> Vec<String> {
+        let namespace = format!("{}{NAMESPACE_SEPARATOR}{}", self.catalog, self.name);
         self.shared
-            .listed(|l| l.get(&self.on).and_then(|n| n.get(&self.name)).cloned())
+            .listed(|l| l.get(&self.on).and_then(|n| n.get(&namespace)).cloned())
             .unwrap_or_default()
     }
 
     async fn table(&self, name: &str) -> DataFusionResult<Option<Arc<dyn TableProvider>>> {
         let shared = &self.shared;
-        if self.on == SOURCES {
+        if self.catalog == SOURCES {
             let sources = shared.sources.lock().expect("a source is only added or taken");
             return Ok(name.parse().ok().and_then(|name: u64| sources.get(&name).cloned()));
         }
         let Some(on) = shared.find(&self.on).await.map_err(external)? else {
             return Ok(None);
         };
-        let path = TablePath::from_parts(Some(&self.on), Some(&self.name), name);
+        let path = TablePath::from_parts(&self.on, Some(&self.catalog), Some(&self.name), name);
         let namespace: Vec<&str> = path.namespace.iter().map(String::as_str).collect();
         match on.table(&namespace, &path.name).await {
             Ok(table) => Ok(Some(Arc::new(MetaTable {

@@ -29,7 +29,8 @@ pub enum Verb {
     Init(Init),
     /// Says what the lake is: its catalog, versions, warehouse and refs.
     Status,
-    /// Runs SQL, in DataFusion's dialect: tables are `ref.namespace.table`, by default on `main.default`.
+    /// Runs SQL, in DataFusion's dialect: tables are `[[catalog.]schema.]table`, by default `default.default`, on `main`
+    /// until `USE BRANCH` says another ref.
     Sql(Sql),
     /// Lists every branch and tag.
     Refs,
@@ -170,14 +171,20 @@ pub struct PipelineCreate {
     pub parallelism: u32,
     /// Empties the tables it writes first, when they have rows: they then hold what the query gives.
     #[arg(long)]
-    pub empty_target: bool,
+    pub empty_target: bool,    /// The ref it is on: no table's name says one.
+    #[arg(long = "ref", value_name = "REF", default_value = "main")]
+    pub on: String,
 }
 
 #[derive(Debug, Args)]
 pub struct Changes {
-    /// The table: `t`, `namespace.t` or `ref.namespace.t`.
+    /// The table: `t`, `schema.t` or `catalog.schema.t`.
     #[arg(value_name = "TABLE")]
     pub table: String,
+
+    /// The ref it is on: no table's name says one.
+    #[arg(long = "ref", value_name = "REF", default_value = "main")]
+    pub on: String,
 
     /// The commit the range starts after: a `_commit_seq`, or a position `follow` printed.
     #[arg(long, value_name = "SEQ")]
@@ -190,9 +197,13 @@ pub struct Changes {
 
 #[derive(Debug, Args)]
 pub struct Follow {
-    /// The table: `t`, `namespace.t` or `ref.namespace.t`.
+    /// The table: `t`, `schema.t` or `catalog.schema.t`.
     #[arg(value_name = "TABLE")]
     pub table: String,
+
+    /// The ref it is on: no table's name says one.
+    #[arg(long = "ref", value_name = "REF", default_value = "main")]
+    pub on: String,
 
     /// Starts after this commit: a position it printed. By default, with what the table holds, then what comes.
     #[arg(long, value_name = "SEQ", conflicts_with_all = ["latest", "since"])]
@@ -217,9 +228,13 @@ pub struct Follow {
 
 #[derive(Debug, Args)]
 pub struct Ingest {
-    /// The table: `t`, `namespace.t` or `ref.namespace.t`.
+    /// The table: `t`, `schema.t` or `catalog.schema.t`.
     #[arg(value_name = "TABLE")]
     pub table: String,
+
+    /// The ref it is on: no table's name says one.
+    #[arg(long = "ref", value_name = "REF", default_value = "main")]
+    pub on: String,
 
     /// How the rows come: one JSON object per line, or CSV with a header. Columns go by name.
     #[arg(long, value_enum, default_value = "json")]
@@ -307,6 +322,9 @@ pub struct IcebergConnect {
     /// a tag, it reads.
     #[arg(long = "ref", value_name = "REF", default_value = "main")]
     pub on: String,
+    /// The lake's catalog the engine sees: its schemas are the engine's namespaces, as `lake.demo.t` (I7).
+    #[arg(long, value_name = "CATALOG", default_value = "default")]
+    pub catalog: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

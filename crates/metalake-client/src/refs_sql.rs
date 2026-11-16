@@ -6,7 +6,7 @@
 //! DROP BRANCH [IF EXISTS] dev FORCE;                   DROP TAG v1 FORCE;
 //! MERGE BRANCH dev [DRY RUN] [TABLES demo.t, demo.u] [SPLIT] [MESSAGE '…'] [AUTHOR '…'];
 //! SHOW BRANCHES;  SHOW TAGS;  SHOW LOG [dev] [LIMIT 20];
-//! USE BRANCH dev;  USE TAG v1;
+//! USE BRANCH dev [AS OF 1234];  USE TAG v1;
 //! ALTER BRANCH dev RETAIN 30 DAYS 3 SNAPSHOTS;  ALTER TAG v1 RETAIN 90 DAYS;
 //! ALTER LAKE GRACE 7 DAYS;
 //! ```
@@ -53,6 +53,8 @@ pub enum RefVerb {
     Use {
         kind: RefKind,
         name: String,
+        /// `AS OF`: a commit sequence, or a time, the session reads the ref at (I7).
+        at: Option<String>,
     },
     Retain {
         kind: RefKind,
@@ -60,6 +62,20 @@ pub enum RefVerb {
         retention: Retention,
     },
     Grace(Duration),
+}
+
+/// `AS OF 1234` (a commit sequence) or `AS OF '2026-11-04T10:00:00Z'` (a time), if the statement says one.
+fn as_of(words: &mut Words) -> Result<Option<String>> {
+    if !words.take("AS") {
+        return Ok(None);
+    }
+    if !words.take("OF") {
+        return Err(Error::usage("AS OF takes a commit sequence or a time, '…'"));
+    }
+    match words.peek() {
+        Some(Token::Number(..)) => Ok(Some(words.number("AS OF")?.to_string())),
+        _ => Ok(Some(words.string("AS OF")?)),
+    }
 }
 
 /// How many commits `SHOW LOG` answers unless it says.
@@ -141,6 +157,7 @@ pub fn ref_verb_of(text: &str) -> Result<Option<RefVerb>> {
         (Some("USE"), kind @ (Some("BRANCH") | Some("TAG"))) => RefVerb::Use {
             kind: kind_of(kind).expect("matched"),
             name: words.name("a ref")?,
+            at: as_of(&mut words)?,
         },
         (Some("ALTER"), kind @ (Some("BRANCH") | Some("TAG"))) => {
             let kind = kind_of(kind).expect("matched");
@@ -371,8 +388,13 @@ mod tests {
         assert!(matches!(verb("show log"), RefVerb::Log { on: None, limit: LOG }));
         assert!(matches!(verb("show log dev limit 5"), RefVerb::Log { on: Some(on), limit: 5 } if on == "dev"));
         assert!(matches!(verb("show log limit 3"), RefVerb::Log { on: None, limit: 3 }));
-        assert!(matches!(verb("use branch dev"), RefVerb::Use { kind: RefKind::Branch, name } if name == "dev"));
+        assert!(matches!(verb("use branch dev"), RefVerb::Use { kind: RefKind::Branch, name, at: None } if name == "dev"));
         assert!(matches!(verb("use tag v1"), RefVerb::Use { kind: RefKind::Tag, .. }));
+        assert!(matches!(verb("use branch dev as of 12"), RefVerb::Use { at: Some(at), .. } if at == "12"));
+        assert!(matches!(
+            verb("use branch main as of '2026-11-04T10:00:00Z'"),
+            RefVerb::Use { at: Some(at), .. } if at == "2026-11-04T10:00:00Z"
+        ));
         let RefVerb::Retain { retention, .. } = verb("alter branch dev retain 30 days 3 snapshots") else {
             panic!()
         };

@@ -34,7 +34,7 @@ pub(super) fn profile(name: &str, target: &Target) -> Profile {
     if let Some(token) = &target.token {
         set("token", token);
     }
-    if let Some(on) = &target.on {
+    if let Some(on) = &target.asks() {
         set("warehouse", on);
     }
     // Iceberg's catalog keeps the tables it loaded for 30 s by default: following a session, a table must be the
@@ -72,6 +72,7 @@ mod tests {
             region: None,
             endpoint: None,
             on: None,
+            catalog: None,
         }
     }
 

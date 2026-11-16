@@ -162,10 +162,11 @@ fn pipeline_options(words: &mut Words, options: &mut PipelineOptions) -> Result<
     }
 }
 
-/// Runs a verb, and answers what a statement answers: the pipelines it is about, as rows.
-pub async fn run(lake: &Lake, verb: Verb) -> Result<Prepared> {
+/// Runs a verb, and answers what a statement answers: the pipelines it is about, as rows. A new pipeline is on `on`, the
+/// session's ref.
+pub async fn run(lake: &Lake, verb: Verb, on: &str) -> Result<Prepared> {
     let pipelines = match verb {
-        Verb::Create { name, query, options } => vec![lake.create_pipeline(&name, &query, options).await?],
+        Verb::Create { name, query, options } => vec![lake.create_pipeline(&name, &query, options, on).await?],
         Verb::Show => lake.pipelines().await?,
         Verb::Describe(name) => vec![lake.pipeline(&name).await?],
         Verb::Suspend(name) => vec![lake.suspend_pipeline(&name).await?],
@@ -198,6 +199,8 @@ pub fn rows(pipelines: &[Pipeline]) -> Result<(SchemaRef, RecordBatch)> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("name", DataType::Utf8, false),
         Field::new("state", DataType::Utf8, false),
+        // The ref its tables are on, which their names do not say (I7).
+        Field::new("ref", DataType::Utf8, false),
         Field::new("reads", DataType::Utf8, false),
         Field::new("writes", DataType::Utf8, false),
         Field::new("reached", DataType::Utf8, false),
@@ -217,6 +220,7 @@ pub fn rows(pipelines: &[Pipeline]) -> Result<(SchemaRef, RecordBatch)> {
     let columns: Vec<ArrayRef> = vec![
         joined(&|p| p.name.clone()),
         joined(&|p| state_name(&p.state)),
+        joined(&|p| p.on.clone()),
         joined(&|p| list(&p.reads)),
         joined(&|p| list(&p.writes)),
         joined(&|p| {

@@ -34,14 +34,30 @@ pub(crate) struct Writing<'a> {
     pub storage: &'a Storage,
 }
 
-/// Creates a namespace on `on`.
-pub(crate) async fn create_schema(on: &Ref, namespace: &[&str], if_not_exists: bool) -> DataFusionResult<()> {
+/// Creates a namespace on `on`, with each level above it that `on` lacks, in one commit (NS-2): `ventas.eu` makes the
+/// catalog `ventas` too, if it is not there (I7).
+pub(crate) async fn create_schema(on: &Ref, namespace: &[String], if_not_exists: bool) -> DataFusionResult<()> {
     if if_not_exists {
         return Err(refused("create schema if not exists"));
     }
     on.writable().map_err(external)?;
-    let commit = on.transaction().create_namespace(namespace).commit().await;
-    commit.map(|_| ()).map_err(external)
+    let there: Vec<Vec<String>> = on
+        .namespaces()
+        .await
+        .map_err(external)?
+        .into_iter()
+        .map(|row| row.namespace)
+        .collect();
+    let mut transaction = on.transaction();
+    for depth in 1..=namespace.len() {
+        let levels = &namespace[..depth];
+        if depth < namespace.len() && there.iter().any(|seen| seen.as_slice() == levels) {
+            continue;
+        }
+        let levels: Vec<&str> = levels.iter().map(String::as_str).collect();
+        transaction = transaction.create_namespace(&levels);
+    }
+    transaction.commit().await.map(|_| ()).map_err(external)
 }
 
 /// Creates the table a statement declares, in `namespace` of `on`: by its columns, or by a query's, with its rows. One
@@ -219,16 +235,14 @@ pub(crate) async fn alter_table(
                 let (RenameTableNameKind::To(to) | RenameTableNameKind::As(to)) = table_name;
                 let renamed = match object_name_to_table_reference(to.clone(), normalize)? {
                     TableReference::Bare { table } => (path.namespace.clone(), table.to_string()),
+                    // On the table's own ref, which no name says (I7).
                     TableReference::Partial { schema, table } => {
-                        let to = TablePath::from_parts(None, Some(&schema), &table);
+                        let to = TablePath::from_parts(&path.on, None, Some(&schema), &table);
                         (to.namespace, to.name)
                     }
-                    TableReference::Full { catalog, schema, table } if *catalog == *path.on => {
-                        let to = TablePath::from_parts(Some(&catalog), Some(&schema), &table);
+                    TableReference::Full { catalog, schema, table } => {
+                        let to = TablePath::from_parts(&path.on, Some(&catalog), Some(&schema), &table);
                         (to.namespace, to.name)
-                    }
-                    TableReference::Full { .. } => {
-                        return Err(refused("rename to another ref: a table is renamed on its own"));
                     }
                 };
                 changes.push(TableChange::Rename {

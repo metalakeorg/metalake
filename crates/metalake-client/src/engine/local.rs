@@ -90,11 +90,13 @@ pub(crate) async fn run_local(lake: &Lake, on: &str, using: &Using) -> Result<Pr
     })?;
     // On the session's ref: its namespaces and tables, as the selector of whatever face runs it says (I6). The
     // worker keeps a connection per setup, and the ref is part of it, so that one ref's connection is never another's.
-    let profile = lake.iceberg().profile_on(Engine::DuckDb, crate::CATALOG, on).await?;
+    // The lake's catalog `default`, whose schemas are DuckDB's (I7): `demo.t` there is `default.demo.t` here.
+    let catalog = metalake::path::DEFAULT_CATALOG;
+    let profile = lake.iceberg().profile_on(Engine::DuckDb, crate::CATALOG, on, catalog).await?;
     let mut setup = profile.statements();
-    // `USE lake` alone means its schema `main`, which a lake has none of: `default`, which every lake has, so that a
-    // bare `t` is the lake's `default.t`, and `demo.t` its schema `demo`'s.
-    setup.push(format!("USE {}.default", crate::CATALOG));
+    // `USE lake` alone means its schema `main`, which a lake has none of: `default`, which every catalog of a new lake
+    // has, so that a bare `t` is `default.default.t`, and `demo.t` the schema `demo`'s.
+    setup.push(format!("USE {}.{}", crate::CATALOG, metalake::path::DEFAULT_NAMESPACE));
     let (engine, sql) = (using.engine.clone(), using.sql.clone());
     let answered = tokio::task::spawn_blocking(move || runner(&engine, &setup, &sql))
         .await

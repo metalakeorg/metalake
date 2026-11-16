@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{Error, Lake, Result, table};
 
-/// A merge to make or to check. Tables are `namespace.table`, and none means every table.
+/// A merge to make or to check. Tables are `[catalog.]schema.table`, and none means every table.
 #[derive(Debug, Default)]
 pub struct MergeRequest {
     pub branch: String,
@@ -121,7 +121,7 @@ fn outcome(request: &MergeRequest, outcome: &'static str) -> MergeOutcome {
     }
 }
 
-/// The tables named, by `namespace.table`.
+/// The tables named, by `[catalog.]schema.table`.
 async fn selection(branch: &Ref, tables: &[String]) -> Result<Vec<Table>> {
     let mut selected = Vec::with_capacity(tables.len());
     for name in tables {

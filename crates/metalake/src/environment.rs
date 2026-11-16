@@ -14,6 +14,8 @@ pub const POSTGRES_AUTH: &str = "METALAKE_POSTGRES_AUTH";
 pub const SCHEMA: &str = "METALAKE_SCHEMA";
 /// A Ballista scheduler of the lake's (`df://host:port`), where a session's router may send a statement.
 pub const SCHEDULER: &str = "METALAKE_SCHEDULER";
+/// The ref a pipeline's tables are on, as a runner is given it: `main` when unset (I7).
+pub const REF: &str = "METALAKE_REF";
 /// The catalog's password, which the driver does not read by itself.
 pub const PASSWORD: &str = "PGPASSWORD";
 /// The catalog's schema, unless one is named.

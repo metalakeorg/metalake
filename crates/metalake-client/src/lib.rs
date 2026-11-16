@@ -1,6 +1,7 @@
 //! What MetaLake's faces share (ADR 0003 §4). A face turns what it is given into calls and their answers into its own
 //! form, and decides nothing: which lake is meant and what each verb does live here, once.
 
+mod catalogs_sql;
 mod details;
 mod engine;
 mod error;

@@ -69,7 +69,7 @@ async fn c14_pipeline_lifecycle() {
     let query = "INSERT INTO shop.totals SELECT customer, count(*) AS orders, sum(amount) AS amount \
                  FROM shop.orders GROUP BY customer";
     let created = lake
-        .create_pipeline("totals", query, PipelineOptions::default())
+        .create_pipeline("totals", query, PipelineOptions::default(), "main")
         .await
         .unwrap();
     assert_eq!(created.state, PipelineState::Running, "{:?}", created.state);
@@ -78,12 +78,12 @@ async fn c14_pipeline_lifecycle() {
 
     // A name is taken once, and a table with commits is not written by a new pipeline unless emptied.
     let again = lake
-        .create_pipeline("totals", query, PipelineOptions::default())
+        .create_pipeline("totals", query, PipelineOptions::default(), "main")
         .await
         .unwrap_err();
     assert!(again.message.contains("exists"), "{}", again.message);
     let other = lake
-        .create_pipeline("other", query, PipelineOptions::default())
+        .create_pipeline("other", query, PipelineOptions::default(), "main")
         .await
         .unwrap_err();
     assert!(other.message.contains("has rows"), "{}", other.message);

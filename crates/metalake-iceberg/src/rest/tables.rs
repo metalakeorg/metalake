@@ -6,13 +6,14 @@ use axum::body::Bytes;
 use axum::extract::{Path, State as Shared};
 use axum::http::{HeaderMap, StatusCode};
 use axum::{Extension, Json};
+use metalake::path::{DEFAULT_CATALOG, MAIN};
 use metalake::{Error, Ref, Table};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use super::errors::Failure;
 use super::namespaces::SEPARATOR;
-use super::prefix::{On, prefix_of};
+use super::prefix::{Catalog, On, prefix_of};
 
 use crate::apply::commit::Target;
 use crate::apply::update::{Change, asserted_uuid, change, check_uuid};
@@ -36,14 +37,14 @@ fn asks(headers: &HeaderMap) -> bool {
         .any(|mode| mode.trim().eq_ignore_ascii_case("vended-credentials"))
 }
 
-/// The endpoint a client renews a table's credentials at: under the prefix of the ref it is connected to, so that it
-/// renews them for the same table (I6).
-fn renewal(on: &Ref, namespace: &str, name: &str) -> String {
-    match on.name() {
-        "main" => refresh_path(namespace, name),
-        other => format!(
+/// The endpoint a client renews a table's credentials at: under the prefix of the ref and the catalog it is connected
+/// to, so that it renews them for the same table (I6, I7).
+fn renewal(on: &Ref, catalog: &Catalog, namespace: &str, name: &str) -> String {
+    match (on.name(), catalog.0.as_str()) {
+        (MAIN, DEFAULT_CATALOG) => refresh_path(namespace, name),
+        (other, catalog) => format!(
             "v1/{}/{}",
-            prefix_of(other),
+            prefix_of(other, catalog),
             &refresh_path(namespace, name)["v1/".len()..]
         ),
     }
@@ -76,17 +77,28 @@ pub(super) fn levels(namespace: &str) -> Vec<&str> {
     namespace.split(SEPARATOR).collect()
 }
 
+/// The lake's namespace of one a client names on a route: under the catalog it sees (I7).
+pub(super) fn inside(catalog: &Catalog, namespace: &str) -> Vec<String> {
+    catalog.inside(&levels(namespace))
+}
+
+/// Levels, borrowed.
+pub(super) fn strs(levels: &[String]) -> Vec<&str> {
+    levels.iter().map(String::as_str).collect()
+}
+
 /// `GET /v1/namespaces/{namespace}/tables`.
-pub(crate) async fn list(On(on): On, Path(namespace): Path<String>) -> Result<Json<Value>, Failure> {
-    let wanted = levels(&namespace);
+pub(crate) async fn list(On(on, catalog): On, Path(namespace): Path<String>) -> Result<Json<Value>, Failure> {
+    let full = inside(&catalog, &namespace);
+    let wanted = strs(&full);
     let names = on.namespaces().await?;
     if !names.iter().any(|n| n.namespace.iter().eq(&wanted)) {
-        return Err(Failure::no_namespace(&wanted.join(".")));
+        return Err(Failure::no_namespace(&levels(&namespace).join(".")));
     }
     let tables = on.tables().await?;
     let here = tables.iter().filter(|t| t.namespace.iter().eq(&wanted));
     let identifiers: Vec<Value> = here
-        .map(|t| json!({"namespace": t.namespace, "name": t.name}))
+        .map(|t| json!({"namespace": catalog.outside(&t.namespace).unwrap_or(&t.namespace), "name": t.name}))
         .collect();
     Ok(Json(json!({"identifiers": identifiers})))
 }
@@ -114,14 +126,15 @@ pub(super) fn decoded<T: DeserializeOwned>(body: &Bytes) -> Result<T, Failure> {
 /// later brings the definition back whole.
 pub(crate) async fn create(
     Shared(state): Shared<State>,
-    On(on): On,
+    On(on, catalog): On,
     Path(namespace): Path<String>,
     caller: Option<Extension<Caller>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<LoadTableResult>, Failure> {
     let (caller, asked) = (caller.map(|Extension(c)| c), asks(&headers));
-    let wanted = levels(&namespace);
+    let full = inside(&catalog, &namespace);
+    let wanted = strs(&full);
     let request: CreateTableRequest = decoded(&body)?;
     let name = request.name.clone();
     let namespaces = on.namespaces().await?;
@@ -152,7 +165,7 @@ pub(crate) async fn create(
         .unwrap_or_default()
         .to_string();
     let storage_credentials =
-        credentials_for(&state, caller, asked, &location, Some(renewal(&on, &namespace, &name))).await?;
+        credentials_for(&state, caller, asked, &location, Some(renewal(&on, &catalog, &namespace, &name))).await?;
     let table = create::create(&state, &on, &wanted, &name, new).await.map_err(|e| {
         let failure = Failure::from(e);
         if failure.is_conflict() {
@@ -169,12 +182,13 @@ pub(crate) async fn create(
 /// `GET /v1/namespaces/{namespace}/tables/{table}`.
 pub(crate) async fn get(
     Shared(state): Shared<State>,
-    On(on): On,
+    On(on, catalog): On,
     Path((namespace, name)): Path<(String, String)>,
     caller: Option<Extension<Caller>>,
     headers: HeaderMap,
 ) -> Result<Json<LoadTableResult>, Failure> {
-    let table = found(&on, &levels(&namespace), &name).await?;
+    let full = inside(&catalog, &namespace);
+    let table = found(&on, &strs(&full), &name).await?;
     let mut loaded = load(&state, &on, &table).await?;
     let caller = caller.map(|Extension(c)| c);
     loaded.storage_credentials = credentials_for(
@@ -182,7 +196,7 @@ pub(crate) async fn get(
         caller,
         asks(&headers),
         table.location(),
-        Some(renewal(&on, &namespace, &name)),
+        Some(renewal(&on, &catalog, &namespace, &name)),
     )
     .await?;
     Ok(Json(loaded))
@@ -192,18 +206,19 @@ pub(crate) async fn get(
 /// as a client asks when its own expire (REST-11). Asking is what it is: none for a table whose files are local.
 pub(crate) async fn credentials(
     Shared(state): Shared<State>,
-    On(on): On,
+    On(on, catalog): On,
     Path((namespace, name)): Path<(String, String)>,
     caller: Option<Extension<Caller>>,
 ) -> Result<Json<LoadCredentialsResponse>, Failure> {
-    let table = found(&on, &levels(&namespace), &name).await?;
+    let full = inside(&catalog, &namespace);
+    let table = found(&on, &strs(&full), &name).await?;
     let caller = caller.map(|Extension(c)| c);
     let storage_credentials = credentials_for(
         &state,
         caller,
         true,
         table.location(),
-        Some(renewal(&on, &namespace, &name)),
+        Some(renewal(&on, &catalog, &namespace, &name)),
     )
     .await?;
     Ok(Json(LoadCredentialsResponse { storage_credentials }))
@@ -229,12 +244,12 @@ async fn checked(on: &Ref, namespace: &[String], name: &str, request: CommitTabl
 /// `POST /v1/namespaces/{namespace}/tables/{table}`: `updateTable`, one commit (ICE-6).
 pub(crate) async fn update(
     Shared(state): Shared<State>,
-    On(on): On,
+    On(on, catalog): On,
     Path((namespace, name)): Path<(String, String)>,
     body: Bytes,
 ) -> Result<Json<LoadTableResult>, Failure> {
     let request: CommitTableRequest = decoded(&body)?;
-    let namespace: Vec<String> = levels(&namespace).iter().map(|l| l.to_string()).collect();
+    let namespace: Vec<String> = inside(&catalog, &namespace);
     let change = checked(&on, &namespace, &name, request).await?;
     let target = Target {
         namespace,
@@ -248,7 +263,7 @@ pub(crate) async fn update(
 /// `POST /v1/transactions/commit`: one commit of several tables, on one ref (REST-9).
 pub(crate) async fn commit_transaction(
     Shared(state): Shared<State>,
-    On(on): On,
+    On(on, catalog): On,
     body: Bytes,
 ) -> Result<StatusCode, Failure> {
     let request: CommitTransactionRequest = decoded(&body)?;
@@ -256,9 +271,10 @@ pub(crate) async fn commit_transaction(
     for mut entry in request.table_changes {
         let identifier = entry.identifier.take();
         let identifier = identifier.ok_or_else(|| Refused::Invalid("a table change names no table".into()))?;
-        let change = checked(&on, &identifier.namespace, &identifier.name, entry).await?;
+        let namespace = catalog.inside(&identifier.namespace);
+        let change = checked(&on, &namespace, &identifier.name, entry).await?;
         targets.push(Target {
-            namespace: identifier.namespace,
+            namespace,
             name: identifier.name,
             change,
         });
@@ -268,29 +284,30 @@ pub(crate) async fn commit_transaction(
 }
 
 /// `HEAD /v1/namespaces/{namespace}/tables/{table}`, which generates nothing, unlike a load.
-pub(crate) async fn exists(On(on): On, Path((namespace, name)): Path<(String, String)>) -> Result<StatusCode, Failure> {
-    found(&on, &levels(&namespace), &name).await?;
+pub(crate) async fn exists(On(on, catalog): On, Path((namespace, name)): Path<(String, String)>) -> Result<StatusCode, Failure> {
+    found(&on, &strs(&inside(&catalog, &namespace)), &name).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// `DELETE /v1/namespaces/{namespace}/tables/{table}`. `purgeRequested` changes nothing (REST-8), so it is not read.
-pub(crate) async fn drop(On(on): On, Path((namespace, name)): Path<(String, String)>) -> Result<StatusCode, Failure> {
-    let table = found(&on, &levels(&namespace), &name).await?;
+pub(crate) async fn drop(On(on, catalog): On, Path((namespace, name)): Path<(String, String)>) -> Result<StatusCode, Failure> {
+    let table = found(&on, &strs(&inside(&catalog, &namespace)), &name).await?;
     ddl::drop_table(&on, &table).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /v1/tables/rename`.
-pub(crate) async fn rename(On(on): On, body: Bytes) -> Result<StatusCode, Failure> {
+pub(crate) async fn rename(On(on, catalog): On, body: Bytes) -> Result<StatusCode, Failure> {
     let request: RenameTableRequest = decoded(&body)?;
-    let source: Vec<&str> = request.source.namespace.iter().map(String::as_str).collect();
-    let table = found(&on, &source, &request.source.name).await?;
+    let source = catalog.inside(&request.source.namespace);
+    let table = found(&on, &strs(&source), &request.source.name).await?;
     let destination = &request.destination;
+    let into = catalog.inside(&destination.namespace);
     let namespaces = on.namespaces().await?;
-    if !namespaces.iter().any(|n| n.namespace == destination.namespace) {
+    if !namespaces.iter().any(|n| n.namespace == into) {
         return Err(Failure::no_namespace(&destination.namespace.join(".")));
     }
-    ddl::rename_table(&on, &table, &destination.namespace, &destination.name)
+    ddl::rename_table(&on, &table, &into, &destination.name)
         .await
         .map_err(|e| match Failure::from(e) {
             failure if failure.is_conflict() => {

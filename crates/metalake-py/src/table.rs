@@ -113,10 +113,17 @@ impl PyTable {
 
 #[pymethods]
 impl PyTable {
-    /// Its whole name: `ref.namespace.table`.
+    /// Its whole name: `catalog.schema.table`. No name says a ref (I7): `ref` does.
     #[getter]
     fn name(&self) -> String {
         self.path.to_string()
+    }
+
+    /// The ref it is read and written on: the one `lake` was on when it was opened.
+    #[getter]
+    #[pyo3(name = "ref")]
+    fn on(&self) -> String {
+        self.path.on.clone()
     }
 
     /// The names of its columns, now.

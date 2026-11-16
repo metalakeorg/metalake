@@ -138,7 +138,7 @@ impl PyLake {
         ))
     }
 
-    /// A table by the name a statement would use: `t`, `namespace.t` or `ref.namespace.t`.
+    /// A table by the name a statement would use: `t`, `schema.t` or `catalog.schema.t`, on the ref `lake` is on (I7).
     fn table(&self, py: Python<'_>, name: &str) -> PyResult<PyTable> {
         self.owner.check(py, "Lake")?;
         PyTable::open(py, self.owner.clone(), self.lake.clone(), self.session.clone(), name)
@@ -178,7 +178,9 @@ impl PyLake {
             parallelism,
             empty_target,
         };
-        let created = wait(py, async move { lake.create_pipeline(&name, &query, options).await })?;
+        // On the ref `lake` is on, as a statement of it would be (I7).
+        let on = self.session.current_ref();
+        let created = wait(py, async move { lake.create_pipeline(&name, &query, options, &on).await })?;
         let created = created.map_err(|e| to_python(py, e))?;
         Ok(PyPipeline::new(self.owner.clone(), self.lake.clone(), created))
     }

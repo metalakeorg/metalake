@@ -40,6 +40,7 @@ fn environment(lake: &Lake, storage: &[&str]) -> Environment {
         schema: lake.schema.clone(),
         auth: None,
         storage: storage.iter().map(|s| s.to_string()).collect(),
+        on: "main".into(),
     }
 }
 
@@ -104,6 +105,7 @@ async fn resolve_nothing_reaches_nothing() {
         schema: "nowhere".into(),
         auth: None,
         storage: vec![],
+        on: "main".into(),
     };
     let tables = resolve(QUERY, |_| true, &unreachable).await.unwrap();
     assert!(tables.is_empty(), "with every name known, the catalog is not reached");

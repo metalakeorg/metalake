@@ -123,11 +123,9 @@ impl Lake {
     }
 }
 
-/// A table of a ref, by `namespace.table`.
+/// A table of a ref, by its name as every face reads one: `t`, `schema.t` or `catalog.schema.t` (I7).
 pub async fn table(on: &Ref, name: &str) -> Result<Table> {
-    let (namespace, table) = name
-        .rsplit_once('.')
-        .ok_or_else(|| Error::usage(format!("{name}: a table is namespace.table")))?;
-    let namespace: Vec<&str> = namespace.split('.').collect();
-    Ok(on.table(&namespace, table).await?)
+    let path = crate::TablePath::parse_on(name, on.name())?;
+    let namespace: Vec<&str> = path.namespace.iter().map(String::as_str).collect();
+    Ok(on.table(&namespace, &path.name).await?)
 }

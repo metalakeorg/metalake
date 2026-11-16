@@ -10,7 +10,7 @@ pub(super) fn profile(name: &str, target: &Target) -> Profile {
     if let Some(token) = &target.token {
         profile.properties.insert("token".into(), token.clone());
     }
-    if let Some(on) = &target.on {
+    if let Some(on) = &target.asks() {
         profile.properties.insert("warehouse".into(), on.clone());
     }
     // PyArrow's file IO, PyIceberg's default, reads `file:///C:/…` as the path `/C:/…`, which Windows refuses; fsspec's
@@ -53,6 +53,7 @@ mod tests {
             region: None,
             endpoint: None,
             on: None,
+            catalog: None,
         }
     }
 

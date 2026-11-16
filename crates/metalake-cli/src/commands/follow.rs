@@ -18,7 +18,7 @@ use crate::args::Follow;
 use crate::out::{Format, Out};
 
 pub async fn run(args: &Follow, lake: &Lake, format: Option<Format>) -> Result<(), Error> {
-    let path = TablePath::parse(&args.table)?;
+    let path = TablePath::parse_on(&args.table, &args.on)?;
     let kept = match &args.position_file {
         Some(file) => kept(file)?,
         None => None,

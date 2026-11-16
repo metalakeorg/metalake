@@ -8,6 +8,7 @@ use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use metalake::environment::{self, has_password, storage_options, without_password};
+use metalake::path::{DEFAULT_CATALOG, DEFAULT_NAMESPACE};
 use metalake::{Auth, Catalog, CatalogConfig, Storage};
 use metalake_local::{Binaries, Cluster};
 use serde::{Deserialize, Serialize};
@@ -548,7 +549,12 @@ impl Lake {
             }
         };
         let main = catalog.branch("main").await?;
-        main.transaction().create_namespace(&["default"]).commit().await?;
+        // The catalog and the schema a name without them is in (I7): `t` is `default.default.t`.
+        main.transaction()
+            .create_namespace(&[DEFAULT_CATALOG])
+            .create_namespace(&[DEFAULT_CATALOG, DEFAULT_NAMESPACE])
+            .commit()
+            .await?;
         Ok(Self { catalog, location })
     }
 

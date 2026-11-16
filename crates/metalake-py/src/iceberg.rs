@@ -51,22 +51,29 @@ impl PyIceberg {
         }
     }
 
-    /// The profile of `engine` for an engine MetaLake connects: following this session, the server told its ref now;
-    /// or, given `pinned`, on that ref whatever the session does after.
-    fn following(&self, py: Python<'_>, engine: &str, name: &str, pinned: Option<&str>) -> PyResult<Profile> {
+    /// The profile of `engine` for an engine MetaLake connects, seeing the lake's catalog `catalog` (I7): following this
+    /// session, the server told its ref now; or, given `pinned`, on that ref whatever the session does after.
+    fn following(
+        &self,
+        py: Python<'_>,
+        engine: &str,
+        name: &str,
+        pinned: Option<&str>,
+        catalog: &str,
+    ) -> PyResult<Profile> {
         self.owner.check(py, "Lake")?;
         let engine: Engine = engine.parse().map_err(|e| to_python(py, e))?;
         let lake = self.lake.clone();
-        let name = name.to_string();
+        let (name, catalog) = (name.to_string(), catalog.to_string());
         let profile = match pinned {
             Some(on) => {
                 let on = on.to_string();
-                wait(py, async move { lake.iceberg().profile_on(engine, &name, &on).await })?
+                wait(py, async move { lake.iceberg().profile_on(engine, &name, &on, &catalog).await })?
             }
             None => {
                 let (id, on) = (self.following.id.clone(), self.session.current_ref());
                 let profile = wait(py, async move {
-                    lake.iceberg().profile_in_session(engine, &name, &id, &on).await
+                    lake.iceberg().profile_in_session(engine, &name, &id, &on, &catalog).await
                 })?;
                 if profile.is_ok() {
                     self.following.engaged.store(true, Ordering::SeqCst);
@@ -131,15 +138,16 @@ impl PyIceberg {
     /// What `engine` (`pyiceberg`, `duckdb`, `spark`, `flink`, `trino`) needs to connect to the lake, its catalog named
     /// `name`: what fixes it as it starts and what sets it once running, in one dict, by the engine's own keys. For what
     /// MetaLake does not connect itself: a Spark Connect server, Trino, a file of one's own. Starts the lake's server.
-    #[pyo3(signature = (engine, *, name = "lake", uri = None))]
+    #[pyo3(signature = (engine, *, name = "lake", uri = None, catalog = "default"))]
     fn properties(
         &self,
         py: Python<'_>,
         engine: &str,
         name: &str,
         uri: Option<&str>,
+        catalog: &str,
     ) -> PyResult<BTreeMap<String, String>> {
-        let profile = self.profile(py, engine, name, uri)?;
+        let profile = self.profile(py, engine, name, uri, catalog)?;
         Ok(profile.startup.into_iter().chain(profile.properties).collect())
     }
 
@@ -147,16 +155,24 @@ impl PyIceberg {
     /// what sets it once running, the statements that make the catalog, the libraries it loads. Starts the lake's
     /// server, and fetches the jars Flink is given as files. With `uri`, the lake's server elsewhere, as `metalake
     /// iceberg serve` there: nothing is started here, and the token is that server's, from METALAKE_ICEBERG_TOKEN.
-    #[pyo3(signature = (engine, *, name = "lake", uri = None))]
-    fn profile(&self, py: Python<'_>, engine: &str, name: &str, uri: Option<&str>) -> PyResult<PyProfile> {
+    #[pyo3(signature = (engine, *, name = "lake", uri = None, catalog = "default"))]
+    fn profile(
+        &self,
+        py: Python<'_>,
+        engine: &str,
+        name: &str,
+        uri: Option<&str>,
+        catalog: &str,
+    ) -> PyResult<PyProfile> {
         self.owner.check(py, "Lake")?;
         let engine: Engine = engine.parse().map_err(|e| to_python(py, e))?;
         let lake = self.lake.clone();
         let (name, uri, on) = (name.to_string(), uri.map(str::to_string), self.session.current_ref());
+        let catalog = catalog.to_string();
         let profile = wait(py, async move {
             match uri {
-                Some(uri) => lake.iceberg().profile_at(engine, &name, &uri, &on).await,
-                None => lake.iceberg().profile_on(engine, &name, &on).await,
+                Some(uri) => lake.iceberg().profile_at(engine, &name, &uri, &on, &catalog).await,
+                None => lake.iceberg().profile_on(engine, &name, &on, &catalog).await,
             }
         })?;
         Ok(PyProfile::from(profile.map_err(|e| to_python(py, e))?))
@@ -164,23 +180,31 @@ impl PyIceberg {
 
     /// A PyIceberg catalog of the lake, named `name`. Polars' `scan_iceberg` and Daft take it as it is. It follows the
     /// ref `lake` is on, at each call; given `ref`, it stays on that one.
-    #[pyo3(signature = (*, name = "lake", r#ref = None))]
-    fn pyiceberg<'py>(&self, py: Python<'py>, name: &str, r#ref: Option<&str>) -> PyResult<Bound<'py, PyAny>> {
-        let profile = PyProfile::from(self.following(py, "pyiceberg", name, r#ref)?);
+    #[pyo3(signature = (*, name = "lake", r#ref = None, catalog = "default"))]
+    fn pyiceberg<'py>(
+        &self,
+        py: Python<'py>,
+        name: &str,
+        r#ref: Option<&str>,
+        catalog: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let profile = PyProfile::from(self.following(py, "pyiceberg", name, r#ref, catalog)?);
         engines(py)?.getattr("pyiceberg")?.call1((profile,))
     }
 
-    /// A DuckDB connection with the lake attached as `name`: the one given, or a new one. The lake follows the ref
-    /// `lake` is on, at each statement; given `ref`, it stays on that one, as two refs attached side by side do.
-    #[pyo3(signature = (connection = None, *, name = "lake", r#ref = None))]
+    /// A DuckDB connection with the lake's catalog `catalog` attached as `name`, its schemas DuckDB's (I7): the one
+    /// given, or a new one. It follows the ref `lake` is on, at each statement; given `ref`, it stays on that one, as two
+    /// refs, or two catalogs, attached side by side do.
+    #[pyo3(signature = (connection = None, *, name = "lake", r#ref = None, catalog = "default"))]
     fn duckdb<'py>(
         &self,
         py: Python<'py>,
         connection: Option<Bound<'py, PyAny>>,
         name: &str,
         r#ref: Option<&str>,
+        catalog: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let profile = PyProfile::from(self.following(py, "duckdb", name, r#ref)?);
+        let profile = PyProfile::from(self.following(py, "duckdb", name, r#ref, catalog)?);
         engines(py)?.getattr("duckdb")?.call1((profile, connection))
     }
 
@@ -188,15 +212,16 @@ impl PyIceberg {
     /// with Iceberg. A session that runs already gets only what can be set once running, the catalog; one started
     /// without Iceberg is refused, with what it needs at start.
     /// Its catalog follows the ref `lake` is on, at each statement; given `ref`, it stays on that one.
-    #[pyo3(signature = (session = None, *, name = "lake", r#ref = None))]
+    #[pyo3(signature = (session = None, *, name = "lake", r#ref = None, catalog = "default"))]
     fn spark<'py>(
         &self,
         py: Python<'py>,
         session: Option<Bound<'py, PyAny>>,
         name: &str,
         r#ref: Option<&str>,
+        catalog: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let profile = PyProfile::from(self.following(py, "spark", name, r#ref)?);
+        let profile = PyProfile::from(self.following(py, "spark", name, r#ref, catalog)?);
         engines(py)?.getattr("spark")?.call1((profile, session))
     }
 
@@ -204,7 +229,7 @@ impl PyIceberg {
     /// `streaming`. The lake's jars, fetched once into `~/.metalake/jars`, go on the classpath PyFlink starts with;
     /// one that started without them is refused, with what it needs at start.
     /// Its catalog follows the ref `lake` is on, at each statement; given `ref`, it stays on that one.
-    #[pyo3(signature = (environment = None, *, name = "lake", streaming = false, r#ref = None))]
+    #[pyo3(signature = (environment = None, *, name = "lake", streaming = false, r#ref = None, catalog = "default"))]
     fn flink<'py>(
         &self,
         py: Python<'py>,
@@ -212,8 +237,9 @@ impl PyIceberg {
         name: &str,
         streaming: bool,
         r#ref: Option<&str>,
+        catalog: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let profile = PyProfile::from(self.following(py, "flink", name, r#ref)?);
+        let profile = PyProfile::from(self.following(py, "flink", name, r#ref, catalog)?);
         engines(py)?.getattr("flink")?.call1((profile, environment, streaming))
     }
 
