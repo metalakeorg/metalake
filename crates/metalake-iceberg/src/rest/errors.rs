@@ -94,6 +94,26 @@ impl Failure {
         Self::new(StatusCode::NOT_FOUND, "NotFoundException", message)
     }
 
+    /// A session that has said no ref to this server: one that names its ref first, as `lake.on` does, is known (I6).
+    pub(crate) fn no_session(id: &str, code: StatusCode) -> Self {
+        let message = format!("no session {id} here: the session says its ref first, as lake.on(...) does");
+        let kind = if code == StatusCode::BAD_REQUEST {
+            "BadRequestException"
+        } else {
+            "NotFoundException"
+        };
+        Self::new(code, kind, message)
+    }
+
+    /// A session's ref set by a request that does not bear the lake's token.
+    pub(crate) fn session_refused() -> Self {
+        Self::new(
+            StatusCode::FORBIDDEN,
+            "ForbiddenException",
+            "a session's ref is set by a request that bears the lake's token",
+        )
+    }
+
     /// The same, asked for of `GET /v1/config`, which answers a 400 for what it is asked wrongly.
     pub(crate) fn no_warehouse(name: &str) -> Self {
         let message = format!("no ref {name}: the warehouse names a branch or a tag of the lake");

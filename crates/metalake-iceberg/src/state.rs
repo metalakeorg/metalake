@@ -34,6 +34,9 @@ pub struct State {
     generations: Generations,
     /// How the credentials for tables' files are minted, by their store (REST-11).
     vendor: Vendor,
+    /// The ref each session is on, by the session's id, as the session last said (I6): what a client connected to a
+    /// session, rather than to a ref, reads and writes. Held in this process alone.
+    sessions: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl State {
@@ -63,6 +66,7 @@ impl State {
             footers,
             materializer: None,
             pruned: Arc::default(),
+            sessions: Arc::default(),
             generations: Generations::default(),
             vendor: stores(),
         })
@@ -160,6 +164,17 @@ impl State {
 
     pub(crate) fn main(&self) -> &Ref {
         &self.main
+    }
+
+    /// Says that session `id` is on the ref named `on`, from now on.
+    pub(crate) fn follow(&self, id: &str, on: &str) {
+        let mut sessions = self.sessions.lock().expect("not poisoned");
+        sessions.insert(id.to_string(), on.to_string());
+    }
+
+    /// The name of the ref session `id` is on, if it has said one.
+    pub(crate) fn session(&self, id: &str) -> Option<String> {
+        self.sessions.lock().expect("not poisoned").get(id).cloned()
     }
 
     /// Stops materializing, lets the footers queued finish for a while, then closes the catalog's connections.

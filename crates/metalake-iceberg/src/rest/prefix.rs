@@ -1,15 +1,19 @@
 //! The ref a request is on (I6). A lake's branches and tags are the whole lake's; Iceberg's REST protocol names a
 //! catalog of its own by a prefix of the routes, `/v1/{prefix}/…`, which `GET /v1/config` hands a client for the
-//! `warehouse` it asks for. Here the warehouse is a ref's name, and the prefix `refs/<name, percent-encoded>`, which no
-//! route without a prefix starts with: a request under it is on that ref, one without a prefix on `main`.
+//! `warehouse` it asks for. A prefix is one of two, neither of which a route without a prefix starts with:
 //!
-//! The prefix is the server's to choose and the client's to use as given: DuckDB, PyIceberg and Iceberg's Java client
-//! join it to their routes without encoding it again. A ref's name may hold any character, `/` and `%` among them, so it
-//! is encoded whole, and decoded once here.
+//! - `refs/<name>`: that ref, whatever happens after, as `metalake iceberg connect --ref` connects an engine;
+//! - `sessions/<id>`: the ref a session is on *at each request*, as `git`'s `HEAD` is the branch checked out. A session
+//!   says its ref to the server, and again each time it moves, as `lake.on` and a notebook's selector do; a client
+//!   connected to it follows, with no new connection.
+//!
+//! A request with no prefix is on `main`. The prefix is the server's to choose and the client's to use as given:
+//! DuckDB, PyIceberg and Iceberg's Java client join it to their routes without encoding it again. A ref's name, or a
+//! session's id, may hold any character, `/` and `%` among them, so it is encoded whole, and decoded once here.
 
 use axum::extract::{FromRequestParts, Request, State as Shared};
-use axum::http::Uri;
 use axum::http::request::Parts;
+use axum::http::{StatusCode, Uri};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use metalake::{Error, Ref};
@@ -18,8 +22,10 @@ use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, utf8_perc
 use super::errors::Failure;
 use crate::state::State;
 
-/// What a prefix starts with.
+/// What the prefix of a ref starts with.
 const REFS: &str = "refs";
+/// What the prefix of a session starts with.
+const SESSIONS: &str = "sessions";
 
 /// Every character of a name but RFC 3986's unreserved ones is encoded, so that the name is one segment of a path.
 const SEGMENT: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'.').remove(b'_').remove(b'~');
@@ -29,27 +35,41 @@ pub(crate) fn prefix_of(name: &str) -> String {
     format!("{REFS}/{}", utf8_percent_encode(name, SEGMENT))
 }
 
-/// A request's path under a prefix: the ref's name, and the path without the prefix, its query kept.
-fn unprefixed(uri: &Uri) -> Option<(String, Uri)> {
-    let under = uri.path().strip_prefix(&format!("/v1/{REFS}/"))?;
+/// The prefix of the routes on whatever ref session `id` is on.
+pub(crate) fn session_prefix(id: &str) -> String {
+    format!("{SESSIONS}/{}", utf8_percent_encode(id, SEGMENT))
+}
+
+/// What a prefix names.
+#[derive(Debug, PartialEq, Eq)]
+enum Named {
+    Ref(String),
+    Session(String),
+}
+
+/// A request's path under a prefix: what the prefix names, and the path without the prefix, its query kept.
+fn unprefixed(uri: &Uri) -> Option<(Named, Uri)> {
+    let under = uri.path().strip_prefix("/v1/")?;
+    let (kind, under) = under.split_once('/')?;
     let (encoded, rest) = under.split_once('/')?;
     if encoded.is_empty() || rest.is_empty() {
         return None;
     }
-    let name = percent_decode_str(encoded).decode_utf8().ok()?.into_owned();
+    let decoded = percent_decode_str(encoded).decode_utf8().ok()?.into_owned();
+    let named = match kind {
+        REFS => Named::Ref(decoded),
+        SESSIONS => Named::Session(decoded),
+        _ => return None,
+    };
     let path = match uri.query() {
         Some(query) => format!("/v1/{rest}?{query}"),
         None => format!("/v1/{rest}"),
     };
-    Some((name, path.parse().ok()?))
+    Some((named, path.parse().ok()?))
 }
 
 /// The ref a request is on, as the request's extension: the one its prefix names, or `main` when it has none.
 #[derive(Debug, Clone)]
-#[allow(
-    dead_code,
-    reason = "the routes read it from I6's step 3, which reads on the request's ref"
-)]
 pub(crate) struct On(pub(crate) Ref);
 
 impl FromRequestParts<State> for On {
@@ -64,11 +84,19 @@ impl FromRequestParts<State> for On {
     }
 }
 
-/// Before the routes: a request under a prefix is on the ref it names, and is routed as one without it. A ref the lake
-/// has not is refused here, before anything reads.
+/// Before the routes: a request under a prefix is on the ref it names, or on the one its session is on now, and is
+/// routed as one without it. A ref the lake has not, or a session that has said none, is refused here, before anything
+/// reads.
 pub(crate) async fn route(Shared(state): Shared<State>, mut request: Request, next: Next) -> Response {
-    let Some((name, path)) = unprefixed(request.uri()) else {
+    let Some((named, path)) = unprefixed(request.uri()) else {
         return next.run(request).await;
+    };
+    let name = match named {
+        Named::Ref(name) => name,
+        Named::Session(id) => match state.session(&id) {
+            Some(name) => name,
+            None => return Failure::no_session(&id, StatusCode::NOT_FOUND).into_response(),
+        },
     };
     let on = match state.named(&name).await {
         Ok(on) => on,
@@ -102,11 +130,20 @@ mod tests {
             assert_eq!(prefix.matches('/').count(), 1, "{prefix}");
             let uri: Uri = format!("/v1/{prefix}/namespaces/db/tables?pageToken=").parse().unwrap();
             let (back, path) = unprefixed(&uri).unwrap();
-            assert_eq!(back, name);
+            assert_eq!(back, Named::Ref(name.to_string()));
             assert_eq!(path, "/v1/namespaces/db/tables?pageToken=");
         }
         assert_eq!(prefix_of("feature/x"), "refs/feature%2Fx");
         assert_eq!(prefix_of("a%2Fb"), "refs/a%252Fb");
+    }
+
+    #[test]
+    fn a_sessions_id_is_one_segment_of_its_prefix() {
+        let id = "9f0c/kernel 1";
+        let uri: Uri = format!("/v1/{}/namespaces", session_prefix(id)).parse().unwrap();
+        let (named, path) = unprefixed(&uri).unwrap();
+        assert_eq!(named, Named::Session(id.to_string()));
+        assert_eq!(path, "/v1/namespaces");
     }
 
     #[test]
@@ -118,6 +155,8 @@ mod tests {
             "/v1/tables/rename",
             "/v1/refs/dev",
             "/v1/refs//namespaces",
+            "/v1/sessions/x",
+            "/v1/other/x/namespaces",
             "/metalake/shutdown",
         ] {
             assert!(unprefixed(&path.parse().unwrap()).is_none(), "{path}");

@@ -13,7 +13,7 @@ use pyo3::types::PyTuple;
 
 use crate::engine::PyEngine;
 use crate::errors::to_python;
-use crate::iceberg::PyIceberg;
+use crate::iceberg::{Following, PyIceberg};
 use crate::info::{History, PyDone, PyMerged, PyRef, PyStatus};
 use crate::owner::Owner;
 use crate::pipeline::PyPipeline;
@@ -43,6 +43,8 @@ pub struct PyLake {
     owner: Owner,
     lake: Arc<Lake>,
     session: Arc<Session>,
+    /// This `lake` as a session of the lake's Iceberg server, which the engines `lake.iceberg` connects follow.
+    following: Arc<Following>,
 }
 
 impl PyLake {
@@ -72,6 +74,7 @@ impl PyLake {
             owner: Owner::here(),
             lake: Arc::new(lake),
             session: Arc::new(session),
+            following: Arc::new(Following::new()),
         })
     }
 }
@@ -116,6 +119,7 @@ impl PyLake {
             self.owner.clone(),
             self.lake.clone(),
             self.session.clone(),
+            self.following.clone(),
         ))
     }
 
@@ -244,7 +248,8 @@ impl PyLake {
 
     /// Names that say no ref read and write on `ref` from now: `default.t` is `ref.default.t`, as it is
     /// `main.default.t` until this is called; a name that says its ref keeps it. On a tag, reads see the lake as it was
-    /// when tagged, and writes are refused. A ref that does not exist is refused, and nothing changes.
+    /// when tagged, and writes are refused. A ref that does not exist is refused, and nothing changes. The engines
+    /// `lake.iceberg` connected follow it too, from their next statement (I6).
     #[pyo3(name = "on")]
     fn on_ref(&self, py: Python<'_>, r#ref: String) -> PyResult<()> {
         self.owner.check(py, "Lake")?;
@@ -254,6 +259,11 @@ impl PyLake {
             return Err(to_python(py, Error::usage(format!("no ref {}", r#ref))));
         }
         self.session.on_ref(&r#ref);
+        if self.following.engaged.load(std::sync::atomic::Ordering::SeqCst) {
+            let (lake, id, name) = (self.lake.clone(), self.following.id.clone(), r#ref.clone());
+            let told = wait(py, async move { lake.iceberg().follow(&id, &name).await })?;
+            told.map_err(|e| to_python(py, e))?;
+        }
         Ok(())
     }
 

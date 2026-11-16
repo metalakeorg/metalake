@@ -45,6 +45,11 @@ pub(super) fn profile(name: &str, target: &Target) -> Result<Profile> {
     if let Some(on) = &target.on {
         profile.properties.insert("warehouse".into(), on.clone());
     }
+    // Iceberg's catalog keeps the tables it loaded, in Flink with no expiry by default: following a session, a table
+    // must be the session's ref's at each statement.
+    if target.follows_a_session() {
+        profile.properties.insert("cache-enabled".into(), "false".into());
+    }
     if target.store.bundle().is_some() {
         profile.properties.insert(DELEGATION.0.into(), DELEGATION.1.into());
     }

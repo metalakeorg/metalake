@@ -115,16 +115,31 @@ pub struct Target {
     /// says: what an engine that reads the store itself, as Trino, is told besides its credentials.
     pub region: Option<String>,
     pub endpoint: Option<String>,
-    /// The ref of the lake the engine is connected to, by the `warehouse` it asks the server for (I6): none for `main`,
-    /// which a client that asks for no warehouse is on.
+    /// The `warehouse` the engine asks the server for (I6): a ref's name, which it stays on; `session:<id>`, a session,
+    /// whose ref it follows request by request; none for `main`, which a client that asks for no warehouse is on.
     pub on: Option<String>,
 }
+
+/// What a warehouse starts with that asks the server for a session rather than a ref, as the server reads it.
+pub const SESSION: &str = "session:";
 
 impl Target {
     /// This target, on the ref `on`: `main` asks for no warehouse, so that its profile is what it always was.
     pub fn on(mut self, on: &str) -> Target {
         self.on = (on != crate::MAIN).then(|| on.to_string());
         self
+    }
+
+    /// This target, following session `id`: on whatever ref the session says it is on, at each request.
+    pub fn in_session(mut self, id: &str) -> Target {
+        self.on = Some(format!("{SESSION}{id}"));
+        self
+    }
+
+    /// Whether the engine follows a session, whose ref may move under a table the engine has loaded: one that keeps
+    /// tables it loaded (Spark's and Flink's catalogs, by default) is told to keep none.
+    pub fn follows_a_session(&self) -> bool {
+        self.on.as_deref().is_some_and(|on| on.starts_with(SESSION))
     }
 }
 
@@ -362,6 +377,47 @@ impl Iceberg<'_> {
         self.profile_for(engine, name, &target).await
     }
 
+    /// The profile of `engine` for session `id`, which is on `on` now (I6): the engine follows the session, reading and
+    /// writing whatever ref it says it is on, with no new connection. The server is told `on` first.
+    pub async fn profile_in_session(&self, engine: Engine, name: &str, id: &str, on: &str) -> Result<Profile> {
+        catalog_name(name)?;
+        self.follow(id, on).await?;
+        let target = self.target().await?.in_session(id);
+        self.profile_for(engine, name, &target).await
+    }
+
+    /// Tells the lake's server on this machine that session `id` is on `on`, from its next request: what `lake.on` and
+    /// a notebook's selector do. The server is started if it is not; the request bears the lake's token.
+    pub async fn follow(&self, id: &str, on: &str) -> Result<()> {
+        let server = self.ensure().await?;
+        let mut url = url::Url::parse(&server.url).map_err(|e| Error::failed(format!("the server's url: {e}")))?;
+        url.path_segments_mut()
+            .map_err(|()| Error::failed("the server's url takes no path"))?
+            .extend(["metalake", "sessions", id]);
+        let answer = reqwest::Client::new()
+            .put(url)
+            .bearer_auth(&server.token)
+            .json(&serde_json::json!({"ref": on}))
+            .send()
+            .await
+            .map_err(|e| Error::failed(format!("the lake's server, telling it session {id} is on {on}: {e}")))?;
+        if answer.status().is_success() {
+            return Ok(());
+        }
+        let status = answer.status();
+        let said: serde_json::Value = answer.json().await.unwrap_or_default();
+        let message = said["error"]["message"]
+            .as_str()
+            .unwrap_or("no reason given")
+            .to_string();
+        Err(match status.as_u16() {
+            404 => Error::usage(message),
+            _ => Error::failed(format!(
+                "the lake's server refused session {id} on {on} ({status}): {message}"
+            )),
+        })
+    }
+
     async fn profile_for(&self, engine: Engine, name: &str, target: &Target) -> Result<Profile> {
         let profile = profile(engine, name, target)?;
         if engine == Engine::Flink {
@@ -458,5 +514,44 @@ mod tests {
         }
         let quoted = profile(Engine::DuckDb, "lake", &target.on("ana's")).unwrap().render();
         assert!(quoted.contains("ATTACH 'ana''s' AS lake"), "{quoted}");
+    }
+
+    /// Following a session, each engine asks for `session:<id>` as its warehouse, and those whose catalog keeps the
+    /// tables it loaded, Spark and Flink, are told to keep none (I6).
+    #[test]
+    fn i6_each_engine_follows_a_session_and_caches_no_table() {
+        let target = Target {
+            uri: "http://127.0.0.1:8181".into(),
+            store: Store::Gcs,
+            warehouse: "gs://bucket/lake".into(),
+            token: None,
+            region: None,
+            endpoint: None,
+            on: None,
+        }
+        .in_session("k1");
+        assert!(target.follows_a_session());
+        let asked = [
+            (Engine::PyIceberg, "warehouse: \"session:k1\""),
+            (Engine::DuckDb, "ATTACH 'session:k1' AS lake ("),
+            (Engine::Spark, "spark.sql.catalog.lake.warehouse session:k1"),
+            (Engine::Flink, "'warehouse' = 'session:k1'"),
+            (Engine::Trino, "iceberg.rest-catalog.warehouse=session:k1"),
+        ];
+        for (engine, said) in asked {
+            let rendered = profile(engine, "lake", &target).unwrap().render();
+            assert!(rendered.contains(said), "{engine:?}: {rendered}");
+        }
+        let spark = profile(Engine::Spark, "lake", &target).unwrap().render();
+        assert!(spark.contains("spark.sql.catalog.lake.cache-enabled false"), "{spark}");
+        let flink = profile(Engine::Flink, "lake", &target).unwrap().render();
+        assert!(flink.contains("'cache-enabled' = 'false'"), "{flink}");
+        let pinned = profile(Engine::Spark, "lake", &target.clone().on("dev"))
+            .unwrap()
+            .render();
+        assert!(
+            !pinned.contains("cache-enabled"),
+            "a ref, which does not move, keeps Iceberg's default: {pinned}"
+        );
     }
 }

@@ -1,6 +1,7 @@
-"""The engines `lake.iceberg` connects are on the ref `lake` is on as each is asked for (I6): `lake.on`, which a notebook's
-selector sets, holds for them as it does for `lake.sql`. One connected stays on its ref; another asked for later is on
-the ref then."""
+"""The engines `lake.iceberg` connects follow the ref `lake` is on (I6): `lake.on`, which a notebook's selector calls,
+moves them as it moves `lake.sql`, at their next statement, with no new connection. Given `ref=`, one stays on it. A
+table already loaded is a snapshot: written after a move, its commit conflicts, and a client that tries again lands it
+on the ref the session is on now, never on the one it was loaded from."""
 
 import pytest
 
@@ -31,7 +32,7 @@ def count(lake, table):
     return lake.sql(f"select count(*) as n from {table}").to_arrow().to_pylist()[0]["n"]
 
 
-def test_duckdb_is_on_the_ref_lake_is_on(lake):
+def test_one_duckdb_connection_follows_lake_on(lake):
     pytest.importorskip("duckdb")
     lake.on("ventas_ana")
     con = lake.iceberg.duckdb()
@@ -42,17 +43,15 @@ def test_duckdb_is_on_the_ref_lake_is_on(lake):
     assert count(lake, "main.demo.t") == 2, "main is untouched"
 
     lake.on("main")
-    on_main = lake.iceberg.duckdb()
-    assert on_main.sql("select count(*) from lake.demo.t").fetchall()[0][0] == 2
-    assert con.sql("select count(*) from lake.demo.t").fetchall()[0][0] == 4, "one connected stays on its ref"
-
-
-def test_two_refs_in_one_duckdb_connection(lake):
-    pytest.importorskip("duckdb")
+    assert con.sql("select count(*) from lake.demo.t").fetchall()[0][0] == 2, "the same connection, now on main"
     lake.on("ventas_ana")
-    con = lake.iceberg.duckdb(name="ana")
-    lake.on("main")
-    lake.iceberg.duckdb(con, name="trunk")
+    assert con.sql("select count(*) from lake.demo.t").fetchall()[0][0] == 4, "and back"
+
+
+def test_two_refs_pinned_in_one_duckdb_connection(lake):
+    pytest.importorskip("duckdb")
+    con = lake.iceberg.duckdb(name="ana", ref="ventas_ana")
+    lake.iceberg.duckdb(con, name="trunk", ref="main")
     rows = con.sql(
         "select 'ana', count(*) from ana.demo.t union all select 'trunk', count(*) from trunk.demo.t order by 1"
     ).fetchall()
@@ -60,7 +59,7 @@ def test_two_refs_in_one_duckdb_connection(lake):
     assert rows[0][0] == "ana" and rows[0][1] >= 3
 
 
-def test_pyiceberg_is_on_the_ref_lake_is_on(lake):
+def test_one_pyiceberg_catalog_follows_lake_on(lake):
     pytest.importorskip("pyiceberg")
     pa = pytest.importorskip("pyarrow")
     lake.on("ventas_ana")
@@ -70,7 +69,21 @@ def test_pyiceberg_is_on_the_ref_lake_is_on(lake):
     catalog.load_table("demo.only_there").append(pa.table({"k": pa.array([10], pa.int64())}))
     assert count(lake, "ventas_ana.demo.only_there") == before + 1
     lake.on("main")
-    assert ("demo", "only_there") not in lake.iceberg.pyiceberg().list_tables("demo")
+    assert ("demo", "only_there") not in catalog.list_tables("demo"), "the same catalog, now on main"
+
+
+def test_a_table_loaded_before_a_move_never_lands_on_the_ref_it_was_loaded_from(lake):
+    """Its commit conflicts on the ref the session is on now; PyIceberg, as Iceberg's clients do, then loads the table
+    again, through the same session, and applies the append there: never on the ref the table was loaded from."""
+    pytest.importorskip("pyiceberg")
+    pa = pytest.importorskip("pyarrow")
+    lake.on("ventas_ana")
+    t = lake.iceberg.pyiceberg().load_table("demo.t")
+    main_rows, ventas_rows = count(lake, "main.demo.t"), count(lake, "ventas_ana.demo.t")
+    lake.on("main")
+    t.append(pa.table({"k": pa.array([77], pa.int64())}))
+    assert count(lake, "ventas_ana.demo.t") == ventas_rows, "not on the ref it was loaded from"
+    assert count(lake, "main.demo.t") == main_rows + 1, "on the ref the session is on"
 
 
 def test_the_profile_names_the_ref(lake):

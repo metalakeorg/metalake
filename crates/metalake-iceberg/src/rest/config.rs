@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::errors::Failure;
-use super::prefix::prefix_of;
+use super::prefix::{prefix_of, session_prefix};
 use crate::state::State;
 
 /// What this server serves, as the OpenAPI spells a route. `{prefix}` is a ref's, when the client asks for one.
@@ -34,6 +34,9 @@ pub(crate) struct Asked {
     warehouse: Option<String>,
 }
 
+/// What a warehouse starts with that asks for a session rather than a ref: `session:<id>`.
+pub(crate) const SESSION: &str = "session:";
+
 /// Whether a warehouse a client asks for is a place, as Iceberg's Java catalogs mostly mean it (`s3://b/w`, `/tmp/w`),
 /// rather than a ref's name: such a client is on `main`, as before refs were served.
 fn is_a_location(warehouse: &str) -> bool {
@@ -48,6 +51,14 @@ pub(crate) async fn config(Shared(state): Shared<State>, Query(asked): Query<Ask
         None => json!({}),
         Some(name) => match state.named(name).await {
             Ok(_) => json!({"prefix": prefix_of(name)}),
+            // A session, which follows the ref it says it is on; one that has said none is not known here yet.
+            Err(Error::NotFound(_)) if name.starts_with(SESSION) => {
+                let id = &name[SESSION.len()..];
+                if state.session(id).is_none() {
+                    return Err(Failure::no_session(id, axum::http::StatusCode::BAD_REQUEST));
+                }
+                json!({"prefix": session_prefix(id)})
+            }
             Err(Error::NotFound(_)) if is_a_location(name) => json!({}),
             Err(Error::NotFound(_)) => return Err(Failure::no_warehouse(name)),
             Err(e) => return Err(e.into()),

@@ -3246,6 +3246,7 @@ dependencies = [
  "pyo3-arrow",
  "serde_json",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
