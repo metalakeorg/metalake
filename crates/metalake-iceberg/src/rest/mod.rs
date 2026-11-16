@@ -5,10 +5,11 @@ mod config;
 pub(crate) mod errors;
 mod namespaces;
 pub(crate) mod prefix;
+mod sessions;
 mod tables;
 
 use axum::Router;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 
 use crate::state::State;
 use errors::Failure;
@@ -24,6 +25,7 @@ pub(crate) fn router(state: State) -> Router {
 fn routes(state: State) -> Router {
     Router::new()
         .route("/v1/config", get(config::config))
+        .route(sessions::PATH, put(sessions::put))
         .route("/v1/namespaces", get(namespaces::list).post(namespaces::create))
         .route(
             "/v1/namespaces/{namespace}",

@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use metalake_client::{Engine, IcebergTable, Lake, Profile, Session};
 use pyo3::prelude::*;
@@ -11,18 +12,69 @@ use crate::errors::to_python;
 use crate::owner::Owner;
 use crate::runtime::wait;
 
-/// The lake's Iceberg face, from `lake.iceberg`. The engines it connects are on the ref `lake` is on as each is asked
-/// for (`lake.ref`, which a notebook's selector sets): one already connected stays on its own (I6).
+/// What a `lake` is to the lake's Iceberg server: a session, by an id of its own, whose ref the engines it connects
+/// follow (I6). The server learns its ref once an engine follows it, and each time `lake.on` moves it after.
+pub struct Following {
+    pub id: String,
+    /// Whether an engine follows this session yet: until one does, `lake.on` starts no server to tell.
+    pub engaged: AtomicBool,
+}
+
+impl Following {
+    pub fn new() -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            engaged: AtomicBool::new(false),
+        }
+    }
+}
+
+/// The lake's Iceberg face, from `lake.iceberg`. The engines it connects follow the ref `lake` is on, statement by
+/// statement: `lake.on`, which a notebook's selector calls, moves every one of them, with no new connection (I6).
+/// `properties` and `profile`, for engines MetaLake does not connect itself, name the ref `lake` is on as they are
+/// asked for, which stays.
 #[pyclass(name = "Iceberg", module = "metalake", frozen)]
 pub struct PyIceberg {
     owner: Owner,
     lake: Arc<Lake>,
     session: Arc<Session>,
+    following: Arc<Following>,
 }
 
 impl PyIceberg {
-    pub fn new(owner: Owner, lake: Arc<Lake>, session: Arc<Session>) -> Self {
-        Self { owner, lake, session }
+    pub fn new(owner: Owner, lake: Arc<Lake>, session: Arc<Session>, following: Arc<Following>) -> Self {
+        Self {
+            owner,
+            lake,
+            session,
+            following,
+        }
+    }
+
+    /// The profile of `engine` for an engine MetaLake connects: following this session, the server told its ref now;
+    /// or, given `pinned`, on that ref whatever the session does after.
+    fn following(&self, py: Python<'_>, engine: &str, name: &str, pinned: Option<&str>) -> PyResult<Profile> {
+        self.owner.check(py, "Lake")?;
+        let engine: Engine = engine.parse().map_err(|e| to_python(py, e))?;
+        let lake = self.lake.clone();
+        let name = name.to_string();
+        let profile = match pinned {
+            Some(on) => {
+                let on = on.to_string();
+                wait(py, async move { lake.iceberg().profile_on(engine, &name, &on).await })?
+            }
+            None => {
+                let (id, on) = (self.following.id.clone(), self.session.current_ref());
+                let profile = wait(py, async move {
+                    lake.iceberg().profile_in_session(engine, &name, &id, &on).await
+                })?;
+                if profile.is_ok() {
+                    self.following.engaged.store(true, Ordering::SeqCst);
+                }
+                profile
+            }
+        };
+        profile.map_err(|e| to_python(py, e))
     }
 }
 
@@ -110,51 +162,58 @@ impl PyIceberg {
         Ok(PyProfile::from(profile.map_err(|e| to_python(py, e))?))
     }
 
-    /// A PyIceberg catalog of the lake, named `name`. Polars' `scan_iceberg` and Daft take it as it is.
-    #[pyo3(signature = (*, name = "lake"))]
-    fn pyiceberg<'py>(&self, py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyAny>> {
-        let profile = self.profile(py, "pyiceberg", name, None)?;
+    /// A PyIceberg catalog of the lake, named `name`. Polars' `scan_iceberg` and Daft take it as it is. It follows the
+    /// ref `lake` is on, at each call; given `ref`, it stays on that one.
+    #[pyo3(signature = (*, name = "lake", r#ref = None))]
+    fn pyiceberg<'py>(&self, py: Python<'py>, name: &str, r#ref: Option<&str>) -> PyResult<Bound<'py, PyAny>> {
+        let profile = PyProfile::from(self.following(py, "pyiceberg", name, r#ref)?);
         engines(py)?.getattr("pyiceberg")?.call1((profile,))
     }
 
-    /// A DuckDB connection with the lake attached as `name`: the one given, or a new one.
-    #[pyo3(signature = (connection = None, *, name = "lake"))]
+    /// A DuckDB connection with the lake attached as `name`: the one given, or a new one. The lake follows the ref
+    /// `lake` is on, at each statement; given `ref`, it stays on that one, as two refs attached side by side do.
+    #[pyo3(signature = (connection = None, *, name = "lake", r#ref = None))]
     fn duckdb<'py>(
         &self,
         py: Python<'py>,
         connection: Option<Bound<'py, PyAny>>,
         name: &str,
+        r#ref: Option<&str>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let profile = self.profile(py, "duckdb", name, None)?;
+        let profile = PyProfile::from(self.following(py, "duckdb", name, r#ref)?);
         engines(py)?.getattr("duckdb")?.call1((profile, connection))
     }
 
     /// A SparkSession connected to the lake as `name`: the one given, else the active one, else a local one started
     /// with Iceberg. A session that runs already gets only what can be set once running, the catalog; one started
     /// without Iceberg is refused, with what it needs at start.
-    #[pyo3(signature = (session = None, *, name = "lake"))]
+    /// Its catalog follows the ref `lake` is on, at each statement; given `ref`, it stays on that one.
+    #[pyo3(signature = (session = None, *, name = "lake", r#ref = None))]
     fn spark<'py>(
         &self,
         py: Python<'py>,
         session: Option<Bound<'py, PyAny>>,
         name: &str,
+        r#ref: Option<&str>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let profile = self.profile(py, "spark", name, None)?;
+        let profile = PyProfile::from(self.following(py, "spark", name, r#ref)?);
         engines(py)?.getattr("spark")?.call1((profile, session))
     }
 
     /// A Flink TableEnvironment with the lake's catalog as `name`: the one given, or a new one, in batch unless
     /// `streaming`. The lake's jars, fetched once into `~/.metalake/jars`, go on the classpath PyFlink starts with;
     /// one that started without them is refused, with what it needs at start.
-    #[pyo3(signature = (environment = None, *, name = "lake", streaming = false))]
+    /// Its catalog follows the ref `lake` is on, at each statement; given `ref`, it stays on that one.
+    #[pyo3(signature = (environment = None, *, name = "lake", streaming = false, r#ref = None))]
     fn flink<'py>(
         &self,
         py: Python<'py>,
         environment: Option<Bound<'py, PyAny>>,
         name: &str,
         streaming: bool,
+        r#ref: Option<&str>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let profile = self.profile(py, "flink", name, None)?;
+        let profile = PyProfile::from(self.following(py, "flink", name, r#ref)?);
         engines(py)?.getattr("flink")?.call1((profile, environment, streaming))
     }
 

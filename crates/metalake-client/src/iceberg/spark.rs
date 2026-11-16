@@ -37,6 +37,11 @@ pub(super) fn profile(name: &str, target: &Target) -> Profile {
     if let Some(on) = &target.on {
         set("warehouse", on);
     }
+    // Iceberg's catalog keeps the tables it loaded for 30 s by default: following a session, a table must be the
+    // session's ref's at each statement.
+    if target.follows_a_session() {
+        set("cache-enabled", "false");
+    }
     if target.store.bundle().is_some() {
         set(DELEGATION.0, DELEGATION.1);
     }

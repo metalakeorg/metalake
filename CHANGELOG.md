@@ -7,7 +7,7 @@ pull request; the decisions, in the ADRs.
 
 ### Iceberg
 
-- **Connect any Iceberg engine to a branch or tag of the lake.** The engine sees that ref's namespaces and tables and writes there, with no ref named in a statement; a tag is read only. In Python, `lake.iceberg.duckdb()`, `pyiceberg()`, `spark()` and `flink()` follow `lake.on(…)` and the notebook's Ref selector; elsewhere, `metalake iceberg connect <engine> --ref <ref>`. Under the hood, the engine asks the lake's server for the ref as its Iceberg `warehouse` ([#67](https://github.com/metalakeorg/metalake/pull/67))
+- **Connect any Iceberg engine to a branch or tag of the lake.** The engine sees that ref's namespaces and tables and writes there, with no ref named in a statement; a tag is read only. In Python, an engine from `lake.iceberg.duckdb()`, `pyiceberg()`, `spark()` or `flink()` follows the notebook's Ref selector and `lake.on(…)`: the same connection reads and writes the new ref from its next statement, and a table loaded before a move refuses to commit; `ref=` pins one. Elsewhere, `metalake iceberg connect <engine> --ref <ref>`. Under the hood, the engine asks the lake's server for the ref as its Iceberg `warehouse` ([#67](https://github.com/metalakeorg/metalake/pull/67))
 
 ### Engines
 
