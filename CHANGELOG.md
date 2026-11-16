@@ -7,16 +7,16 @@ pull request; the decisions, in the ADRs.
 
 ### Upgrading from 0.7.0
 
-- **Name tables without their ref.** `main.demo.t` now means the catalog `main`, not the branch: choose the ref with the selector, `USE BRANCH dev`, `lake.on("dev")` or `--ref`, and read the past with `USE BRANCH main AS OF 1234`. A lake made before 0.8.0 is not read by these rules: make a new one (PR_LINK)
-- **Ask for `catalog@ref` as an Iceberg warehouse.** An engine connected to a ref asks for `default@dev`, not `dev`; `metalake iceberg connect` and `lake.iceberg` write it for you (PR_LINK)
+- **Name tables without their ref.** `main.demo.t` now means the catalog `main`, not the branch: choose the ref with the selector, `USE BRANCH dev`, `lake.on("dev")` or `--ref`, and read the past with `USE BRANCH main AS OF 1234`. A lake made before 0.8.0 is not read by these rules: make a new one ([#73](https://github.com/metalakeorg/metalake/pull/73))
+- **Ask for `catalog@ref` as an Iceberg warehouse.** An engine connected to a ref asks for `default@dev`, not `dev`; `metalake iceberg connect` and `lake.iceberg` write it for you ([#73](https://github.com/metalakeorg/metalake/pull/73))
 
 ### SQL
 
-- **Group schemas in catalogs.** A table is `catalog.schema.table`, `demo.t` is `default.demo.t`, and a branch covers every catalog. `CREATE SCHEMA ventas.eu` makes the catalog `ventas`; `CREATE CATALOG`, `DROP CATALOG` and `SHOW CATALOGS` manage them (PR_LINK)
+- **Group schemas in catalogs.** A table is `catalog.schema.table`, `demo.t` is `default.demo.t`, and a branch covers every catalog. `CREATE SCHEMA ventas.eu` makes the catalog `ventas`; `CREATE CATALOG`, `DROP CATALOG` and `SHOW CATALOGS` manage them ([#73](https://github.com/metalakeorg/metalake/pull/73))
 
 ### Iceberg
 
-- **Connect an engine to one catalog of the lake.** `metalake iceberg connect duckdb --catalog ventas`, or `lake.iceberg.duckdb(catalog="ventas")`: the engine sees that catalog's schemas as its own, `lake.eu.orders`, on the ref it follows (PR_LINK)
+- **Connect an engine to one catalog of the lake.** `metalake iceberg connect duckdb --catalog ventas`, or `lake.iceberg.duckdb(catalog="ventas")`: the engine sees that catalog's schemas as its own, `lake.eu.orders`, on the ref it follows ([#73](https://github.com/metalakeorg/metalake/pull/73))
 
 ### Query
 
