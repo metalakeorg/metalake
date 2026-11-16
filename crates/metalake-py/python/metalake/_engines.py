@@ -138,8 +138,8 @@ def _same_version(engine, installed, profile, runtime):
         raise UsageError(f"{engine} {installed} is installed; the lake's Iceberg runtime is for {engine} {built}")
 
 
-# `USING duckdb …` from any face of this process: a connection per lake, made as `lake.iceberg.duckdb()` makes one and
-# kept for the statements after it. One statement at a time on it, as DuckDB's connection is one.
+# `USING duckdb …`, in the process `metalake._worker` runs: a connection per lake, made as `lake.iceberg.duckdb()`
+# makes one and kept for the statements after it. One statement at a time on it, as DuckDB's connection is one.
 _local: dict[tuple[str, ...], Any] = {}
 _local_lock = threading.Lock()
 

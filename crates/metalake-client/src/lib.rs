@@ -22,7 +22,7 @@ mod write;
 pub use details::{Column, RefDetails, SchemaDetails, SchemaSummary, Size, TableDetails, TableSize, TableSummary};
 pub use engine::{
     CATALOG, Checked, EngineConfig, EngineKind, Engines, LOCAL, LocalFailure, LocalRunner, OWN, Remote, Trino, Using,
-    UsingOf, check_engine_name, engine_rows, set_local_runner, using_of,
+    UsingOf, check_engine_name, engine_rows, how_it_ended, set_local_runner, using_of,
 };
 pub use error::{Error, Kind, Result};
 pub use follow::{Changes, Follower, StartAt};

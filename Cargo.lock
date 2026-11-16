@@ -3243,6 +3243,7 @@ dependencies = [
  "metalake-client",
  "pyo3",
  "pyo3-arrow",
+ "serde_json",
  "tokio",
 ]
 

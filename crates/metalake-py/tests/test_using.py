@@ -1,6 +1,6 @@
-"""`USING duckdb` from Python's `lake.sql`: a statement, or the statements after a `USING` alone, run on DuckDB in this
-process, as `lake.iceberg.duckdb()` connects it, the lake attached through its Iceberg server; `USING metalake` back on
-the lake's own engine. What DuckDB refuses is said in its words; a missing DuckDB says what to install."""
+"""`USING duckdb` from Python's `lake.sql`: a statement, or the statements after a `USING` alone, run on DuckDB in a
+process of its own, as `lake.iceberg.duckdb()` connects it, the lake attached through its Iceberg server; `USING
+metalake` back on the lake's own engine. What DuckDB refuses is said in its words; a missing DuckDB says what to install."""
 
 import sys
 
@@ -67,7 +67,39 @@ def test_an_engine_the_lakes_file_names_is_sent_the_statement(lake):
         lake.remove_engine("trino_test")
 
 
-def test_a_missing_duckdb_says_what_to_install(lake, monkeypatch):
-    monkeypatch.setitem(sys.modules, "duckdb", None)
+@pytest.fixture
+def worker(tmp_path, monkeypatch):
+    """A worker of one's own for `USING duckdb`: a module by its name and source, which the worker's Python finds. A
+    worker of another module than the running one's is started in its place."""
+
+    def worker(name, source):
+        (tmp_path / f"{name}.py").write_text(source)
+        monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+        monkeypatch.setenv("METALAKE_LOCAL_WORKER", name)
+
+    return worker
+
+
+def test_a_missing_duckdb_says_what_to_install(lake, worker):
+    worker("no_duckdb", "import sys\nsys.modules['duckdb'] = None\nfrom metalake._worker import main\nmain()\n")
     with pytest.raises(metalake.UsageError, match=r'pip install "metalake\[duckdb\]"'):
         lake.sql("using duckdb select 1")
+
+
+# A worker that ends as one does on an instruction its processor lacks: by that code on Windows, that signal elsewhere.
+ILLEGAL_INSTRUCTION = """import os, signal, sys
+sys.stdin.readline()
+if os.name == "nt":
+    os._exit(0xC000001D - 2**32)
+os.kill(os.getpid(), signal.SIGILL)
+"""
+
+
+def test_an_engine_that_fails_as_native_code_fails_ends_its_process_not_this_one(lake, worker, monkeypatch):
+    """DuckDB runs in a process of its own: one that dies as native code dies fails its statement, saying how it
+    ended, and the next `USING duckdb` starts another."""
+    worker("dies", ILLEGAL_INSTRUCTION)
+    with pytest.raises(metalake.MetaLakeError, match=r"duckdb stopped: illegal instruction .*starts it again"):
+        lake.sql("using duckdb select 1")
+    monkeypatch.delenv("METALAKE_LOCAL_WORKER")
+    assert one(lake.sql("using duckdb select count(*) as n from demo.t")) == {"n": 3}

@@ -30,8 +30,9 @@ fn _metalake(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     // MetaLake's command line lives in this extension, so a server this process starts runs as `python -m metalake`.
     let python: OsString = module.py().import("sys")?.getattr("executable")?.extract()?;
-    metalake_client::server::set_launcher(vec![python, "-m".into(), "metalake".into()]);
-    // `USING duckdb` from any face of this process: the call a notebook makes, through `metalake._engines`.
+    metalake_client::server::set_launcher(vec![python.clone(), "-m".into(), "metalake".into()]);
+    // `USING duckdb` from any face of this process: the call a notebook makes, in a worker on this same Python.
+    local::set_python(python);
     metalake_client::set_local_runner(std::sync::Arc::new(local::run));
     module.add_class::<lake::PyLake>()?;
     module.add_class::<iceberg::PyIceberg>()?;

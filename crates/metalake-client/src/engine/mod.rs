@@ -20,7 +20,7 @@ mod trino;
 mod using;
 
 use local::run_local;
-pub use local::{LOCAL, LocalFailure, LocalRunner, set_local_runner};
+pub use local::{LOCAL, LocalFailure, LocalRunner, how_it_ended, set_local_runner};
 pub use trino::Trino;
 pub use using::{OWN, Using, UsingOf, using_of};
 pub(crate) use using::{Placed, place};
@@ -215,8 +215,8 @@ impl EngineConfig {
 /// The engines a lake names, by name.
 pub type Engines = BTreeMap<String, EngineConfig>;
 
-/// One statement `USING` an engine, on `lake`, the session reading `on`: a local engine, run in this process, or one
-/// the lake's file names, sent the statement. A local engine's name is never another's.
+/// One statement `USING` an engine, on `lake`, the session reading `on`: a local engine, run in a process of its own, or
+/// one the lake's file names, sent the statement. A local engine's name is never another's.
 pub(crate) async fn run_using(lake: &crate::Lake, on: &str, using: &Using) -> Result<crate::Prepared> {
     // An engine sees the lake through its Iceberg server, whose catalog is `main`'s: on another ref, it would answer
     // for `main` without a word.

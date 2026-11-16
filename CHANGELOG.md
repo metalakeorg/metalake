@@ -3,6 +3,12 @@
 What each version published on PyPI as `metalake` brings to whoever installs it. The work behind each line is in its
 pull request; the decisions, in the ADRs.
 
+## 0.7.0
+
+### Engines
+
+- **Run DuckDB in a process of its own.** `USING duckdb` sends each statement to a worker process; if DuckDB crashes there (a CPU it was not built for, a bad extension), only that statement fails, saying how DuckDB ended, and the UI, `metalake sql` or your Python keep running. The next `USING duckdb` starts it again ([#66](https://github.com/metalakeorg/metalake/pull/66))
+
 ## 0.6.0
 
 Released on 2026-11-15.
