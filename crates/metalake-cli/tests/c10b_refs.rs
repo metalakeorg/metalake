@@ -141,3 +141,26 @@ fn ref_list_output_formats() {
     let main = &objects(&dir, &["branch", "list"])[0];
     assert!(main["created_seq"].is_i64() && main["protected"].is_boolean() && main["parent"].is_null());
 }
+
+/// A ref's life from `metalake sql` (I5): the verbs are the session's, as Python's and Query's are. A `USE` holds for
+/// the rest of its text; the next invocation starts on `main`, as every `metalake sql` does.
+#[test]
+fn ref_verbs_in_sql() {
+    let dir = table();
+    let created = sql(&dir, "create branch dev", "csv");
+    assert!(created.starts_with("name,kind,parent"), "the refs' columns: {created}");
+    assert!(created.contains("dev,branch,main"), "{created}");
+
+    sql(&dir, "use branch dev; insert into db.t values (3, 'c', 2.5)", "csv");
+    assert_eq!(count(&dir, "dev"), "3");
+    assert_eq!(count(&dir, "main"), "2", "the next invocation started on main");
+
+    let merged = sql(&dir, "merge branch dev", "csv");
+    assert!(merged.contains("dev,merged"), "{merged}");
+    assert_eq!(count(&dir, "main"), "3");
+
+    let refused = run(&dir, &["sql", "drop branch dev"]);
+    assert!(!refused.status.success());
+    assert!(text(&refused.stderr).contains("FORCE"), "{}", text(&refused.stderr));
+    assert!(sql(&dir, "drop branch dev force", "csv").contains("deleted"));
+}

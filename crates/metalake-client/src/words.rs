@@ -68,6 +68,51 @@ impl Words {
         }
     }
 
+    /// The next token, past whitespace and comments, without taking it.
+    pub(crate) fn peek(&mut self) -> Option<Token> {
+        self.skip();
+        self.tokens.get(self.at).cloned()
+    }
+
+    /// Whether nothing but `;` is left.
+    pub(crate) fn at_end(&mut self) -> bool {
+        self.skip();
+        self.tokens[self.at.min(self.tokens.len())..]
+            .iter()
+            .all(|t| matches!(t, Token::SemiColon | Token::Whitespace(_)))
+    }
+
+    /// A whole number, after the clause `what`.
+    pub(crate) fn number(&mut self, what: &str) -> Result<i64> {
+        match self.next() {
+            Some(Token::Number(n, _)) => n
+                .parse()
+                .map_err(|_| Error::usage(format!("{what} takes a whole number, not {n}"))),
+            other => Err(Error::usage(format!(
+                "{what} takes a whole number, not {}",
+                other.map_or("nothing".to_string(), |t| t.to_string())
+            ))),
+        }
+    }
+
+    /// A string, `'…'`, after the clause `what`.
+    pub(crate) fn string(&mut self, what: &str) -> Result<String> {
+        match self.next() {
+            Some(Token::SingleQuotedString(s)) => Ok(s),
+            _ => Err(Error::usage(format!("{what} takes a string, '…'"))),
+        }
+    }
+
+    /// A name of names joined by `.`, `namespace.table`, each folded or kept as [`Words::name`] does.
+    pub(crate) fn dotted(&mut self, what: &str) -> Result<String> {
+        let mut parts = vec![self.name(what)?];
+        while self.peek() == Some(Token::Period) {
+            self.next();
+            parts.push(self.name(what)?);
+        }
+        Ok(parts.join("."))
+    }
+
     /// What follows, as written, with no `;` at its end.
     pub(crate) fn rest(&mut self) -> String {
         let text: String = self.tokens[self.at.min(self.tokens.len())..]

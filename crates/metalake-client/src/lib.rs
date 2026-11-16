@@ -14,6 +14,7 @@ mod maintain;
 mod merge;
 mod pipeline;
 mod refs;
+mod refs_sql;
 pub mod server;
 mod session;
 mod status;
