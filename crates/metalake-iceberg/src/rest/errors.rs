@@ -87,6 +87,18 @@ impl Failure {
         let message = format!("Namespace does not exist: {name}");
         Self::new(StatusCode::NOT_FOUND, "NoSuchNamespaceException", message)
     }
+
+    /// A prefix, or a warehouse asked for, that names no branch or tag of the lake (I6).
+    pub(crate) fn no_ref(name: &str) -> Self {
+        let message = format!("no ref {name}: the warehouse names a branch or a tag of the lake");
+        Self::new(StatusCode::NOT_FOUND, "NotFoundException", message)
+    }
+
+    /// The same, asked for of `GET /v1/config`, which answers a 400 for what it is asked wrongly.
+    pub(crate) fn no_warehouse(name: &str) -> Self {
+        let message = format!("no ref {name}: the warehouse names a branch or a tag of the lake");
+        Self::new(StatusCode::BAD_REQUEST, "BadRequestException", message)
+    }
 }
 
 /// The code and exception of what the protocol answered.

@@ -4,6 +4,7 @@
 mod config;
 pub(crate) mod errors;
 mod namespaces;
+pub(crate) mod prefix;
 mod tables;
 
 use axum::Router;
@@ -12,7 +13,15 @@ use axum::routing::{get, post};
 use crate::state::State;
 use errors::Failure;
 
+/// The routes, under no prefix, on `main`, and under a ref's prefix, on that ref ([`prefix`]).
 pub(crate) fn router(state: State) -> Router {
+    let routes = routes(state.clone());
+    Router::new()
+        .fallback_service(routes)
+        .layer(axum::middleware::from_fn_with_state(state, prefix::route))
+}
+
+fn routes(state: State) -> Router {
     Router::new()
         .route("/v1/config", get(config::config))
         .route("/v1/namespaces", get(namespaces::list).post(namespaces::create))
