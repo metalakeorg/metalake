@@ -5,6 +5,10 @@ pull request; the decisions, in the ADRs.
 
 ## 0.7.0
 
+Released on 2026-11-16.
+
+Manage branches and tags in SQL, connect any Iceberg engine to a branch that follows the notebook's selector, and run DuckDB apart from MetaLake's process.
+
 ### SQL
 
 - **Manage branches and tags in SQL.** `CREATE BRANCH dev [FROM main@1234]`, `MERGE BRANCH dev [DRY RUN]`, `USE BRANCH dev`, `SHOW BRANCHES`, `SHOW LOG`, `ALTER BRANCH dev RETAIN 30 DAYS` and `DROP BRANCH dev FORCE`, tags alike, in Query, `metalake sql` and `lake.sql`. In Query, `USE BRANCH` and `USE TAG` move the branch selector, and the next run starts there ([#69](https://github.com/metalakeorg/metalake/pull/69))

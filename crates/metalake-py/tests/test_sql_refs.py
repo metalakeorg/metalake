@@ -5,6 +5,9 @@ import pytest
 
 import metalake
 
+# The answers are read as Arrow: a `metalake` installed with no extra skips this.
+pytest.importorskip("pyarrow")
+
 
 @pytest.fixture(scope="module")
 def directory(tmp_path_factory):
