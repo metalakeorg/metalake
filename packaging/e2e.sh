@@ -34,9 +34,9 @@ metalake init ./lake
 metalake status
 metalake sql "create table t (k bigint); insert into t select value from generate_series(1, 200000)"
 [ "$(metalake sql 'select count(*) as n from t' --format csv | tail -1)" = 200000 ]
-ls lake/data/default/*/data/*.parquet >/dev/null
+ls lake/data/default/*/*/data/*.parquet >/dev/null
 metalake branch create dev
-metalake sql "insert into dev.default.t values (0)"
+metalake sql "use branch dev; insert into t values (0)"
 metalake merge dev
 [ "$(metalake sql 'select count(*) as n from t' --format csv | tail -1)" = 200001 ]
 metalake maintain >/dev/null

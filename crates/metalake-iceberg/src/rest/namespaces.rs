@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use super::errors::Failure;
 use super::prefix::On;
-use super::tables::{decoded, inside, levels, strs};
+use super::tables::{decoded, inside, levels, shown, strs};
 use crate::apply::ddl;
 use crate::wire::commit::{CreateNamespaceRequest, UpdateNamespaceRequest};
 
@@ -47,7 +47,7 @@ pub(crate) async fn list(On(on, catalog): On, Query(listing): Query<Listing>) ->
 async fn found(on: &Ref, wanted: &[&str]) -> Result<NamespaceRow, Failure> {
     let namespaces = on.namespaces().await?;
     let row = namespaces.into_iter().find(|n| n.namespace.iter().eq(wanted));
-    row.ok_or_else(|| Failure::no_namespace(&wanted.join(".")))
+    row.ok_or_else(|| Failure::no_namespace(&shown(wanted).join(".")))
 }
 
 /// `POST /v1/namespaces`.
@@ -105,7 +105,7 @@ pub(crate) async fn drop(On(on, catalog): On, Path(namespace): Path<String>) -> 
     ddl::drop_namespace(&on, &wanted)
         .await
         .map_err(|e| match Failure::from(e) {
-            failure if failure.is_conflict() => Failure::namespace_not_empty(&wanted.join(".")),
+            failure if failure.is_conflict() => Failure::namespace_not_empty(&shown(&wanted).join(".")),
             failure => failure,
         })?;
     Ok(StatusCode::NO_CONTENT)

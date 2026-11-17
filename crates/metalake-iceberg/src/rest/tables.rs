@@ -82,6 +82,12 @@ pub(super) fn inside(catalog: &Catalog, namespace: &str) -> Vec<String> {
     catalog.inside(&levels(namespace))
 }
 
+/// A namespace of the lake as the client named it: past its catalog, which the client does not say (I7). What a client
+/// is told names it as it asked.
+pub(super) fn shown<'a>(namespace: &'a [&'a str]) -> &'a [&'a str] {
+    namespace.get(1..).unwrap_or(namespace)
+}
+
 /// Levels, borrowed.
 pub(super) fn strs(levels: &[String]) -> Vec<&str> {
     levels.iter().map(String::as_str).collect()
@@ -112,7 +118,7 @@ fn qualified<S: AsRef<str>>(namespace: &[S], name: &str) -> String {
 /// The table a client names on the ref, or Iceberg's `NoSuchTableException` naming it.
 async fn found(on: &Ref, namespace: &[&str], name: &str) -> Result<Table, Failure> {
     on.table(namespace, name).await.map_err(|e| match e {
-        Error::NotFound(_) => Failure::no_table(&qualified(namespace, name)),
+        Error::NotFound(_) => Failure::no_table(&qualified(shown(namespace), name)),
         other => other.into(),
     })
 }
@@ -139,10 +145,10 @@ pub(crate) async fn create(
     let name = request.name.clone();
     let namespaces = on.namespaces().await?;
     if !namespaces.iter().any(|n| n.namespace.iter().eq(&wanted)) {
-        return Err(Failure::no_namespace(&wanted.join(".")));
+        return Err(Failure::no_namespace(&shown(&wanted).join(".")));
     }
     if on.table(&wanted, &name).await.is_ok() {
-        return Err(Failure::already_exists(&qualified(&wanted, &name)));
+        return Err(Failure::already_exists(&qualified(shown(&wanted), &name)));
     }
     let new = create::requested(&state, &wanted, request)?;
     if new.stage {
@@ -175,7 +181,7 @@ pub(crate) async fn create(
     let table = create::create(&state, &on, &wanted, &name, new).await.map_err(|e| {
         let failure = Failure::from(e);
         if failure.is_conflict() {
-            Failure::already_exists(&qualified(&wanted, &name))
+            Failure::already_exists(&qualified(shown(&wanted), &name))
         } else {
             failure
         }

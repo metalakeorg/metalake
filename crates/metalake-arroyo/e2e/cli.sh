@@ -23,17 +23,17 @@ docker run -d --name "$pg" -p "$port:5432" -e POSTGRES_HOST_AUTH_METHOD=trust "$
 until docker exec "$pg" pg_isready -q -U postgres 2>/dev/null; do sleep 1; done; sleep 2
 
 "$metalake" init "host=localhost port=$port user=postgres dbname=postgres" "$dir/data" --schema cli >/dev/null
-"$metalake" sql "create schema main.shop;
-                 create table main.shop.orders (id bigint, customer varchar, amount double);
-                 create table main.shop.totals (customer varchar, orders bigint, amount double);
-                 insert into main.shop.orders values (1, 'ana', 10), (2, 'ana', 20), (3, 'bo', 5)" >/dev/null
+"$metalake" sql "create schema shop;
+                 create table shop.orders (id bigint, customer varchar, amount double);
+                 create table shop.totals (customer varchar, orders bigint, amount double);
+                 insert into shop.orders values (1, 'ana', 10), (2, 'ana', 20), (3, 'bo', 5)" >/dev/null
 
 settled() {
   local want got
   want=$("$metalake" sql --format csv "select customer, count(*) as orders, sum(amount) as amount
-                                        from main.shop.orders group by customer order by customer")
+                                        from shop.orders group by customer order by customer")
   for _ in $(seq 1 90); do
-    got=$("$metalake" sql --format csv "select customer, orders, amount from main.shop.totals order by customer")
+    got=$("$metalake" sql --format csv "select customer, orders, amount from shop.totals order by customer")
     if [ "$got" = "$want" ]; then echo "   $1: $(echo "$got" | tail -n +2 | tr '\n' ' ')"; return 0; fi
     sleep 2
   done
@@ -46,12 +46,12 @@ echo "== create"
 "$metalake" pipeline create totals --query "INSERT INTO shop.totals
   SELECT customer, count(*) AS orders, sum(amount) AS amount FROM shop.orders GROUP BY customer"
 settled "snapshot"
-"$metalake" sql "insert into main.shop.orders values (4, 'cy', 7)" >/dev/null
+"$metalake" sql "insert into shop.orders values (4, 'cy', 7)" >/dev/null
 settled "an insert"
 
 echo "== suspend, in SQL"
 "$metalake" sql "alter pipeline totals suspend"
-"$metalake" sql "insert into main.shop.orders values (5, 'bo', 1); delete from main.shop.orders where id = 1" >/dev/null
+"$metalake" sql "insert into shop.orders values (5, 'bo', 1); delete from shop.orders where id = 1" >/dev/null
 echo "== resume"
 "$metalake" pipeline resume totals
 settled "resumed"
