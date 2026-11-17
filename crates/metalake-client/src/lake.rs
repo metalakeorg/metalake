@@ -246,6 +246,9 @@ fn engine_table(config: &EngineConfig) -> toml_edit::Table {
             table[key] = toml_edit::value(value);
         }
     }
+    if let Some(mode) = config.mode {
+        table["mode"] = toml_edit::value(mode.name());
+    }
     table
 }
 
@@ -794,6 +797,7 @@ mod tests {
             password_env: None,
             catalog: None,
             lake_url: None,
+            mode: None,
         }
     }
 

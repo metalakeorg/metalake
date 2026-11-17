@@ -1,4 +1,4 @@
-//! Engines a lake's faces send statements to: a cluster elsewhere, such as Trino or Spark, that reaches the lake through
+//! Engines a lake's faces send statements to: a cluster elsewhere, such as Trino, Spark or Flink, that reaches the lake through
 //! its Iceberg REST server. Each is named once in the lake's `metalake.toml`, `[engines.<name>]`, with where it answers and
 //! who asks; a secret is never written there, only the variable of the environment that holds it.
 //!
@@ -15,11 +15,13 @@ use url::Url;
 
 use crate::{Error, Result};
 
+mod flink;
 mod local;
 mod spark;
 mod trino;
 mod using;
 
+pub use flink::Flink;
 use local::run_local;
 pub use local::{LOCAL, LocalFailure, LocalRunner, how_it_ended, set_local_runner};
 pub use spark::Spark;
@@ -32,6 +34,7 @@ pub(crate) use using::{Placed, place};
 pub enum Remote {
     Trino(Trino),
     Spark(Spark),
+    Flink(Flink),
 }
 
 impl Remote {
@@ -40,6 +43,7 @@ impl Remote {
         match config.kind {
             EngineKind::Trino => Ok(Self::Trino(Trino::new(name, config)?)),
             EngineKind::Spark => Ok(Self::Spark(Spark::new(name, config)?)),
+            EngineKind::Flink => Ok(Self::Flink(Flink::new(name, config)?)),
         }
     }
 
@@ -48,6 +52,7 @@ impl Remote {
         match self {
             Self::Trino(trino) => trino.sql(text).await,
             Self::Spark(spark) => spark.sql(text).await,
+            Self::Flink(flink) => flink.sql(text).await,
         }
     }
 
@@ -55,7 +60,7 @@ impl Remote {
     pub fn catalog(&self) -> &str {
         match self {
             Self::Trino(trino) => trino.catalog(),
-            Self::Spark(_) => SPARK_CATALOGS,
+            Self::Spark(_) | Self::Flink(_) => OWN_NAMES,
         }
     }
 
@@ -63,6 +68,19 @@ impl Remote {
     /// the engine reaches the lake, through the lake's Iceberg server, as its catalog. The second is not asked when
     /// the first fails.
     pub async fn check(&self) -> Checked {
+        if let Self::Flink(flink) = self {
+            // Not a query: one, in streaming, is refused.
+            let engine = flink
+                .sql("SHOW CATALOGS")
+                .await
+                .map(|_| "answers, and lets this side in".to_string())
+                .map_err(|e| e.to_string());
+            let lake = match &engine {
+                Err(_) => Err("not asked: the engine is not reached".to_string()),
+                Ok(_) => flink_check_lake(flink).await,
+            };
+            return Checked { engine, lake };
+        }
         if let Self::Spark(spark) = self {
             let engine = spark
                 .sql("select 1")
@@ -142,8 +160,9 @@ impl Checked {
 /// The catalog the lake is in an engine, unless its entry names another: what `metalake iceberg connect` names it.
 pub const CATALOG: &str = "lake";
 
-/// What a Spark engine's catalog is, as rows show it: each of the lake's, by its own name.
-const SPARK_CATALOGS: &str = "the lake's, by their names";
+/// What the catalog of an engine MetaLake gives the lake's catalogs to (Spark, Flink) is, as rows show it: each of
+/// the lake's, by its own name.
+const OWN_NAMES: &str = "the lake's, by their names";
 
 /// The kinds of engine a lake can send statements to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,6 +171,8 @@ pub enum EngineKind {
     Trino,
     /// Through Spark Connect.
     Spark,
+    /// Through Flink's SQL Gateway.
+    Flink,
 }
 
 impl EngineKind {
@@ -159,6 +180,7 @@ impl EngineKind {
         match self {
             Self::Trino => "trino",
             Self::Spark => "spark",
+            Self::Flink => "flink",
         }
     }
 
@@ -166,8 +188,36 @@ impl EngineKind {
         match name {
             "trino" => Ok(Self::Trino),
             "spark" => Ok(Self::Spark),
+            "flink" => Ok(Self::Flink),
             other => Err(Error::usage(format!(
-                "an engine of type `{other}`: the types are trino, spark"
+                "an engine of type `{other}`: the types are trino, spark, flink"
+            ))),
+        }
+    }
+}
+
+/// How Flink runs what it is sent: its own default, streaming, unless an engine says batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RuntimeMode {
+    Streaming,
+    Batch,
+}
+
+impl RuntimeMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Streaming => "streaming",
+            Self::Batch => "batch",
+        }
+    }
+
+    pub fn parse(name: &str) -> Result<Self> {
+        match name {
+            "streaming" => Ok(Self::Streaming),
+            "batch" => Ok(Self::Batch),
+            other => Err(Error::usage(format!(
+                "a Flink engine's mode is streaming or batch, not `{other}`"
             ))),
         }
     }
@@ -180,7 +230,7 @@ pub struct EngineConfig {
     #[serde(rename = "type")]
     pub kind: EngineKind,
     /// Where it answers: Trino's coordinator, `https://trino.example:8443`; Spark Connect's server,
-    /// `sc://spark.example:15002`.
+    /// `sc://spark.example:15002`; Flink's SQL Gateway, `https://flink.example:8083`.
     pub url: String,
     /// Who asks, as the engine knows them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -199,6 +249,9 @@ pub struct EngineConfig {
     /// a server elsewhere, `metalake iceberg serve`; when not given, the one this lake starts on this machine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lake_url: Option<String>,
+    /// How Flink runs statements, `streaming` or `batch`: Flink's own default, streaming, when not given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<RuntimeMode>,
 }
 
 impl EngineConfig {
@@ -220,6 +273,39 @@ impl EngineConfig {
                     ));
                 }
             }
+            EngineKind::Flink => {
+                let url = Url::parse(&self.url)
+                    .map_err(|e| Error::usage(format!("a Flink engine's url {}: {e}", self.url)))?;
+                if !matches!(url.scheme(), "http" | "https") {
+                    return Err(Error::usage(format!(
+                        "a Flink engine's url is its SQL Gateway's, http or https, not {}",
+                        self.url
+                    )));
+                }
+                if !url.username().is_empty() || url.password().is_some() || url.query().is_some() {
+                    return Err(Error::usage(
+                        "a Flink engine's url is where its Gateway answers, nothing else: a token is never in it, but \
+                         in the variable token_env names",
+                    ));
+                }
+                let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+                if self.token_env.is_some() && url.scheme() != "https" && !local {
+                    return Err(Error::usage(
+                        "a Flink engine elsewhere is sent its token encrypted: its url is https",
+                    ));
+                }
+                if self.password_env.is_some() || self.user.is_some() {
+                    return Err(Error::usage(
+                        "Flink's SQL Gateway asks no user: a proxy in front of it takes a token, token_env",
+                    ));
+                }
+                if self.catalog.is_some() {
+                    return Err(Error::usage(
+                        "Flink is given each of the lake's catalogs by its own name: no catalog to name",
+                    ));
+                }
+                lake_url(self.lake_url.as_deref())?;
+            }
             EngineKind::Spark => {
                 let endpoint = spark::Endpoint::parse(&self.url)?;
                 if self.token_env.is_some() && !endpoint.tls() && !endpoint.is_local() {
@@ -227,15 +313,7 @@ impl EngineConfig {
                         "a Spark engine elsewhere is sent its token encrypted: add ;use_ssl=true to its url",
                     ));
                 }
-                if let Some(lake_url) = &self.lake_url {
-                    let parsed = Url::parse(lake_url)
-                        .map_err(|e| Error::usage(format!("the lake's server url {lake_url}: {e}")))?;
-                    if !matches!(parsed.scheme(), "http" | "https") {
-                        return Err(Error::usage(format!(
-                            "the lake's server url is http or https, not {lake_url}"
-                        )));
-                    }
-                }
+                lake_url(self.lake_url.as_deref())?;
                 if self.password_env.is_some() {
                     return Err(Error::usage("Spark Connect takes a token, not a password"));
                 }
@@ -245,6 +323,9 @@ impl EngineConfig {
                     ));
                 }
             }
+        }
+        if self.mode.is_some() && self.kind != EngineKind::Flink {
+            return Err(Error::usage("a mode is Flink's: streaming or batch"));
         }
         if self.token_env.is_some() && self.password_env.is_some() {
             return Err(Error::usage("an engine signs in by a token or by a password, not both"));
@@ -267,7 +348,7 @@ impl EngineConfig {
     pub fn catalog(&self) -> &str {
         match self.kind {
             EngineKind::Trino => self.catalog.as_deref().unwrap_or(CATALOG),
-            EngineKind::Spark => SPARK_CATALOGS,
+            EngineKind::Spark | EngineKind::Flink => OWN_NAMES,
         }
     }
 
@@ -279,6 +360,20 @@ impl EngineConfig {
             (None, None) => "none".into(),
         }
     }
+}
+
+/// Refuses a lake server's url that is not http or https.
+fn lake_url(lake_url: Option<&str>) -> Result<()> {
+    let Some(lake_url) = lake_url else {
+        return Ok(());
+    };
+    let parsed = Url::parse(lake_url).map_err(|e| Error::usage(format!("the lake's server url {lake_url}: {e}")))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(Error::usage(format!(
+            "the lake's server url is http or https, not {lake_url}"
+        )));
+    }
+    Ok(())
 }
 
 /// The engines a lake names, by name.
@@ -330,7 +425,7 @@ pub(crate) async fn run_using(
         Remote::Trino(trino) => {
             if on != crate::MAIN {
                 return Err(Error::usage(format!(
-                    "USING {} reads the ref its own catalog is connected to, which is not this session's `{on}`:                      connect it with `metalake iceberg connect <engine> --ref {on}`",
+                    "USING {} reads the ref its own catalog is connected to, which is not this session's `{on}`: connect it with `metalake iceberg connect <engine> --ref {on}`",
                     using.engine
                 )));
             }
@@ -340,12 +435,24 @@ pub(crate) async fn run_using(
         Remote::Spark(spark) => {
             if on.contains('@') {
                 return Err(Error::usage(format!(
-                    "USING {} reads and writes a branch as it is now, and this session reads `{on}` at a point:                      USE BRANCH first",
+                    "USING {} reads and writes a branch as it is now, and this session reads `{on}` at a point: USE BRANCH first",
                     using.engine
                 )));
             }
             let catalogs = spark_catalogs(lake, on, config).await?;
             spark.sql_on(on, &catalogs, &using.sql).await?
+        }
+        // Flink is given the lake's catalogs on `on` by MetaLake itself, as Spark is.
+        Remote::Flink(flink) => {
+            if on.contains('@') {
+                return Err(Error::usage(format!(
+                    "USING {} reads and writes a branch as it is now, and this session reads `{on}` at a point: \
+                     USE BRANCH first",
+                    using.engine
+                )));
+            }
+            let catalogs = flink_catalogs(lake, on, config).await?;
+            flink.sql_on(on, &catalogs, &using.sql).await?
         }
     };
     crate::Prepared::from_batches(schema, batches)
@@ -356,6 +463,54 @@ pub(crate) async fn run_using(
 /// own statements write the same tables between Spark's. Its server is the one `config` names, or this lake's on this
 /// machine; the jars and extensions a profile starts Spark with are the server's own, not set here.
 async fn spark_catalogs(lake: &crate::Lake, on: &str, config: &EngineConfig) -> Result<Vec<spark::CatalogSettings>> {
+    let settings = lake_catalogs(lake, on, config, crate::iceberg::Engine::Spark)
+        .await?
+        .into_iter()
+        .map(|(catalog, profile)| {
+            let mut settings: Vec<(String, String)> = profile.properties.into_iter().collect();
+            settings.push((format!("spark.sql.catalog.{catalog}.cache-enabled"), "false".into()));
+            (catalog, settings)
+        })
+        .collect::<Vec<_>>();
+    Ok(settings)
+}
+
+/// Each of the lake's catalogs on `on`, as Flink's session is given it: `CREATE CATALOG` under the catalog's own name,
+/// quoted (`default` is a word Flink's SQL keeps), from Flink's profile, keeping no table it loaded. The jars Flink
+/// starts with are the Gateway's own, not set here.
+async fn flink_catalogs(lake: &crate::Lake, on: &str, config: &EngineConfig) -> Result<Vec<flink::CatalogStatement>> {
+    Ok(lake_catalogs(lake, on, config, crate::iceberg::Engine::Flink)
+        .await?
+        .into_iter()
+        .map(|(catalog, mut profile)| {
+            profile.properties.insert("cache-enabled".into(), "false".into());
+            let made = create_catalog(&catalog, &profile.properties);
+            (catalog, made)
+        })
+        .collect())
+}
+
+/// `CREATE CATALOG `name` WITH ('type' = …, …)`, `type` first as Flink's documents write it.
+fn create_catalog(name: &str, properties: &BTreeMap<String, String>) -> String {
+    let literal = |value: &str| format!("'{}'", value.replace('\'', "''"));
+    let with = properties
+        .get_key_value("type")
+        .into_iter()
+        .chain(properties.iter().filter(|(key, _)| key.as_str() != "type"))
+        .map(|(key, value)| format!("{} = {}", literal(key), literal(value)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("CREATE CATALOG `{}` WITH ({with})", name.replace('`', "``"))
+}
+
+/// The lake's catalogs on `on`, `default` always among them, each with `engine`'s profile asking the lake's Iceberg
+/// server for that catalog on `on`. The server is the one `config` names, or this lake's on this machine.
+async fn lake_catalogs(
+    lake: &crate::Lake,
+    on: &str,
+    config: &EngineConfig,
+    engine: crate::iceberg::Engine,
+) -> Result<Vec<(String, crate::iceberg::Profile)>> {
     let iceberg = lake.iceberg();
     let target = match &config.lake_url {
         Some(url) => iceberg.target_at(url)?,
@@ -368,16 +523,50 @@ async fn spark_catalogs(lake: &crate::Lake, on: &str, config: &EngineConfig) -> 
     names
         .into_iter()
         .map(|catalog| {
-            let profile = crate::iceberg::profile(
-                crate::iceberg::Engine::Spark,
-                &catalog,
-                &target.clone().on(on).in_catalog(&catalog),
-            )?;
-            let mut settings: Vec<(String, String)> = profile.properties.into_iter().collect();
-            settings.push((format!("spark.sql.catalog.{catalog}.cache-enabled"), "false".into()));
-            Ok((catalog, settings))
+            let profile = crate::iceberg::profile(engine, &catalog, &target.clone().on(on).in_catalog(&catalog))?;
+            Ok((catalog, profile))
         })
         .collect()
+}
+
+/// Whether Flink reaches the lake's Iceberg server, as its `lake_url` names it: a catalog of its own on a session of
+/// its own, `metalake_check`, asked for the lake's databases on `main`.
+async fn flink_check_lake(flink: &Flink) -> std::result::Result<String, String> {
+    let Some(lake_url) = flink.lake_url() else {
+        return Err(
+            "not asked: the engine names no lake_url, so Flink is given this lake's own server when a \
+                    statement runs; `USING <engine> SHOW DATABASES IN `default`` asks it"
+                .to_string(),
+        );
+    };
+    let mut properties = BTreeMap::from([
+        ("type".to_string(), "iceberg".to_string()),
+        ("catalog-type".to_string(), "rest".to_string()),
+        ("uri".to_string(), lake_url.to_string()),
+        ("cache-enabled".to_string(), "false".to_string()),
+    ]);
+    if let Some(token) = std::env::var(crate::SHUTDOWN_TOKEN).ok().filter(|t| !t.is_empty()) {
+        properties.insert("token".into(), token);
+    }
+    let catalog = "metalake_check";
+    let on = "metalake check";
+    let answered = flink
+        .sql_on(
+            on,
+            &[(catalog.to_string(), create_catalog(catalog, &properties))],
+            &format!("SHOW DATABASES IN `{catalog}`"),
+        )
+        .await;
+    flink.close_session(on);
+    match answered {
+        Ok((_, batches)) => {
+            let databases: usize = batches.iter().map(RecordBatch::num_rows).sum();
+            Ok(format!(
+                "reaches the lake at {lake_url}: {databases} databases in `default`"
+            ))
+        }
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// One statement on the engine the lake names, on `main`, as `USING <name>` sends it from a session of its own: for
@@ -423,6 +612,7 @@ pub fn engine_rows(engines: &Engines) -> Result<(SchemaRef, RecordBatch)> {
         Field::new("auth", DataType::Utf8, false),
         Field::new("catalog", DataType::Utf8, false),
         Field::new("lake_url", DataType::Utf8, true),
+        Field::new("mode", DataType::Utf8, true),
     ]));
     let column = |f: &dyn Fn(&str, &EngineConfig) -> Option<String>| -> ArrayRef {
         Arc::new(engines.iter().map(|(name, e)| f(name, e)).collect::<StringArray>())
@@ -435,6 +625,7 @@ pub fn engine_rows(engines: &Engines) -> Result<(SchemaRef, RecordBatch)> {
         column(&|_, e| Some(e.auth())),
         column(&|_, e| Some(e.catalog().to_string())),
         column(&|_, e| e.lake_url.clone()),
+        column(&|_, e| e.mode.map(|m| m.name().to_string())),
     ];
     Ok((schema.clone(), RecordBatch::try_new(schema, columns)?))
 }
@@ -452,6 +643,7 @@ mod tests {
             password_env: None,
             catalog: None,
             lake_url: None,
+            mode: None,
         }
     }
 
@@ -496,6 +688,7 @@ mod tests {
             password_env: None,
             catalog: None,
             lake_url: None,
+            mode: None,
         }
     }
 
@@ -510,10 +703,10 @@ token_env = \"SPARK_TOKEN\"
         assert_eq!(toml::to_string(&read).unwrap(), text);
         assert_eq!(EngineKind::parse("spark").unwrap(), EngineKind::Spark);
         assert!(
-            EngineKind::parse("flink")
+            EngineKind::parse("oracle")
                 .unwrap_err()
                 .to_string()
-                .contains("trino, spark")
+                .contains("trino, spark, flink")
         );
     }
 
@@ -547,6 +740,73 @@ token_env = \"SPARK_TOKEN\"
         assert!(with(&|e| e.catalog = Some("lake".into())).is_err());
         assert!(with(&|e| e.lake_url = Some("http://lake.example:8181".into())).is_ok());
         assert!(with(&|e| e.lake_url = Some("sc://lake.example".into())).is_err());
+    }
+
+    fn flink() -> EngineConfig {
+        EngineConfig {
+            kind: EngineKind::Flink,
+            url: "http://127.0.0.1:8083".into(),
+            user: None,
+            token_env: None,
+            password_env: None,
+            catalog: None,
+            lake_url: Some("http://127.0.0.1:8181".into()),
+            mode: Some(RuntimeMode::Batch),
+        }
+    }
+
+    #[test]
+    fn a_flink_engine_reads_as_written() {
+        let text = "type = \"flink\"\nurl = \"http://127.0.0.1:8083\"\nlake_url = \"http://127.0.0.1:8181\"\nmode = \"batch\"\n";
+        let read: EngineConfig = toml::from_str(text).unwrap();
+        assert_eq!(read, flink());
+        assert_eq!(toml::to_string(&read).unwrap(), text);
+        assert_eq!(read.catalog(), "the lake's, by their names");
+    }
+
+    #[test]
+    fn what_flink_could_never_be_asked_is_refused() {
+        let with = |f: &dyn Fn(&mut EngineConfig)| {
+            let mut e = flink();
+            f(&mut e);
+            e.validate()
+        };
+        assert!(with(&|_| {}).is_ok());
+        assert!(with(&|e| e.mode = None).is_ok(), "Flink's own default");
+        assert!(with(&|e| e.url = "sc://127.0.0.1:8083".into()).is_err());
+        assert!(with(&|e| e.token_env = Some("T".into())).is_ok(), "on this machine");
+        assert!(
+            with(&|e| {
+                e.url = "http://flink.example:8083".into();
+                e.token_env = Some("T".into());
+            })
+            .is_err(),
+            "a token over the network unencrypted"
+        );
+        assert!(with(&|e| e.user = Some("ana".into())).is_err());
+        assert!(
+            with(&|e| e.url = "http://ana:s@127.0.0.1:8083".into()).is_err(),
+            "a secret in the url"
+        );
+        assert!(with(&|e| e.url = "http://127.0.0.1:8083?token=s".into()).is_err());
+        assert!(with(&|e| e.catalog = Some("lake".into())).is_err());
+        assert!(RuntimeMode::parse("micro").is_err());
+        let mut trino = trino();
+        trino.mode = Some(RuntimeMode::Batch);
+        assert!(trino.validate().is_err(), "a mode is Flink's");
+    }
+
+    #[test]
+    fn a_catalog_is_created_quoted_its_type_first() {
+        let properties = BTreeMap::from([
+            ("uri".to_string(), "http://h:1".to_string()),
+            ("type".to_string(), "iceberg".to_string()),
+            ("token".to_string(), "it's".to_string()),
+        ]);
+        assert_eq!(
+            create_catalog("default", &properties),
+            "CREATE CATALOG `default` WITH ('type' = 'iceberg', 'token' = 'it''s', 'uri' = 'http://h:1')"
+        );
     }
 
     #[test]

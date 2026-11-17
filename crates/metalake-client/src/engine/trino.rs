@@ -378,6 +378,7 @@ mod tests {
                 password_env: None,
                 catalog: Some("lake".into()),
                 lake_url: None,
+                mode: None,
             }
         }
 
