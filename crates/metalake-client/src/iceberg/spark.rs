@@ -2,7 +2,7 @@
 //! catalog, which Spark loads the first time the catalog is named and so can be set on a session already running. On
 //! an object store, the cloud's bundle and the header that asks the server for credentials.
 
-use super::profile::{Artifact, DELEGATION, Engine, Profile, SCALA, SPARK, Target};
+use super::profile::{Artifact, DELEGATION, Engine, NO_QUOTA_PROJECT, Profile, SCALA, SPARK, Store, Target};
 
 /// Iceberg's SQL extensions: `MERGE INTO`, its procedures, `ALTER TABLE … WRITE ORDERED BY`.
 const EXTENSIONS: &str = "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions";
@@ -18,6 +18,12 @@ pub(super) fn profile(name: &str, target: &Target) -> Profile {
     let packages: Vec<String> = profile.artifacts.iter().map(Artifact::coordinate).collect();
     profile.startup.insert("spark.jars.packages".into(), packages.join(","));
     profile.startup.insert("spark.sql.extensions".into(), EXTENSIONS.into());
+    // On GCS, the driver and each executor write with the vended token alone, billed to no project.
+    if target.store == Store::Gcs {
+        for jvm in ["spark.driver.extraJavaOptions", "spark.executor.extraJavaOptions"] {
+            profile.startup.insert(jvm.into(), NO_QUOTA_PROJECT.into());
+        }
+    }
 
     let catalog = format!("spark.sql.catalog.{name}");
     let mut set = |key: &str, value: &str| {
@@ -101,6 +107,18 @@ mod tests {
             profile.properties["spark.sql.catalog.lake.header.X-Iceberg-Access-Delegation"],
             "vended-credentials"
         );
+    }
+
+    /// On GCS, the driver and the executors read no quota project, which a vended token cannot be billed to; elsewhere,
+    /// their options are the user's.
+    #[test]
+    fn spark_profile_gcs_bills_no_project() {
+        let gcs = profile(Engine::Spark, "lake", &target(Store::Gcs, "gs://bucket/lake")).unwrap();
+        for jvm in ["spark.driver.extraJavaOptions", "spark.executor.extraJavaOptions"] {
+            assert_eq!(gcs.startup[jvm], "-DGOOGLE_APPLICATION_CREDENTIALS=", "{jvm}");
+        }
+        let s3 = profile(Engine::Spark, "lake", &target(Store::S3, "s3://bucket/lake")).unwrap();
+        assert!(!s3.startup.contains_key("spark.driver.extraJavaOptions"));
     }
 
     #[test]
