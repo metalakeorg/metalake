@@ -3,6 +3,12 @@
 What each version published on PyPI as `metalake` brings to whoever installs it. The work behind each line is in its
 pull request; the decisions, in the ADRs.
 
+## 0.9.0
+
+### Fixes
+
+- **Fix Spark's and Flink's writes to GCS where `GOOGLE_APPLICATION_CREDENTIALS` names a file with a quota project.** Google refused them (`serviceusage.services.use`): `lake.iceberg.spark()`, `lake.iceberg.flink()` and their profiles start the JVM billing no project for the token MetaLake vends (PR_LINK)
+
 ## 0.8.0
 
 Released on 2026-11-17.

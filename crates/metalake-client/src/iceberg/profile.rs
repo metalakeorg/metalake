@@ -100,6 +100,14 @@ impl Store {
     }
 }
 
+/// For a JVM that writes a lake's files on GCS with the credentials the lake's server vends: no file to read a quota
+/// project from. Google's Java clients read `quota_project_id` from the file `GOOGLE_APPLICATION_CREDENTIALS` names,
+/// the JVM's property first and then the environment's, whatever credentials they are given, and send it as
+/// `x-goog-user-project`; a vended token is Storage's alone and cannot be billed to a project, so Google refuses the
+/// write (`serviceusage.services.use`). An empty name reads no file. Nothing else in the JVM asks for it: the token is
+/// the vended one.
+pub(super) const NO_QUOTA_PROJECT: &str = "-DGOOGLE_APPLICATION_CREDENTIALS=";
+
 /// What a lake gives a profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {

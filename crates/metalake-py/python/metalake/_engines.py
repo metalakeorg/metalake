@@ -113,6 +113,11 @@ def _classpath_for(profile):
     wanted = profile.startup[HADOOP_CLASSPATH]
     if wanted not in held:
         os.environ[HADOOP_CLASSPATH] = os.pathsep.join(part for part in (held, wanted) if part)
+    # The options its JVM starts with: on GCS, no file to read a quota project from, as the profile says.
+    options = profile.startup.get("JVM_ARGS")
+    held = os.environ.get("JVM_ARGS", "")
+    if options and options not in held:
+        os.environ["JVM_ARGS"] = " ".join(part for part in (held, options) if part)
 
 
 def _classpath_in(profile):

@@ -7,7 +7,7 @@
 //! [`super::jars`] fetches them: [`super::Iceberg::profile`] fetches them, the pure profile only names them.
 
 use super::jars;
-use super::profile::{Artifact, DELEGATION, Engine, FLINK, Profile, Target};
+use super::profile::{Artifact, DELEGATION, Engine, FLINK, NO_QUOTA_PROJECT, Profile, Store, Target};
 use crate::{Error, Result};
 
 /// The property Flink's `CREATE CATALOG` names first, the kind of catalog.
@@ -15,6 +15,8 @@ const TYPE: &str = "type";
 /// What Flink adds to the classpath it starts with, read as its JVM starts: PyFlink's gateway, the SQL client, a
 /// cluster's scripts.
 pub const HADOOP_CLASSPATH: &str = "HADOOP_CLASSPATH";
+/// The options PyFlink's gateway starts its JVM with, besides Flink's own: `env.java.opts.all` on a cluster.
+pub const JVM_ARGS: &str = "JVM_ARGS";
 
 pub(super) fn profile(name: &str, target: &Target) -> Result<Profile> {
     let mut profile = Profile::new(Engine::Flink, name, target);
@@ -35,6 +37,11 @@ pub(super) fn profile(name: &str, target: &Target) -> Result<Profile> {
     profile
         .startup
         .insert(HADOOP_CLASSPATH.into(), classpath.to_string_lossy().into_owned());
+
+    // On GCS, Flink writes with the vended token alone, billed to no project.
+    if target.store == Store::Gcs {
+        profile.startup.insert(JVM_ARGS.into(), NO_QUOTA_PROJECT.into());
+    }
 
     profile.properties.insert(TYPE.into(), "iceberg".into());
     profile.properties.insert("catalog-type".into(), "rest".into());
@@ -75,6 +82,11 @@ pub(super) fn render(profile: &Profile) -> String {
     if let Some(classpath) = profile.startup.get(HADOOP_CLASSPATH) {
         sql.push_str(&format!(
             "-- Flink starts with the lake's jars: {HADOOP_CLASSPATH}={classpath}\n"
+        ));
+    }
+    if let Some(options) = profile.startup.get(JVM_ARGS) {
+        sql.push_str(&format!(
+            "-- and its JVM with {options} (env.java.opts.all on a cluster)\n"
         ));
     }
     for statement in statements(profile) {
@@ -150,6 +162,20 @@ mod tests {
             statements[0].contains("'header.X-Iceberg-Access-Delegation' = 'vended-credentials'"),
             "{statements:?}"
         );
+    }
+
+    /// On GCS, PyFlink's JVM reads no quota project, which a vended token cannot be billed to.
+    #[test]
+    fn flink_profile_gcs_bills_no_project() {
+        let gcs = profile(Engine::Flink, "lake", &target(Store::Gcs, "gs://bucket/lake")).unwrap();
+        assert_eq!(gcs.startup[JVM_ARGS], "-DGOOGLE_APPLICATION_CREDENTIALS=");
+        assert!(
+            gcs.render().contains("-DGOOGLE_APPLICATION_CREDENTIALS="),
+            "{}",
+            gcs.render()
+        );
+        let s3 = profile(Engine::Flink, "lake", &target(Store::S3, "s3://bucket/lake")).unwrap();
+        assert!(!s3.startup.contains_key(JVM_ARGS));
     }
 
     #[test]
