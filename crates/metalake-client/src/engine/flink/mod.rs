@@ -3,7 +3,8 @@
 //! session of that ref, which the lake's catalogs are created on under their own names, each asking the lake's Iceberg
 //! server for itself on that ref (`catalog@ref`): what `USING` sends reads the names MetaLake does, on the session's
 //! branch. A session the Gateway reaped (ten idle minutes) is opened again, its catalogs created again, and the
-//! statement sent once more; what `SET` had set on it is gone, and that is said.
+//! statement sent once more; what `SET` had set on it is gone, and that is said. A query in streaming is refused once
+//! Flink says it is one: it would not end, and `USING` answers a statement's rows when it ended.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -267,6 +268,15 @@ impl Flink {
                 Err(failed) => return Err(failed),
             };
             query |= fetched.is_query_result;
+            // A query in streaming does not end: its rows would never all be there to answer. Its operation is closed
+            // as this returns, which ends its job; rows answered as they come are a step of their own.
+            if query && streaming {
+                return Err(Error::usage(format!(
+                    "flink at {}: a SELECT in streaming does not end, and USING answers a statement's rows once it                      ended: run it in batch, `SET 'execution.runtime-mode' = 'batch'` in the USING block or                      `mode = \"batch\"` in the engine's entry",
+                    self.inner.url
+                ))
+                .into());
+            }
             if let Some(results) = fetched.results {
                 if columns.is_none() && !results.columns.is_empty() {
                     columns = Some(results.columns);
