@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use metalake_client::{EngineConfig, Lake, Prepared};
+use metalake_client::{EngineConfig, Lake};
 use pyo3::prelude::*;
 
 use crate::errors::to_python;
@@ -16,7 +16,6 @@ use crate::runtime::wait;
 #[pyclass(name = "Engine", module = "metalake", frozen)]
 pub struct PyEngine {
     owner: Owner,
-    #[allow(dead_code)]
     lake: Arc<Lake>,
     name: String,
     config: EngineConfig,
@@ -35,14 +34,17 @@ impl PyEngine {
 
 #[pymethods]
 impl PyEngine {
-    /// Runs one statement on the engine, in its own SQL, with the lake's catalog as the session's: `demo.t` is the
-    /// lake's `demo.t`. Its rows come back as a `Result`, as `lake.sql` answers.
+    /// Runs one statement on the engine, in its own SQL, on `main`, as `USING <name>` sends it: `demo.t` is the lake's
+    /// `demo.t`, and Spark is given the lake's catalogs first. Its rows come back as a `Result`, as `lake.sql` answers.
     fn sql(&self, py: Python<'_>, text: String) -> PyResult<QueryResult> {
         self.owner.check(py, "Lake")?;
-        let remote = metalake_client::Remote::new(&self.name, &self.config).map_err(|e| to_python(py, e))?;
-        let answered = wait(py, async move { remote.sql(&text).await })?;
-        let (schema, batches) = answered.map_err(|e| to_python(py, e))?;
-        let prepared = Prepared::from_batches(schema, batches).map_err(|e| to_python(py, e))?;
+        let lake = self.lake.clone();
+        let name = self.name.clone();
+        let answered = wait(
+            py,
+            async move { metalake_client::sql_on_engine(&lake, &name, &text).await },
+        )?;
+        let prepared = answered.map_err(|e| to_python(py, e))?;
         Ok(QueryResult::new(prepared, self.owner.clone()))
     }
 

@@ -221,7 +221,12 @@ impl EngineConfig {
                 }
             }
             EngineKind::Spark => {
-                spark::Endpoint::parse(&self.url)?;
+                let endpoint = spark::Endpoint::parse(&self.url)?;
+                if self.token_env.is_some() && !endpoint.tls() && !endpoint.is_local() {
+                    return Err(Error::usage(
+                        "a Spark engine elsewhere is sent its token encrypted: add ;use_ssl=true to its url",
+                    ));
+                }
                 if let Some(lake_url) = &self.lake_url {
                     let parsed = Url::parse(lake_url)
                         .map_err(|e| Error::usage(format!("the lake's server url {lake_url}: {e}")))?;
@@ -279,9 +284,10 @@ impl EngineConfig {
 /// The engines a lake names, by name.
 pub type Engines = BTreeMap<String, EngineConfig>;
 
-/// The engines a session has sent statements to, by name, kept for the session's life: a Spark keeps its sessions in
-/// it, and what a statement set there holds for the next.
-pub(crate) type Remotes = Arc<std::sync::Mutex<BTreeMap<String, Remote>>>;
+/// The engines a session has sent statements to, by name, each with the entry it was made from, kept for the
+/// session's life: a Spark keeps its sessions in it, and what a statement set there holds for the next. An entry the
+/// file says otherwise now, replaced, makes the engine anew.
+pub(crate) type Remotes = Arc<std::sync::Mutex<BTreeMap<String, (EngineConfig, Remote)>>>;
 
 /// One statement `USING` an engine, on `lake`, the session reading `on`: a local engine, run in a process of its own and
 /// connected to `on` (I6), or one the lake's file names, sent the statement. A local engine's name is never another's.
@@ -310,10 +316,10 @@ pub(crate) async fn run_using(
     let remote = {
         let mut held = remotes.lock().unwrap_or_else(|e| e.into_inner());
         match held.get(&using.engine) {
-            Some(remote) => remote.clone(),
-            None => {
+            Some((made_from, remote)) if made_from == config => remote.clone(),
+            _ => {
                 let remote = Remote::new(&using.engine, config)?;
-                held.insert(using.engine.clone(), remote.clone());
+                held.insert(using.engine.clone(), (config.clone(), remote.clone()));
                 remote
             }
         }
@@ -372,6 +378,16 @@ async fn spark_catalogs(lake: &crate::Lake, on: &str, config: &EngineConfig) -> 
             Ok((catalog, settings))
         })
         .collect()
+}
+
+/// One statement on the engine the lake names, on `main`, as `USING <name>` sends it from a session of its own: for
+/// Spark, the lake's catalogs set on it first. What `Engine.sql` runs.
+pub async fn sql_on_engine(lake: &crate::Lake, name: &str, text: &str) -> Result<crate::Prepared> {
+    let using = Using {
+        engine: name.to_string(),
+        sql: text.to_string(),
+    };
+    run_using(lake, crate::MAIN, &using, &Remotes::default()).await
 }
 
 /// Refuses a name `USING` could not take bare: lowercase letters, digits and `_`, not first a digit.
@@ -474,7 +490,7 @@ mod tests {
     fn spark() -> EngineConfig {
         EngineConfig {
             kind: EngineKind::Spark,
-            url: "sc://spark.example:15002".into(),
+            url: "sc://spark.example:15002/;use_ssl=true".into(),
             user: None,
             token_env: Some("SPARK_TOKEN".into()),
             password_env: None,
@@ -486,7 +502,7 @@ mod tests {
     #[test]
     fn a_spark_engine_reads_as_written() {
         let text = "type = \"spark\"
-url = \"sc://spark.example:15002\"
+url = \"sc://spark.example:15002/;use_ssl=true\"
 token_env = \"SPARK_TOKEN\"
 ";
         let read: EngineConfig = toml::from_str(text).unwrap();
@@ -512,6 +528,14 @@ token_env = \"SPARK_TOKEN\"
         assert!(
             with(&|e| e.token_env = None).is_ok(),
             "no secret, as a server of one's own"
+        );
+        assert!(
+            with(&|e| e.url = "sc://spark.example:15002/;use_ssl=false".into()).is_err(),
+            "a token over the network unencrypted"
+        );
+        assert!(
+            with(&|e| e.url = "sc://127.0.0.1:15002".into()).is_ok(),
+            "on this machine"
         );
         assert!(with(&|e| e.url = "sc://spark.example/;use_ssl=true".into()).is_ok());
         assert!(with(&|e| e.url = "https://spark.example:15002".into()).is_err());

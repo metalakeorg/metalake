@@ -8,7 +8,7 @@
 //!
 //! The protocol is Spark 3.5's (`proto/`, written by `spark-connect/generate.sh`); a newer server answers it too.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 
@@ -83,6 +83,11 @@ impl Endpoint {
             .filter(|h| !h.is_empty())
             .ok_or_else(|| Error::usage(format!("a Spark engine's url names no host: {url}")))?
             .to_string();
+        if parsed.query().is_some() || parsed.fragment().is_some() || !parsed.username().is_empty() {
+            return Err(Error::usage(
+                "a Spark engine's url is sc://host:port[/;use_ssl=true], nothing else: a token is never in it, but in                  the variable token_env names",
+            ));
+        }
         let mut tls = false;
         let path = parsed.path().trim_start_matches('/');
         for parameter in path.split(';').filter(|p| !p.is_empty()) {
@@ -109,6 +114,15 @@ impl Endpoint {
             port: parsed.port().unwrap_or(PORT),
             tls,
         })
+    }
+
+    /// Whether the server is this machine, where a token may go unencrypted, as PySpark lets it.
+    pub(crate) fn is_local(&self) -> bool {
+        matches!(self.host.as_str(), "localhost" | "127.0.0.1" | "[::1]" | "::1")
+    }
+
+    pub(crate) fn tls(&self) -> bool {
+        self.tls
     }
 
     fn uri(&self) -> String {
@@ -150,11 +164,11 @@ struct Inner {
     sessions: Mutex<HashMap<String, Held>>,
 }
 
-/// A Spark session, and the lake's catalogs set on it.
+/// A Spark session, and the lake's catalogs set on it, each with the settings it was set with.
 #[derive(Debug, Clone)]
 struct Held {
     id: String,
-    catalogs: BTreeSet<String>,
+    catalogs: HashMap<String, Vec<(String, String)>>,
 }
 
 /// A catalog of the lake as Spark is given it: its name, and the session's settings that make it.
@@ -298,11 +312,20 @@ impl Spark {
         catalogs: &[CatalogSettings],
         text: &str,
     ) -> std::result::Result<(SchemaRef, Vec<RecordBatch>), Failed> {
-        let session = self.session(on);
+        let mut session = self.session(on);
+        // Spark keeps a catalog as it was first set, so one whose settings changed since, as when the lake's server
+        // started again at another address, is set on a session begun anew.
+        let changed = catalogs
+            .iter()
+            .any(|(catalog, settings)| session.catalogs.get(catalog).is_some_and(|set| set != settings));
+        if changed {
+            self.forget(on);
+            session = self.session(on);
+        }
         for (catalog, settings) in catalogs {
-            if !session.catalogs.contains(catalog) {
+            if !session.catalogs.contains_key(catalog) {
                 self.set(&session.id, settings).await?;
-                self.mark(on, catalog);
+                self.mark(on, catalog, settings);
             }
         }
         let command = Plan {
@@ -339,15 +362,15 @@ impl Spark {
             .entry(on.to_string())
             .or_insert_with(|| Held {
                 id: uuid::Uuid::new_v4().to_string(),
-                catalogs: BTreeSet::new(),
+                catalogs: HashMap::new(),
             })
             .clone()
     }
 
-    fn mark(&self, on: &str, catalog: &str) {
+    fn mark(&self, on: &str, catalog: &str, settings: &[(String, String)]) {
         let mut sessions = self.inner.sessions.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(held) = sessions.get_mut(on) {
-            held.catalogs.insert(catalog.to_string());
+            held.catalogs.insert(catalog.to_string(), settings.to_vec());
         }
     }
 
@@ -687,6 +710,9 @@ mod tests {
         assert!(Endpoint::parse("sc://spark.example/;x-cluster=1").is_err());
         assert!(Endpoint::parse("grpc://spark.example").is_err());
         assert!(Endpoint::parse("sc:///").is_err());
+        assert!(Endpoint::parse("sc://spark.example:15002?token=s").is_err());
+        assert!(Endpoint::parse("sc://ana:s@spark.example:15002").is_err());
+        assert!(Endpoint::parse("sc://spark.example#x").is_err());
     }
 
     #[test]
@@ -800,6 +826,25 @@ mod tests {
                     (sessions[0], "spark.sql.catalog.demo"),
                     (sessions[2], "spark.sql.catalog.default"),
                 ]
+            );
+        }
+
+        #[tokio::test]
+        async fn a_catalog_set_otherwise_is_set_on_a_session_begun_anew() {
+            let (spark, fake) = spark().await;
+            let first = catalog("default");
+            let mut moved = first.clone();
+            moved
+                .1
+                .push(("spark.sql.catalog.default.uri".into(), "http://127.0.0.1:2".into()));
+            spark.sql_on("main", &[first], "select n").await.unwrap();
+            spark.sql_on("main", &[moved], "select n").await.unwrap();
+            let heard = fake.heard.lock().unwrap();
+            assert_ne!(heard.statements[0].0, heard.statements[1].0, "a new session");
+            assert_eq!(
+                heard.settings.len(),
+                3,
+                "the catalog set, then set again with its new uri"
             );
         }
 
