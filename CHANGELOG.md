@@ -7,7 +7,7 @@ pull request; the decisions, in the ADRs.
 
 ### Fixes
 
-- **Fix Spark's and Flink's writes to GCS where `GOOGLE_APPLICATION_CREDENTIALS` names a file with a quota project.** Google refused them (`serviceusage.services.use`): `lake.iceberg.spark()`, `lake.iceberg.flink()` and their profiles start the JVM billing no project for the token MetaLake vends (PR_LINK)
+- **Fix Spark's and Flink's writes to GCS where `GOOGLE_APPLICATION_CREDENTIALS` names a file with a quota project.** Google refused them (`serviceusage.services.use`): `lake.iceberg.spark()`, `lake.iceberg.flink()` and their profiles start the JVM billing no project for the token MetaLake vends ([#77](https://github.com/metalakeorg/metalake/pull/77))
 
 ## 0.8.0
 
