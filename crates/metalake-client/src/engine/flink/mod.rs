@@ -19,6 +19,10 @@ use serde_json::json;
 use super::{EngineConfig, RuntimeMode};
 use crate::{Error, Result};
 
+#[cfg(test)]
+mod fake;
+#[cfg(test)]
+mod protocol_tests;
 mod wire;
 
 use wire::{Column, Fetched, Opened, ResultType, Row, Submitted};
