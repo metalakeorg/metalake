@@ -86,5 +86,6 @@ def test_log_table_snapshots(lake):
 def test_missing_ref_raises(lake):
     with pytest.raises(metalake.MetaLakeError, match="no ref nobody"):
         lake.log("nobody")
+    # `t` is a name since I7 (`default.default.t`); a name with an empty part is none.
     with pytest.raises(metalake.UsageError):
-        lake.log(table="t")
+        lake.log(table="db..t")
