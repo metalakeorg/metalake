@@ -108,20 +108,36 @@ impl MetaLake {
     pub async fn refresh(&self) -> Result<()> {
         let mut listing = Listing::new();
         for on in self.shared.catalog.refs().await? {
-            let namespaces = listing.entry(on.name().to_string()).or_default();
-            // A catalog or a schema with no table yet is listed too, as `CREATE CATALOG` leaves one (I7).
-            for row in on.namespaces().await? {
-                namespaces.entry(row.namespace.join(".")).or_default();
-            }
-            for table in on.tables().await? {
-                namespaces
-                    .entry(table.namespace.join("."))
-                    .or_default()
-                    .push(table.name);
+            // A ref that cannot be read now, one being made or dropped as this reads, is left out of this picture:
+            // the next shows it. The others are not held back by it.
+            if let Ok(namespaces) = Self::listed_on(&on).await {
+                listing.insert(on.name().to_string(), namespaces);
             }
         }
         *self.shared.listing.write().expect("a listing is replaced whole") = listing;
         Ok(())
+    }
+
+    /// A ref's namespaces, each with its tables: a catalog or a schema with no table yet too, as `CREATE CATALOG`
+    /// leaves one (I7).
+    async fn listed_on(on: &Ref) -> Result<BTreeMap<String, Vec<String>>> {
+        let mut namespaces: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for row in on.namespaces().await? {
+            namespaces.entry(row.namespace.join(".")).or_default();
+        }
+        for table in on.tables().await? {
+            namespaces
+                .entry(table.namespace.join("."))
+                .or_default()
+                .push(table.name);
+        }
+        Ok(namespaces)
+    }
+
+    /// Takes a new picture after a statement that changed the catalog. It committed already: a picture that cannot be
+    /// taken now does not fail it, and the next is taken anew, as a table is found without one.
+    async fn refreshed(&self) {
+        let _ = self.refresh().await;
     }
 
     /// A session over this catalog, with `information_schema`, on `main` until [`MetaLake::on_ref`] says another, and
@@ -180,7 +196,7 @@ impl MetaLake {
             let path = TablePath::from_parts(&on, Some(&name.catalog), Some(&name.schema), &name.table);
             let on = self.shared.named(&path.on).await?;
             ddl::alter_table(&on, &path, alter, context).await?;
-            self.refresh().await.map_err(external)?;
+            self.refreshed().await;
             let done = LogicalPlanBuilder::empty(false).build()?;
             return context.execute_logical_plan(done).await;
         }
@@ -223,7 +239,7 @@ impl MetaLake {
             }
             plan => return context.execute_logical_plan(plan).await,
         }
-        self.refresh().await.map_err(external)?;
+        self.refreshed().await;
         let done = LogicalPlanBuilder::empty(false).build()?;
         context.execute_logical_plan(done).await
     }

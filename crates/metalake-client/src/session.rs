@@ -402,7 +402,8 @@ impl Session {
                 }
                 let on = self.lake.find_ref(&self.current_ref()).await?;
                 let answer = crate::catalogs_sql::run(&on, verb).await;
-                self.engine.refresh().await?;
+                // A picture of the listings that cannot be taken now does not fail what committed.
+                let _ = self.engine.refresh().await;
                 answer
             }
             Step::Using(using) => crate::engine::run_using(&self.lake, &self.current_ref(), &using).await,
