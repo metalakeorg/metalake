@@ -1,0 +1,12 @@
+# Writes the Rust of Spark Connect's protocol from the protos beside it: run by `../generate.sh`, not part of the build.
+[package]
+name = "spark-connect-generate"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Its own workspace: never a member of MetaLake's.
+[workspace]
+
+[dependencies]
+tonic-prost-build = "=0.14.9"

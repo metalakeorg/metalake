@@ -5,6 +5,11 @@ pull request; the decisions, in the ADRs.
 
 ## 0.9.0
 
+### Engines
+
+- **Run statements on Spark with `USING`.** Name a Spark Connect server once, `metalake engine add spark_prod --type spark --url "sc://spark.example:15002/;use_ssl=true" --lake-url http://lake.example:8181` or `lake.add_engine("spark_prod", type="spark", url=..., lake_url=...)`, then `USING spark_prod SELECT … FROM demo.sales.orders`: Spark is given the lake's catalogs under their own names, on the session's branch, so it reads and writes `dev` when the session is on `dev` ([#78](https://github.com/metalakeorg/metalake/pull/78))
+- **Check that Spark reaches the lake.** `metalake engine check spark_prod` says apart whether MetaLake reaches Spark and whether Spark reaches the lake's Iceberg server at its `lake_url` ([#78](https://github.com/metalakeorg/metalake/pull/78))
+
 ### Fixes
 
 - **Fix Spark's and Flink's writes to GCS where `GOOGLE_APPLICATION_CREDENTIALS` names a file with a quota project.** Google refused them (`serviceusage.services.use`): `lake.iceberg.spark()`, `lake.iceberg.flink()` and their profiles start the JVM billing no project for the token MetaLake vends ([#77](https://github.com/metalakeorg/metalake/pull/77))

@@ -377,6 +377,7 @@ mod tests {
                 token_env: Some("METALAKE_TEST_TRINO_TOKEN".into()),
                 password_env: None,
                 catalog: Some("lake".into()),
+                lake_url: None,
             }
         }
 

@@ -45,7 +45,7 @@ jobs:
     timeout-minutes: 45
     env:
       METALAKE_TEST_PYTHON: python
-      METALAKE_TEST_ENGINES: trino,flink
+      METALAKE_TEST_ENGINES: trino,flink,spark_connect
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -60,6 +60,13 @@ jobs:
         run: python -m pip install --quiet trino==0.340.0 apache-flink==1.20.3
       - name: Trino
         run: docker pull --quiet trinodb/trino:484
+      # A Spark Connect server, 3.5 with Iceberg's runtime, which `c20_engines` starts: its jars resolved by Ivy, kept.
+      - name: Spark
+        run: docker pull --quiet spark:3.5.9-scala2.12-java17-ubuntu
+      - uses: actions/cache@v4
+        with:
+          path: ~/.ivy2
+          key: ivy-spark-connect-3.5.9-iceberg-${{ env.ICEBERG }}
       - name: Iceberg's runtime for Flink
         run: |
           cd "$(python -c 'import os, pyflink; print(os.path.dirname(pyflink.__file__))')/lib"
@@ -79,7 +86,7 @@ jobs:
           cargo test -p metalake-client --lib -- words:: refs_sql:: engine::using:: pipeline::sql::
           CRATE=metalake-client bash sql/test.sh --test sql_refs
           CRATE=metalake-cli bash sql/test.sh --test c10b_refs
-      - name: A Trino the lake names
+      - name: A Trino and a Spark the lake names
         run: CRATE=metalake-cli bash sql/test.sh --test c20_engines
 
   # The extension, built once, in its debug profile, with Rust's cache: the Python jobs below install its wheel rather

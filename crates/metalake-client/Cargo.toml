@@ -33,6 +33,11 @@ tokio = { workspace = true, features = ["time"] }
 # Engines elsewhere, as Trino, sent statements by their HTTP protocol.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json"] }
 base64 = "0.22"
+# Spark, sent statements through Spark Connect's gRPC: the code its protos make is in src/engine/spark/proto, checked in.
+tonic = { version = "0.14", features = ["tls-ring", "tls-native-roots"] }
+tonic-prost = "0.14"
+prost = "0.14"
+prost-types = "0.14"
 uuid.workspace = true
 toml = "1"
 # A lake's file edited in place, its comments kept.

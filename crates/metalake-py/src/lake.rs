@@ -198,9 +198,9 @@ impl PyLake {
     }
 
     /// Names an engine elsewhere in the lake's `metalake.toml`, as a Trino that reaches the lake through its Iceberg
-    /// REST server. It reaches nothing: neither the engine nor the lake's server need run. A secret is never written:
+    /// REST server, or a Spark Connect server (`type="spark"`, `url="sc://host:15002"`). It reaches nothing: neither the engine nor the lake's server need run. A secret is never written:
     /// `token_env` or `password_env` names the variable that holds it.
-    #[pyo3(signature = (name, *, url, user=None, token_env=None, password_env=None, catalog=None, r#type="trino", replace=false))]
+    #[pyo3(signature = (name, *, url, user=None, token_env=None, password_env=None, catalog=None, r#type="trino", lake_url=None, replace=false))]
     #[allow(clippy::too_many_arguments)]
     fn add_engine(
         &self,
@@ -212,6 +212,7 @@ impl PyLake {
         password_env: Option<String>,
         catalog: Option<String>,
         r#type: &str,
+        lake_url: Option<String>,
         replace: bool,
     ) -> PyResult<PyEngine> {
         self.owner.check(py, "Lake")?;
@@ -223,6 +224,7 @@ impl PyLake {
                 token_env,
                 password_env,
                 catalog,
+                lake_url,
             };
             self.lake.add_engine(&name, &config, replace)?;
             Ok::<_, Error>(config)
