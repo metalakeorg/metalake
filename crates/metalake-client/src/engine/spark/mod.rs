@@ -268,7 +268,7 @@ impl Spark {
                 &format!("show namespaces in {catalog}"),
             )
             .await;
-        self.forget(on);
+        self.release(on);
         match answered {
             Ok((_, batches)) => {
                 let namespaces: usize = batches.iter().map(RecordBatch::num_rows).sum();
@@ -319,7 +319,7 @@ impl Spark {
             .iter()
             .any(|(catalog, settings)| session.catalogs.get(catalog).is_some_and(|set| set != settings));
         if changed {
-            self.forget(on);
+            self.release(on);
             session = self.session(on);
         }
         for (catalog, settings) in catalogs {
@@ -374,9 +374,28 @@ impl Spark {
         }
     }
 
-    fn forget(&self, on: &str) {
+    /// Forgets the session of `on`: one Spark lost already, as when it restarted.
+    fn forget(&self, on: &str) -> Option<Held> {
         let mut sessions = self.inner.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        sessions.remove(on);
+        sessions.remove(on)
+    }
+
+    /// Forgets the session of `on` and releases it in Spark, as the last clone dropped releases the rest.
+    fn release(&self, on: &str) {
+        let Some(held) = self.forget(on) else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let (channel, bearer, user) = (
+            self.inner.channel.clone(),
+            self.inner.bearer.clone(),
+            self.inner.user.clone(),
+        );
+        runtime.spawn(async move {
+            let _ = release_session(channel, bearer, &user, held.id).await;
+        });
     }
 
     /// Asks `call` of a client, again while Spark says it cannot answer now, waiting longer each time.
