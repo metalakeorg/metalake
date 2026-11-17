@@ -5,6 +5,10 @@ pull request; the decisions, in the ADRs.
 
 ## 0.8.0
 
+Released on 2026-11-17.
+
+Group a lake's schemas in catalogs under one branch, and choose the branch or tag in the session, never in a table's name.
+
 ### Upgrading from 0.7.0
 
 - **Name tables without their ref.** `main.demo.t` now means the catalog `main`, not the branch: choose the ref with the selector, `USE BRANCH dev`, `lake.on("dev")` or `--ref`, and read the past with `USE BRANCH main AS OF 1234`. A lake made before 0.8.0 is not read by these rules: make a new one ([#73](https://github.com/metalakeorg/metalake/pull/73))
