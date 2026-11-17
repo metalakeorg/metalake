@@ -423,3 +423,188 @@ fn a_spark_named_and_checked_end_to_end() {
         std::panic::resume_unwind(failed);
     }
 }
+
+/// A Flink the lake names, end to end: the lake's server run with `iceberg serve`, a Flink 1.20 cluster and its SQL
+/// Gateway with Iceberg's and Hadoop's jars in its `lib` and nothing of the lake's, and the engine named in batch with
+/// where Flink reaches the lake's server. `engine check` holds on both links; `USING` reads the lake's table by the
+/// name MetaLake gives it, writes it, and on a branch writes the branch alone; a query in streaming is refused. Needs
+/// Docker, Flink's image and the jars in `METALAKE_TEST_FLINK_LIB`, as the `engines` workflow has:
+/// `METALAKE_TEST_ENGINES=flink_gateway` (`flink` alone is PyFlink's, in `c12_engines`).
+#[test]
+fn a_flink_named_and_checked_end_to_end() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let wanted = std::env::var("METALAKE_TEST_ENGINES").unwrap_or_default();
+    if !wanted.split(',').any(|e| e == "flink_gateway") {
+        return;
+    }
+    let lib = std::path::PathBuf::from(std::env::var("METALAKE_TEST_FLINK_LIB").expect("the jars Flink starts with"));
+    let token = "flink-end-to-end";
+    let with_token = |dir: &std::path::Path, args: &[&str]| {
+        common::metalake(dir)
+            .env("METALAKE_ICEBERG_TOKEN", token)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let dir = common::table();
+    let mut server = common::metalake(&dir)
+        .env("METALAKE_ICEBERG_TOKEN", token)
+        .args(["iceberg", "serve", "--listen", "127.0.0.1:0"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(server.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let address = line.trim().strip_prefix("listening on ").expect(&line).to_string();
+
+    let mut run_flink = Command::new("docker");
+    run_flink.args([
+        "run",
+        "-d",
+        "--rm",
+        "--name",
+        "metalake-flink-gateway",
+        "--network",
+        "host",
+        "--user",
+        "root",
+        "-v",
+        "/tmp:/tmp",
+    ]);
+    for jar in [
+        "iceberg-flink-runtime-1.20-1.11.0.jar",
+        "hadoop-client-api-3.4.1.jar",
+        "hadoop-client-runtime-3.4.1.jar",
+    ] {
+        let path = lib.join(jar);
+        assert!(path.is_file(), "{} is not there", path.display());
+        run_flink
+            .arg("-v")
+            .arg(format!("{}:/opt/flink/lib/{jar}:ro", path.display()));
+    }
+    let started = run_flink
+        .args([
+            "--entrypoint",
+            "bash",
+            "flink:1.20.3-scala_2.12-java17",
+            "-c",
+            "bin/start-cluster.sh && exec bin/sql-gateway.sh start-foreground \
+             -Dsql-gateway.endpoint.rest.address=127.0.0.1 -Drest.address=127.0.0.1",
+        ])
+        .output()
+        .unwrap();
+    assert!(started.status.success(), "{}", text(&started.stderr));
+
+    let checked = std::panic::catch_unwind(|| {
+        ok(
+            &dir,
+            &[
+                "engine",
+                "add",
+                "flink_test",
+                "--type",
+                "flink",
+                "--url",
+                "http://127.0.0.1:8083",
+                "--mode",
+                "batch",
+                "--lake-url",
+                &format!("http://{address}"),
+            ],
+        );
+        let logs = || {
+            let logs = Command::new("docker")
+                .args(["logs", "metalake-flink-gateway"])
+                .output()
+                .unwrap();
+            format!("{}{}", text(&logs.stdout), text(&logs.stderr))
+        };
+        let deadline = Instant::now() + Duration::from_secs(240);
+        let check = || with_token(&dir, &["engine", "check", "flink_test", "--format", "json"]);
+        let mut checked = check();
+        while !checked.status.success() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_secs(3));
+            checked = check();
+        }
+        assert!(
+            checked.status.success(),
+            "{}{}\n{}",
+            text(&checked.stdout),
+            text(&checked.stderr),
+            logs()
+        );
+        let links: Vec<Value> = text(&checked.stdout)
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert!(links.iter().all(|l| l["holds"] == true), "{links:?}");
+
+        let last = |args: &[&str]| -> Value {
+            let output = with_token(&dir, args);
+            assert!(
+                output.status.success(),
+                "{args:?}: {}\n{}",
+                text(&output.stderr),
+                logs()
+            );
+            let stdout = text(&output.stdout);
+            serde_json::from_str(stdout.lines().last().expect(&stdout)).unwrap()
+        };
+        // `default` is a word Flink's SQL keeps: quoted.
+        let count = "using flink_test select count(*) as n from `default`.db.t";
+
+        // Read by the name MetaLake gives it, the catalog first.
+        assert_eq!(last(&["sql", count, "--format", "json"])["n"], 2);
+
+        // Written by Flink, in batch once its job ended, read by MetaLake.
+        let inserted = with_token(
+            &dir,
+            &[
+                "sql",
+                "using flink_test insert into `default`.db.t values (cast(3 as bigint), 'c', cast(2.5 as double))",
+            ],
+        );
+        assert!(inserted.status.success(), "{}\n{}", text(&inserted.stderr), logs());
+        assert_eq!(
+            last(&["sql", "select count(*) as n from db.t", "--format", "json"])["n"],
+            3
+        );
+
+        // On a branch, Flink writes the branch alone.
+        let on_dev = format!(
+            "create branch dev; use branch dev; \
+             using flink_test insert into `default`.db.t values (cast(4 as bigint), 'd', cast(3.5 as double)); {count}"
+        );
+        assert_eq!(last(&["sql", &on_dev, "--format", "json"])["n"], 4);
+        assert_eq!(last(&["sql", count, "--format", "json"])["n"], 3, "main is as it was");
+
+        // A query in streaming does not end: refused, saying so.
+        let streaming = with_token(
+            &dir,
+            &[
+                "sql",
+                "using flink_test; SET 'execution.runtime-mode' = 'streaming'; \
+                 select count(*) from `default`.db.t",
+            ],
+        );
+        assert!(!streaming.status.success());
+        assert!(
+            text(&streaming.stderr).contains("does not end"),
+            "{}",
+            text(&streaming.stderr)
+        );
+    });
+    let _ = Command::new("docker")
+        .args(["rm", "-f", "metalake-flink-gateway"])
+        .output();
+    let _ = server.kill();
+    let _ = server.wait();
+    if let Err(failed) = checked {
+        std::panic::resume_unwind(failed);
+    }
+}

@@ -8,7 +8,8 @@ pull request; the decisions, in the ADRs.
 ### Engines
 
 - **Run statements on Spark with `USING`.** Name a Spark Connect server once, `metalake engine add spark_prod --type spark --url "sc://spark.example:15002/;use_ssl=true" --lake-url http://lake.example:8181` or `lake.add_engine("spark_prod", type="spark", url=..., lake_url=...)`, then `USING spark_prod SELECT … FROM demo.sales.orders`: Spark is given the lake's catalogs under their own names, on the session's branch, so it reads and writes `dev` when the session is on `dev` ([#78](https://github.com/metalakeorg/metalake/pull/78))
-- **Check that Spark reaches the lake.** `metalake engine check spark_prod` says apart whether MetaLake reaches Spark and whether Spark reaches the lake's Iceberg server at its `lake_url` ([#78](https://github.com/metalakeorg/metalake/pull/78))
+- **Run statements on Flink with `USING`.** Name a Flink SQL Gateway once, `metalake engine add flink_prod --type flink --url https://flink.example:8083 --mode batch --lake-url http://lake.example:8181` or `lake.add_engine("flink_prod", type="flink", url=..., mode="batch", lake_url=...)`, then `` USING flink_prod SELECT … FROM `default`.sales.orders ``: Flink is given the lake's catalogs under their own names, on the session's branch. A query in streaming does not end and is refused, saying to run it in batch ([#79](https://github.com/metalakeorg/metalake/pull/79))
+- **Check that Spark or Flink reaches the lake.** `metalake engine check spark_prod` says apart whether MetaLake reaches the engine and whether the engine reaches the lake's Iceberg server at its `lake_url` ([#78](https://github.com/metalakeorg/metalake/pull/78), [#79](https://github.com/metalakeorg/metalake/pull/79))
 
 ### Fixes
 
