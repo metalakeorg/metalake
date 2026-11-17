@@ -256,7 +256,7 @@ fn a_trino_named_and_checked_end_to_end() {
 /// Iceberg's runtime on its classpath and nothing of the lake's, and the engine named with where Spark reaches the
 /// lake's server. `engine check` holds on both links; `USING` reads the lake's table by the name MetaLake gives it,
 /// writes it, and on a branch writes the branch alone. Needs Docker and Spark's image, as the `engines` workflow has:
-/// `METALAKE_TEST_ENGINES=spark`.
+/// `METALAKE_TEST_ENGINES=spark_connect` (`spark` alone is PySpark's, in `c12_engines`).
 #[test]
 fn a_spark_named_and_checked_end_to_end() {
     use std::io::{BufRead, BufReader};
@@ -264,7 +264,7 @@ fn a_spark_named_and_checked_end_to_end() {
     use std::time::{Duration, Instant};
 
     let wanted = std::env::var("METALAKE_TEST_ENGINES").unwrap_or_default();
-    if !wanted.split(',').any(|e| e == "spark") {
+    if !wanted.split(',').any(|e| e == "spark_connect") {
         return;
     }
     // The token the lake's server is started with, which Spark bears to write.

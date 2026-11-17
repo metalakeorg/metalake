@@ -45,7 +45,7 @@ jobs:
     timeout-minutes: 45
     env:
       METALAKE_TEST_PYTHON: python
-      METALAKE_TEST_ENGINES: trino,flink,spark
+      METALAKE_TEST_ENGINES: trino,flink,spark_connect
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
