@@ -9,7 +9,7 @@ use crate::args::Changes;
 use crate::out::Out;
 
 pub async fn run(args: &Changes, lake: &Lake, out: &Out) -> Result<(), Error> {
-    let path = TablePath::parse(&args.table)?;
+    let path = TablePath::parse_on(&args.table, &args.on)?;
     let (schema, rows) = lake.changes(&path, args.after, args.until).await?;
     let rows = rows.map_err(|e| DataFusionError::External(Box::new(e)));
     out.rows(Box::pin(RecordBatchStreamAdapter::new(schema, rows))).await

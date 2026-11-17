@@ -24,7 +24,7 @@ pub struct Names {
 
 /// What `query` reads and writes. A pipeline writes into at least one table, with `INSERT INTO t SELECT …`, names only
 /// the lake's tables, and never reads one it writes, since it would feed itself.
-pub fn names_of(query: &str) -> Result<Names> {
+pub fn names_of(query: &str, on: &str) -> Result<Names> {
     let statements = Parser::parse_sql(&GenericDialect {}, query)
         .map_err(|e| Error::usage(format!("the pipeline's query does not parse: {e}")))?;
     let mut reads: Vec<TablePath> = Vec::new();
@@ -41,9 +41,9 @@ pub fn names_of(query: &str) -> Result<Names> {
                     return Err(Error::usage("a pipeline inserts into a table of the lake, by its name"));
                 };
                 let reference = object_name_to_table_reference(name.clone(), NORMALIZE)?;
-                add(&mut writes, path_of(&reference));
+                add(&mut writes, path_of(&reference, on));
                 if let Some(source) = &insert.source {
-                    for read in relations(&Statement::Query(source.clone()))? {
+                    for read in relations(&Statement::Query(source.clone()), on)? {
                         add(&mut reads, read);
                     }
                 }
@@ -80,13 +80,14 @@ pub fn names_of(query: &str) -> Result<Names> {
 }
 
 /// The tables a statement reads, without the names of its CTEs.
-fn relations(statement: &Statement) -> Result<Vec<TablePath>> {
+fn relations(statement: &Statement, on: &str) -> Result<Vec<TablePath>> {
     let (relations, _ctes) = resolve_table_references(&DFStatement::Statement(Box::new(statement.clone())), NORMALIZE)?;
-    Ok(relations.iter().map(path_of).collect())
+    Ok(relations.iter().map(|r| path_of(r, on)).collect())
 }
 
-fn path_of(reference: &TableReference) -> TablePath {
-    TablePath::from_parts(reference.catalog(), reference.schema(), reference.table())
+/// On the pipeline's ref `on`, which no name says (I7).
+fn path_of(reference: &TableReference, on: &str) -> TablePath {
+    TablePath::from_parts(on, reference.catalog(), reference.schema(), reference.table())
 }
 
 #[cfg(test)]
@@ -97,20 +98,33 @@ mod tests {
         names.iter().map(|n| TablePath::parse(n).unwrap()).collect()
     }
 
+    /// `default.shop.customers` is `shop.customers`: one table by two spellings (I7).
     #[test]
-    fn reads_and_writes() {
+    fn i7_reads_and_writes() {
         let names = names_of(
-            "INSERT INTO shop.totals SELECT o.customer, count(*) FROM shop.orders o \
-             JOIN main.shop.customers c ON o.customer = c.name GROUP BY o.customer",
+            "INSERT INTO shop.totals SELECT o.customer, count(*) FROM shop.orders o              JOIN default.shop.customers c ON o.customer = c.name GROUP BY o.customer",
+            "main",
         )
         .unwrap();
         assert_eq!(names.writes, paths(&["shop.totals"]));
         assert_eq!(names.reads, paths(&["shop.orders", "shop.customers"]));
     }
 
+    /// Every table is on the pipeline's ref, which no name says.
+    #[test]
+    fn i7_on_the_pipelines_ref() {
+        let names = names_of("INSERT INTO ventas.eu.totals SELECT * FROM s", "dev").unwrap();
+        assert_eq!(names.writes, [TablePath::parse_on("ventas.eu.totals", "dev").unwrap()]);
+        assert_eq!(names.reads, [TablePath::parse_on("s", "dev").unwrap()]);
+    }
+
     #[test]
     fn ctes_are_not_tables() {
-        let names = names_of("INSERT INTO t WITH big AS (SELECT * FROM s WHERE x > 1) SELECT * FROM big").unwrap();
+        let names = names_of(
+            "INSERT INTO t WITH big AS (SELECT * FROM s WHERE x > 1) SELECT * FROM big",
+            "main",
+        )
+        .unwrap();
         assert_eq!(names.reads, paths(&["s"]));
     }
 
@@ -119,11 +133,11 @@ mod tests {
         for (query, says) in [
             ("SELECT * FROM s", "INSERT INTO"),
             ("INSERT INTO s SELECT * FROM s", "feed itself"),
-            ("INSERT INTO main.db.s SELECT * FROM db.s", "feed itself"),
+            ("INSERT INTO default.db.s SELECT * FROM db.s", "feed itself"),
             ("CREATE TABLE x (a int)", "declares none"),
             ("INSERT INTO", "does not parse"),
         ] {
-            let refused = names_of(query).unwrap_err();
+            let refused = names_of(query, "main").unwrap_err();
             assert!(refused.message.contains(says), "{query}: {}", refused.message);
         }
     }

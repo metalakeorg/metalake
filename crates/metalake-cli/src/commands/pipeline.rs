@@ -20,7 +20,7 @@ pub async fn run(verb: &PipelineVerb, lake: &Lake, out: &Out) -> Result<(), Erro
                 parallelism: create.parallelism,
                 empty_target: create.empty_target,
             };
-            vec![lake.create_pipeline(&create.name, &query, options).await?]
+            vec![lake.create_pipeline(&create.name, &query, options, &create.on).await?]
         }
         PipelineVerb::List => lake.pipelines().await?,
         PipelineVerb::Describe(p) => vec![lake.pipeline(&p.name).await?],

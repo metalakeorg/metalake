@@ -71,6 +71,11 @@ ELSEWHERE = {
     ("pipeline", "file"): Lake.create_pipeline,
     # An engine Python connects is on the ref `lake` is on, which `lake.on` sets, as a notebook's selector does.
     ("iceberg", "ref"): Lake.on,
+    # No table's name says its ref (I7): a table, and a pipeline, are on the ref `lake` is on, which `lake.on` sets.
+    ("changes", "ref"): Lake.on,
+    ("follow", "ref"): Lake.on,
+    ("ingest", "ref"): Lake.on,
+    ("pipeline", "ref"): Lake.on,
 }
 
 

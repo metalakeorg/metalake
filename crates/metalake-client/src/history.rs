@@ -31,7 +31,7 @@ impl Lake {
         Ok(self.find_ref(on).await?.history(limit).await?)
     }
 
-    /// The snapshots of a table of a ref, by `namespace.table`, the latest first.
+    /// The snapshots of a table of a ref, by `[catalog.]schema.table`, the latest first.
     pub async fn snapshots(&self, on: &str, name: &str, limit: i64) -> Result<Vec<SnapshotEntry>> {
         let on = self.find_ref(on).await?;
         let table = table(&on, name).await?;

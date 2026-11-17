@@ -20,6 +20,7 @@ for batch in result:
 table = lake.table("t")
 assert_type(table, metalake.Table)
 assert_type(table.columns, list[str])
+assert_type(table.ref, str)
 frame = polars.DataFrame({"k": [1]})
 assert_type(table.append(frame, idempotent=("job", 1)), Written)
 assert_type(table.append(result), Written)

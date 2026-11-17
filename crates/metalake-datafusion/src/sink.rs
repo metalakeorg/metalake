@@ -127,7 +127,13 @@ impl Selection {
     }
 
     async fn plan(&self) -> Result<Vec<ScanTask>> {
-        self.scan.plan().await.map_err(external)?.try_collect().await.map_err(external)
+        self.scan
+            .plan()
+            .await
+            .map_err(external)?
+            .try_collect()
+            .await
+            .map_err(external)
     }
 
     /// The batches of the rows that match; a filter that is null for a row does not match it.

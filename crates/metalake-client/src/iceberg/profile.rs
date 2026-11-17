@@ -115,9 +115,11 @@ pub struct Target {
     /// says: what an engine that reads the store itself, as Trino, is told besides its credentials.
     pub region: Option<String>,
     pub endpoint: Option<String>,
-    /// The `warehouse` the engine asks the server for (I6): a ref's name, which it stays on; `session:<id>`, a session,
-    /// whose ref it follows request by request; none for `main`, which a client that asks for no warehouse is on.
+    /// The ref the engine is on (I6): a ref's name, which it stays on; `session:<id>`, a session, whose ref it follows
+    /// request by request; none for `main`.
     pub on: Option<String>,
+    /// The catalog of the lake the engine sees (I7), whose schemas are its namespaces: none for `default`.
+    pub catalog: Option<String>,
 }
 
 /// What a warehouse starts with that asks the server for a session rather than a ref, as the server reads it.
@@ -134,6 +136,23 @@ impl Target {
     pub fn in_session(mut self, id: &str) -> Target {
         self.on = Some(format!("{SESSION}{id}"));
         self
+    }
+
+    /// This target, seeing the lake's catalog `catalog`: `default` asks for no warehouse of its own (I7).
+    pub fn in_catalog(mut self, catalog: &str) -> Target {
+        self.catalog = (catalog != metalake::path::DEFAULT_CATALOG).then(|| catalog.to_string());
+        self
+    }
+
+    /// The `warehouse` the engine asks the server for: `catalog@ref`, or `catalog@session:<id>` (I6, I7); none for the
+    /// catalog `default` on `main`, which a client that asks for no warehouse sees.
+    pub fn asks(&self) -> Option<String> {
+        let catalog = self.catalog.as_deref().unwrap_or(metalake::path::DEFAULT_CATALOG);
+        match (&self.catalog, &self.on) {
+            (None, None) => None,
+            (Some(_), None) => Some(catalog.to_string()),
+            (_, Some(on)) => Some(format!("{catalog}@{on}")),
+        }
     }
 
     /// Whether the engine follows a session, whose ref may move under a table the engine has loaded: one that keeps
@@ -352,37 +371,47 @@ impl Iceberg<'_> {
             region: s3.then(|| var(&["AWS_REGION", "AWS_DEFAULT_REGION"]).unwrap_or_else(|| "us-east-1".into())),
             endpoint: s3.then(|| var(&["AWS_ENDPOINT", "AWS_ENDPOINT_URL"])).flatten(),
             on: None,
+            catalog: None,
         })
     }
 
     /// The profile of `engine` for this lake on `main`, its catalog named `name`, with the jars it is given as files
     /// fetched.
     pub async fn profile(&self, engine: Engine, name: &str) -> Result<Profile> {
-        self.profile_on(engine, name, crate::MAIN).await
+        self.profile_on(engine, name, crate::MAIN, metalake::path::DEFAULT_CATALOG)
+            .await
     }
 
-    /// The same, on the ref `on`: the engine reads and writes that ref's namespaces and tables (I6).
-    pub async fn profile_on(&self, engine: Engine, name: &str, on: &str) -> Result<Profile> {
+    /// The same, on the ref `on`, seeing the lake's catalog `catalog`: the engine reads and writes that catalog's
+    /// schemas and tables on that ref (I6, I7).
+    pub async fn profile_on(&self, engine: Engine, name: &str, on: &str, catalog: &str) -> Result<Profile> {
         // A name refused before a server is started for it.
         catalog_name(name)?;
-        let target = self.target().await?.on(on);
+        let target = self.target().await?.on(on).in_catalog(catalog);
         self.profile_for(engine, name, &target).await
     }
 
     /// The profile of `engine` for this lake's server at `uri`, which runs elsewhere, on the ref `on`: nothing is started
     /// here.
-    pub async fn profile_at(&self, engine: Engine, name: &str, uri: &str, on: &str) -> Result<Profile> {
+    pub async fn profile_at(&self, engine: Engine, name: &str, uri: &str, on: &str, catalog: &str) -> Result<Profile> {
         catalog_name(name)?;
-        let target = self.target_at(uri)?.on(on);
+        let target = self.target_at(uri)?.on(on).in_catalog(catalog);
         self.profile_for(engine, name, &target).await
     }
 
     /// The profile of `engine` for session `id`, which is on `on` now (I6): the engine follows the session, reading and
     /// writing whatever ref it says it is on, with no new connection. The server is told `on` first.
-    pub async fn profile_in_session(&self, engine: Engine, name: &str, id: &str, on: &str) -> Result<Profile> {
+    pub async fn profile_in_session(
+        &self,
+        engine: Engine,
+        name: &str,
+        id: &str,
+        on: &str,
+        catalog: &str,
+    ) -> Result<Profile> {
         catalog_name(name)?;
         self.follow(id, on).await?;
-        let target = self.target().await?.in_session(id);
+        let target = self.target().await?.in_session(id).in_catalog(catalog);
         self.profile_for(engine, name, &target).await
     }
 
@@ -492,13 +521,14 @@ mod tests {
             region: None,
             endpoint: None,
             on: None,
+            catalog: None,
         };
         let asked = [
-            (Engine::PyIceberg, "warehouse: \"ventas_ana\""),
-            (Engine::DuckDb, "ATTACH 'ventas_ana' AS lake ("),
-            (Engine::Spark, "spark.sql.catalog.lake.warehouse ventas_ana"),
-            (Engine::Flink, "'warehouse' = 'ventas_ana'"),
-            (Engine::Trino, "iceberg.rest-catalog.warehouse=ventas_ana"),
+            (Engine::PyIceberg, "warehouse: \"default@ventas_ana\""),
+            (Engine::DuckDb, "ATTACH 'default@ventas_ana' AS lake ("),
+            (Engine::Spark, "spark.sql.catalog.lake.warehouse default@ventas_ana"),
+            (Engine::Flink, "'warehouse' = 'default@ventas_ana'"),
+            (Engine::Trino, "iceberg.rest-catalog.warehouse=default@ventas_ana"),
         ];
         for (engine, said) in asked {
             let on = profile(engine, "lake", &target.clone().on("ventas_ana"))
@@ -513,7 +543,36 @@ mod tests {
             );
         }
         let quoted = profile(Engine::DuckDb, "lake", &target.on("ana's")).unwrap().render();
-        assert!(quoted.contains("ATTACH 'ana''s' AS lake"), "{quoted}");
+        assert!(quoted.contains("ATTACH 'default@ana''s' AS lake"), "{quoted}");
+    }
+
+    /// A catalog other than `default` is asked for with the ref, or alone on `main` (I7).
+    #[test]
+    fn i7_each_engine_asks_for_its_catalog() {
+        let target = Target {
+            uri: "http://127.0.0.1:8181".into(),
+            store: Store::Local,
+            warehouse: "file:///tmp/lake/".into(),
+            token: None,
+            region: None,
+            endpoint: None,
+            on: None,
+            catalog: None,
+        };
+        assert_eq!(target.clone().in_catalog("ventas").asks().as_deref(), Some("ventas"));
+        assert_eq!(
+            target.clone().on("dev").in_catalog("ventas").asks().as_deref(),
+            Some("ventas@dev")
+        );
+        assert_eq!(
+            target.clone().in_session("k1").in_catalog("ventas").asks().as_deref(),
+            Some("ventas@session:k1")
+        );
+        assert_eq!(target.clone().in_catalog("default").asks(), None);
+        let duckdb = profile(Engine::DuckDb, "lake", &target.in_catalog("ventas"))
+            .unwrap()
+            .render();
+        assert!(duckdb.contains("ATTACH 'ventas' AS lake ("), "{duckdb}");
     }
 
     /// Following a session, each engine asks for `session:<id>` as its warehouse, and those whose catalog keeps the
@@ -528,15 +587,16 @@ mod tests {
             region: None,
             endpoint: None,
             on: None,
+            catalog: None,
         }
         .in_session("k1");
         assert!(target.follows_a_session());
         let asked = [
-            (Engine::PyIceberg, "warehouse: \"session:k1\""),
-            (Engine::DuckDb, "ATTACH 'session:k1' AS lake ("),
-            (Engine::Spark, "spark.sql.catalog.lake.warehouse session:k1"),
-            (Engine::Flink, "'warehouse' = 'session:k1'"),
-            (Engine::Trino, "iceberg.rest-catalog.warehouse=session:k1"),
+            (Engine::PyIceberg, "warehouse: \"default@session:k1\""),
+            (Engine::DuckDb, "ATTACH 'default@session:k1' AS lake ("),
+            (Engine::Spark, "spark.sql.catalog.lake.warehouse default@session:k1"),
+            (Engine::Flink, "'warehouse' = 'default@session:k1'"),
+            (Engine::Trino, "iceberg.rest-catalog.warehouse=default@session:k1"),
         ];
         for (engine, said) in asked {
             let rendered = profile(engine, "lake", &target).unwrap().render();

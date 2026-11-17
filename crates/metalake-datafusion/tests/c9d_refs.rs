@@ -1,6 +1,7 @@
-//! C9d (ADR 0003 §7): the path of C7 through SQL. A branch and a tag are catalogs; the past is a catalog's name with a
-//! point, a sequence or a time; a read in the past takes no write; a bad point is an error. And a statement reads one
-//! point (VIS-11): tables written by one commit agree, whatever a writer does while the statement runs.
+//! C9d (ADR 0003 §7): the path of C7 through SQL. A branch, a tag and the past (a ref with a point, a sequence or a
+//! time) are where the session is, which no name says (I7); a read in the past takes no write; a bad point is an
+//! error. And a statement reads one point (VIS-11): tables written by one commit agree, whatever a writer does while
+//! the statement runs.
 
 #[path = "../../metalake/tests/common/mod.rs"]
 mod common;
@@ -33,10 +34,13 @@ async fn lake(tables: &[&str]) -> Result<(Catalog, Ref, Storage, String), Error>
     let main = catalog.branch("main").await?;
     let storage = Storage::in_memory();
     let shape = batch(0..1).schema();
-    let mut tx = main.transaction().create_namespace(&["db"]);
+    let mut tx = main
+        .transaction()
+        .create_namespace(&["default"])
+        .create_namespace(&["default", "db"]);
     for name in tables {
         (tx, _) = tx.create_table(NewTable {
-            namespace: &["db"],
+            namespace: &["default", "db"],
             name,
             schema: &shape,
             location: None,
@@ -56,7 +60,7 @@ async fn files(
     name: &str,
     keys: std::ops::Range<i64>,
 ) -> Result<Vec<FileAdd>, Error> {
-    let t = on.table(&["db"], name).await?;
+    let t = on.table(&["default", "db"], name).await?;
     let mut writer = TableWriter::new(catalog, &t, storage.clone(), WriteOptions::default())?;
     writer.write(&batch(keys)).await?;
     writer.finish().await
@@ -71,6 +75,14 @@ async fn keys(context: &SessionContext, table: &str) -> Result<Vec<i64>, Box<dyn
         .collect())
 }
 
+/// The keys of `table` on the ref `on`; the session is back on `main` after.
+async fn keys_on(context: &SessionContext, on: &str, table: &str) -> Result<Vec<i64>, Box<dyn std::error::Error>> {
+    MetaLake::on_ref(context, on);
+    let keys = keys(context, table).await;
+    MetaLake::on_ref(context, "main");
+    keys
+}
+
 fn rfc3339(time: std::time::SystemTime) -> String {
     DateTime::<Utc>::from(time).to_rfc3339()
 }
@@ -79,26 +91,23 @@ fn rfc3339(time: std::time::SystemTime) -> String {
 async fn sql_branches_tags_time_travel() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, main, storage, schema) = lake(&["t"]).await?;
     let context = MetaLake::new(catalog.clone(), storage).await?.context()?;
-    context
-        .sql("insert into main.db.t values (1), (2)")
-        .await?
-        .collect()
-        .await?;
-    let first = main.table(&["db"], "t").await?.snapshot_id().unwrap();
+    context.sql("insert into db.t values (1), (2)").await?.collect().await?;
+    let first = main.table(&["default", "db"], "t").await?.snapshot_id().unwrap();
     main.at(first).create_tag("v1").await?;
-    context.sql("insert into main.db.t values (3)").await?.collect().await?;
-    let second = main.table(&["db"], "t").await?.snapshot_id().unwrap();
+    context.sql("insert into db.t values (3)").await?.collect().await?;
+    let second = main.table(&["default", "db"], "t").await?.snapshot_id().unwrap();
     main.create_branch("dev").await?;
 
-    // A branch, written apart; a tag stays.
-    context.sql("insert into dev.db.t values (4)").await?.collect().await?;
-    assert_eq!(keys(&context, "dev.db.t").await?, [1, 2, 3, 4]);
-    assert_eq!(keys(&context, "main.db.t").await?, [1, 2, 3]);
-    assert_eq!(keys(&context, "v1.db.t").await?, [1, 2]);
+    // A branch, written apart; a tag stays. The same name on each ref the session is on.
+    MetaLake::on_ref(&context, "dev");
+    context.sql("insert into db.t values (4)").await?.collect().await?;
+    assert_eq!(keys(&context, "db.t").await?, [1, 2, 3, 4]);
+    assert_eq!(keys_on(&context, "main", "db.t").await?, [1, 2, 3]);
+    assert_eq!(keys_on(&context, "v1", "db.t").await?, [1, 2]);
 
     // By sequence.
-    assert_eq!(keys(&context, &format!(r#""main@{first}".db.t"#)).await?, [1, 2]);
-    assert_eq!(keys(&context, &format!(r#""main@{second}".db.t"#)).await?, [1, 2, 3]);
+    assert_eq!(keys_on(&context, &format!("main@{first}"), "db.t").await?, [1, 2]);
+    assert_eq!(keys_on(&context, &format!("main@{second}"), "db.t").await?, [1, 2, 3]);
 
     // By time, as of the commit that wrote the first rows.
     let pool = Pool::new(&url(), 1)?;
@@ -110,28 +119,29 @@ async fn sql_branches_tags_time_travel() -> Result<(), Box<dyn std::error::Error
     );
     tokio::time::sleep(Duration::from_millis(1100)).await;
     assert_eq!(
-        keys(&context, &format!(r#""main@{}".db.t"#, rfc3339(at_first))).await?,
+        keys_on(&context, &format!("main@{}", rfc3339(at_first)), "db.t").await?,
         [1, 2]
     );
     assert_eq!(
-        keys(&context, &format!(r#""main@{}".db.t"#, rfc3339(at_second))).await?,
+        keys_on(&context, &format!("main@{}", rfc3339(at_second)), "db.t").await?,
         [1, 2, 3]
     );
 
-    // The past together with now, in one statement.
-    let sql = format!(r#"select count(*) as c from main.db.t now cross join "main@{first}".db.t old"#);
-    let joined = context.sql(&sql).await?.collect().await?;
-    assert_eq!(joined[0].column(0).as_primitive::<Int64Type>().value(0), 3 * 2);
+    // A point is the session's, not a name's: `"main@1".db.t` is a catalog of that name, which is not there.
+    let sql = format!(r#"select count(*) as c from "main@{first}".db.t"#);
+    assert!(context.sql(&sql).await.is_err());
 
     // The past takes no write, and a point that is none is an error of the query.
-    let sql = format!(r#"insert into "main@{first}".db.t values (9)"#);
-    let refused = match context.sql(&sql).await {
+    MetaLake::on_ref(&context, &format!("main@{first}"));
+    let refused = match context.sql("insert into db.t values (9)").await {
         Ok(statement) => statement.collect().await.map(|_| ()),
         Err(e) => Err(e),
     };
     assert!(refused.is_err_and(|e| e.to_string().contains("past")));
-    assert!(context.sql(r#"select * from "main@soon".db.t"#).await.is_err());
-    assert!(context.sql(r#"select * from "nothing@1".db.t"#).await.is_err());
+    MetaLake::on_ref(&context, "main@soon");
+    assert!(context.sql("select * from db.t").await.is_err());
+    MetaLake::on_ref(&context, "nothing@1");
+    assert!(context.sql("select * from db.t").await.is_err());
     Ok(())
 }
 
@@ -141,7 +151,7 @@ async fn statement_snapshot_isolation() -> Result<(), Box<dyn std::error::Error>
     let context = MetaLake::new(catalog.clone(), storage.clone()).await?.context()?;
 
     // Planned before a commit and run after it: both tables read after it, together.
-    let sql = "select (select count(*) from main.db.a) as a, (select count(*) from main.db.b) as b";
+    let sql = "select (select count(*) from db.a) as a, (select count(*) from db.b) as b";
     let both = [
         files(&catalog, &main, &storage, "a", 0..1).await?,
         files(&catalog, &main, &storage, "b", 0..1).await?,
@@ -182,31 +192,28 @@ async fn statement_snapshot_isolation() -> Result<(), Box<dyn std::error::Error>
 }
 
 #[tokio::test]
-async fn branch_inherited_read_and_cross_ref_join() -> Result<(), Box<dyn std::error::Error>> {
+async fn branch_inherited_read_one_ref_per_statement() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, main, storage, _) = lake(&["a"]).await?;
     let context = MetaLake::new(catalog.clone(), storage).await?.context()?;
-    context
-        .sql("insert into main.db.a values (1), (2)")
-        .await?
-        .collect()
-        .await?;
+    context.sql("insert into db.a values (1), (2)").await?.collect().await?;
     let dev = main.create_branch("dev").await?;
-    context.sql("insert into main.db.a values (3)").await?.collect().await?;
+    context.sql("insert into db.a values (3)").await?.collect().await?;
 
     // Untouched on the branch: read at the branch's base, not at the older snapshot, below which it sees nothing.
-    let inherited = dev.table(&["db"], "a").await?;
+    let inherited = dev.table(&["default", "db"], "a").await?;
     assert!(inherited.seq() > inherited.snapshot_id().unwrap());
-    assert_eq!(keys(&context, "dev.db.a").await?, [1, 2]);
+    assert_eq!(keys_on(&context, "dev", "db.a").await?, [1, 2]);
 
-    // Two refs in one statement, each with its own state.
-    let sql = "select count(*) as c from main.db.a m cross join dev.db.a d";
-    let joined = context.sql(sql).await?.collect().await?;
-    assert_eq!(joined[0].column(0).as_primitive::<Int64Type>().value(0), 3 * 2);
+    // One statement reads one ref: a ref is no catalog, so `dev.db.a` beside `db.a` is not the branch's table.
+    let sql = "select count(*) as c from db.a m cross join dev.db.a d";
+    assert!(context.sql(sql).await.is_err());
 
     // Once the branch writes the table, it reads its own snapshot, and a read of it is a point that stays.
-    context.sql("insert into dev.db.a values (4)").await?.collect().await?;
-    let own = dev.table(&["db"], "a").await?;
+    MetaLake::on_ref(&context, "dev");
+    context.sql("insert into db.a values (4)").await?.collect().await?;
+    let own = dev.table(&["default", "db"], "a").await?;
     assert_eq!(Some(own.seq()), own.snapshot_id());
-    assert_eq!(keys(&context, "dev.db.a").await?, [1, 2, 4]);
+    assert_eq!(keys(&context, "db.a").await?, [1, 2, 4]);
+    assert_eq!(keys_on(&context, "main", "db.a").await?, [1, 2, 3]);
     Ok(())
 }

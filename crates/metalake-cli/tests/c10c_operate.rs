@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use common::{lake, ok, run, sql, text};
+use common::{lake, ok, run, sql, sql_on, text};
 use serde_json::Value;
 
 /// A statement in the catalog's Postgres, past the protocol, as an older or newer catalog would have it. The tests'
@@ -97,10 +97,10 @@ fn newer_catalog_refused() {
 /// A lake whose table `db.t` holds two Parquet files of 100,000 rows each.
 fn split() -> PathBuf {
     let (dir, _) = lake();
-    sql(&dir, "create schema main.db; create table main.db.t (k bigint)", "csv");
+    sql(&dir, "create schema db; create table db.t (k bigint)", "csv");
     for from in [1, 100_001] {
         let insert = format!(
-            "insert into main.db.t select value from generate_series({from}, {})",
+            "insert into db.t select value from generate_series({from}, {})",
             from + 99_999
         );
         sql(&dir, &insert, "csv");
@@ -125,9 +125,15 @@ fn parquet(dir: &Path) -> usize {
     under(&dir.join("data"))
 }
 
+/// The count on `on`, a branch or a tag the session uses: a name says no ref (I7).
 fn count(dir: &Path, on: &str) -> String {
-    let select = format!("select count(*) as n, max(k) as m from \"{on}\".db.t");
-    sql(dir, &select, "csv")
+    let kind = if on == "q3" { "tag" } else { "branch" };
+    sql_on(
+        dir,
+        &format!("use {kind} {on}"),
+        "select count(*) as n, max(k) as m from db.t",
+        "csv",
+    )
 }
 
 fn maintain(dir: &Path, args: &[&str]) -> Vec<Value> {
@@ -175,7 +181,7 @@ fn tag_retains_files() {
     ok(&dir, &["tag", "create", "q3"]);
     ok(&dir, &["retain", "main", "--min-snapshots", "1"]);
     ok(&dir, &["retain", "--grace", "0s"]);
-    sql(&dir, "delete from main.db.t where k > 100000", "csv");
+    sql(&dir, "delete from db.t where k > 100000", "csv");
     maintain(&dir, &[]);
 
     assert_eq!(count(&dir, "main"), "n,m\n100000,100000\n");
@@ -197,7 +203,7 @@ fn maintain_ref_and_table_filter() {
     let done = maintain(&dir, &["compact", "--ref", "dev", "--table", "db.t"]);
     assert_eq!(done.len(), 1);
     assert_eq!(done[0]["ref"], "dev");
-    assert_eq!(done[0]["table"], "db.t");
+    assert_eq!(done[0]["table"], "default.db.t");
     assert!(done[0]["result"].is_i64());
     assert_eq!(count(&dir, "dev"), ALL);
 

@@ -19,9 +19,9 @@ use futures_util::TryStreamExt;
 use metalake::{Scan, ScanTask};
 
 use crate::catalog::external;
-use crate::source;
 use crate::merge::Merge;
 use crate::sink::{Delete, Selection, Update};
+use crate::source;
 
 /// What a plan reads, and whether it shuffles.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -50,7 +50,13 @@ pub async fn measure(plan: &Arc<dyn ExecutionPlan>) -> Result<Measure> {
             // Planned once: the selection keeps its files for reading.
             Held::Selection(selection) => selection.measure().await?,
             Held::Scan(scan) => {
-                let tasks: Vec<_> = scan.plan().await.map_err(external)?.try_collect().await.map_err(external)?;
+                let tasks: Vec<_> = scan
+                    .plan()
+                    .await
+                    .map_err(external)?
+                    .try_collect()
+                    .await
+                    .map_err(external)?;
                 sizes(&tasks)
             }
         };

@@ -27,7 +27,8 @@ def test_on_commit_one_commit_for_all(lake):
     assert lake.log(limit=1)[0].seq == commit
     assert lake.iceberg.on_commit(["default.a"]) is None, "nothing changed"
     status = lake.iceberg.status()
-    assert [t.table for t in status] == ["default.a", "default.b"]
+    # Named whole, `catalog.schema.table` (I7), whatever name they were set by.
+    assert [t.table for t in status] == ["default.default.a", "default.default.b"]
     assert all(t.written is None and t.behind > 0 for t in status), status
 
 
@@ -39,10 +40,10 @@ def test_on_commit_missing_table_raises(lake):
 def test_on_load_on_a_branch(lake):
     lake.iceberg.on_commit(["default.a"])
     lake.branch("dev")
-    assert [t.table for t in lake.iceberg.status(on="dev")] == ["default.a", "default.b"], "inherited"
+    assert [t.table for t in lake.iceberg.status(on="dev")] == ["default.default.a", "default.default.b"], "inherited"
     assert isinstance(lake.iceberg.on_load(["default.a"], on="dev"), int)
-    assert [t.table for t in lake.iceberg.status(on="dev")] == ["default.b"]
-    assert "default.a" in [t.table for t in lake.iceberg.status()], "main keeps it"
+    assert [t.table for t in lake.iceberg.status(on="dev")] == ["default.default.b"]
+    assert "default.default.a" in [t.table for t in lake.iceberg.status()], "main keeps it"
 
 
 def test_server_uri_reused_and_stopped(lake):

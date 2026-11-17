@@ -106,11 +106,11 @@ fn refs_and_tables_of_branch() {
     let (dir, _) = lake();
     sql(
         &dir,
-        "create schema main.sales; create table main.sales.orders (k bigint);",
+        "create schema sales; create table sales.orders (k bigint);",
         "csv",
     );
     ok(&dir, &["branch", "create", "dev"]);
-    sql(&dir, "create table dev.default.only_dev (k bigint);", "csv");
+    sql(&dir, "use branch dev; create table only_dev (k bigint);", "csv");
     let (mut ui, port) = started(&dir);
 
     let (code, body) = get(port, "/api/v1/refs", Some(TOKEN));
@@ -131,18 +131,21 @@ fn refs_and_tables_of_branch() {
         let mut names: Vec<String> = tables
             .iter()
             .map(|t| {
-                format!(
-                    "{}.{}",
-                    t["namespace"][0].as_str().unwrap(),
-                    t["name"].as_str().unwrap()
-                )
+                // Its namespace whole: the catalog, then the schema (I7).
+                let namespace: Vec<&str> = t["namespace"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|l| l.as_str().unwrap())
+                    .collect();
+                format!("{}.{}", namespace.join("."), t["name"].as_str().unwrap())
             })
             .collect();
         names.sort();
         names
     };
-    assert_eq!(names("main"), ["sales.orders"]);
-    assert_eq!(names("dev"), ["default.only_dev", "sales.orders"]);
+    assert_eq!(names("main"), ["default.sales.orders"]);
+    assert_eq!(names("dev"), ["default.default.only_dev", "default.sales.orders"]);
     assert_eq!(get(port, "/api/v1/refs/nope/tables", Some(TOKEN)).0, 400);
     ui.kill().unwrap();
     ui.wait().unwrap();
@@ -190,7 +193,7 @@ fn events_say_lake_changed() {
 
     // A commit notifies: its mark comes before the interval of 5 s would have read it.
     let committed = Instant::now();
-    sql(&dir, "create table main.default.t (k bigint);", "csv");
+    sql(&dir, "create table t (k bigint);", "csv");
     let after = events.next(Duration::from_secs(10)).expect("the commit's mark");
     assert!(after["seq"].as_i64() > first["seq"].as_i64(), "{first} {after}");
     assert!(
@@ -208,9 +211,9 @@ fn events_say_lake_changed() {
     let noisy = {
         let busy = busy.clone();
         std::thread::spawn(move || {
-            sql(&other, "create table main.default.n (k bigint);", "csv");
+            sql(&other, "create table n (k bigint);", "csv");
             while busy.load(std::sync::atomic::Ordering::Relaxed) {
-                sql(&other, "insert into main.default.n values (1);", "csv");
+                sql(&other, "insert into n values (1);", "csv");
             }
         })
     };
@@ -280,7 +283,7 @@ fn sql_on_branch_writes_and_reads() {
     assert_eq!(values, [1, 2]);
 
     // All of it, within the limit, is not truncated.
-    let (_, head, _) = run(port, r#"{"sql":"select k from dev.default.t"}"#);
+    let (_, head, _) = run(port, r#"{"sql":"select k from default.t","branch":"dev"}"#);
     assert!(
         head.contains("metalake-rows: 3") && head.contains("metalake-truncated: false"),
         "{head}"
@@ -324,7 +327,7 @@ fn catalog_details_of_ref_schema_and_table() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|s| s["namespace"] == serde_json::json!(["shop"]))
+        .find(|s| s["namespace"] == serde_json::json!(["default", "shop"]))
         .unwrap();
     assert_eq!(shop["size"]["rows"], 3);
 
@@ -332,12 +335,12 @@ fn catalog_details_of_ref_schema_and_table() {
     assert_eq!(commits.as_array().unwrap().len(), 2);
     assert_eq!(commits[0]["operation"], "append");
 
-    let schema = read("/api/v1/refs/main/schemas/shop");
+    let schema = read("/api/v1/refs/main/schemas/default%1Fshop");
     assert_eq!(schema["tables"][0]["name"], "customers");
     assert_eq!(schema["tables"][0]["rows"], 3);
     assert!(schema["tables"][0]["changed_at"].is_string(), "{schema}");
 
-    let table = read("/api/v1/refs/main/tables/shop/customers");
+    let table = read("/api/v1/refs/main/tables/default%1Fshop/customers");
     let columns: Vec<_> = table["columns"]
         .as_array()
         .unwrap()
@@ -350,7 +353,7 @@ fn catalog_details_of_ref_schema_and_table() {
     assert!(table["bytes"].as_i64().unwrap() > 0, "{table}");
     assert!(table["location"].as_str().unwrap().contains("customers"), "{table}");
 
-    let snapshots = read("/api/v1/refs/main/tables/shop/customers/snapshots");
+    let snapshots = read("/api/v1/refs/main/tables/default%1Fshop/customers/snapshots");
     assert!(snapshots.as_array().unwrap().len() >= 2, "{snapshots}");
 
     // The tag: the lake as it was when tagged, two rows.
@@ -359,7 +362,7 @@ fn catalog_details_of_ref_schema_and_table() {
         (then["kind"].as_str(), then["size"]["rows"].as_i64()),
         (Some("tag"), Some(2))
     );
-    assert_eq!(read("/api/v1/refs/then/tables/shop/customers")["rows"], 2);
+    assert_eq!(read("/api/v1/refs/then/tables/default%1Fshop/customers")["rows"], 2);
 
     // What does not exist is said, not answered empty.
     let (code, _) = get(port, "/api/v1/refs/main/schemas/nowhere", Some(TOKEN));

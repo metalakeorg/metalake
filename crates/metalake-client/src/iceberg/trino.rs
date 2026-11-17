@@ -13,7 +13,7 @@ pub(super) fn profile(name: &str, target: &Target) -> Profile {
     set("connector.name", "iceberg");
     set("iceberg.catalog.type", "rest");
     set("iceberg.rest-catalog.uri", &target.uri);
-    if let Some(on) = &target.on {
+    if let Some(on) = &target.asks() {
         set("iceberg.rest-catalog.warehouse", on);
     }
     if let Some(token) = &target.token {
@@ -80,6 +80,7 @@ mod tests {
             region: None,
             endpoint: None,
             on: None,
+            catalog: None,
         }
     }
 

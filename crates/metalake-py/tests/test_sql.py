@@ -129,11 +129,13 @@ def test_external_table_resolved_by_name(lake, directory):
     assert count(lake, "named_by_another") == 0
 
 
-def test_ref_and_sequence_names(lake, table, directory):
+def test_names_on_the_session_ref(lake, table, directory):
+    """No name says its ref (I7): `USE BRANCH` does, for the statements after it."""
     metalake._cli(["metalake", "--lake", str(directory), "branch", "create", f"{table}_dev"])
-    lake.sql(f'insert into "{table}_dev".default.{table} values (2)')
+    lake.sql(f"use branch {table}_dev; insert into {table} values (2)")
+    assert rows(lake.sql(f"select k from {table}")) == [(1,), (2,)]
+    lake.sql("use branch main")
     assert rows(lake.sql(f"select k from {table}")) == [(1,)]
-    assert rows(lake.sql(f'select k from "{table}_dev".default.{table}')) == [(1,), (2,)]
 
 
 def test_concurrent_writers_conflict(lake, table):

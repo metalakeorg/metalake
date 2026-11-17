@@ -342,8 +342,9 @@ export function TableView({ on, namespace, name }: { on: string; namespace: stri
     queryKey: [...CATALOG, "snapshots", ...key],
     queryFn: () => snapshots(on, namespace, name),
   });
-  // The ref is named in the statement, as the schema and the table are: the sample is of this table on this ref.
-  const sql = `select * from ${quoted(on)}.${quoted(namespace.join("."))}.${quoted(name)} limit ${SAMPLE}`;
+  // The catalog, the schema and the table, run on this ref (I7): no name says a ref, the run does.
+  const [catalog = "", ...schema] = namespace;
+  const sql = `select * from ${quoted(catalog)}.${quoted(schema.join("."))}.${quoted(name)} limit ${SAMPLE}`;
   const sample = useQuery({
     queryKey: [...CATALOG, "sample", ...key],
     queryFn: async () => {

@@ -348,13 +348,14 @@ mod tests {
         }
     }
 
-    /// A session on another ref: a table that names none is on it; one that names its ref keeps it.
+    /// A session on another ref: every table is on it; a name of three parts says a catalog, not a ref (I7).
     #[test]
-    fn calls_on_session_ref() {
-        let sql = "select * from table_changes('t', 1) a, table_changes('r.n.t', 1) b";
+    fn i7_calls_on_session_ref() {
+        let sql = "select * from table_changes('t', 1) a, table_changes('c.n.t', 1) b";
         let found = calls(&statement(sql), "dev").unwrap();
         let on: Vec<_> = found.iter().map(|c| c.path.on.as_str()).collect();
-        assert_eq!(on, ["dev", "r"]);
+        assert_eq!(on, ["dev", "dev"]);
+        assert_eq!(found[1].path.namespace, ["c", "n"]);
     }
 
     #[test]

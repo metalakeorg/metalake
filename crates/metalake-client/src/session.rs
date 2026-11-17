@@ -33,6 +33,8 @@ pub enum Step {
     Pipeline(crate::pipeline::Verb),
     /// A ref's verb (I5): `CREATE BRANCH`, `MERGE BRANCH`, `USE BRANCH`…
     Ref(crate::refs_sql::RefVerb),
+    /// A catalog's verb (I7): `CREATE CATALOG`, `DROP CATALOG`, `SHOW CATALOGS`.
+    Catalog(crate::catalogs_sql::CatalogVerb),
     /// `USING <engine> <statement>`: the statement is the engine's, sent to it as written.
     Using(crate::Using),
     /// `USING <engine>` alone: runs nothing, and chooses the engine for the statements after it. A step of its own, so
@@ -44,7 +46,7 @@ impl Step {
     /// The engine that runs it, when not the lake's own: what a face says beside its answer.
     pub fn engine(&self) -> Option<&str> {
         match self {
-            Step::Statement(_) | Step::Pipeline(_) | Step::Ref(_) => None,
+            Step::Statement(_) | Step::Pipeline(_) | Step::Ref(_) | Step::Catalog(_) => None,
             Step::Using(using) => Some(&using.engine),
             Step::Choose(engine) => (engine != crate::OWN).then_some(engine.as_str()),
         }
@@ -63,6 +65,9 @@ pub struct SourcedStep {
 pub(crate) fn client_verb(text: &str) -> Result<Option<Step>> {
     if let Some(verb) = crate::pipeline::sql::verb_of(text)? {
         return Ok(Some(Step::Pipeline(verb)));
+    }
+    if let Some(verb) = crate::catalogs_sql::catalog_verb_of(text)? {
+        return Ok(Some(Step::Catalog(verb)));
     }
     Ok(crate::refs_sql::ref_verb_of(text)?.map(Step::Ref))
 }
@@ -181,19 +186,33 @@ impl Session {
         })
     }
 
-    /// Names that do not say their ref read and write on `name`: `default.t` is `name.default.t`, as it is
-    /// `main.default.t` until this is called. A name that says its ref is not changed.
+    /// Every name reads and writes on `name` (or `name@point`), from the next statement: no name says its ref (I7). The
+    /// session is on `main` until this is called.
     pub fn on_ref(&self, name: &str) {
-        let state = self.context.state_ref();
-        let mut state = state.write();
-        state.config_mut().options_mut().catalog.default_catalog = name.to_string();
+        MetaLake::on_ref(&self.context, name);
     }
 
-    /// The ref names that say none read and write on: `main`, unless [`on_ref`](Self::on_ref) said another.
+    /// The ref every name reads and writes on: `main`, unless [`on_ref`](Self::on_ref) said another.
     pub fn current_ref(&self) -> String {
-        let state = self.context.state_ref();
-        let state = state.read();
-        state.config().options().catalog.default_catalog.clone()
+        MetaLake::current_ref(&self.context)
+    }
+
+    /// Refuses `what` in a session read at a point (`USE BRANCH … AS OF`): it would act on the branch as it is now.
+    fn live(&self, what: &str) -> Result<()> {
+        if self.current_ref() == self.current_ref_name() {
+            return Ok(());
+        }
+        Err(Error::usage(format!(
+            "{what} is on a branch as it is now, and this session reads {} at a point: USE BRANCH {} first",
+            self.current_ref_name(),
+            self.current_ref_name()
+        )))
+    }
+
+    /// The name of the ref the session is on, without the point `USE … AS OF` reads it at.
+    fn current_ref_name(&self) -> String {
+        let on = self.current_ref();
+        on.split_once('@').map_or(on.clone(), |(name, _)| name.to_string())
     }
 
     /// The statements of a text, in order. A text with none is a wrong use.
@@ -205,9 +224,31 @@ impl Session {
         Ok(statements.into())
     }
 
+    /// A context of this session's engine on the ref `on`: this session's own when it is on it, else one apart, so that
+    /// a statement for a table opened on `on` reads and writes there whatever ref the session moved to (I7).
+    fn context_on(&self, on: &str) -> Result<SessionContext> {
+        if self.current_ref() == on {
+            return Ok(self.context.clone());
+        }
+        let context = self.engine.context()?;
+        MetaLake::on_ref(&context, on);
+        Ok(context)
+    }
+
     /// Prepares one statement, and runs it if it does more than read.
     pub async fn prepare(&self, statement: Statement) -> Result<Prepared> {
-        let frame = self.engine.execute(&self.context, statement).await?;
+        self.prepare_in(&self.context.clone(), statement).await
+    }
+
+    /// Prepares one statement of text on the ref `on`, whatever ref the session is on: a table's own reads.
+    pub async fn prepare_on(&self, text: &str, on: &str) -> Result<Prepared> {
+        let [statement] = <[Statement; 1]>::try_from(Self::parse(text)?)
+            .map_err(|_| Error::failed("one statement is prepared on a ref"))?;
+        self.prepare_in(&self.context_on(on)?, statement).await
+    }
+
+    async fn prepare_in(&self, context: &SessionContext, statement: Statement) -> Result<Prepared> {
+        let frame = self.engine.execute(context, statement).await?;
         let task = Arc::new(frame.task_ctx());
         let read = is_read(frame.logical_plan());
         let plan = frame.create_physical_plan().await?;
@@ -220,14 +261,14 @@ impl Session {
         Ok(Prepared { plan, task, read })
     }
 
-    /// Deletes the rows of a table that a filter matches, in one commit. The filter is SQL, so what it makes is looked at
-    /// and not its text: one `delete`, of this table, and nothing else.
+    /// Deletes the rows of a table that a filter matches, in one commit, on the table's ref. The filter is SQL, so what it
+    /// makes is looked at and not its text: one `delete`, of this table, and nothing else.
     pub async fn delete(&self, path: &TablePath, filter: &str, details: Details) -> Result<Written> {
         let text = format!("delete from {} where {filter}", path.quoted());
         let statements = Self::parse(&text).map_err(|e| Error::usage(format!("{filter}: {e}")))?;
         let [statement] = <[Statement; 1]>::try_from(statements)
             .map_err(|_| Error::usage(format!("{filter}: a filter is one expression")))?;
-        let frame = self.engine.execute(&self.context, statement).await?;
+        let frame = self.engine.execute(&self.context_on(&path.on)?, statement).await?;
         let LogicalPlan::Dml(delete) = frame.logical_plan() else {
             return Err(Error::usage(format!("{filter}: a filter is one expression")));
         };
@@ -265,11 +306,11 @@ impl Session {
         Ok(frame.limit(0, Some(1))?.count().await? > 0)
     }
 
-    /// Runs one `merge into`, and says how many rows it inserted and updated.
-    pub(crate) async fn merge(&self, text: &str, details: Details) -> Result<Written> {
+    /// Runs one `merge into` on the ref `on`, and says how many rows it inserted and updated.
+    pub(crate) async fn merge(&self, text: &str, on: &str, details: Details) -> Result<Written> {
         let [statement] =
             <[Statement; 1]>::try_from(Self::parse(text)?).map_err(|_| Error::failed("a merge is one statement"))?;
-        let frame = self.engine.execute(&self.context, statement).await?;
+        let frame = self.engine.execute(&self.context_on(on)?, statement).await?;
         let row = self.run_with(frame, details).await?;
         Ok(Written::of_statement(row.outcome, row.count).merged(row.inserted, row.updated))
     }
@@ -348,8 +389,23 @@ impl Session {
     pub async fn step(&self, step: Step) -> Result<Prepared> {
         match step {
             Step::Statement(statement) => self.prepare(statement).await,
-            Step::Pipeline(verb) => crate::pipeline::sql::run(&self.lake, verb).await,
+            Step::Pipeline(verb) => {
+                if matches!(verb, crate::pipeline::Verb::Create { .. }) {
+                    self.live("CREATE PIPELINE")?;
+                }
+                crate::pipeline::sql::run(&self.lake, verb, &self.current_ref_name()).await
+            }
             Step::Ref(verb) => self.run_ref(verb).await,
+            Step::Catalog(verb) => {
+                if !matches!(verb, crate::catalogs_sql::CatalogVerb::Show) {
+                    self.live("a catalog's change")?;
+                }
+                let on = self.lake.find_ref(&self.current_ref()).await?;
+                let answer = crate::catalogs_sql::run(&on, verb).await;
+                // A picture of the listings that cannot be taken now does not fail what committed.
+                let _ = self.engine.refresh().await;
+                answer
+            }
             Step::Using(using) => crate::engine::run_using(&self.lake, &self.current_ref(), &using).await,
             // It ran nothing: an answer with no column, as a statement that leaves nothing to show.
             Step::Choose(_) => {
@@ -381,7 +437,7 @@ impl Session {
                 ref_rows(&[created])
             }
             RefVerb::Drop { kind, name, if_exists } => {
-                if name == self.current_ref() {
+                if name == self.current_ref_name() {
                     return Err(Error::usage(format!(
                         "{name} is the ref this session is on: USE another before dropping it"
                     )));
@@ -402,10 +458,10 @@ impl Session {
             }
             RefVerb::Show(kind) => ref_rows(&lake.refs(Some(kind)).await?),
             RefVerb::Log { on, limit } => {
-                let on = on.unwrap_or_else(|| self.current_ref());
+                let on = on.unwrap_or_else(|| self.current_ref_name());
                 log_rows(&lake.commits(&on, limit).await?)
             }
-            RefVerb::Use { kind, name } => {
+            RefVerb::Use { kind, name, at } => {
                 let found = named(lake.refs(Some(kind)).await?, &name);
                 if found.is_empty() {
                     let kind = match kind {
@@ -414,7 +470,11 @@ impl Session {
                     };
                     return Err(Error::usage(format!("no {kind} {name}")));
                 }
-                self.on_ref(&name);
+                // At a point, the ref is read as it was then: `name@point`, as the engine finds it.
+                match at {
+                    Some(at) => self.on_ref(&format!("{name}@{at}")),
+                    None => self.on_ref(&name),
+                }
                 ref_rows(&found)
             }
             RefVerb::Retain { name, retention, .. } => {

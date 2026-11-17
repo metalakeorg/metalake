@@ -35,11 +35,11 @@ fn run(engine: &str, uri: &str) -> Result<Value, Failure> {
 async fn wide(schema: &str) -> Result<std::path::PathBuf, Failure> {
     let (catalog, storage, directory) = local_catalog(schema).await?;
     let main = catalog.branch("main").await?;
-    main.transaction().create_namespace(&["db"]).commit().await?;
+    main.transaction().create_namespace(&["default", "db"]).commit().await?;
     create(&main, "wide", "0", vec![("k", "truncate[10]")]).await?;
     append(&catalog, &main, &storage, "wide", 0..5).await?;
     append(&catalog, &main, &storage, "wide", 10..13).await?;
-    let t = main.table(&["db"], "wide").await?;
+    let t = main.table(&["default", "db"], "wide").await?;
     let planned: Vec<_> = Scan::new(&catalog, &t).plan().await?.try_collect().await?;
     let mut deletes = Deletes::new();
     deletes.insert(

@@ -28,13 +28,17 @@ async fn lake(names: &[&str]) -> (Lake, PathBuf) {
     .await
     .expect("a lake");
     let main = lake.catalog.branch("main").await.unwrap();
-    main.transaction().create_namespace(&["db"]).commit().await.unwrap();
+    main.transaction()
+        .create_namespace(&["default", "db"])
+        .commit()
+        .await
+        .unwrap();
     let shape = Schema::new(vec![Field::new("k", DataType::Int64, false)]);
     for name in names {
         let (tx, _) = main
             .transaction()
             .create_table(NewTable {
-                namespace: &["db"],
+                namespace: &["default", "db"],
                 name,
                 schema: &shape,
                 location: None,
@@ -50,7 +54,7 @@ async fn lake(names: &[&str]) -> (Lake, PathBuf) {
 
 /// The value of the property of `name` on `on`.
 async fn value(on: &Ref, name: &str) -> Option<String> {
-    let t = on.table(&["db"], name).await.unwrap();
+    let t = on.table(&["default", "db"], name).await.unwrap();
     let definition = on.definition(&t, None).await.unwrap();
     definition["properties"][ICEBERG_METADATA].as_str().map(str::to_string)
 }
@@ -100,7 +104,7 @@ async fn rest9_on_commit_missing_table_refuses_all() {
         "nothing committed"
     );
     assert_eq!(value(&main, "a").await, None);
-    let malformed = lake.iceberg().on_commit("main", &["a"]).await.unwrap_err();
+    let malformed = lake.iceberg().on_commit("main", &["db..a"]).await.unwrap_err();
     assert_eq!(malformed.kind, Kind::Usage);
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -127,7 +131,7 @@ async fn rest6_status_reports_unwritten_commits() {
     let status = lake.iceberg().status("main").await.unwrap();
     assert_eq!(status.len(), 1, "only the table set: {status:?}");
     let a = &status[0];
-    assert_eq!(a.table, "db.a");
+    assert_eq!(a.table, "default.db.a");
     assert_eq!(
         (a.head, a.written, a.metadata.as_deref()),
         (Some(seq), None, None),
@@ -138,7 +142,12 @@ async fn rest6_status_reports_unwritten_commits() {
 
     // a metadata file that serves the head, as the service writes it: nothing behind
     let main = lake.catalog.branch("main").await.unwrap();
-    let location = main.table(&["db"], "a").await.unwrap().location().to_string();
+    let location = main
+        .table(&["default", "db"], "a")
+        .await
+        .unwrap()
+        .location()
+        .to_string();
     let local = location.trim_start_matches("file://").trim_start_matches('/');
     let local = if cfg!(windows) {
         local.to_string()

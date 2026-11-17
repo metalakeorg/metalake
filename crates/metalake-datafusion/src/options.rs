@@ -176,11 +176,18 @@ impl MetaLakeOptions {
         message: Option<String>,
         idempotent: Option<(String, i64)>,
     ) -> SessionConfig {
-        let mut options = config.options().extensions.get::<MetaLakeOptions>().cloned().unwrap_or_default();
+        let mut options = config
+            .options()
+            .extensions
+            .get::<MetaLakeOptions>()
+            .cloned()
+            .unwrap_or_default();
         options.author = author;
         options.message = message;
         // A version is positive (CMT-8): one that is not is sent as 0, for the protocol to refuse, not dropped.
-        options.app_version = idempotent.as_ref().map(|(_, version)| u64::try_from(*version).unwrap_or(0));
+        options.app_version = idempotent
+            .as_ref()
+            .map(|(_, version)| u64::try_from(*version).unwrap_or(0));
         options.app = idempotent.map(|(app, _)| app);
         config.options_mut().extensions.insert(options);
         config
@@ -221,6 +228,9 @@ mod tests {
         config.options_mut().set("metalake.engine", "cluster").unwrap();
         let config = MetaLakeOptions::commit(config, Some("ana".into()), None, None);
         let options = config.options().extensions.get::<MetaLakeOptions>().unwrap();
-        assert_eq!((options.engine, options.author.as_deref()), (Some(Engine::Cluster), Some("ana")));
+        assert_eq!(
+            (options.engine, options.author.as_deref()),
+            (Some(Engine::Cluster), Some("ana"))
+        );
     }
 }

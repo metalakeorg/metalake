@@ -1,12 +1,14 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { Assets, byNamespace, identifier } from "./Assets";
+import { Assets, byCatalog, byNamespace, identifier } from "./Assets";
 
+/** A lake's tables (I7): a namespace's first level is its catalog, the levels after it its schema. */
 const TABLES = [
-  { namespace: ["sales"], name: "orders" },
-  { namespace: ["default"], name: "t" },
-  { namespace: ["sales"], name: "customers" },
-  { namespace: ["sales", "eu"], name: "orders" },
+  { namespace: ["default", "sales"], name: "orders" },
+  { namespace: ["default", "default"], name: "t" },
+  { namespace: ["default", "sales"], name: "customers" },
+  { namespace: ["default", "sales", "eu"], name: "orders" },
+  { namespace: ["ventas", "eu"], name: "pedidos" },
 ];
 
 describe("identifier", () => {
@@ -39,9 +41,33 @@ describe("byNamespace", () => {
 
   it("groups by namespace, both in name order", () => {
     expect(byNamespace(TABLES)).toEqual([
-      ["default", ["t"], ["default"]],
-      ["sales", ["customers", "orders"], ["sales"]],
-      ["sales.eu", ["orders"], ["sales", "eu"]],
+      ["default.default", ["t"], ["default", "default"]],
+      ["default.sales", ["customers", "orders"], ["default", "sales"]],
+      ["default.sales.eu", ["orders"], ["default", "sales", "eu"]],
+      ["ventas.eu", ["pedidos"], ["ventas", "eu"]],
+    ]);
+  });
+});
+
+describe("byCatalog", () => {
+  it("groups the schemas by their catalog, the first level, both in name order", () => {
+    expect(byCatalog(TABLES)).toEqual([
+      [
+        "default",
+        [
+          ["default", ["t"], ["default", "default"]],
+          ["sales", ["customers", "orders"], ["default", "sales"]],
+          ["sales.eu", ["orders"], ["default", "sales", "eu"]],
+        ],
+      ],
+      ["ventas", [["eu", ["pedidos"], ["ventas", "eu"]]]],
+    ]);
+  });
+
+  it("holds a catalog with no schema, and a schema with no tables, empty", () => {
+    expect(byCatalog([], [["ventas"], ["default", "demo"]])).toEqual([
+      ["default", [["demo", [], ["default", "demo"]]]],
+      ["ventas", []],
     ]);
   });
 });
@@ -50,18 +76,28 @@ describe("Assets", () => {
   it("lists the tables of the branch by namespace", () => {
     render(<Assets branches={["main", "dev"]} branch="dev" onBranch={() => {}} tables={TABLES} />);
     expect(screen.getByRole("combobox", { name: "Branch" })).toHaveValue("dev");
-    const sales = within(screen.getByRole("list", { name: "sales" }));
+    const sales = within(screen.getByRole("list", { name: "default.sales" }));
     expect(sales.getAllByRole("listitem").map((item) => item.textContent)).toEqual(["customers", "orders"]);
   });
 
-  it("holds the tables in their schema, and the schemas in the branch's catalog", () => {
+  it("holds the tables in their schema, the schemas in their catalog, and the catalogs in the ref", () => {
     render(<Assets branches={["main", "dev"]} branch="dev" onBranch={() => {}} tables={TABLES} />);
-    const catalog = screen.getByText("dev", { selector: "summary span" }).closest("details");
-    expect(catalog?.querySelector("summary")).toHaveTextContent("▸dev");
-    const schemas = [...(catalog?.querySelectorAll("details") ?? [])].map(
-      (d) => d.querySelector("summary")?.textContent,
-    );
-    expect(schemas).toEqual(["▸default", "▸sales", "▸sales.eu"]);
+    const ref = screen.getByText("dev", { selector: "summary span" }).closest("details");
+    expect(ref?.querySelector("summary")).toHaveTextContent("▸dev");
+    const below = (node: Element | null | undefined) =>
+      [...(node?.querySelectorAll(":scope > div > details") ?? [])].map((d) => d.querySelector("summary"));
+    const catalogs = below(ref);
+    expect(catalogs.map((s) => s?.textContent)).toEqual(["▸default", "▸ventas"]);
+    expect(below(catalogs[0]?.parentElement).map((s) => s?.textContent)).toEqual(["▸default", "▸sales", "▸sales.eu"]);
+    expect(below(catalogs[1]?.parentElement).map((s) => s?.textContent)).toEqual(["▸eu"]);
+  });
+
+  it("puts a table in the editor by its catalog, its schema and its name: no ref", () => {
+    const onInsert = vi.fn();
+    render(<Assets branches={["main", "dev"]} branch="dev" onBranch={() => {}} tables={TABLES} onInsert={onInsert} />);
+    const eu = within(screen.getByRole("list", { name: "default.sales.eu" }));
+    fireEvent.click(eu.getByRole("button", { name: "Put orders in the editor" }));
+    expect(onInsert).toHaveBeenCalledWith('default."sales.eu".orders');
   });
 
   it("tells the page which branch was picked", () => {

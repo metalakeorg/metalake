@@ -4,7 +4,7 @@ mod common;
 
 use std::path::Path;
 
-use common::{ok, run, sql, table};
+use common::{ok, run, sql, sql_on, table};
 use serde_json::Value;
 
 fn log(dir: &Path, args: &[&str]) -> Vec<Value> {
@@ -14,9 +14,10 @@ fn log(dir: &Path, args: &[&str]) -> Vec<Value> {
     lines.lines().map(|l| serde_json::from_str(l).unwrap()).collect()
 }
 
+/// The count after `on`, a USE: a name says no ref (I7).
 fn count(dir: &Path, on: &str) -> String {
-    let select = format!("select count(*) as n from \"{on}\".db.t");
-    sql(dir, &select, "csv").lines().nth(1).unwrap().to_string()
+    let counted = sql_on(dir, on, "select count(*) as n from db.t", "csv");
+    counted.lines().nth(1).unwrap().to_string()
 }
 
 #[test]
@@ -51,20 +52,20 @@ fn log_order() {
 fn time_travel_from_log_sequence() {
     let dir = table();
     let two_rows = log(&dir, &["--limit", "1"])[0]["commit_seq"].as_i64().unwrap();
-    sql(&dir, "insert into main.db.t values (3, 'c', 2.5)", "csv");
-    assert_eq!(count(&dir, "main"), "3");
+    sql(&dir, "insert into db.t values (3, 'c', 2.5)", "csv");
+    assert_eq!(count(&dir, "use branch main"), "3");
 
+    assert_eq!(count(&dir, &format!("use branch main as of {two_rows}")), "2");
     let past = format!("main@{two_rows}");
-    assert_eq!(count(&dir, &past), "2");
     ok(&dir, &["branch", "create", "old", "--from", &past]);
-    assert_eq!(count(&dir, "old"), "2");
+    assert_eq!(count(&dir, "use branch old"), "2");
 }
 
 #[test]
 fn log_merge_author_and_branch_commits() {
     let dir = table();
     ok(&dir, &["branch", "create", "dev"]);
-    sql(&dir, "insert into dev.db.t values (3, 'c', 2.5)", "csv");
+    sql(&dir, "use branch dev; insert into db.t values (3, 'c', 2.5)", "csv");
 
     let own = log(&dir, &["dev"]);
     assert_eq!(own.len(), 2, "its creation and its insert: {own:?}");
@@ -79,7 +80,7 @@ fn log_merge_author_and_branch_commits() {
 
     // The environment names the author when the flag does not.
     ok(&dir, &["branch", "create", "next"]);
-    sql(&dir, "insert into next.db.t values (4, 'd', 3.5)", "csv");
+    sql(&dir, "use branch next; insert into db.t values (4, 'd', 3.5)", "csv");
     let output = common::metalake(&dir)
         .env("METALAKE_AUTHOR", "bea")
         .args(["merge", "next"])
@@ -92,12 +93,8 @@ fn log_merge_author_and_branch_commits() {
 #[test]
 fn log_table_filter() {
     let dir = table();
-    sql(
-        &dir,
-        "create table main.db.u (k int); insert into main.db.u values (1)",
-        "csv",
-    );
-    sql(&dir, "insert into main.db.t values (3, 'c', 2.5)", "csv");
+    sql(&dir, "create table db.u (k int); insert into db.u values (1)", "csv");
+    sql(&dir, "insert into db.t values (3, 'c', 2.5)", "csv");
 
     let of_u = log(&dir, &["--table", "db.u"]);
     assert_eq!(of_u.len(), 2, "its creation and its insert: {of_u:?}");
@@ -105,6 +102,8 @@ fn log_table_filter() {
     let of_t = log(&dir, &["--table", "db.t"]);
     assert_eq!(of_t.len(), 3, "{of_t:?}");
 
-    assert_eq!(run(&dir, &["log", "--table", "plain"]).status.code(), Some(2));
+    // `plain` is now a name, `default.default.plain` (I7): an empty part is what is malformed.
+    assert_eq!(run(&dir, &["log", "--table", "db..u"]).status.code(), Some(2));
+    assert_eq!(run(&dir, &["log", "--table", "plain"]).status.code(), Some(1));
     assert_eq!(run(&dir, &["log", "--table", "db.none"]).status.code(), Some(1));
 }

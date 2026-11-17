@@ -59,11 +59,11 @@ async fn rest5_load_cost_by_window() -> Result<(), Failure> {
     let schema = fresh_schema();
     let (catalog, storage, directory) = local_catalog(&schema).await?;
     let main = catalog.branch("main").await?;
-    main.transaction().create_namespace(&["db"]).commit().await?;
+    main.transaction().create_namespace(&["default", "db"]).commit().await?;
     create(&main, "long", "0", vec![]).await?;
 
     let append = async |at: i64| -> Result<(), Failure> {
-        let t = main.table(&["db"], "long").await?;
+        let t = main.table(&["default", "db"], "long").await?;
         let mut writer = TableWriter::new(&catalog, &t, storage.clone(), WriteOptions::default())?;
         writer.write(&batch(at..at + 1)).await?;
         let added = writer.finish().await?;
@@ -79,7 +79,7 @@ async fn rest5_load_cost_by_window() -> Result<(), Failure> {
     }
     eprintln!("{SNAPSHOTS} commits written");
 
-    let t = main.table(&["db"], "long").await?;
+    let t = main.table(&["default", "db"], "long").await?;
     let location = t.location().trim_start_matches("file:///").to_string();
     let (_server, uri) = server(&schema)?;
     println!("window | first load ms | unchanged ms | after a commit ms | answer KB | ancestors ms");
@@ -101,7 +101,7 @@ async fn rest5_load_cost_by_window() -> Result<(), Failure> {
             after.push(loads(&uri, 1)?["ms"][0].clone());
         }
         let head = main
-            .table(&["db"], "long")
+            .table(&["default", "db"], "long")
             .await?
             .snapshot_id()
             .into_iter()

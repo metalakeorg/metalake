@@ -57,7 +57,7 @@ async fn served_with(minter: Arc<dyn Minter>) -> Result<String, Failure> {
     let schema = fresh_schema();
     let (catalog, _, _) = local_catalog(&schema).await?;
     let main = catalog.branch("main").await?;
-    main.transaction().create_namespace(&["db"]).commit().await?;
+    main.transaction().create_namespace(&["default", "db"]).commit().await?;
     create(&main, "t", "0", vec![]).await?;
     let state = State::connect(&common::url(), &schema).await?.vending("file", minter);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;

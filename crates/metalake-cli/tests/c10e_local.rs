@@ -69,7 +69,7 @@ fn local_lake_dedicated_postgres() {
     assert_eq!(parquet(&dir.join("lake/data")), 1);
 
     ok(dir, &["branch", "create", "dev"]);
-    sql(dir, "insert into dev.default.t values (0)", "csv");
+    sql(dir, "use branch dev; insert into t values (0)", "csv");
     ok(dir, &["merge", "dev", "--check"]);
     ok(dir, &["merge", "dev"]);
     assert_eq!(sql(dir, "select count(*) as n from t", "csv"), "n\n200003\n");

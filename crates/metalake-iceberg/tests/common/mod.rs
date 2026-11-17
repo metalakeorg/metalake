@@ -40,6 +40,9 @@ pub async fn local_catalog(schema: &str) -> Result<(Catalog, Storage, PathBuf), 
     let path = directory.display().to_string().replace('\\', "/");
     let warehouse = format!("file:///{}", path.trim_start_matches('/'));
     let catalog = Catalog::init(CatalogConfig::new(url(), schema).warehouse(&warehouse), None).await?;
+    // The catalog `default`, which a client that asks for no warehouse sees (I7): its schemas are the client's namespaces.
+    let main = catalog.branch("main").await?;
+    main.transaction().create_namespace(&["default"]).commit().await?;
     let storage = Storage::new(&warehouse, Vec::<(String, String)>::new())?;
     Ok((catalog, storage, directory))
 }
@@ -47,7 +50,7 @@ pub async fn local_catalog(schema: &str) -> Result<(Catalog, Storage, PathBuf), 
 pub async fn create(on: &Ref, name: &str, inline_max: &str, partitioning: Vec<(&str, &str)>) -> Result<(), Failure> {
     let shape = batch(0..1).schema();
     let (tx, _) = on.transaction().create_table(NewTable {
-        namespace: &["db"],
+        namespace: &["default", "db"],
         name,
         schema: &shape,
         location: None,
@@ -66,7 +69,7 @@ pub async fn append(
     name: &str,
     keys: std::ops::Range<i64>,
 ) -> Result<(), Failure> {
-    let t = on.table(&["db"], name).await?;
+    let t = on.table(&["default", "db"], name).await?;
     let mut writer = TableWriter::new(catalog, &t, storage.clone(), WriteOptions::default())?;
     writer.write(&batch(keys)).await?;
     let added = writer.finish().await?;
@@ -80,7 +83,7 @@ pub async fn append(
 pub async fn streamed(schema: &str) -> Result<std::path::PathBuf, Failure> {
     let (catalog, storage, directory) = local_catalog(schema).await?;
     let main = catalog.branch("main").await?;
-    main.transaction().create_namespace(&["db"]).commit().await?;
+    main.transaction().create_namespace(&["default", "db"]).commit().await?;
 
     create(&main, "merged", "0", vec![]).await?;
     append(&catalog, &main, &storage, "merged", 0..2).await?;
@@ -92,7 +95,7 @@ pub async fn streamed(schema: &str) -> Result<std::path::PathBuf, Failure> {
     create(&main, "removed", "0", vec![]).await?;
     append(&catalog, &main, &storage, "removed", 0..2).await?;
     let branch = main.create_branch("c").await?;
-    let t = branch.table(&["db"], "removed").await?;
+    let t = branch.table(&["default", "db"], "removed").await?;
     let planned: Vec<_> = Scan::new(&catalog, &t).plan().await?.try_collect().await?;
     let ids = planned.iter().map(|f| f.file_id);
     branch.transaction().remove(&t, ids).commit().await?;
@@ -100,7 +103,7 @@ pub async fn streamed(schema: &str) -> Result<std::path::PathBuf, Failure> {
 
     create(&main, "evolved", "0", vec![]).await?;
     append(&catalog, &main, &storage, "evolved", 0..2).await?;
-    let t = main.table(&["db"], "evolved").await?;
+    let t = main.table(&["default", "db"], "evolved").await?;
     let field = json!({"source_ids": [1], "field_id": 1000, "name": "k_trunc", "transform": "truncate[10]"});
     let spec = json!({"partition_spec": [field]});
     main.transaction().define(t.id(), spec).commit().await?;

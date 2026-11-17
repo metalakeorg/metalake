@@ -40,7 +40,7 @@ async fn lake() -> Result<Lake, Box<dyn std::error::Error>> {
         Field::new("s", DataType::Utf8, true),
     ]);
     let table = |name| NewTable {
-        namespace: &["db"],
+        namespace: &["default", "db"],
         name,
         schema: &shape,
         location: None,
@@ -48,7 +48,11 @@ async fn lake() -> Result<Lake, Box<dyn std::error::Error>> {
         partitioning: vec![],
         properties: vec![("inline.max-bytes", "0")],
     };
-    let (tx, _) = main.transaction().create_namespace(&["db"]).create_table(table("t"))?;
+    let (tx, _) = main
+        .transaction()
+        .create_namespace(&["default"])
+        .create_namespace(&["default", "db"])
+        .create_table(table("t"))?;
     let (tx, _) = tx.create_table(table("source"))?;
     tx.commit().await?;
     let context = MetaLake::new(catalog.clone(), storage.clone()).await?.context()?;
@@ -61,6 +65,19 @@ async fn lake() -> Result<Lake, Box<dyn std::error::Error>> {
 }
 
 impl Lake {
+    /// Has the session read and write on the ref `name`, from its next statement.
+    fn on(&self, name: &str) {
+        MetaLake::on_ref(&self.context, name);
+    }
+
+    /// The rows of `table` on the ref `name`; the session is back on `main` after.
+    async fn rows_on(&self, name: &str, table: &str) -> Result<Vec<(i64, i32)>, Box<dyn std::error::Error>> {
+        self.on(name);
+        let rows = self.rows(table).await;
+        self.on("main");
+        rows
+    }
+
     async fn run(&self, sql: &str) -> Result<u64, Box<dyn std::error::Error>> {
         let batches = self.context.sql(sql).await?.collect().await?;
         Ok(batches[0].column(0).as_primitive::<UInt64Type>().value(0))
@@ -80,7 +97,7 @@ impl Lake {
     }
 
     async fn tasks(&self) -> Result<Vec<ScanTask>, Error> {
-        let t = self.main.table(&["db"], "t").await?;
+        let t = self.main.table(&["default", "db"], "t").await?;
         Scan::new(&self.catalog, &t).plan().await?.try_collect().await
     }
 }
@@ -88,141 +105,130 @@ impl Lake {
 #[tokio::test]
 async fn overwrite_replaces_all_rows() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
-    lake.run("insert into main.db.t values (1, 1, 'a'), (2, 2, 'b')")
+    lake.run("insert into db.t values (1, 1, 'a'), (2, 2, 'b')").await?;
+    lake.run("insert into db.t values (3, 3, 'c')").await?;
+    lake.run("insert into db.source values (7, 7, 'x'), (8, 8, 'y')")
         .await?;
-    lake.run("insert into main.db.t values (3, 3, 'c')").await?;
-    lake.run("insert into main.db.source values (7, 7, 'x'), (8, 8, 'y')")
-        .await?;
-    let before = lake.main.table(&["db"], "t").await?.snapshot_id().unwrap();
+    let before = lake.main.table(&["default", "db"], "t").await?.snapshot_id().unwrap();
     lake.main.create_branch("dev").await?;
 
-    assert_eq!(
-        lake.run("insert overwrite main.db.t select * from main.db.source")
-            .await?,
-        2
-    );
-    assert_eq!(lake.rows("main.db.t").await?, [(7, 7), (8, 8)]);
+    assert_eq!(lake.run("insert overwrite db.t select * from db.source").await?, 2);
+    assert_eq!(lake.rows("db.t").await?, [(7, 7), (8, 8)]);
     assert_eq!(lake.tasks().await?.len(), 1);
     assert_eq!(
-        lake.rows("dev.db.t").await?,
+        lake.rows_on("dev", "db.t").await?,
         [(1, 1), (2, 2), (3, 3)],
         "a branch keeps its rows"
     );
-    let past = format!(r#""main@{before}".db.t"#);
     assert_eq!(
-        lake.rows(&past).await?,
+        lake.rows_on(&format!("main@{before}"), "db.t").await?,
         [(1, 1), (2, 2), (3, 3)],
         "and the past its own"
     );
 
     // From values, on a branch, and with nothing, which empties a table.
-    assert_eq!(lake.run("insert overwrite dev.db.t values (9, 9, 'z')").await?, 1);
-    assert_eq!(lake.rows("dev.db.t").await?, [(9, 9)]);
-    assert_eq!(lake.rows("main.db.t").await?, [(7, 7), (8, 8)]);
+    lake.on("dev");
+    assert_eq!(lake.run("insert overwrite db.t values (9, 9, 'z')").await?, 1);
+    assert_eq!(lake.rows("db.t").await?, [(9, 9)]);
+    lake.on("main");
+    assert_eq!(lake.rows("db.t").await?, [(7, 7), (8, 8)]);
     assert_eq!(
-        lake.run("insert overwrite main.db.t select * from main.db.t where k < 0")
-            .await?,
+        lake.run("insert overwrite db.t select * from db.t where k < 0").await?,
         0
     );
-    assert!(lake.rows("main.db.t").await?.is_empty());
+    assert!(lake.rows("db.t").await?.is_empty());
     Ok(())
 }
 
 #[tokio::test]
 async fn update_single_commit() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
-    lake.run("insert into main.db.t values (1, 10, 'a'), (2, 20, 'b'), (3, null, 'c')")
+    lake.run("insert into db.t values (1, 10, 'a'), (2, 20, 'b'), (3, null, 'c')")
         .await?;
-    lake.run("insert into main.db.t values (4, 40, 'a')").await?;
+    lake.run("insert into db.t values (4, 40, 'a')").await?;
     lake.main.create_branch("dev").await?;
-    let before = lake.main.table(&["db"], "t").await?.snapshot_id().unwrap();
+    let before = lake.main.table(&["default", "db"], "t").await?.snapshot_id().unwrap();
 
     // Off the cluster key, across files, from the row itself.
-    assert_eq!(lake.run("update main.db.t set n = n + 1 where s = 'a'").await?, 2);
-    assert_eq!(lake.rows("main.db.t").await?, [(1, 11), (2, 20), (3, -1), (4, 41)]);
-    let latest = lake.main.table(&["db"], "t").await?.snapshot_id().unwrap();
+    assert_eq!(lake.run("update db.t set n = n + 1 where s = 'a'").await?, 2);
+    assert_eq!(lake.rows("db.t").await?, [(1, 11), (2, 20), (3, -1), (4, 41)]);
+    let latest = lake.main.table(&["default", "db"], "t").await?.snapshot_id().unwrap();
     let tasks = lake.tasks().await?;
     assert_eq!(tasks.len(), 3, "the two files with vectors, and the new one");
     assert_eq!(tasks.iter().filter(|f| f.vector.is_some()).count(), 2);
 
     // One commit: the sequence before it has the old values, not some of each.
-    let then = format!(r#""main@{}".db.t"#, latest - 1);
-    assert_eq!(lake.rows(&then).await?, [(1, 10), (2, 20), (3, -1), (4, 40)]);
+    let then = format!("main@{}", latest - 1);
+    assert_eq!(lake.rows_on(&then, "db.t").await?, [(1, 10), (2, 20), (3, -1), (4, 40)]);
     assert_ne!(before, latest);
 
     // On the cluster key, with a constant of another type, a null, and a column to null.
-    assert_eq!(lake.run("update main.db.t set n = 5, s = null where k = 2").await?, 1);
-    assert_eq!(lake.rows("main.db.t").await?, [(1, 11), (2, 5), (3, -1), (4, 41)]);
+    assert_eq!(lake.run("update db.t set n = 5, s = null where k = 2").await?, 1);
+    assert_eq!(lake.rows("db.t").await?, [(1, 11), (2, 5), (3, -1), (4, 41)]);
     let nulls = lake
         .context
-        .sql("select s from main.db.t where k = 2")
+        .sql("select s from db.t where k = 2")
         .await?
         .collect()
         .await?;
     assert!(nulls[0].column(0).is_null(0));
 
     // A filter null for a row does not match it; nothing matching is no commit; a branch is apart.
-    let latest = lake.main.table(&["db"], "t").await?.snapshot_id();
-    assert_eq!(lake.run("update main.db.t set n = 0 where n > 1000").await?, 0);
-    assert_eq!(lake.main.table(&["db"], "t").await?.snapshot_id(), latest);
-    assert_eq!(lake.run("update dev.db.t set n = 0").await?, 4);
-    assert_eq!(lake.rows("dev.db.t").await?, [(1, 0), (2, 0), (3, 0), (4, 0)]);
-    assert_eq!(lake.rows("main.db.t").await?, [(1, 11), (2, 5), (3, -1), (4, 41)]);
+    let latest = lake.main.table(&["default", "db"], "t").await?.snapshot_id();
+    assert_eq!(lake.run("update db.t set n = 0 where n > 1000").await?, 0);
+    assert_eq!(lake.main.table(&["default", "db"], "t").await?.snapshot_id(), latest);
+    lake.on("dev");
+    assert_eq!(lake.run("update db.t set n = 0").await?, 4);
+    assert_eq!(lake.rows("db.t").await?, [(1, 0), (2, 0), (3, 0), (4, 0)]);
+    lake.on("main");
+    assert_eq!(lake.rows("db.t").await?, [(1, 11), (2, 5), (3, -1), (4, 41)]);
 
     // What a required column cannot hold is refused, and nothing changes.
     assert!(
-        lake.context
-            .sql("update main.db.t set k = null where k = 1")
-            .await
-            .is_err()
-            || {
-                lake.context
-                    .sql("update main.db.t set k = null where k = 1")
-                    .await?
-                    .collect()
-                    .await
-                    .is_err()
-            }
+        lake.context.sql("update db.t set k = null where k = 1").await.is_err() || {
+            lake.context
+                .sql("update db.t set k = null where k = 1")
+                .await?
+                .collect()
+                .await
+                .is_err()
+        }
     );
-    assert_eq!(lake.rows("main.db.t").await?, [(1, 11), (2, 5), (3, -1), (4, 41)]);
+    assert_eq!(lake.rows("db.t").await?, [(1, 11), (2, 5), (3, -1), (4, 41)]);
     Ok(())
 }
 
 #[tokio::test]
 async fn update_conflicts_with_earlier_commit() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
-    lake.run("insert into main.db.t values (1, 1, 'a'), (2, 2, 'b')")
-        .await?;
+    lake.run("insert into db.t values (1, 1, 'a'), (2, 2, 'b')").await?;
 
     // An update planned, then a delete of its row gets in: were the update to go on, its row would come back.
-    let update = lake.context.sql("update main.db.t set n = 100 where k = 1").await?;
-    lake.run("delete from main.db.t where k = 1").await?;
+    let update = lake.context.sql("update db.t set n = 100 where k = 1").await?;
+    lake.run("delete from db.t where k = 1").await?;
     assert!(update.collect().await.is_err());
-    assert_eq!(lake.rows("main.db.t").await?, [(2, 2)]);
+    assert_eq!(lake.rows("db.t").await?, [(2, 2)]);
 
     // Two updates of one row: one stands, and the row is there once.
-    let first = lake.context.sql("update main.db.t set n = 100 where k = 2").await?;
-    let second = lake.context.sql("update main.db.t set n = 200 where k = 2").await?;
+    let first = lake.context.sql("update db.t set n = 100 where k = 2").await?;
+    let second = lake.context.sql("update db.t set n = 200 where k = 2").await?;
     first.collect().await?;
     assert!(second.collect().await.is_err());
-    assert_eq!(lake.rows("main.db.t").await?, [(2, 100)]);
+    assert_eq!(lake.rows("db.t").await?, [(2, 100)]);
 
     // Two updates of rows of different files both stand: only what they touch conflicts.
-    lake.run("insert into main.db.t values (5, 5, 'e')").await?;
-    let first = lake.context.sql("update main.db.t set n = 300 where k = 2").await?;
-    let second = lake.context.sql("update main.db.t set n = 500 where k = 5").await?;
+    lake.run("insert into db.t values (5, 5, 'e')").await?;
+    let first = lake.context.sql("update db.t set n = 300 where k = 2").await?;
+    let second = lake.context.sql("update db.t set n = 500 where k = 5").await?;
     first.collect().await?;
     second.collect().await?;
-    assert_eq!(lake.rows("main.db.t").await?, [(2, 300), (5, 500)]);
+    assert_eq!(lake.rows("db.t").await?, [(2, 300), (5, 500)]);
 
     // An overwrite planned, then an insert: its rows are not lost in silence.
-    let overwrite = lake
-        .context
-        .sql("insert overwrite main.db.t values (9, 9, 'z')")
-        .await?;
-    lake.run("insert into main.db.t values (3, 3, 'c')").await?;
+    let overwrite = lake.context.sql("insert overwrite db.t values (9, 9, 'z')").await?;
+    lake.run("insert into db.t values (3, 3, 'c')").await?;
     assert!(overwrite.collect().await.is_err());
-    assert_eq!(lake.rows("main.db.t").await?, [(2, 300), (3, 3), (5, 500)]);
+    assert_eq!(lake.rows("db.t").await?, [(2, 300), (3, 3), (5, 500)]);
     Ok(())
 }
 
@@ -230,10 +236,10 @@ async fn update_conflicts_with_earlier_commit() -> Result<(), Box<dyn std::error
 #[tokio::test]
 async fn delete_retries_vector_union() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
-    lake.run("insert into main.db.t values (1, 1, 'a'), (2, 2, 'b'), (3, 3, 'c'), (4, 4, 'd')")
+    lake.run("insert into db.t values (1, 1, 'a'), (2, 2, 'b'), (3, 3, 'c'), (4, 4, 'd')")
         .await?;
     let main = &lake.main;
-    let read = main.table(&["db"], "t").await?;
+    let read = main.table(&["default", "db"], "t").await?;
     let file = lake.tasks().await?[0].file_id;
     let at = |position| {
         let mut deletes = Deletes::new();
@@ -244,7 +250,7 @@ async fn delete_retries_vector_union() -> Result<(), Box<dyn std::error::Error>>
 
     // From the same read: the vector changed under it.
     main.transaction().delete(&read, &lake.storage, at(1)).commit().await?;
-    assert_eq!(lake.rows("main.db.t").await?, [(3, 3), (4, 4)]);
+    assert_eq!(lake.rows("db.t").await?, [(3, 3), (4, 4)]);
 
     let columns: Vec<ArrayRef> = vec![
         Arc::new(Int64Array::from(vec![30])),
@@ -265,6 +271,6 @@ async fn delete_retries_vector_union() -> Result<(), Box<dyn std::error::Error>>
         matches!(&refused, Err(Error::Protocol(e)) if e.kind() == ErrorKind::Conflict && e.rule() == Some("DV-4")),
         "{refused:?}"
     );
-    assert_eq!(lake.rows("main.db.t").await?, [(3, 3), (4, 4)]);
+    assert_eq!(lake.rows("db.t").await?, [(3, 3), (4, 4)]);
     Ok(())
 }

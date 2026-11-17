@@ -171,7 +171,10 @@ fn widen(batch: &RecordBatch, slot: &CommitDetails) -> Result<RecordBatch> {
     let columns: Vec<ArrayRef> = vec![
         batch.column(0).clone(),
         Arc::new(Int64Array::from(vec![outcome.map(Outcome::seq); rows])),
-        Arc::new(BooleanArray::from(vec![matches!(outcome, Some(Outcome::Committed(_))); rows])),
+        Arc::new(BooleanArray::from(vec![
+            matches!(outcome, Some(Outcome::Committed(_)));
+            rows
+        ])),
         Arc::new(UInt64Array::from(vec![inserted; rows])),
         Arc::new(UInt64Array::from(vec![updated; rows])),
     ];
@@ -190,7 +193,10 @@ impl AnalyzerRule for Written {
                 if dml.output_schema == output_schema {
                     return Ok(Transformed::no(LogicalPlan::Dml(dml)));
                 }
-                Ok(Transformed::yes(LogicalPlan::Dml(DmlStatement { output_schema, ..dml })))
+                Ok(Transformed::yes(LogicalPlan::Dml(DmlStatement {
+                    output_schema,
+                    ..dml
+                })))
             }
             plan => Ok(Transformed::no(plan)),
         })
@@ -249,10 +255,17 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn slot_reaches_the_row_in_many_partitions() -> Result<()> {
         let schema = Arc::new(Schema::empty());
-        let sink = DataSinkExec::new(Arc::new(EmptyExec::new(schema.clone())), Arc::new(Counted(schema)), None);
+        let sink = DataSinkExec::new(
+            Arc::new(EmptyExec::new(schema.clone())),
+            Arc::new(Counted(schema)),
+            None,
+        );
         let mut plan: Arc<dyn ExecutionPlan> = Arc::new(MetaWriteExec::new(Arc::new(sink)));
         let config = SessionConfig::new().with_target_partitions(16);
-        let state = SessionStateBuilder::new().with_config(config).with_default_features().build();
+        let state = SessionStateBuilder::new()
+            .with_config(config)
+            .with_default_features()
+            .build();
         for rule in state.physical_optimizers() {
             plan = rule.optimize(plan, state.config_options())?;
         }

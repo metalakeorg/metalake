@@ -38,24 +38,26 @@ def case(lake, request):
     return name, f"{name}_dev"
 
 
-def test_merge(lake, case):
+def test_merge(lake, case, on_ref):
     table, branch = case
-    lake.table(f"{branch}.default.{table}").append(frame(2))
+    with on_ref(lake, branch):
+        lake.table(table).append(frame(2))
     merged = lake.merge(branch, message="the merge", author="ana")
     assert isinstance(merged, metalake.Merged)
     assert merged.outcome == "merged" and merged.commit
-    assert merged.merged == [f"default.{table}"]
+    assert merged.merged == [f"default.default.{table}"]
     assert rows(lake, table) == [(1,), (2,)]
     latest = lake.log()[0]
     assert (latest.message, latest.author, latest.seq) == ("the merge", "ana", merged.commit)
 
 
-def test_check_preserves_state(lake, case):
+def test_check_preserves_state(lake, case, on_ref):
     table, branch = case
-    lake.table(f"{branch}.default.{table}").append(frame(2))
+    with on_ref(lake, branch):
+        lake.table(table).append(frame(2))
     checked = lake.merge(branch, check=True)
     assert checked.outcome == "would merge" and checked.commit is None
-    assert checked.merged == [f"default.{table}"]
+    assert checked.merged == [f"default.default.{table}"]
     assert rows(lake, table) == [(1,)]
 
 
@@ -65,28 +67,32 @@ def test_nothing_to_merge(lake, case):
     assert merged.outcome == "nothing" and merged.commit is None
 
 
-def test_conflict_error_rule(lake, case):
+def test_conflict_error_rule(lake, case, on_ref):
     table, branch = case
-    lake.table(f"{branch}.default.{table}").delete("k = 1")
+    with on_ref(lake, branch):
+        lake.table(table).delete("k = 1")
     lake.table(table).overwrite(frame(7))
     for check in (True, False):
         with pytest.raises(metalake.ConflictError) as raised:
             lake.merge(branch, check=check)
         assert raised.value.rule, check
     assert rows(lake, table) == [(7,)]
-    assert rows(lake, f'"{branch}".default.{table}') == []
+    with on_ref(lake, branch):
+        assert rows(lake, table) == []
 
 
-def test_selected_tables(lake, case):
+def test_selected_tables(lake, case, on_ref):
     table, branch = case
     other = f"{table}_b"
-    lake.sql(f'create table {other} (k bigint); create table "{branch}".default.{other}_c (k bigint)')
+    lake.sql(f"create table {other} (k bigint); use branch {branch}; create table {other}_c (k bigint)")
+    lake.on("main")
     lake.branch(f"{branch}_two")
     two = f"{branch}_two"
-    lake.table(f"{two}.default.{table}").append(frame(2))
-    lake.table(f"{two}.default.{other}").append(frame(3))
+    with on_ref(lake, two):
+        lake.table(table).append(frame(2))
+        lake.table(other).append(frame(3))
     merged = lake.merge(two, tables=[f"default.{table}"])
-    assert merged.merged == [f"default.{table}"]
+    assert merged.merged == [f"default.default.{table}"]
     assert rows(lake, table) == [(1,), (2,)]
     assert rows(lake, other) == []
 
@@ -94,10 +100,10 @@ def test_selected_tables(lake, case):
 def test_invalid_table_name_raises(lake, case):
     _, branch = case
     with pytest.raises(metalake.UsageError):
-        lake.merge(branch, tables=["no_namespace"])
+        lake.merge(branch, tables=["no..name"])
 
 
-def test_cross_table_commit_requires_split(lake, case):
+def test_cross_table_commit_requires_split(lake, case, on_ref):
     table, branch = case
     other = f"{table}_b"
     lake.sql(f"create table {other} (k bigint)")
@@ -105,8 +111,9 @@ def test_cross_table_commit_requires_split(lake, case):
     middle = f"{branch}_mid"
     lake.branch(f"{branch}_sub", start=middle)
     below = f"{branch}_sub"
-    lake.table(f"{below}.default.{table}").append(frame(2))
-    lake.table(f"{below}.default.{other}").append(frame(3))
+    with on_ref(lake, below):
+        lake.table(table).append(frame(2))
+        lake.table(other).append(frame(3))
     lake.merge(below)
 
     with pytest.raises(metalake.ConflictError):
@@ -119,11 +126,12 @@ def test_cross_table_commit_requires_split(lake, case):
     assert rows(lake, other) == []
 
 
-def test_deletes_on_both_refs(lake):
+def test_deletes_on_both_refs(lake, on_ref):
     lake.sql("create table both_sides (k bigint)")
     lake.table("both_sides").append(pl.DataFrame({"k": range(100_000)}))
     lake.branch("both_dev")
-    lake.table("both_dev.default.both_sides").delete("k < 5000")
+    with on_ref(lake, "both_dev"):
+        lake.table("both_sides").delete("k < 5000")
     lake.table("both_sides").delete("k >= 95000")
     assert lake.merge("both_dev").outcome == "merged"
     assert pl.DataFrame(lake.sql("select count(*) as n from both_sides"))["n"][0] == 90_000
@@ -131,7 +139,7 @@ def test_deletes_on_both_refs(lake):
 
 def test_new_table_visible_after_merge(lake, case):
     table, branch = case
-    lake.sql(f'create table "{branch}".default.{table}_new (k bigint)')
+    lake.sql(f"use branch {branch}; create table {table}_new (k bigint); use branch main")
     lake.merge(branch)
     names = pl.DataFrame(lake.sql("select table_name from information_schema.tables"))["table_name"]
     assert f"{table}_new" in names.to_list()

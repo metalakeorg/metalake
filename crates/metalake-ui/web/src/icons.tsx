@@ -1,4 +1,4 @@
-// The icons of the tree (Lucide, ISC): a catalog, a schema, a table, and a column by the family of its type, of the
+// The icons of the tree (Lucide, ISC): a ref, a catalog, a schema, a table, and a column by the family of its type, of the
 // types MetaLake reads and writes (Iceberg's: `crates/metalake/src/schema.rs`).
 
 import {
@@ -14,6 +14,7 @@ import {
   DecimalsArrowRight,
   FingerprintPattern,
   Folder,
+  GitBranch,
   Hash,
   KeyRound,
   type LucideIcon,
@@ -27,6 +28,7 @@ function shown(Icon: LucideIcon) {
   return <Icon aria-hidden strokeWidth={1.75} className={CLASS} />;
 }
 
+export const RefIcon = () => shown(GitBranch);
 export const CatalogIcon = () => shown(Database);
 export const SchemaIcon = () => shown(Folder);
 export const TableIcon = () => shown(Table2);

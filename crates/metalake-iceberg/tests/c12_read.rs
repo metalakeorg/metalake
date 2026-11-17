@@ -43,7 +43,7 @@ async fn ice1_pyiceberg_load_matches_reference() -> Result<(), Failure> {
     let schema = fresh_schema();
     let (catalog, storage, directory) = local_catalog(&schema).await?;
     let main = catalog.branch("main").await?;
-    main.transaction().create_namespace(&["db"]).commit().await?;
+    main.transaction().create_namespace(&["default", "db"]).commit().await?;
     create(&main, "plain", "0", vec![]).await?;
     create(&main, "small", "1000000", vec![]).await?;
     append(&catalog, &main, &storage, "plain", 0..5).await?;
@@ -70,7 +70,7 @@ async fn ice1_pyiceberg_load_matches_reference() -> Result<(), Failure> {
     session
         .batch_execute(&format!("set search_path = {schema}; {reference}"))
         .await?;
-    let t = main.table(&["db"], "plain").await?;
+    let t = main.table(&["default", "db"], "plain").await?;
     let expected: Value = session
         .query_one("select iceberg_metadata($1)", &[&t.id()])
         .await?
@@ -84,12 +84,12 @@ async fn pyiceberg_read_partitions_vectors_branch_schemas() -> Result<(), Failur
     let schema = fresh_schema();
     let (catalog, storage, directory) = local_catalog(&schema).await?;
     let main = catalog.branch("main").await?;
-    main.transaction().create_namespace(&["db"]).commit().await?;
+    main.transaction().create_namespace(&["default", "db"]).commit().await?;
     create(&main, "wide", "0", vec![("k", "truncate[10]")]).await?;
     append(&catalog, &main, &storage, "wide", 0..5).await?;
     append(&catalog, &main, &storage, "wide", 10..13).await?;
 
-    let t = main.table(&["db"], "wide").await?;
+    let t = main.table(&["default", "db"], "wide").await?;
     let planned: Vec<_> = Scan::new(&catalog, &t).plan().await?.try_collect().await?;
     let mut deletes = Deletes::new();
     deletes.insert(
@@ -157,12 +157,12 @@ async fn rest6_manifest_schema_matches_snapshot() -> Result<(), Failure> {
     let schema = fresh_schema();
     let (catalog, storage, directory) = local_catalog(&schema).await?;
     let main = catalog.branch("main").await?;
-    main.transaction().create_namespace(&["db"]).commit().await?;
+    main.transaction().create_namespace(&["default", "db"]).commit().await?;
     create(&main, "grown", "0", vec![]).await?;
     append(&catalog, &main, &storage, "grown", 0..2).await?;
-    let before = main.table(&["db"], "grown").await?.snapshot_id().unwrap();
+    let before = main.table(&["default", "db"], "grown").await?.snapshot_id().unwrap();
 
-    let t = main.table(&["db"], "grown").await?;
+    let t = main.table(&["default", "db"], "grown").await?;
     let pool = Pool::new(&url(), 1)?;
     let session = pool.get().await?;
     let protocol = Protocol::new(&schema);
@@ -176,7 +176,7 @@ async fn rest6_manifest_schema_matches_snapshot() -> Result<(), Failure> {
         ..Default::default()
     };
     protocol.commit(&session, &change).await?;
-    let t = main.table(&["db"], "grown").await?;
+    let t = main.table(&["default", "db"], "grown").await?;
     let fields = vec![
         Field::new("k", DataType::Int64, false),
         Field::new("v", DataType::Int64, true),
@@ -189,7 +189,7 @@ async fn rest6_manifest_schema_matches_snapshot() -> Result<(), Failure> {
     let mut writer = TableWriter::new(&catalog, &t, storage.clone(), WriteOptions::default())?;
     writer.write(&grown).await?;
     main.transaction().append(writer.finish().await?).commit().await?;
-    let after = main.table(&["db"], "grown").await?.snapshot_id().unwrap();
+    let after = main.table(&["default", "db"], "grown").await?.snapshot_id().unwrap();
 
     // one load generates both, the first on the schema it was written with
     let (_server, uri) = server(&schema)?;
@@ -197,6 +197,7 @@ async fn rest6_manifest_schema_matches_snapshot() -> Result<(), Failure> {
     let load = format!("import urllib.request; urllib.request.urlopen('{uri}/v1/namespaces/db/tables/grown').read()");
     assert!(Command::new(python).args(["-c", &load]).status()?.success());
     let generated = directory
+        .join("default")
         .join("db")
         .read_dir()?
         .flatten()
@@ -238,7 +239,7 @@ async fn ice2_manifests_roll_up() -> Result<(), Failure> {
     let schema = fresh_schema();
     let (catalog, _storage, directory) = local_catalog(&schema).await?;
     let main = catalog.branch("main").await?;
-    main.transaction().create_namespace(&["db"]).commit().await?;
+    main.transaction().create_namespace(&["default", "db"]).commit().await?;
     create(&main, "rolled", "0", vec![]).await?;
 
     let (_server, uri) = server(&schema)?;
@@ -284,7 +285,7 @@ async fn tt3_pyiceberg_as_of_time_matches_metalake() -> Result<(), Failure> {
     let schema = fresh_schema();
     let (catalog, storage, directory) = local_catalog(&schema).await?;
     let main = catalog.branch("main").await?;
-    main.transaction().create_namespace(&["db"]).commit().await?;
+    main.transaction().create_namespace(&["default", "db"]).commit().await?;
     create(&main, "plain", "0", vec![]).await?;
     for keys in [0..5, 100..103] {
         // Commits a millisecond apart or more, so that each has a time of its own in the log.
@@ -306,7 +307,7 @@ async fn tt3_pyiceberg_as_of_time_matches_metalake() -> Result<(), Failure> {
     assert_eq!(said[0]["snapshot"], Value::Null, "before the table, no snapshot");
     for at in said {
         let time = std::time::UNIX_EPOCH + std::time::Duration::from_millis(at["at"].as_u64().unwrap());
-        let then = match main.as_of(time).table(&["db"], "plain").await {
+        let then = match main.as_of(time).table(&["default", "db"], "plain").await {
             Ok(t) => Some((t.snapshot_id(), keys_of(&catalog, &storage, &t).await?)),
             Err(metalake::Error::NotFound(_)) => None,
             Err(e) => return Err(e.into()),
@@ -325,13 +326,13 @@ async fn ice6_pyiceberg_append() -> Result<(), Failure> {
     let schema = fresh_schema();
     let (catalog, storage, directory) = local_catalog(&schema).await?;
     let main = catalog.branch("main").await?;
-    main.transaction().create_namespace(&["db"]).commit().await?;
+    main.transaction().create_namespace(&["default", "db"]).commit().await?;
     create(&main, "plain", "0", vec![]).await?;
     append(&catalog, &main, &storage, "plain", 0..3).await?;
 
     let (_server, uri) = server(&schema)?;
     let said = client("append", &uri)?;
-    let t = main.table(&["db"], "plain").await?;
+    let t = main.table(&["default", "db"], "plain").await?;
     let planned: Vec<_> = Scan::new(&catalog, &t).plan().await?.try_collect().await?;
     // The commit read no file of the client's, so its footer's size is not known (STA-1); MetaLake reads it all the
     // same, and the server keeps its footer once it has answered (FTR-1), which leaves maintenance nothing.
@@ -374,7 +375,7 @@ async fn rest3_conflict_rebase_and_repeat() -> Result<(), Failure> {
     let schema = fresh_schema();
     let (catalog, storage, directory) = local_catalog(&schema).await?;
     let main = catalog.branch("main").await?;
-    main.transaction().create_namespace(&["db"]).commit().await?;
+    main.transaction().create_namespace(&["default", "db"]).commit().await?;
     create(&main, "plain", "0", vec![]).await?;
     append(&catalog, &main, &storage, "plain", 0..3).await?;
 
@@ -501,7 +502,7 @@ async fn delete_key(catalog: &Catalog, on: &metalake::Ref, storage: &metalake::S
     use arrow_array::types::Int64Type;
     use metalake::vectors::{FILE_ID, POSITION};
 
-    let t = on.table(&["db"], "plain").await?;
+    let t = on.table(&["default", "db"], "plain").await?;
     let scan = Scan::new(catalog, &t).with_positions();
     let batches: Vec<arrow_array::RecordBatch> = scan.read(scan.plan().await?, storage).try_collect().await?;
     let mut deletes = Deletes::new();
@@ -521,7 +522,7 @@ async fn ice4_overwrite_writes_only_new_objects() -> Result<(), Failure> {
     let schema = fresh_schema();
     let (catalog, storage, directory) = local_catalog(&schema).await?;
     let main = catalog.branch("main").await?;
-    main.transaction().create_namespace(&["db"]).commit().await?;
+    main.transaction().create_namespace(&["default", "db"]).commit().await?;
     create(&main, "plain", "65536", vec![]).await?;
     // four inline files, and rows deleted in two of them
     for keys in [0..3, 3..6, 6..9, 9..12] {
@@ -583,6 +584,7 @@ fn load_table(uri: &str, name: &str) -> Result<(), Failure> {
 /// marker is drawn anew each time it is written, so their bytes are not what they hold.
 fn manifests_of(directory: &std::path::Path) -> Result<std::collections::BTreeMap<String, String>, Failure> {
     let table = directory
+        .join("default")
         .join("db")
         .read_dir()?
         .flatten()
@@ -613,7 +615,7 @@ async fn rest6_batch_generation_matches_incremental() -> Result<(), Failure> {
     let schema = fresh_schema();
     let (catalog, storage, directory) = local_catalog(&schema).await?;
     let main = catalog.branch("main").await?;
-    main.transaction().create_namespace(&["db"]).commit().await?;
+    main.transaction().create_namespace(&["default", "db"]).commit().await?;
     create(&main, "plain", "65536", vec![]).await?;
     let (_server, uri) = server(&schema)?;
     load_table(&uri, "plain")?;
@@ -635,6 +637,7 @@ async fn rest6_batch_generation_matches_incremental() -> Result<(), Failure> {
     let one_at_a_time = manifests_of(&directory)?;
 
     let table = directory
+        .join("default")
         .join("db")
         .read_dir()?
         .flatten()

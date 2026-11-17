@@ -78,10 +78,10 @@ metalake() {
   docker run --rm -i --network "$net" -v "$lake:/lake" -w /lake metalake-e2e/metalake "$@"
 }
 metalake init "postgresql://postgres@$pg/postgres" /lake/data --schema lake
-metalake sql "create schema main.shop;
-              create table main.shop.orders (id bigint, customer varchar, amount double);
-              create table main.shop.totals (customer varchar, orders bigint, amount double);
-              insert into main.shop.orders values (1, 'ana', 10), (2, 'ana', 20), (3, 'bo', 5), (4, 'cy', 7)"
+metalake sql "create schema shop;
+              create table shop.orders (id bigint, customer varchar, amount double);
+              create table shop.totals (customer varchar, orders bigint, amount double);
+              insert into shop.orders values (1, 'ana', 10), (2, 'ana', 20), (3, 'bo', 5), (4, 'cy', 7)"
 
 # Arroyo reaches the lake as a client does, from its environment: the pipeline names no catalog of its own.
 start() {
@@ -94,9 +94,9 @@ start() {
 settled() {
   local want got
   want=$(metalake sql --format csv "select customer, count(*) as orders, sum(amount) as amount
-                                     from main.shop.orders group by customer order by customer")
+                                     from shop.orders group by customer order by customer")
   for _ in $(seq 1 60); do
-    got=$(metalake sql --format csv "select customer, orders, amount from main.shop.totals order by customer")
+    got=$(metalake sql --format csv "select customer, orders, amount from shop.totals order by customer")
     if [ "$got" = "$want" ]; then
       echo "   $1: $(echo "$got" | tail -n +2 | tr '\n' ' ')"
       return 0
@@ -113,20 +113,20 @@ settled() {
 echo "== pipeline"
 start
 settled "snapshot"
-metalake sql "insert into main.shop.orders values (5, 'bo', 15), (6, 'dee', 30)"
+metalake sql "insert into shop.orders values (5, 'bo', 15), (6, 'dee', 30)"
 settled "inserts"
-metalake sql "delete from main.shop.orders where id = 2"
+metalake sql "delete from shop.orders where id = 2"
 settled "an order deleted"
-metalake sql "delete from main.shop.orders where customer = 'cy'"
+metalake sql "delete from shop.orders where customer = 'cy'"
 settled "a customer gone"
 
 echo "== restart"
 docker stop -t 30 "$job" >/dev/null
 docker rm "$job" >/dev/null
-metalake sql "insert into main.shop.orders values (7, 'ana', 1), (8, 'eve', 2)"
+metalake sql "insert into shop.orders values (7, 'ana', 1), (8, 'eve', 2)"
 start
 settled "restored from its checkpoint"
-metalake sql "delete from main.shop.orders where customer = 'dee'; insert into main.shop.orders values (9, 'bo', 4)"
+metalake sql "delete from shop.orders where customer = 'dee'; insert into shop.orders values (9, 'bo', 4)"
 settled "after the restart"
 
 echo "== passed"

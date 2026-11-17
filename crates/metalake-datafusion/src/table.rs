@@ -26,10 +26,10 @@ use metalake::{Catalog, Evolve, Ref, Scan, Storage, Table};
 
 use crate::adapter::ByFieldId;
 use crate::catalog::external;
-use crate::source::MetaLakeSource;
 use crate::point::StatementPoint;
 use crate::read::{self, TaskReaders};
 use crate::sink::{Delete, Insert, Selection, Update};
+use crate::source::MetaLakeSource;
 use crate::written::MetaWriteExec;
 use crate::{filters, merge};
 
@@ -210,7 +210,11 @@ impl TableProvider for MetaTable {
             table: self.clone(),
             overwrite: insert_op == InsertOp::Overwrite,
         };
-        Ok(Arc::new(MetaWriteExec::new(Arc::new(DataSinkExec::new(input, Arc::new(sink), None)))))
+        Ok(Arc::new(MetaWriteExec::new(Arc::new(DataSinkExec::new(
+            input,
+            Arc::new(sink),
+            None,
+        )))))
     }
 
     async fn delete_from(&self, state: &dyn Session, filters: Vec<Expr>) -> DataFusionResult<Arc<dyn ExecutionPlan>> {

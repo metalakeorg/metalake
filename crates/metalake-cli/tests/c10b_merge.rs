@@ -5,7 +5,7 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use common::{ok, run, sql, table, text};
+use common::{ok, run, sql, sql_on, table, text};
 use serde_json::Value;
 
 fn answer(dir: &Path, args: &[&str]) -> Value {
@@ -14,9 +14,10 @@ fn answer(dir: &Path, args: &[&str]) -> Value {
     serde_json::from_str(&ok(dir, &args)).unwrap()
 }
 
-fn rows(dir: &Path, table: &str) -> String {
+/// The keys of `table` on the branch `on`: a name says no ref (I7).
+fn rows(dir: &Path, on: &str, table: &str) -> String {
     let select = format!("select k from {table} order by k");
-    sql(dir, &select, "csv")
+    sql_on(dir, &format!("use branch {on}"), &select, "csv")
 }
 
 /// Every file under `dir`.
@@ -35,19 +36,19 @@ fn files(dir: &Path) -> Vec<PathBuf> {
 fn merge_branch() {
     let dir = table();
     ok(&dir, &["branch", "create", "dev"]);
-    sql(&dir, "insert into dev.db.t values (3, 'c', 2.5)", "csv");
+    sql(&dir, "use branch dev; insert into db.t values (3, 'c', 2.5)", "csv");
 
     // A check changes nothing, and says what would happen.
     let check = answer(&dir, &["merge", "dev", "--check"]);
     assert_eq!(check["outcome"], "would merge");
-    assert_eq!(check["merged"][0], "db.t");
+    assert_eq!(check["merged"][0], "default.db.t");
     assert!(check["commit"].is_null());
-    assert_eq!(rows(&dir, "main.db.t"), "k\n1\n2\n");
+    assert_eq!(rows(&dir, "main", "db.t"), "k\n1\n2\n");
 
     let merged = answer(&dir, &["merge", "dev", "-m", "add a row"]);
     assert_eq!(merged["outcome"], "merged");
     assert!(merged["commit"].is_i64());
-    assert_eq!(rows(&dir, "main.db.t"), "k\n1\n2\n3\n");
+    assert_eq!(rows(&dir, "main", "db.t"), "k\n1\n2\n3\n");
 
     // Merging again has nothing to do, and that is not a failure.
     assert_eq!(answer(&dir, &["merge", "dev"])["outcome"], "nothing");
@@ -63,8 +64,8 @@ fn merge_conflict_exit_code() {
     let dir = table();
     ok(&dir, &["branch", "create", "dev"]);
     // The branch sets a vector on a file the parent removes, which is a conflict (MRG-3, by MRG-5's rule).
-    sql(&dir, "delete from dev.db.t where k = 1", "csv");
-    sql(&dir, "insert overwrite main.db.t values (7, 'z', 9.5)", "csv");
+    sql(&dir, "use branch dev; delete from db.t where k = 1", "csv");
+    sql(&dir, "insert overwrite db.t values (7, 'z', 9.5)", "csv");
 
     for args in [&["merge", "dev", "--check"][..], &["merge", "dev"][..]] {
         let mut args = args.to_vec();
@@ -76,13 +77,13 @@ fn merge_conflict_exit_code() {
         assert_eq!(failure["error"], "conflict", "{args:?}");
         assert_eq!(failure["rule"], "MRG-5", "{args:?}: {failure}");
     }
-    assert_eq!(rows(&dir, "main.db.t"), "k\n7\n");
+    assert_eq!(rows(&dir, "main", "db.t"), "k\n7\n");
 }
 
 #[test]
 fn sql_conflict_exit_code() {
     let dir = table();
-    let update = "update main.db.t set f = f + 1 where k = 1";
+    let update = "update db.t set f = f + 1 where k = 1";
     let start = || {
         common::metalake(&dir)
             .args(["sql", update, "--format", "json"])
@@ -116,12 +117,12 @@ fn merge_unions_vectors() {
     let dir = table();
     sql(
         &dir,
-        "insert into main.db.t select value, 'row', 0.5 from generate_series(3, 1000000)",
+        "insert into db.t select value, 'row', 0.5 from generate_series(3, 1000000)",
         "csv",
     );
     ok(&dir, &["branch", "create", "dev"]);
-    sql(&dir, "delete from dev.db.t where k % 2 = 0", "csv");
-    sql(&dir, "delete from main.db.t where k % 3 = 0", "csv");
+    sql(&dir, "use branch dev; delete from db.t where k % 2 = 0", "csv");
+    sql(&dir, "delete from db.t where k % 3 = 0", "csv");
     assert!(
         files(&dir.join("data"))
             .iter()
@@ -131,32 +132,30 @@ fn merge_unions_vectors() {
 
     assert_eq!(answer(&dir, &["merge", "dev", "--check"])["outcome"], "would merge");
     assert_eq!(answer(&dir, &["merge", "dev"])["outcome"], "merged");
-    let left = "select count(*) as n from main.db.t";
+    let left = "select count(*) as n from db.t";
     assert_eq!(sql(&dir, left, "csv"), "n\n333333\n");
-    let wrong = "select count(*) as n from main.db.t where k % 2 = 0 or k % 3 = 0";
+    let wrong = "select count(*) as n from db.t where k % 2 = 0 or k % 3 = 0";
     assert_eq!(sql(&dir, wrong, "csv"), "n\n0\n");
 }
 
 #[test]
 fn merge_selected_table() {
     let dir = table();
-    sql(
-        &dir,
-        "create table main.db.u (k int); insert into main.db.u values (1)",
-        "csv",
-    );
+    sql(&dir, "create table db.u (k int); insert into db.u values (1)", "csv");
     ok(&dir, &["branch", "create", "dev"]);
-    sql(&dir, "insert into dev.db.t values (3, 'c', 2.5)", "csv");
-    sql(&dir, "insert into dev.db.u values (2)", "csv");
+    sql(&dir, "use branch dev; insert into db.t values (3, 'c', 2.5)", "csv");
+    sql(&dir, "use branch dev; insert into db.u values (2)", "csv");
 
     let merged = answer(&dir, &["merge", "dev", "--table", "db.t"]);
-    assert_eq!(merged["merged"], serde_json::json!(["db.t"]));
-    assert_eq!(merged["rebased"], serde_json::json!(["db.u"]));
-    assert_eq!(rows(&dir, "main.db.t"), "k\n1\n2\n3\n");
-    assert_eq!(rows(&dir, "main.db.u"), "k\n1\n");
-    assert_eq!(rows(&dir, "dev.db.u"), "k\n1\n2\n");
+    assert_eq!(merged["merged"], serde_json::json!(["default.db.t"]));
+    assert_eq!(merged["rebased"], serde_json::json!(["default.db.u"]));
+    assert_eq!(rows(&dir, "main", "db.t"), "k\n1\n2\n3\n");
+    assert_eq!(rows(&dir, "main", "db.u"), "k\n1\n");
+    assert_eq!(rows(&dir, "dev", "db.u"), "k\n1\n2\n");
 
-    assert_eq!(run(&dir, &["merge", "dev", "--table", "plain"]).status.code(), Some(2));
+    // `plain` is now a name, `default.default.plain` (I7): an empty part is what is malformed.
+    assert_eq!(run(&dir, &["merge", "dev", "--table", "db..t"]).status.code(), Some(2));
+    assert_eq!(run(&dir, &["merge", "dev", "--table", "plain"]).status.code(), Some(1));
     assert_eq!(
         run(&dir, &["merge", "dev", "--table", "db.nothing"]).status.code(),
         Some(1)
@@ -166,15 +165,11 @@ fn merge_selected_table() {
 #[test]
 fn mrg7_cross_table_commit_requires_split() {
     let dir = table();
-    sql(
-        &dir,
-        "create table main.db.u (k int); insert into main.db.u values (1)",
-        "csv",
-    );
+    sql(&dir, "create table db.u (k int); insert into db.u values (1)", "csv");
     ok(&dir, &["branch", "create", "dev"]);
     ok(&dir, &["branch", "create", "sub", "--from", "dev"]);
-    sql(&dir, "insert into sub.db.t values (3, 'c', 2.5)", "csv");
-    sql(&dir, "insert into sub.db.u values (2)", "csv");
+    sql(&dir, "use branch sub; insert into db.t values (3, 'c', 2.5)", "csv");
+    sql(&dir, "use branch sub; insert into db.u values (2)", "csv");
     // Merging `sub` writes one commit of `dev` that crosses both tables.
     ok(&dir, &["merge", "sub"]);
 
@@ -182,9 +177,9 @@ fn mrg7_cross_table_commit_requires_split() {
     assert_eq!(refused.status.code(), Some(3), "{}", text(&refused.stderr));
     let failure: Value = serde_json::from_slice(&refused.stderr).unwrap();
     assert_eq!(failure["rule"], "MRG-7", "{failure}");
-    assert_eq!(rows(&dir, "main.db.t"), "k\n1\n2\n");
+    assert_eq!(rows(&dir, "main", "db.t"), "k\n1\n2\n");
 
     answer(&dir, &["merge", "dev", "--table", "db.t", "--split"]);
-    assert_eq!(rows(&dir, "main.db.t"), "k\n1\n2\n3\n");
-    assert_eq!(rows(&dir, "main.db.u"), "k\n1\n");
+    assert_eq!(rows(&dir, "main", "db.t"), "k\n1\n2\n3\n");
+    assert_eq!(rows(&dir, "main", "db.u"), "k\n1\n");
 }

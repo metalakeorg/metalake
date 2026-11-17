@@ -1,7 +1,7 @@
 //! C9c (ADR 0003 §7): writing through SQL. An `insert` is one commit however many files it makes, read back at once,
 //! from values or a query, in any column order; an inline-sized one stays inline. A commit the protocol refuses shows
-//! nothing and leaves only orphans. A `delete` matches by filter, as vectors, and only what it matches, on the ref it
-//! names. A tag takes no statement, and what a table cannot do yet is refused, not done differently.
+//! nothing and leaves only orphans. A `delete` matches by filter, as vectors, and only what it matches, on the ref the
+//! session is on. A tag takes no statement, and what a table cannot do yet is refused, not done differently.
 
 #[path = "../../metalake/tests/common/mod.rs"]
 mod common;
@@ -43,7 +43,7 @@ async fn lake() -> Result<Lake, Box<dyn std::error::Error>> {
     let storage = Storage::in_memory();
     let shape = shape();
     let table = |name| NewTable {
-        namespace: &["db"],
+        namespace: &["default", "db"],
         name,
         schema: &shape,
         location: None,
@@ -51,7 +51,11 @@ async fn lake() -> Result<Lake, Box<dyn std::error::Error>> {
         partitioning: vec![],
         properties: vec![("inline.max-bytes", "0")],
     };
-    let (tx, _) = main.transaction().create_namespace(&["db"]).create_table(table("t"))?;
+    let (tx, _) = main
+        .transaction()
+        .create_namespace(&["default"])
+        .create_namespace(&["default", "db"])
+        .create_table(table("t"))?;
     let (tx, _) = tx.create_table(NewTable {
         properties: vec![],
         ..table("small")
@@ -70,6 +74,19 @@ async fn lake() -> Result<Lake, Box<dyn std::error::Error>> {
 }
 
 impl Lake {
+    /// Has the session read and write on the ref `name`, from its next statement.
+    fn on(&self, name: &str) {
+        MetaLake::on_ref(&self.context, name);
+    }
+
+    /// The keys of `table` on the ref `name`; the session is back on `main` after.
+    async fn keys_on(&self, name: &str, table: &str) -> Result<Vec<i64>, Box<dyn std::error::Error>> {
+        self.on(name);
+        let keys = self.keys(table).await;
+        self.on("main");
+        keys
+    }
+
     /// Runs one statement as a session of the client does, through `execute`, which takes what makes a table.
     async fn execute(&self, sql: &str) -> datafusion::error::Result<Vec<RecordBatch>> {
         let mut statements = DFParser::parse_sql(sql)?;
@@ -93,13 +110,13 @@ impl Lake {
     }
 
     async fn table(&self, name: &str) -> Result<Table, Error> {
-        self.main.table(&["db"], name).await
+        self.main.table(&["default", "db"], name).await
     }
 
     /// How many rows `name` had just before its latest commit: with what a statement wrote gone, it wrote in one.
     async fn rows_before_last_commit(&self, name: &str) -> Result<u64, Box<dyn std::error::Error>> {
         let seq = self.table(name).await?.snapshot_id().unwrap();
-        let then = self.main.at(seq - 1).table(&["db"], name).await?;
+        let then = self.main.at(seq - 1).table(&["default", "db"], name).await?;
         Ok(self.files(&then).await?.iter().map(|f| f.record_count as u64).sum())
     }
 
@@ -115,50 +132,42 @@ impl Lake {
 #[tokio::test]
 async fn insert_single_commit() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
-    assert_eq!(lake.run("insert into main.db.t values (1, 'a'), (2, null)").await?, 2);
-    assert_eq!(lake.keys("main.db.t").await?, [1, 2]);
+    assert_eq!(lake.run("insert into db.t values (1, 'a'), (2, null)").await?, 2);
+    assert_eq!(lake.keys("db.t").await?, [1, 2]);
 
     // Columns in another order, and one left out.
-    assert_eq!(lake.run("insert into main.db.t (s, k) values ('c', 3)").await?, 1);
-    assert_eq!(lake.run("insert into main.db.t (k) values (4)").await?, 1);
+    assert_eq!(lake.run("insert into db.t (s, k) values ('c', 3)").await?, 1);
+    assert_eq!(lake.run("insert into db.t (k) values (4)").await?, 1);
     let row = lake
         .context
-        .sql("select s from main.db.t where k = 3")
+        .sql("select s from db.t where k = 3")
         .await?
         .collect()
         .await?;
     assert_eq!(row[0].num_rows(), 1);
-    assert_eq!(lake.keys("main.db.t").await?, [1, 2, 3, 4]);
+    assert_eq!(lake.keys("db.t").await?, [1, 2, 3, 4]);
 
     // From a query over many files, into one commit. What was read keeps reading.
     for at in 0..4 {
-        let sql = format!("insert into main.db.source values ({at}, 'x'), ({}, 'y')", at + 100);
+        let sql = format!("insert into db.source values ({at}, 'x'), ({}, 'y')", at + 100);
         lake.run(&sql).await?;
     }
-    let sql = "insert into main.db.t select k + 1000, s from main.db.source where k >= 100";
+    let sql = "insert into db.t select k + 1000, s from db.source where k >= 100";
     assert_eq!(lake.run(sql).await?, 4);
     assert_eq!(lake.rows_before_last_commit("t").await?, 4, "all four in one commit");
-    assert_eq!(lake.keys("main.db.t").await?, [1, 2, 3, 4, 1100, 1101, 1102, 1103]);
+    assert_eq!(lake.keys("db.t").await?, [1, 2, 3, 4, 1100, 1101, 1102, 1103]);
 
     // A table can read itself into itself, and nothing inserted is nothing committed but an empty answer.
-    assert_eq!(
-        lake.run("insert into main.db.t select * from main.db.t where k = 1")
-            .await?,
-        1
-    );
-    assert_eq!(lake.keys("main.db.t").await?.len(), 9);
-    assert_eq!(
-        lake.run("insert into main.db.t select * from main.db.t where k = -1")
-            .await?,
-        0
-    );
-    assert_eq!(lake.keys("main.db.t").await?.len(), 9);
+    assert_eq!(lake.run("insert into db.t select * from db.t where k = 1").await?, 1);
+    assert_eq!(lake.keys("db.t").await?.len(), 9);
+    assert_eq!(lake.run("insert into db.t select * from db.t where k = -1").await?, 0);
+    assert_eq!(lake.keys("db.t").await?.len(), 9);
 
     // A small insert stays inline, under the table's limit.
-    lake.run("insert into main.db.small values (1, 'a')").await?;
+    lake.run("insert into db.small values (1, 'a')").await?;
     let small = lake.table("small").await?;
     assert!(lake.files(&small).await?.iter().all(|f| f.path.is_none()));
-    assert_eq!(lake.keys("main.db.small").await?, [1]);
+    assert_eq!(lake.keys("db.small").await?, [1]);
     Ok(())
 }
 
@@ -166,32 +175,32 @@ async fn insert_single_commit() -> Result<(), Box<dyn std::error::Error>> {
 async fn create_table_as_select_in_one_commit() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
     let run = |sql: &'static str| lake.execute(sql);
-    run("insert into main.db.source values (1, 'a'), (2, 'b'), (3, null)").await?;
+    run("insert into db.source values (1, 'a'), (2, 'b'), (3, null)").await?;
 
     // The table, by the query's columns, and its rows: one commit makes both, as the ref before it has neither.
-    run("create table main.db.copy as select k * 10 as k, s from main.db.source where k > 1").await?;
-    assert_eq!(lake.keys("main.db.copy").await?, [20, 30]);
+    run("create table db.copy as select k * 10 as k, s from db.source where k > 1").await?;
+    assert_eq!(lake.keys("db.copy").await?, [20, 30]);
     let copy = lake.table("copy").await?;
     let fields: Vec<(&str, &str)> = copy.fields().iter().map(|f| (f.name.as_str(), f.ty.as_str())).collect();
     assert_eq!(fields, [("k", "long"), ("s", "string")]);
     let before = lake
         .main
         .at(copy.snapshot_id().unwrap() - 1)
-        .table(&["db"], "copy")
+        .table(&["default", "db"], "copy")
         .await;
     assert!(matches!(before, Err(Error::NotFound(_))), "{before:?}");
 
     // A query of no rows: the table alone.
-    run("create table main.db.none as select k from main.db.source where k < 0").await?;
-    assert!(lake.keys("main.db.none").await?.is_empty());
+    run("create table db.none as select k from db.source where k < 0").await?;
+    assert!(lake.keys("db.none").await?.is_empty());
 
     // A table that exists is left as it is, its query not run.
-    run("create table if not exists main.db.copy as select 1 as k").await?;
-    assert_eq!(lake.keys("main.db.copy").await?, [20, 30]);
+    run("create table if not exists db.copy as select 1 as k").await?;
+    assert_eq!(lake.keys("db.copy").await?, [20, 30]);
 
     // A query that fails makes no table.
     assert!(
-        run("create table main.db.broken as select k / 0 as k from main.db.source")
+        run("create table db.broken as select k / 0 as k from db.source")
             .await
             .is_err()
     );
@@ -203,16 +212,16 @@ async fn create_table_as_select_in_one_commit() -> Result<(), Box<dyn std::error
 async fn alter_table_in_one_commit_each() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
     let run = |sql: &'static str| lake.execute(sql);
-    run("insert into main.db.source values (1, 'a'), (2, null)").await?;
-    run("create table main.db.a as select cast(k as int) as k, s, 'x' as gone from main.db.source").await?;
+    run("insert into db.source values (1, 'a'), (2, null)").await?;
+    run("create table db.a as select cast(k as int) as k, s, 'x' as gone from db.source").await?;
 
     for sql in [
-        "alter table main.db.a add column n bigint not null default 7",
-        "alter table main.db.a alter column k type bigint",
-        "alter table main.db.a alter column k drop not null",
-        "alter table main.db.a rename column s to label",
-        "alter table main.db.a drop column gone",
-        "alter table main.db.a rename to b",
+        "alter table db.a add column n bigint not null default 7",
+        "alter table db.a alter column k type bigint",
+        "alter table db.a alter column k drop not null",
+        "alter table db.a rename column s to label",
+        "alter table db.a drop column gone",
+        "alter table db.a rename to b",
     ] {
         run(sql).await.map_err(|e| format!("{sql}: {e}"))?;
     }
@@ -231,7 +240,7 @@ async fn alter_table_in_one_commit_each() -> Result<(), Box<dyn std::error::Erro
     // The rows written before, under the new definition.
     let rows = lake
         .context
-        .sql("select k, label, n from main.db.b order by k")
+        .sql("select k, label, n from db.b order by k")
         .await?
         .collect()
         .await?;
@@ -244,26 +253,31 @@ async fn alter_table_in_one_commit_each() -> Result<(), Box<dyn std::error::Erro
     assert_eq!(batch.column(2).as_primitive::<Int64Type>().values().to_vec(), [7, 7]);
 
     // Several changes in one statement are one commit; if exists and if not exists pass over what is not there or is.
-    run("alter table main.db.b add column if not exists n int, add column x int, drop column if exists nope").await?;
+    run("alter table db.b add column if not exists n int, add column x int, drop column if exists nope").await?;
     let b = lake.table("b").await?;
     assert_eq!(
         b.fields().iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
         ["k", "label", "n", "x"]
     );
     assert_eq!(
-        lake.main.at(b.seq() - 1).table(&["db"], "b").await?.fields().len(),
+        lake.main
+            .at(b.seq() - 1)
+            .table(&["default", "db"], "b")
+            .await?
+            .fields()
+            .len(),
         3,
         "one commit"
     );
-    run("alter table if exists main.db.nope add column z int").await?;
+    run("alter table if exists db.nope add column z int").await?;
 
     // Refused, and nothing changes.
     for (sql, says) in [
-        ("alter table main.db.b alter column k type int", "TYP-3"),
-        ("alter table main.db.b add column r varchar not null", "TYP-5"),
-        ("alter table main.db.b alter column label set not null", "set not null"),
-        ("alter table main.db.b add column y int first", "goes last"),
-        ("alter table main.db.nope add column z int", "not found"),
+        ("alter table db.b alter column k type int", "TYP-3"),
+        ("alter table db.b add column r varchar not null", "TYP-5"),
+        ("alter table db.b alter column label set not null", "set not null"),
+        ("alter table db.b add column y int first", "goes last"),
+        ("alter table db.nope add column z int", "not found"),
     ] {
         let refused = run(sql).await.err().map(|e| e.to_string());
         assert!(
@@ -280,7 +294,7 @@ async fn refused_commit_rolls_back() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
     let t = lake.table("t").await?;
     // Planned, not yet run; then the table goes, and the commit has nowhere to land.
-    let statement = lake.context.sql("insert into main.db.t values (1, 'a')").await?;
+    let statement = lake.context.sql("insert into db.t values (1, 'a')").await?;
     let pool = Pool::new(&url(), 1)?;
     let session = pool.get().await?;
     let p = Protocol::new(&lake.schema);
@@ -304,22 +318,22 @@ async fn refused_commit_rolls_back() -> Result<(), Box<dyn std::error::Error>> {
 #[tokio::test]
 async fn delete_by_predicate_on_ref() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
-    lake.run("insert into main.db.t values (1, 'a'), (2, 'b'), (3, null)")
+    lake.run("insert into db.t values (1, 'a'), (2, 'b'), (3, null)")
         .await?;
-    lake.run("insert into main.db.t values (4, 'a'), (5, 'b')").await?;
+    lake.run("insert into db.t values (4, 'a'), (5, 'b')").await?;
     lake.main.create_branch("dev").await?;
 
     // Nothing matches: no commit.
     let before = lake.snapshot("t").await?;
-    assert_eq!(lake.run("delete from main.db.t where k > 100").await?, 0);
+    assert_eq!(lake.run("delete from db.t where k > 100").await?, 0);
     assert_eq!(lake.snapshot("t").await?, before);
 
     // A filter off the cluster key, across files; the row where it is null does not match. The files stay, with
     // vectors, and the branch reads what it did.
-    assert_eq!(lake.run("delete from main.db.t where s = 'a'").await?, 2);
+    assert_eq!(lake.run("delete from db.t where s = 'a'").await?, 2);
     assert_ne!(lake.snapshot("t").await?, before);
-    assert_eq!(lake.keys("main.db.t").await?, [2, 3, 5]);
-    assert_eq!(lake.keys("dev.db.t").await?, [1, 2, 3, 4, 5]);
+    assert_eq!(lake.keys("db.t").await?, [2, 3, 5]);
+    assert_eq!(lake.keys_on("dev", "db.t").await?, [1, 2, 3, 4, 5]);
     let t = lake.table("t").await?;
     let files = lake.files(&t).await?;
     assert_eq!(files.len(), 2);
@@ -330,30 +344,36 @@ async fn delete_by_predicate_on_ref() -> Result<(), Box<dyn std::error::Error>> 
     );
 
     // On the cluster key, and on the branch only.
-    assert_eq!(lake.run("delete from dev.db.t where k = 5").await?, 1);
-    assert_eq!(lake.keys("dev.db.t").await?, [1, 2, 3, 4]);
-    assert_eq!(lake.keys("main.db.t").await?, [2, 3, 5]);
+    lake.on("dev");
+    assert_eq!(lake.run("delete from db.t where k = 5").await?, 1);
+    assert_eq!(lake.keys("db.t").await?, [1, 2, 3, 4]);
+    lake.on("main");
+    assert_eq!(lake.keys("db.t").await?, [2, 3, 5]);
 
     // Everything.
-    assert_eq!(lake.run("delete from main.db.t").await?, 3);
-    assert!(lake.keys("main.db.t").await?.is_empty());
-    assert_eq!(lake.keys("dev.db.t").await?, [1, 2, 3, 4]);
+    assert_eq!(lake.run("delete from db.t").await?, 3);
+    assert!(lake.keys("db.t").await?.is_empty());
+    assert_eq!(lake.keys_on("dev", "db.t").await?, [1, 2, 3, 4]);
+
+    // A ref is no catalog: `dev.db.t` is a table of the catalog `dev`, which is not there.
+    assert!(lake.context.sql("delete from dev.db.t").await.is_err());
     Ok(())
 }
 
 #[tokio::test]
 async fn tag_refuses_writes() -> Result<(), Box<dyn std::error::Error>> {
     let lake = lake().await?;
-    lake.run("insert into main.db.t values (1, 'a')").await?;
+    lake.run("insert into db.t values (1, 'a')").await?;
     lake.main.create_tag("v1").await?;
-    for sql in ["insert into v1.db.t values (2, 'b')", "delete from v1.db.t"] {
+    lake.on("v1");
+    for sql in ["insert into db.t values (2, 'b')", "delete from db.t"] {
         let refused = match lake.context.sql(sql).await {
             Ok(statement) => statement.collect().await.map(|_| ()),
             Err(e) => Err(e),
         };
         assert!(refused.is_err_and(|e| e.to_string().contains("tag")), "{sql}");
     }
-    assert_eq!(lake.keys("v1.db.t").await?, [1]);
+    assert_eq!(lake.keys("db.t").await?, [1]);
     Ok(())
 }
 
@@ -371,7 +391,7 @@ async fn insert_commit_options() -> Result<(), Box<dyn std::error::Error>> {
     ] {
         context.sql(set).await?.collect().await?;
     }
-    let insert = "insert into main.db.t values (1, 'a'), (2, 'b')";
+    let insert = "insert into db.t values (1, 'a'), (2, 'b')";
     let written = context.sql(insert).await?.collect().await?;
     let last = &lake.main.history(1).await?[0];
     assert_eq!(
@@ -388,7 +408,7 @@ async fn insert_commit_options() -> Result<(), Box<dyn std::error::Error>> {
         WrittenRow::of(&again[0])?.outcome,
         Some(Outcome::AlreadyApplied(last.commit_seq))
     );
-    let count = context.sql("select count(*) from main.db.t").await?.collect().await?;
+    let count = context.sql("select count(*) from db.t").await?.collect().await?;
     assert_eq!(count[0].column(0).as_primitive::<Int64Type>().value(0), 2);
     Ok(())
 }

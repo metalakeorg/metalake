@@ -1306,7 +1306,7 @@
               "string",
               "null"
             ],
-            "description": "The branch a name that says no ref reads and writes on: `default.t` is `dev.default.t` on `dev`. By default,\n`main`."
+            "description": "The branch every name reads and writes on, which no name says (I7): `demo.t` is `default.demo.t` on it. By\ndefault, `main`."
           },
           "limit": {
             "type": [

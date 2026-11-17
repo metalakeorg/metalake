@@ -75,11 +75,22 @@ impl Lake {
         Ok(self.catalog.refs().await?.iter().any(|r| r.name() == name))
     }
 
-    /// A ref by its name, which must exist.
+    /// A ref by its name, which must exist; or at a point, a commit sequence or a time (`name@1234`,
+    /// `name@2026-11-04T10:00:00Z`), as `USE BRANCH … AS OF` leaves a session (I7). A ref's own name, `@` included,
+    /// comes first.
     pub async fn find_ref(&self, name: &str) -> Result<Ref> {
         let refs = self.catalog.refs().await?;
-        let found = refs.into_iter().find(|r| r.name() == name);
-        found.ok_or_else(|| Error::failed(format!("no ref {name}")))
+        let named = |name: &str| refs.iter().find(|r| r.name() == name).cloned();
+        if let Some(found) = named(name) {
+            return Ok(found);
+        }
+        if let Some((on, at)) = name.split_once('@')
+            && let Some(found) = named(on)
+        {
+            // As the engine reads the point `AS OF` gives.
+            return Ok(metalake_datafusion::ref_at(found, at)?);
+        }
+        Err(Error::failed(format!("no ref {name}")))
     }
 
     /// A new ref, from `main` unless it says otherwise.
@@ -123,11 +134,9 @@ impl Lake {
     }
 }
 
-/// A table of a ref, by `namespace.table`.
+/// A table of a ref, by its name as every face reads one: `t`, `schema.t` or `catalog.schema.t` (I7).
 pub async fn table(on: &Ref, name: &str) -> Result<Table> {
-    let (namespace, table) = name
-        .rsplit_once('.')
-        .ok_or_else(|| Error::usage(format!("{name}: a table is namespace.table")))?;
-    let namespace: Vec<&str> = namespace.split('.').collect();
-    Ok(on.table(&namespace, table).await?)
+    let path = crate::TablePath::parse_on(name, on.name())?;
+    let namespace: Vec<&str> = path.namespace.iter().map(String::as_str).collect();
+    Ok(on.table(&namespace, &path.name).await?)
 }

@@ -45,11 +45,12 @@ def test_delete_by_predicate(lake, table):
     assert rows(lake, table) == [(1,)]
 
 
-def test_branch_isolation(lake, table, directory):
+def test_branch_isolation(lake, table, directory, on_ref):
     metalake._cli(["metalake", "--lake", str(directory), "branch", "create", f"{table}_dev"])
-    lake.table(f"{table}_dev.default.{table}").delete("k = 1")
+    with on_ref(lake, f"{table}_dev"):
+        lake.table(table).delete("k = 1")
+        assert rows(lake, table) == [(2,), (3,)]
     assert rows(lake, table) == [(1,), (2,), (3,)]
-    assert rows(lake, f'"{table}_dev".default.{table}') == [(2,), (3,)]
 
 
 def test_commit_author_and_message(lake, table, directory, capfd):
@@ -102,10 +103,10 @@ def test_invalid_predicate_raises(lake, table):
         lake.table(table).delete("nope = 1")
 
 
-def test_tag_raises(lake, table, directory):
+def test_tag_raises(lake, table, directory, on_ref):
     metalake._cli(["metalake", "--lake", str(directory), "tag", "create", f"{table}_v1"])
-    with pytest.raises(metalake.MetaLakeError):
-        lake.table(f"{table}_v1.default.{table}").delete("true")
+    with on_ref(lake, f"{table}_v1"), pytest.raises(metalake.MetaLakeError):
+        lake.table(table).delete("true")
 
 
 def test_thread_commit_messages(lake, directory, capfd):

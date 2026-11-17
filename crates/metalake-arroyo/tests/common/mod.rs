@@ -47,9 +47,10 @@ impl Lake {
         let main = catalog.branch("main").await.unwrap();
         let (tx, _) = main
             .transaction()
-            .create_namespace(&["shop"])
+            .create_namespace(&["default"])
+            .create_namespace(&["default", "shop"])
             .create_table(NewTable {
-                namespace: &["shop"],
+                namespace: &["default", "shop"],
                 name: "orders",
                 schema: &keys(0..1).schema(),
                 location: None,
@@ -70,7 +71,7 @@ impl Lake {
 
     /// Commits the rows `keys`, in a file of their own.
     pub async fn append(&self, keys: Range<i64>) -> i64 {
-        let t = self.main.table(&["shop"], "orders").await.unwrap();
+        let t = self.main.table(&["default", "shop"], "orders").await.unwrap();
         let options = WriteOptions {
             stored: true,
             ..Default::default()
@@ -83,7 +84,7 @@ impl Lake {
 
     /// Deletes the rows whose key `chosen` keeps, as an engine does.
     pub async fn delete(&self, chosen: impl Fn(i64) -> bool) -> i64 {
-        let t = self.main.table(&["shop"], "orders").await.unwrap();
+        let t = self.main.table(&["default", "shop"], "orders").await.unwrap();
         let scan = Scan::new(&self.catalog, &t).with_positions();
         let batches: Vec<RecordBatch> = scan
             .read(scan.plan().await.unwrap(), &self.storage)
@@ -120,7 +121,7 @@ impl Lake {
     pub fn table(&self, table_type: MetaLakeTableType) -> MetaLakeTable {
         MetaLakeTable {
             branch: "main".to_string(),
-            namespace: vec!["shop".to_string()],
+            namespace: vec!["default".to_string(), "shop".to_string()],
             table: "orders".to_string(),
             table_type,
         }
@@ -128,7 +129,7 @@ impl Lake {
 
     /// The keys the table holds now, read through the core, sorted.
     pub async fn keys(&self) -> Vec<i64> {
-        let t = self.main.table(&["shop"], "orders").await.unwrap();
+        let t = self.main.table(&["default", "shop"], "orders").await.unwrap();
         let scan = Scan::new(&self.catalog, &t);
         let batches: Vec<RecordBatch> = scan
             .read(scan.plan().await.unwrap(), &self.storage)

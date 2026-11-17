@@ -1,7 +1,8 @@
-//! C9a (ADR 0003 §7): DataFusion sees the lake. Refs are catalogs and namespaces schemas; a table is found at once and
-//! listed from a picture. `count(*)`, `min` and `max` are answered from what the catalog keeps, by field id, with no
-//! request to storage and no file in the plan; and where a statistic would not hold of the rows a read sees, a deleted
-//! bound, a NaN, a column the file lacks or holds in an earlier type, the plan reads instead of answering wrongly.
+//! C9a (ADR 0003 §7): DataFusion sees the lake. A namespace's first level is a catalog and the levels after it a schema,
+//! on the session's ref, which no name says (I7); a table is found at once and listed from a picture. `count(*)`, `min`
+//! and `max` are answered from what the catalog keeps, by field id, with no request to storage and no file in the plan;
+//! and where a statistic would not hold of the rows a read sees, a deleted bound, a NaN, a column the file lacks or holds
+//! in an earlier type, the plan reads instead of answering wrongly.
 
 #[path = "../../metalake/tests/common/mod.rs"]
 mod common;
@@ -109,47 +110,58 @@ async fn names(context: &SessionContext) -> Result<Vec<String>, Box<dyn std::err
 }
 
 #[tokio::test]
-async fn ref_catalogs_and_table_resolution() -> Result<(), Box<dyn std::error::Error>> {
+async fn catalogs_on_the_session_ref_and_table_resolution() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, main, storage, _) = lake(Arc::default()).await?;
     let shape = shape();
     let (tx, _) = main
         .transaction()
-        .create_namespace(&["db"])
-        .create_table(new_table(&["db"], "t", &shape, vec![]))?;
+        .create_namespace(&["default"])
+        .create_namespace(&["default", "db"])
+        .create_table(new_table(&["default", "db"], "t", &shape, vec![]))?;
     tx.commit().await?;
+    // A catalog of its own, with a schema of two levels.
     let (tx, _) = main
         .transaction()
         .create_namespace(&["a"])
         .create_namespace(&["a", "b"])
-        .create_table(new_table(&["a", "b"], "u", &shape, vec![]))?;
+        .create_namespace(&["a", "b", "c"])
+        .create_table(new_table(&["a", "b", "c"], "u", &shape, vec![]))?;
     tx.commit().await?;
     main.create_branch("dev").await?;
 
+    // The catalogs are the first levels of the namespaces, on the session's ref; no name says a ref.
     let lake = MetaLake::new(catalog, storage).await?;
     let context = lake.context()?;
-    assert_eq!(
-        names(&context).await?,
-        ["dev.a.b.u", "dev.db.t", "main.a.b.u", "main.db.t"]
-    );
-    let t = context.table("main.db.t").await?;
+    assert_eq!(names(&context).await?, ["a.b.c.u", "default.db.t"]);
+    let t = context.table("db.t").await?;
     let fields: Vec<&str> = t.schema().fields().iter().map(|f| f.name().as_str()).collect();
     assert_eq!(fields, ["k", "s", "x", "n"]);
-    assert_eq!(long(&context, r#"select count(*) from main."a.b".u"#).await?, 0);
-    assert_eq!(long(&context, "select count(*) from dev.db.t").await?, 0);
+    assert_eq!(long(&context, r#"select count(*) from a."b.c".u"#).await?, 0);
+    assert_eq!(long(&context, "select count(*) from default.db.t").await?, 0);
 
     // A table created after the picture is found by name at once, and listed after a refresh.
     let (tx, _) = main
         .transaction()
-        .create_table(new_table(&["db"], "later", &shape, vec![]))?;
+        .create_table(new_table(&["default", "db"], "later", &shape, vec![]))?;
     tx.commit().await?;
-    assert_eq!(long(&context, "select count(*) from main.db.later").await?, 0);
-    assert_eq!(names(&context).await?.len(), 4);
+    assert_eq!(long(&context, "select count(*) from db.later").await?, 0);
+    assert_eq!(names(&context).await?.len(), 2);
     lake.refresh().await?;
-    assert_eq!(names(&context).await?.len(), 5);
+    assert_eq!(names(&context).await?.len(), 3);
 
-    // What does not exist is an error of the query.
-    assert!(context.sql("select * from main.db.nothing").await.is_err());
+    // On the branch, the same names read the branch, which has no `later`.
+    MetaLake::on_ref(&context, "dev");
+    assert_eq!(MetaLake::current_ref(&context), "dev");
+    assert_eq!(names(&context).await?, ["a.b.c.u", "default.db.t"]);
+    assert_eq!(long(&context, "select count(*) from db.t").await?, 0);
+    assert!(context.sql("select * from db.later").await.is_err());
+    MetaLake::on_ref(&context, "main");
+
+    // What does not exist is an error of the query; and a ref is no catalog.
+    assert!(context.sql("select * from db.nothing").await.is_err());
     assert!(context.sql("select * from nothing.db.t").await.is_err());
+    assert!(context.sql("select * from main.db.t").await.is_err());
+    assert!(context.sql("select * from dev.db.t").await.is_err());
     Ok(())
 }
 
@@ -158,33 +170,37 @@ async fn aggregates_from_statistics() -> Result<(), Box<dyn std::error::Error>> 
     let store = Arc::new(Counting::default());
     let (catalog, main, storage, _) = lake(store.clone()).await?;
     let shape = shape();
-    let (tx, _) = main.transaction().create_namespace(&["db"]).create_table(new_table(
-        &["db"],
-        "t",
-        &shape,
-        vec![("inline.max-bytes", "0")],
-    ))?;
+    let (tx, _) = main
+        .transaction()
+        .create_namespace(&["default"])
+        .create_namespace(&["default", "db"])
+        .create_table(new_table(
+            &["default", "db"],
+            "t",
+            &shape,
+            vec![("inline.max-bytes", "0")],
+        ))?;
     tx.commit().await?;
-    let t = main.table(&["db"], "t").await?;
+    let t = main.table(&["default", "db"], "t").await?;
     append(&catalog, &main, &storage, &t, 0..10).await?;
     append(&catalog, &main, &storage, &t, 10..25).await?;
     let (tx, _) = main
         .transaction()
-        .create_table(new_table(&["db"], "small", &shape, vec![]))?;
+        .create_table(new_table(&["default", "db"], "small", &shape, vec![]))?;
     tx.commit().await?;
-    let small = main.table(&["db"], "small").await?;
+    let small = main.table(&["default", "db"], "small").await?;
     append(&catalog, &main, &storage, &small, 5..8).await?;
     let (tx, _) = main
         .transaction()
-        .create_table(new_table(&["db"], "none", &shape, vec![]))?;
+        .create_table(new_table(&["default", "db"], "none", &shape, vec![]))?;
     tx.commit().await?;
 
     let context = MetaLake::new(catalog, storage).await?.context()?;
     store.take();
     for sql in [
-        "select count(*), min(k), max(k), min(s), max(s) from main.db.t",
-        "select count(*), min(k), max(k), min(s), max(s) from main.db.small",
-        "select count(*) from main.db.none",
+        "select count(*), min(k), max(k), min(s), max(s) from db.t",
+        "select count(*), min(k), max(k), min(s), max(s) from db.small",
+        "select count(*) from db.none",
     ] {
         let plan = context.sql(sql).await?.create_physical_plan().await?;
         assert!(
@@ -194,11 +210,7 @@ async fn aggregates_from_statistics() -> Result<(), Box<dyn std::error::Error>> 
             displayable(plan.as_ref()).indent(true)
         );
     }
-    let row = one(
-        &context,
-        "select count(*), min(k), max(k), min(s), max(s) from main.db.t",
-    )
-    .await?;
+    let row = one(&context, "select count(*), min(k), max(k), min(s), max(s) from db.t").await?;
     assert_eq!(row.column(0).as_primitive::<Int64Type>().value(0), 25);
     assert_eq!(row.column(1).as_primitive::<Int64Type>().value(0), 0);
     assert_eq!(row.column(2).as_primitive::<Int64Type>().value(0), 24);
@@ -206,9 +218,9 @@ async fn aggregates_from_statistics() -> Result<(), Box<dyn std::error::Error>> 
         (text(row.column(3)), text(row.column(4))),
         ("s000".into(), "s024".into())
     );
-    let row = one(&context, "select min(k), max(k) from main.db.small").await?;
+    let row = one(&context, "select min(k), max(k) from db.small").await?;
     assert_eq!(row.column(1).as_primitive::<Int64Type>().value(0), 7);
-    assert_eq!(long(&context, "select count(*) from main.db.none").await?, 0);
+    assert_eq!(long(&context, "select count(*) from db.none").await?, 0);
     assert_eq!(store.take(), 0, "no request to storage");
     Ok(())
 }
@@ -225,21 +237,25 @@ async fn inexact_statistics_not_used() -> Result<(), Box<dyn std::error::Error>>
     let store = Arc::new(Counting::default());
     let (catalog, main, storage, schema) = lake(store.clone()).await?;
     let shape = shape();
-    let (tx, table_id) = main.transaction().create_namespace(&["db"]).create_table(new_table(
-        &["db"],
-        "t",
-        &shape,
-        vec![("inline.max-bytes", "0")],
-    ))?;
+    let (tx, table_id) = main
+        .transaction()
+        .create_namespace(&["default"])
+        .create_namespace(&["default", "db"])
+        .create_table(new_table(
+            &["default", "db"],
+            "t",
+            &shape,
+            vec![("inline.max-bytes", "0")],
+        ))?;
     tx.commit().await?;
-    let t = main.table(&["db"], "t").await?;
+    let t = main.table(&["default", "db"], "t").await?;
     append(&catalog, &main, &storage, &t, 0..10).await?;
 
     // Floats are never exact: Parquet leaves NaN out of its bounds.
     let lake = MetaLake::new(catalog.clone(), storage.clone()).await?;
     let context = lake.context()?;
-    assert!(reads(&context, "select max(x) from main.db.t").await?);
-    assert!(!reads(&context, "select max(k), max(n) from main.db.t").await?);
+    assert!(reads(&context, "select max(x) from db.t").await?);
+    assert!(!reads(&context, "select max(k), max(n) from db.t").await?);
 
     // After a rename the file's bounds are still found, by field id; after a promotion, or for a column the file
     // lacks, they are not.
@@ -269,21 +285,21 @@ async fn inexact_statistics_not_used() -> Result<(), Box<dyn std::error::Error>>
         },
     )
     .await?;
-    assert!(!reads(&context, "select min(label) from main.db.t").await?);
-    let row = one(&context, "select min(label) from main.db.t").await?;
+    assert!(!reads(&context, "select min(label) from db.t").await?);
+    let row = one(&context, "select min(label) from db.t").await?;
     assert_eq!(text(row.column(0)), "s000");
-    assert!(reads(&context, "select max(n) from main.db.t").await?, "promoted");
-    assert!(reads(&context, "select max(extra) from main.db.t").await?, "absent");
+    assert!(reads(&context, "select max(n) from db.t").await?, "promoted");
+    assert!(reads(&context, "select max(extra) from db.t").await?, "absent");
 
     // A delete may have taken a bound: the count stays exact, the bounds do not.
-    let now = main.table(&["db"], "t").await?;
+    let now = main.table(&["default", "db"], "t").await?;
     let tasks: Vec<_> = Scan::new(&catalog, &now).plan().await?.try_collect().await?;
     let mut deletes = Deletes::new();
     deletes.insert(tasks[0].file_id, 0);
     main.transaction().delete(&now, &storage, deletes).commit().await?;
-    assert!(!reads(&context, "select count(*) from main.db.t").await?);
-    assert_eq!(long(&context, "select count(*) from main.db.t").await?, 9);
-    assert!(reads(&context, "select min(k) from main.db.t").await?);
+    assert!(!reads(&context, "select count(*) from db.t").await?);
+    assert_eq!(long(&context, "select count(*) from db.t").await?, 9);
+    assert!(reads(&context, "select min(k) from db.t").await?);
     Ok(())
 }
 
@@ -293,20 +309,24 @@ async fn inexact_statistics_not_used() -> Result<(), Box<dyn std::error::Error>>
 async fn planning_cost() -> Result<(), Box<dyn std::error::Error>> {
     let (catalog, main, storage, _) = lake(Arc::default()).await?;
     let shape = shape();
-    let (tx, _) = main.transaction().create_namespace(&["db"]).create_table(new_table(
-        &["db"],
-        "t",
-        &shape,
-        vec![("inline.max-bytes", "0")],
-    ))?;
+    let (tx, _) = main
+        .transaction()
+        .create_namespace(&["default"])
+        .create_namespace(&["default", "db"])
+        .create_table(new_table(
+            &["default", "db"],
+            "t",
+            &shape,
+            vec![("inline.max-bytes", "0")],
+        ))?;
     tx.commit().await?;
-    let t = main.table(&["db"], "t").await?;
+    let t = main.table(&["default", "db"], "t").await?;
     for at in 0..300 {
         append(&catalog, &main, &storage, &t, at..at + 1).await?;
     }
     let context = MetaLake::new(catalog, storage).await?.context()?;
     let start = std::time::Instant::now();
-    assert_eq!(long(&context, "select count(*) from main.db.t").await?, 300);
+    assert_eq!(long(&context, "select count(*) from db.t").await?, 300);
     println!("300 files: {:?}", start.elapsed());
     Ok(())
 }

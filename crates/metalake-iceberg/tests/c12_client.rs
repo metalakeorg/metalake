@@ -25,16 +25,18 @@ fn fresh_schema() -> String {
     )
 }
 
-/// A catalog with namespaces in it.
+/// A catalog with namespaces in it: schemas of the catalog `default`, which a client that asks for no warehouse sees
+/// from the schema down (I7).
 async fn catalog(schema: &str) -> Result<(), Box<dyn std::error::Error>> {
     let config = CatalogConfig::new(url(), schema).warehouse("memory:///wh");
     let catalog = Catalog::init(config, None).await?;
     let main = catalog.branch("main").await?;
     let tx = main
         .transaction()
-        .create_namespace(&["db"])
-        .create_namespace(&["db", "sub"]);
-    tx.create_namespace(&["other"]).commit().await?;
+        .create_namespace(&["default"])
+        .create_namespace(&["default", "db"])
+        .create_namespace(&["default", "db", "sub"]);
+    tx.create_namespace(&["default", "other"]).commit().await?;
     catalog.close();
     Ok(())
 }

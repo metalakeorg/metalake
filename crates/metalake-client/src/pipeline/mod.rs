@@ -84,6 +84,8 @@ pub struct Pipeline {
     pub query: String,
     pub parallelism: u32,
     pub state: PipelineState,
+    /// The ref it reads and writes on, which its tables' names do not say (I7).
+    pub on: String,
     pub reads: Vec<TablePath>,
     pub writes: Vec<TablePath>,
     /// Each table it writes, with the last commit it holds.
@@ -96,8 +98,15 @@ impl Lake {
         Ok(Records::new(self.storage()?, &self.warehouse()?))
     }
 
-    /// Starts a pipeline: its tables are checked, its name taken, and it runs until suspended or dropped.
-    pub async fn create_pipeline(&self, name: &str, query: &str, options: PipelineOptions) -> Result<Pipeline> {
+    /// Starts a pipeline on the ref `on`, where every table it names is: its tables are checked, its name taken, and it
+    /// runs until suspended or dropped.
+    pub async fn create_pipeline(
+        &self,
+        name: &str,
+        query: &str,
+        options: PipelineOptions,
+        on: &str,
+    ) -> Result<Pipeline> {
         check_name(name)?;
         if options.parallelism == 0 {
             return Err(Error::usage("a pipeline runs with a parallelism of 1 or more"));
@@ -107,13 +116,14 @@ impl Lake {
         if records.has(name).await? {
             return Err(Error::usage(format!("a pipeline {name} exists")));
         }
-        let names = names_of(query)?;
+        let names = names_of(query, on)?;
         for path in names.reads.iter().chain(&names.writes) {
             self.table(path).await?;
         }
         if !options.empty_target {
             // By its rows: creating a table is already a commit.
             let session = Session::new(self).await?;
+            session.on_ref(on);
             for path in &names.writes {
                 if session.has_rows(&format!("select 1 from {}", path.quoted())).await? {
                     return Err(Error::usage(format!(
@@ -130,6 +140,7 @@ impl Lake {
             options.parallelism,
             strings(&names.reads),
             strings(&names.writes),
+            on,
         );
         // Locked before its record exists, so that no other caller changes it before it runs; one that failed to start
         // leaves its name free, still under the lock.
@@ -138,6 +149,7 @@ impl Lake {
             let starting = async {
                 if options.empty_target {
                     let session = Session::new(self).await?;
+                    session.on_ref(on);
                     for path in &names.writes {
                         let details = Details {
                             message: Some(format!("emptied for the pipeline {name}")),
@@ -272,7 +284,12 @@ impl Lake {
             query: &record.query,
             parallelism: record.parallelism,
             state: &state_dir,
-            env: self.pipeline_environment()?,
+            // Its tables are on its ref, which their names do not say (I7).
+            env: {
+                let mut env = self.pipeline_environment()?;
+                env.push((metalake::environment::REF.to_string(), record.on.clone()));
+                env
+            },
             home: &home,
             warehouse: local(&warehouse),
             own_postgres: self.local().is_some(),
@@ -335,7 +352,7 @@ impl Lake {
         let parse = |names: &[String]| {
             names
                 .iter()
-                .map(|n| TablePath::parse(n))
+                .map(|n| TablePath::parse_on(n, &record.on))
                 .collect::<std::result::Result<Vec<_>, _>>()
         };
         let reads = parse(&record.reads)?;
@@ -353,6 +370,7 @@ impl Lake {
             query: record.query,
             parallelism: record.parallelism,
             state,
+            on: record.on,
             reads,
             writes,
             reached,

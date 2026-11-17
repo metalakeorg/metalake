@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowRight } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { type Column, tableDetails } from "./client";
-import { CatalogIcon, SchemaIcon, TableIcon, TypeIcon } from "./icons";
+import { CatalogIcon, RefIcon, SchemaIcon, TableIcon, TypeIcon } from "./icons";
 import { CATALOG } from "./live";
 
 /** What a page may show of the tree: the ref's catalog, a schema by its levels, or a table. */
@@ -51,6 +51,24 @@ export function byNamespace(
       levels,
     ])
     .sort(([a, , x], [b, , y]) => a.localeCompare(b) || x.length - y.length);
+}
+
+/**
+ * The catalogs of `tables` (I7): a namespace's first level, each with its schemas, the levels after it, as
+ * [`byNamespace`] groups them, in name order. A catalog with no schema yet is there, empty.
+ */
+export function byCatalog(
+  tables: readonly Table[],
+  schemas: readonly string[][] = [],
+): [string, [string, string[], string[]][]][] {
+  const catalogs = new Map<string, [string, string[], string[]][]>();
+  for (const [, names, levels] of byNamespace(tables, schemas)) {
+    const [catalog = "", ...schema] = levels;
+    const inside = catalogs.get(catalog) ?? [];
+    if (schema.length > 0) inside.push([schema.join("."), names, levels]);
+    catalogs.set(catalog, inside);
+  }
+  return [...catalogs.entries()].sort(([a], [b]) => a.localeCompare(b));
 }
 
 /**
@@ -231,45 +249,49 @@ function Tables({
   if (tables === undefined) {
     return <p className="px-1 text-xs text-zinc-500">Reading the catalog…</p>;
   }
-  const groups = byNamespace(tables, schemas);
+  // The ref frames every catalog of the lake, each with its schemas, each with its tables (I7).
+  const catalogs = byCatalog(tables, schemas);
   return (
     <Node
-      icon={<CatalogIcon />}
+      icon={<RefIcon />}
       note={tagged ? "read only" : undefined}
       name={branch}
       onName={onPick && (() => onPick({ kind: "ref" }))}
       current={same(picked, { kind: "ref" })}
     >
-      {groups.length === 0 && (
+      {catalogs.length === 0 && (
         <p className="px-1 py-0.5 text-xs text-zinc-500">No tables on this {tagged ? "tag" : "branch"}.</p>
       )}
-      {groups.map(([namespace, names, levels]) => {
-        return (
-          <Node
-            key={levels.join("\u001f")}
-            icon={<SchemaIcon />}
-            name={namespace}
-            onName={onPick && (() => onPick({ kind: "schema", namespace: levels }))}
-            current={same(picked, { kind: "schema", namespace: levels })}
-          >
-            {names.length === 0 && <p className="py-0.5 pl-4 text-xs text-zinc-400 dark:text-zinc-500">No tables.</p>}
-            <ul aria-label={namespace}>
-              {names.map((name) => (
-                <TableNode
-                  key={name}
-                  on={branch}
-                  levels={levels}
-                  name={name}
-                  columns={columns}
-                  onInsert={onInsert}
-                  onPick={onPick && (() => onPick({ kind: "table", namespace: levels, name }))}
-                  current={same(picked, { kind: "table", namespace: levels, name })}
-                />
-              ))}
-            </ul>
-          </Node>
-        );
-      })}
+      {catalogs.map(([catalog, groups]) => (
+        <Node key={catalog} icon={<CatalogIcon />} name={catalog}>
+          {groups.length === 0 && <p className="py-0.5 pl-4 text-xs text-zinc-400 dark:text-zinc-500">No schemas.</p>}
+          {groups.map(([schema, names, levels]) => (
+            <Node
+              key={levels.join("\u001f")}
+              icon={<SchemaIcon />}
+              name={schema}
+              onName={onPick && (() => onPick({ kind: "schema", namespace: levels }))}
+              current={same(picked, { kind: "schema", namespace: levels })}
+            >
+              {names.length === 0 && <p className="py-0.5 pl-4 text-xs text-zinc-400 dark:text-zinc-500">No tables.</p>}
+              <ul aria-label={levels.join(".")}>
+                {names.map((name) => (
+                  <TableNode
+                    key={name}
+                    on={branch}
+                    levels={levels}
+                    name={name}
+                    columns={columns}
+                    onInsert={onInsert}
+                    onPick={onPick && (() => onPick({ kind: "table", namespace: levels, name }))}
+                    current={same(picked, { kind: "table", namespace: levels, name })}
+                  />
+                ))}
+              </ul>
+            </Node>
+          ))}
+        </Node>
+      ))}
     </Node>
   );
 }
@@ -310,9 +332,10 @@ function TableNode({
   ) : (
     <span className="min-w-0 flex-1 truncate">{name}</span>
   );
-  // The table as a statement on any ref names it: its ref, its schema, and its name.
+  // The table as a statement names it (I7): its catalog, its schema, and its name; the ref is the session's.
+  const [catalog = "", ...schema] = levels;
   const put = onInsert && (
-    <Put name={name} onPut={() => onInsert([on, levels.join("."), name].map(identifier).join("."))} />
+    <Put name={name} onPut={() => onInsert([catalog, schema.join("."), name].map(identifier).join("."))} />
   );
   if (!columns) {
     return (

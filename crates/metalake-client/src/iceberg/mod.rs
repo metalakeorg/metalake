@@ -79,7 +79,7 @@ impl Iceberg<'_> {
         blocking(move || server::stop(&identity, &schema)).await
     }
 
-    /// Has the Iceberg metadata of `tables`, each `namespace.table`, written after each of their commits on `on`, in one
+    /// Has the Iceberg metadata of `tables`, each `[catalog.]schema.table`, written after each of their commits on `on`, in one
     /// commit, and answers its sequence; none if every one was so already. A table `on` does not see refuses all.
     pub async fn on_commit(&self, on: &str, tables: &[&str]) -> Result<Option<i64>> {
         self.set(on, tables, Some(ON_COMMIT)).await
@@ -93,17 +93,16 @@ impl Iceberg<'_> {
 
     async fn set(&self, on: &str, tables: &[&str], value: Option<&str>) -> Result<Option<i64>> {
         if tables.is_empty() {
-            return Err(Error::usage("name a table, namespace.table"));
+            return Err(Error::usage("name a table, [catalog.]schema.table"));
         }
         let on = self.lake.find_ref(on).await?;
         let mut found: BTreeMap<Uuid, (String, Table)> = BTreeMap::new();
         let mut missing = Vec::new();
         for name in tables {
-            let (namespace, short) = name
-                .rsplit_once('.')
-                .ok_or_else(|| Error::usage(format!("{name}: a table is namespace.table")))?;
-            let namespace: Vec<&str> = namespace.split('.').collect();
-            match on.table(&namespace, short).await {
+            // As every face reads a name: `t`, `schema.t` or `catalog.schema.t` (I7).
+            let path = crate::TablePath::parse_on(name, on.name())?;
+            let namespace: Vec<&str> = path.namespace.iter().map(String::as_str).collect();
+            match on.table(&namespace, &path.name).await {
                 Ok(t) => {
                     found.insert(t.id(), (name.to_string(), t));
                 }

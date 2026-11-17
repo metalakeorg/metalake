@@ -48,12 +48,19 @@ pub struct Record {
     pub created_at: u64,
     pub reads: Vec<String>,
     pub writes: Vec<String>,
+    /// The ref its tables are on, which their names do not say (I7).
+    #[serde(default = "main")]
+    pub on: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runner: Option<Handle>,
 }
 
+fn main() -> String {
+    metalake::path::MAIN.to_string()
+}
+
 impl Record {
-    pub fn new(name: &str, query: &str, parallelism: u32, reads: Vec<String>, writes: Vec<String>) -> Self {
+    pub fn new(name: &str, query: &str, parallelism: u32, reads: Vec<String>, writes: Vec<String>, on: &str) -> Self {
         Self {
             name: name.to_string(),
             query: query.to_string(),
@@ -62,6 +69,7 @@ impl Record {
             created_at: SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()),
             reads,
             writes,
+            on: on.to_string(),
             runner: None,
         }
     }
@@ -329,6 +337,7 @@ mod tests {
             1,
             vec!["s".into()],
             vec!["t".into()],
+            "main",
         )
     }
 

@@ -42,8 +42,8 @@ pub(super) fn profile(name: &str, target: &Target) -> Result<Profile> {
     if let Some(token) = &target.token {
         profile.properties.insert("token".into(), token.clone());
     }
-    if let Some(on) = &target.on {
-        profile.properties.insert("warehouse".into(), on.clone());
+    if let Some(warehouse) = target.asks() {
+        profile.properties.insert("warehouse".into(), warehouse);
     }
     // Iceberg's catalog keeps the tables it loaded, in Flink with no expiry by default: following a session, a table
     // must be the session's ref's at each statement.
@@ -102,6 +102,7 @@ mod tests {
             region: None,
             endpoint: None,
             on: None,
+            catalog: None,
         }
     }
 

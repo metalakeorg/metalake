@@ -52,20 +52,22 @@ def test_overwrite_empty_input_commits(lake, table):
     assert rows(lake, table) == []
 
 
-def test_time_travel_preserved(lake, table):
+def test_time_travel_preserved(lake, table, on_ref):
     before = lake.sql(f"select k from {table}")
     point = lake.table(table).append(frame(3)).commit
     lake.table(table).overwrite(frame(9))
     assert rows(lake, table) == [(9,)]
     assert sorted(pl.DataFrame(before).rows()) == [(1,), (2,)]
-    assert rows(lake, f'"main@{point}".default.{table}') == [(1,), (2,), (3,)]
+    with on_ref(lake, "main", at=point):
+        assert rows(lake, table) == [(1,), (2,), (3,)]
 
 
-def test_branch_isolation(lake, table, directory):
+def test_branch_isolation(lake, table, directory, on_ref):
     metalake._cli(["metalake", "--lake", str(directory), "branch", "create", f"{table}_dev"])
-    lake.table(f"{table}_dev.default.{table}").overwrite(frame(9))
+    with on_ref(lake, f"{table}_dev"):
+        lake.table(table).overwrite(frame(9))
+        assert rows(lake, table) == [(9,)]
     assert rows(lake, table) == [(1,), (2,)]
-    assert rows(lake, f'"{table}_dev".default.{table}') == [(9,)]
 
 
 def test_missing_column_raises(lake, table, directory):

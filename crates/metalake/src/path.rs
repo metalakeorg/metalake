@@ -1,17 +1,23 @@
-//! Where a table is, by its name: on a ref, in a namespace, its own name. Every face that takes a table's name reads it
-//! by this rule, so that a statement, a command, a library call and a pipeline mean the same table by the same words.
+//! Where a table is, by its name: in a catalog, a schema, its own name (I7). Every face that takes a table's name reads
+//! it by this rule, so that a statement, a command, a library call and a pipeline mean the same table by the same words.
 //! A name is turned into a table by the catalog (`Ref::table`, TBL-1), which answers its id; this only reads the words.
+//!
+//! A name says no ref: the ref is the session's, as `USE BRANCH`, a selector or `lake.on` set it, and a branch covers
+//! every catalog of the lake. A catalog is the first level of a nested namespace, the schema the levels after it.
 
 use std::fmt;
 
-/// The ref a name without one is on.
+/// The ref a session is on until it says another.
 pub const MAIN: &str = "main";
-/// The namespace a name without one is in.
+/// The catalog a name without one is in: the first level of its namespace.
+pub const DEFAULT_CATALOG: &str = "default";
+/// The schema a name without one is in, in its catalog.
 pub const DEFAULT_NAMESPACE: &str = "default";
 /// What separates the levels of a nested namespace, in a name and in an engine's schema name.
 pub const NAMESPACE_SEPARATOR: char = '.';
 
-/// A table's name: `t` is `main.default.t`, `n.t` is `main.n.t`, and `r.n.t` is on the ref `r`.
+/// A table's name, on a ref: `t` is `default.default.t`, `s.t` is `default.s.t`, `c.s.t` is in catalog `c`, and
+/// `c.a.b.t` in the schema `a.b` of `c`. The ref is not in the name: whoever reads it says it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TablePath {
     pub on: String,
@@ -25,29 +31,29 @@ pub struct InvalidPath(String);
 
 impl fmt::Display for InvalidPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: a table is [ref.][namespace.]table", self.0)
+        write!(f, "{}: a table is [[catalog.]schema.]table", self.0)
     }
 }
 
 impl std::error::Error for InvalidPath {}
 
 impl TablePath {
-    /// A name as text, its parts split at dots: past the ref and before the table's name, every part is a level of the
-    /// namespace (`r.a.b.t`).
+    /// A name as text, on `main`: its parts split at dots, the first of three or more the catalog, the last the table,
+    /// and every part between a level of the schema (`c.a.b.t`).
     pub fn parse(text: &str) -> Result<Self, InvalidPath> {
         Self::parse_on(text, MAIN)
     }
 
-    /// A name as text, on `on` when it names no ref: a session's, which reads and writes on another ref than `main`.
+    /// A name as text, on the ref `on`: a session's, which reads and writes on another ref than `main`.
     pub fn parse_on(text: &str, on: &str) -> Result<Self, InvalidPath> {
         let parts: Vec<&str> = text.split(NAMESPACE_SEPARATOR).collect();
         if parts.iter().any(|part| part.is_empty()) {
             return Err(InvalidPath(text.to_string()));
         }
-        let (on, namespace, name) = match parts.as_slice() {
-            [name] => (on, vec![DEFAULT_NAMESPACE], *name),
-            [namespace, name] => (on, vec![*namespace], *name),
-            [on, namespace @ .., name] => (*on, namespace.to_vec(), *name),
+        let (namespace, name) = match parts.as_slice() {
+            [name] => (vec![DEFAULT_CATALOG, DEFAULT_NAMESPACE], *name),
+            [schema, name] => (vec![DEFAULT_CATALOG, *schema], *name),
+            [namespace @ .., name] => (namespace.to_vec(), *name),
             [] => unreachable!("a split has a part"),
         };
         Ok(Self {
@@ -57,26 +63,34 @@ impl TablePath {
         })
     }
 
-    /// A name as a SQL engine gives it, already split into catalog, schema and table: the catalog is the ref, and the
-    /// schema the namespace, with its levels joined by dots.
-    pub fn from_parts(catalog: Option<&str>, schema: Option<&str>, table: &str) -> Self {
+    /// A name as a SQL engine gives it, already split into catalog, schema and table, on the ref `on`: the catalog is the
+    /// namespace's first level, and the schema the levels after it, joined by dots.
+    pub fn from_parts(on: &str, catalog: Option<&str>, schema: Option<&str>, table: &str) -> Self {
+        let mut namespace = vec![catalog.unwrap_or(DEFAULT_CATALOG).to_string()];
+        namespace.extend(levels(schema.unwrap_or(DEFAULT_NAMESPACE)));
         Self {
-            on: catalog.unwrap_or(MAIN).to_string(),
-            namespace: levels(schema.unwrap_or(DEFAULT_NAMESPACE)),
+            on: on.to_string(),
+            namespace,
             name: table.to_string(),
         }
     }
 
-    /// Its namespace as an engine's schema name.
-    pub fn schema_name(&self) -> String {
-        self.namespace.join(&NAMESPACE_SEPARATOR.to_string())
+    /// Its catalog: the first level of its namespace.
+    pub fn catalog_name(&self) -> &str {
+        self.namespace.first().map_or(DEFAULT_CATALOG, String::as_str)
     }
 
-    /// As a statement names it, whatever its names hold: a namespace of several levels is one identifier.
+    /// Its schema as an engine names it: the levels of its namespace past the catalog, joined by dots.
+    pub fn schema_name(&self) -> String {
+        schema_of(&self.namespace)
+    }
+
+    /// As a statement of a session on its ref names it, whatever its names hold: a schema of several levels is one
+    /// identifier.
     pub fn quoted(&self) -> String {
         format!(
             "{}.{}.{}",
-            quoted(&self.on),
+            quoted(self.catalog_name()),
             quoted(&self.schema_name()),
             quoted(&self.name)
         )
@@ -88,6 +102,14 @@ pub fn levels(schema: &str) -> Vec<String> {
     schema.split(NAMESPACE_SEPARATOR).map(str::to_string).collect()
 }
 
+/// A namespace's schema as an engine names it: its levels past the catalog, joined by dots.
+pub fn schema_of(namespace: &[String]) -> String {
+    namespace
+        .get(1..)
+        .unwrap_or_default()
+        .join(&NAMESPACE_SEPARATOR.to_string())
+}
+
 /// A name as a statement says it, whatever it holds.
 fn quoted(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
@@ -95,7 +117,12 @@ fn quoted(name: &str) -> String {
 
 impl fmt::Display for TablePath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}.{}", self.on, self.schema_name(), self.name)
+        write!(
+            f,
+            "{}.{}",
+            self.namespace.join(&NAMESPACE_SEPARATOR.to_string()),
+            self.name
+        )
     }
 }
 
@@ -112,20 +139,36 @@ mod tests {
     }
 
     #[test]
-    fn parse_defaults_and_levels() {
-        assert_eq!(TablePath::parse("t").unwrap(), name("main", &["default"], "t"));
-        assert_eq!(TablePath::parse("n.t").unwrap(), name("main", &["n"], "t"));
-        assert_eq!(TablePath::parse("r.n.t").unwrap(), name("r", &["n"], "t"));
-        assert_eq!(TablePath::parse("r.a.b.t").unwrap(), name("r", &["a", "b"], "t"));
-        assert_eq!(TablePath::parse("r.a.b.t").unwrap().to_string(), "r.a.b.t");
+    fn i7_parse_defaults_and_levels() {
+        assert_eq!(
+            TablePath::parse("t").unwrap(),
+            name("main", &["default", "default"], "t")
+        );
+        assert_eq!(TablePath::parse("s.t").unwrap(), name("main", &["default", "s"], "t"));
+        assert_eq!(TablePath::parse("c.s.t").unwrap(), name("main", &["c", "s"], "t"));
+        assert_eq!(
+            TablePath::parse("c.a.b.t").unwrap(),
+            name("main", &["c", "a", "b"], "t")
+        );
+        assert_eq!(TablePath::parse("c.a.b.t").unwrap().to_string(), "c.a.b.t");
+        assert_eq!(TablePath::parse("t").unwrap().to_string(), "default.default.t");
     }
 
-    /// A session on another ref: names without one are on it; a name that says its ref keeps it.
+    /// A session on another ref: every name is on it, whatever it says.
     #[test]
-    fn parse_on_another_ref() {
-        assert_eq!(TablePath::parse_on("t", "dev").unwrap(), name("dev", &["default"], "t"));
-        assert_eq!(TablePath::parse_on("n.t", "dev").unwrap(), name("dev", &["n"], "t"));
-        assert_eq!(TablePath::parse_on("r.n.t", "dev").unwrap(), name("r", &["n"], "t"));
+    fn i7_parse_on_another_ref() {
+        assert_eq!(
+            TablePath::parse_on("t", "dev").unwrap(),
+            name("dev", &["default", "default"], "t")
+        );
+        assert_eq!(
+            TablePath::parse_on("s.t", "dev").unwrap(),
+            name("dev", &["default", "s"], "t")
+        );
+        assert_eq!(
+            TablePath::parse_on("c.s.t", "dev").unwrap(),
+            name("dev", &["c", "s"], "t")
+        );
     }
 
     #[test]
@@ -137,31 +180,34 @@ mod tests {
     }
 
     #[test]
-    fn from_parts_as_parse() {
-        assert_eq!(TablePath::from_parts(None, None, "t"), TablePath::parse("t").unwrap());
+    fn i7_from_parts_as_parse() {
         assert_eq!(
-            TablePath::from_parts(None, Some("n"), "t"),
-            TablePath::parse("n.t").unwrap()
+            TablePath::from_parts("main", None, None, "t"),
+            TablePath::parse("t").unwrap()
         );
         assert_eq!(
-            TablePath::from_parts(Some("r"), Some("n"), "t"),
-            TablePath::parse("r.n.t").unwrap()
+            TablePath::from_parts("main", None, Some("s"), "t"),
+            TablePath::parse("s.t").unwrap()
         );
         assert_eq!(
-            TablePath::from_parts(Some("r"), Some("a.b"), "t"),
-            TablePath::parse("r.a.b.t").unwrap(),
+            TablePath::from_parts("main", Some("c"), Some("s"), "t"),
+            TablePath::parse("c.s.t").unwrap()
+        );
+        assert_eq!(
+            TablePath::from_parts("dev", Some("c"), Some("a.b"), "t"),
+            TablePath::parse_on("c.a.b.t", "dev").unwrap(),
             "a schema of several levels is one name with dots"
         );
-        // An engine's catalog may carry a point after the ref (`main@1234`): it stays with the ref, for the engine.
-        assert_eq!(TablePath::from_parts(Some("main@12"), None, "t").on, "main@12");
     }
 
     #[test]
-    fn quoted_keeps_levels_together() {
-        assert_eq!(TablePath::parse("r.a.b.t").unwrap().quoted(), r#""r"."a.b"."t""#);
+    fn i7_quoted_names_no_ref() {
+        let path = TablePath::parse_on("c.a.b.t", "dev").unwrap();
+        assert_eq!(path.quoted(), r#""c"."a.b"."t""#);
+        assert_eq!((path.catalog_name(), path.schema_name().as_str()), ("c", "a.b"));
         assert_eq!(
-            TablePath::from_parts(None, None, r#"we"ird"#).quoted(),
-            r#""main"."default"."we""ird""#
+            TablePath::from_parts("main", None, None, r#"we"ird"#).quoted(),
+            r#""default"."default"."we""ird""#
         );
     }
 }

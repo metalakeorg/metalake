@@ -29,7 +29,7 @@ fn load_ms(uri: &str) -> Result<f64, Failure> {
 }
 
 fn table_dir(directory: &Path) -> PathBuf {
-    let found = std::fs::read_dir(directory.join("db"))
+    let found = std::fs::read_dir(directory.join("default").join("db"))
         .into_iter()
         .flatten()
         .flatten()
@@ -70,7 +70,11 @@ async fn until_materialized(table: &Path, seq: i64) -> Duration {
 
 async fn commit(catalog: &Catalog, main: &Ref, storage: &Storage, k: i64) -> Result<i64, Failure> {
     append(catalog, main, storage, "long", k..k + 1).await?;
-    Ok(main.table(&["db"], "long").await?.snapshot_id().expect("a snapshot"))
+    Ok(main
+        .table(&["default", "db"], "long")
+        .await?
+        .snapshot_id()
+        .expect("a snapshot"))
 }
 
 fn median(mut values: Vec<f64>) -> f64 {
@@ -84,7 +88,7 @@ async fn rest6_materialize_cost() -> Result<(), Failure> {
     let schema = fresh_schema();
     let (catalog, storage, directory) = local_catalog(&schema).await?;
     let main = catalog.branch("main").await?;
-    main.transaction().create_namespace(&["db"]).commit().await?;
+    main.transaction().create_namespace(&["default", "db"]).commit().await?;
     create(&main, "long", "0", vec![]).await?;
     let mut last = 0;
     for k in 0..SNAPSHOTS {
@@ -101,12 +105,16 @@ async fn rest6_materialize_cost() -> Result<(), Failure> {
     let _ = std::fs::remove_dir_all(table.join("metalake-metadata"));
 
     // Marked: the worker generates it when it starts, and a client's first load finds it there.
-    let t = main.table(&["db"], "long").await?;
+    let t = main.table(&["default", "db"], "long").await?;
     main.transaction()
         .define(t.id(), json!({"properties": {KEY: "on-commit"}}))
         .commit()
         .await?;
-    let marked = main.table(&["db"], "long").await?.snapshot_id().expect("a snapshot");
+    let marked = main
+        .table(&["default", "db"], "long")
+        .await?
+        .snapshot_id()
+        .expect("a snapshot");
     let (_server, uri) = server(&schema)?;
     let backfill = until_materialized(&table, marked.max(last)).await;
     let marked_load = load_ms(&uri)?;

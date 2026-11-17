@@ -38,7 +38,7 @@ async fn served() -> Result<(common::Running, String), Failure> {
     let schema = fresh_schema();
     let (catalog, _, _) = local_catalog(&schema).await?;
     let main = catalog.branch("main").await?;
-    main.transaction().create_namespace(&["db"]).commit().await?;
+    main.transaction().create_namespace(&["default", "db"]).commit().await?;
     create(&main, "t", "0", vec![]).await?;
     server(&schema)
 }
