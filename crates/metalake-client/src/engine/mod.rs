@@ -63,6 +63,18 @@ impl Remote {
     /// the engine reaches the lake, through the lake's Iceberg server, as its catalog. The second is not asked when
     /// the first fails.
     pub async fn check(&self) -> Checked {
+        if let Self::Spark(spark) = self {
+            let engine = spark
+                .sql("select 1")
+                .await
+                .map(|_| "answers, and lets this side in".to_string())
+                .map_err(|e| e.to_string());
+            let lake = match &engine {
+                Err(_) => Err("not asked: the engine is not reached".to_string()),
+                Ok(_) => spark.check_lake().await,
+            };
+            return Checked { engine, lake };
+        }
         let engine = self
             .sql("select 1")
             .await

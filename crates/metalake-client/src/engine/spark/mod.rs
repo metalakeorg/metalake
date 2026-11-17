@@ -39,14 +39,16 @@ pub(crate) mod proto {
 }
 
 mod errors;
+#[cfg(test)]
+mod fake;
 
 use proto::execute_plan_request::{RequestOption, request_option};
 use proto::execute_plan_response::ResponseType;
 use proto::spark_connect_service_client::SparkConnectServiceClient;
 use proto::{
-    Command, ConfigRequest, ExecutePlanRequest, ExecutePlanResponse, KeyValue, Plan, ReattachExecuteRequest,
-    ReattachOptions, Relation, ReleaseExecuteRequest, SqlCommand, UserContext, command, config_request, plan, relation,
-    release_execute_request,
+    Command, ConfigRequest, ExecutePlanRequest, ExecutePlanResponse, InterruptRequest, KeyValue, Plan,
+    ReattachExecuteRequest, ReattachOptions, Relation, ReleaseExecuteRequest, SqlCommand, UserContext, command,
+    config_request, interrupt_request, plan, relation, release_execute_request,
 };
 
 /// Spark Connect's client, each call carrying the engine's token.
@@ -141,6 +143,8 @@ struct Inner {
     channel: Channel,
     bearer: Bearer,
     user: String,
+    /// Where Spark reaches the lake's Iceberg server, when the engine names it: what a check asks Spark to reach.
+    lake_url: Option<String>,
     /// The Spark session of each ref statements ran on, by the ref's name: a ref's catalogs are set on a session of
     /// its own, so that each catalog, which Spark keeps as it was first set, is that ref's.
     sessions: Mutex<HashMap<String, Held>>,
@@ -198,6 +202,7 @@ impl Spark {
                 channel: channel.connect_lazy(),
                 bearer,
                 user: config.user.clone().unwrap_or_else(|| CLIENT.to_string()),
+                lake_url: config.lake_url.clone(),
                 sessions: Mutex::new(HashMap::new()),
             }),
         })
@@ -220,6 +225,45 @@ impl Spark {
     /// Runs one statement on `main`, no catalog of the lake set: Spark's own, as a check asks.
     pub async fn sql(&self, text: &str) -> Result<(SchemaRef, Vec<RecordBatch>)> {
         self.sql_on(crate::MAIN, &[], text).await
+    }
+
+    /// Whether Spark reaches the lake's Iceberg server, as its `lake_url` names it: a catalog of its own on a session
+    /// of its own, `metalake_check`, asked for the lake's namespaces on `main`. With no `lake_url`, Spark is given the
+    /// server this lake starts when a statement runs, which a check of the file alone cannot name.
+    pub async fn check_lake(&self) -> std::result::Result<String, String> {
+        let Some(lake_url) = &self.inner.lake_url else {
+            return Err("not asked: the engine names no lake_url, so Spark is given this lake's own server when a                         statement runs; `USING <engine> show namespaces in default` asks it"
+                .to_string());
+        };
+        let catalog = "metalake_check";
+        let key = |k: &str| format!("spark.sql.catalog.{catalog}{k}");
+        let mut settings = vec![
+            (key(""), "org.apache.iceberg.spark.SparkCatalog".to_string()),
+            (key(".type"), "rest".to_string()),
+            (key(".uri"), lake_url.clone()),
+            (key(".cache-enabled"), "false".to_string()),
+        ];
+        if let Some(token) = std::env::var(crate::SHUTDOWN_TOKEN).ok().filter(|t| !t.is_empty()) {
+            settings.push((key(".token"), token));
+        }
+        let on = "metalake check";
+        let answered = self
+            .sql_on(
+                on,
+                &[(catalog.to_string(), settings)],
+                &format!("show namespaces in {catalog}"),
+            )
+            .await;
+        self.forget(on);
+        match answered {
+            Ok((_, batches)) => {
+                let namespaces: usize = batches.iter().map(RecordBatch::num_rows).sum();
+                Ok(format!(
+                    "reaches the lake at {lake_url}: {namespaces} namespaces in `default`"
+                ))
+            }
+            Err(e) => Err(e.to_string()),
+        }
     }
 
     /// Runs one statement in the Spark session of the ref `on`, `catalogs` set on it first if they are not, and
@@ -383,6 +427,13 @@ impl Spark {
             }],
             tags: Vec::new(),
         };
+        // Dropped before its answer is all there, as Cancel and Ctrl-C drop it, the statement is interrupted in Spark.
+        let mut running = Running {
+            spark: self.clone(),
+            session: id.to_string(),
+            operation: operation.clone(),
+            done: false,
+        };
         let mut stream = self
             .again(|mut client| {
                 let request = request.clone();
@@ -433,6 +484,7 @@ impl Spark {
                 }
             }
         }
+        running.done = true;
         // What Spark holds of the answer, to take it up again, is let go: what is taken is all.
         let release = ReleaseExecuteRequest {
             session_id: id.to_string(),
@@ -445,6 +497,36 @@ impl Spark {
         };
         let _ = self.client().release_execute(release).await;
         Ok(collected.answer())
+    }
+}
+
+/// A statement running in Spark, interrupted if its answer is not all taken.
+struct Running {
+    spark: Spark,
+    session: String,
+    operation: String,
+    done: bool,
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        if self.done {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let request = InterruptRequest {
+            session_id: self.session.clone(),
+            user_context: Some(self.spark.user_context()),
+            client_type: Some(CLIENT.to_string()),
+            interrupt_type: interrupt_request::InterruptType::OperationId as i32,
+            interrupt: Some(interrupt_request::Interrupt::OperationId(self.operation.clone())),
+        };
+        let mut client = self.spark.client();
+        runtime.spawn(async move {
+            let _ = client.interrupt(request).await;
+        });
     }
 }
 
@@ -620,5 +702,165 @@ mod tests {
         };
         let error = Spark::new("s", &config).unwrap_err().to_string();
         assert!(error.contains("$METALAKE_TEST_SPARK_TOKEN_UNSET"), "{error}");
+    }
+
+    mod protocol {
+        use std::time::Duration;
+
+        use datafusion::arrow::array::{Array, Int64Array, StringArray};
+
+        use super::super::fake::{Fake, serve};
+        use super::*;
+
+        fn config(url: &str, token_env: Option<&str>) -> EngineConfig {
+            EngineConfig {
+                kind: super::super::super::EngineKind::Spark,
+                url: url.into(),
+                user: Some("ana".into()),
+                token_env: token_env.map(str::to_string),
+                password_env: None,
+                catalog: None,
+                lake_url: None,
+            }
+        }
+
+        async fn spark() -> (Spark, Fake) {
+            let fake = Fake::default();
+            let url = serve(fake.clone()).await;
+            (Spark::new("s", &config(&url, None)).unwrap(), fake)
+        }
+
+        fn numbers(batches: &[RecordBatch]) -> Vec<i64> {
+            batches
+                .iter()
+                .flat_map(|b| {
+                    let n = b.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+                    (0..n.len()).map(|i| n.value(i)).collect::<Vec<_>>()
+                })
+                .collect()
+        }
+
+        fn catalog(name: &str) -> CatalogSettings {
+            (
+                name.to_string(),
+                vec![(
+                    format!("spark.sql.catalog.{name}"),
+                    "org.apache.iceberg.spark.SparkCatalog".into(),
+                )],
+            )
+        }
+
+        #[tokio::test]
+        async fn a_query_runs_the_relation_spark_answers() {
+            let (spark, fake) = spark().await;
+            let (schema, batches) = spark.sql("select n from t").await.unwrap();
+            assert_eq!(schema.field(0).name(), "n");
+            assert_eq!(numbers(&batches), [1, 2]);
+            let heard = fake.heard.lock().unwrap();
+            assert_eq!(heard.statements.len(), 1, "sent once, as a command");
+            assert_eq!(heard.released.len(), 2, "each answer let go");
+        }
+
+        #[tokio::test]
+        async fn a_command_answers_its_rows_within() {
+            let (spark, _) = spark().await;
+            let (_, batches) = spark.sql("create table t (n bigint)").await.unwrap();
+            let said = batches[0].column(0).as_any().downcast_ref::<StringArray>().unwrap();
+            assert_eq!(said.value(0), "done");
+        }
+
+        #[tokio::test]
+        async fn an_answer_cut_short_is_taken_up_where_it_ended() {
+            let (spark, fake) = spark().await;
+            let (_, batches) = spark.sql("select long n from t").await.unwrap();
+            assert_eq!(numbers(&batches), [1, 3]);
+            assert_eq!(fake.heard.lock().unwrap().reattached, [Some("b1".to_string())]);
+        }
+
+        #[tokio::test]
+        async fn a_refs_catalogs_are_set_once_on_a_session_of_its_own() {
+            let (spark, fake) = spark().await;
+            let catalogs = [catalog("default"), catalog("demo")];
+            spark.sql_on("main", &catalogs, "select n").await.unwrap();
+            spark.sql_on("main", &catalogs, "select n").await.unwrap();
+            spark.sql_on("dev", &catalogs[..1], "select n").await.unwrap();
+            let heard = fake.heard.lock().unwrap();
+            let sessions: Vec<&str> = heard.statements.iter().map(|(s, _)| s.as_str()).collect();
+            assert_eq!(sessions[0], sessions[1], "main's statements share its session");
+            assert_ne!(sessions[0], sessions[2], "dev has its own");
+            let set: Vec<(&str, &str)> = heard
+                .settings
+                .iter()
+                .map(|(s, k, _)| (s.as_str(), k.as_str()))
+                .collect();
+            assert_eq!(
+                set,
+                [
+                    (sessions[0], "spark.sql.catalog.default"),
+                    (sessions[0], "spark.sql.catalog.demo"),
+                    (sessions[2], "spark.sql.catalog.default"),
+                ]
+            );
+        }
+
+        #[tokio::test]
+        async fn a_refusal_is_said_in_sparks_words() {
+            let (spark, _) = spark().await;
+            let error = spark.sql("fail").await.unwrap_err().to_string();
+            assert!(error.contains("[TABLE_OR_VIEW_NOT_FOUND]"), "{error}");
+            assert!(error.contains("SQLSTATE 42P01"), "{error}");
+        }
+
+        #[tokio::test]
+        async fn a_restarted_spark_is_given_a_session_and_its_catalogs_again() {
+            let (spark, fake) = spark().await;
+            spark.sql_on("main", &[catalog("default")], "select n").await.unwrap();
+            spark.sql_on("main", &[catalog("default")], "changed").await.unwrap();
+            let heard = fake.heard.lock().unwrap();
+            let sessions: Vec<&str> = heard.statements.iter().map(|(s, _)| s.as_str()).collect();
+            assert_eq!(sessions.len(), 3, "{sessions:?}");
+            assert_eq!(sessions[0], sessions[1]);
+            assert_ne!(sessions[1], sessions[2], "a new session after the restart");
+            assert_eq!(heard.settings.len(), 2, "the catalog set again on it");
+        }
+
+        #[tokio::test]
+        async fn a_statement_dropped_unanswered_is_interrupted() {
+            let (spark, fake) = spark().await;
+            let waited = tokio::time::timeout(Duration::from_millis(300), spark.sql("slow")).await;
+            assert!(waited.is_err(), "it never answers");
+            for _ in 0..50 {
+                if !fake.heard.lock().unwrap().interrupted.is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert_eq!(fake.heard.lock().unwrap().interrupted.len(), 1);
+        }
+
+        #[tokio::test]
+        async fn each_call_bears_the_token() {
+            let fake = Fake::default();
+            let url = serve(fake.clone()).await;
+            // SAFETY: a variable no other test reads.
+            unsafe { std::env::set_var("METALAKE_TEST_SPARK_TOKEN", "the-token") };
+            let spark = Spark::new("s", &config(&url, Some("METALAKE_TEST_SPARK_TOKEN"))).unwrap();
+            spark.sql_on("main", &[catalog("default")], "select n").await.unwrap();
+            let heard = fake.heard.lock().unwrap();
+            assert!(!heard.tokens.is_empty());
+            assert!(
+                heard.tokens.iter().all(|t| t.as_deref() == Some("Bearer the-token")),
+                "{:?}",
+                heard.tokens
+            );
+        }
+
+        #[tokio::test]
+        async fn a_check_with_no_lake_url_says_why_it_did_not_ask() {
+            let (spark, _) = spark().await;
+            let checked = super::super::super::Remote::Spark(spark).check().await;
+            assert!(checked.engine.is_ok(), "{checked:?}");
+            assert!(checked.lake.unwrap_err().contains("lake_url"));
+        }
     }
 }
