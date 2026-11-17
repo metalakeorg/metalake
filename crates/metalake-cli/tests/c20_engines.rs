@@ -389,12 +389,18 @@ fn a_spark_named_and_checked_end_to_end() {
         assert_eq!(last(&["sql", count, "--format", "json"])["n"], 2);
 
         // Written by Spark, read by MetaLake.
-        last(&[
-            "sql",
-            "using spark_test insert into default.db.t values (3, 'c', 2.5)",
-            "--format",
-            "json",
-        ]);
+        // Spark's INSERT answers no rows.
+        let inserted = with_token(
+            &dir,
+            &["sql", "using spark_test insert into default.db.t values (3, 'c', 2.5)"],
+        );
+        assert!(
+            inserted.status.success(),
+            "{}
+{}",
+            text(&inserted.stderr),
+            logs()
+        );
         assert_eq!(
             last(&["sql", "select count(*) as n from db.t", "--format", "json"])["n"],
             3
