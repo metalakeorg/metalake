@@ -30,7 +30,7 @@ serde.workspace = true
 sha2 = "0.11"
 # Flink's rows read as their text, a DECIMAL's digits all kept.
 serde_json = { workspace = true, features = ["raw_value"] }
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["time", "sync"] }
 # Engines elsewhere, as Trino, sent statements by their HTTP protocol.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json"] }
 base64 = "0.22"

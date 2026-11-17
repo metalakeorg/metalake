@@ -52,6 +52,9 @@ struct Inner {
     lake_url: Option<String>,
     /// The Gateway session of each ref statements ran on, by the ref's name.
     sessions: Mutex<HashMap<String, Held>>,
+    /// Held while a session is opened and its catalogs made, so that two statements at once open one session and
+    /// make each catalog once.
+    making: tokio::sync::Mutex<()>,
 }
 
 /// A Gateway session, whether it runs streaming, and the lake's catalogs created on it, each by its statement.
@@ -98,6 +101,7 @@ impl Flink {
                 mode: config.mode,
                 lake_url: config.lake_url.clone(),
                 sessions: Mutex::new(HashMap::new()),
+                making: tokio::sync::Mutex::new(()),
             }),
         })
     }
@@ -148,22 +152,26 @@ impl Flink {
         catalogs: &[CatalogStatement],
         text: &str,
     ) -> std::result::Result<(SchemaRef, Vec<RecordBatch>), Failed> {
-        let mut session = self.session(on).await?;
-        // A catalog is made once on a session; one whose statement changed since, as when the lake's server started
-        // again at another address, is made on a session opened anew.
-        let changed = catalogs
-            .iter()
-            .any(|(catalog, made)| session.catalogs.get(catalog).is_some_and(|was| was != made));
-        if changed {
-            self.close_session(on);
-            session = self.session(on).await?;
-        }
-        for (catalog, made) in catalogs {
-            if !session.catalogs.contains_key(catalog) {
-                self.execute(&session.handle, made, false).await?;
-                self.mark(on, catalog, made);
+        let session = {
+            let _making = self.inner.making.lock().await;
+            let mut session = self.session(on).await?;
+            // A catalog is made once on a session; one whose statement changed since, as when the lake's server
+            // started again at another address, is made on a session opened anew.
+            let changed = catalogs
+                .iter()
+                .any(|(catalog, made)| session.catalogs.get(catalog).is_some_and(|was| was != made));
+            if changed {
+                self.close_session(on);
+                session = self.session(on).await?;
             }
-        }
+            for (catalog, made) in catalogs {
+                if !session.catalogs.contains_key(catalog) {
+                    self.execute(&session.handle, made, false).await?;
+                    self.mark(on, catalog, made);
+                }
+            }
+            session
+        };
         let answered = self.execute(&session.handle, text, session.streaming).await?;
         // A mode set in a `USING` block holds for what follows; in batch an INSERT answers once its job ended.
         if let Some(mode) = mode_set(text) {
@@ -372,7 +380,7 @@ impl Flink {
 
 /// The mode a `SET 'execution.runtime-mode' = '…'` sets, if `text` is one.
 fn mode_set(text: &str) -> Option<RuntimeMode> {
-    let words: String = text
+    let words: String = uncommented(text)
         .chars()
         .filter(|c| !c.is_whitespace())
         .collect::<String>()
@@ -380,6 +388,47 @@ fn mode_set(text: &str) -> Option<RuntimeMode> {
     let rest = words.strip_prefix("set'execution.runtime-mode'=")?;
     let value = rest.trim_end_matches(';').trim_matches('\'');
     RuntimeMode::parse(value).ok()
+}
+
+/// `text` without its SQL comments, `-- …` to the line's end and `/* … */`, outside quotes.
+fn uncommented(text: &str) -> String {
+    let mut kept = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let mut quoted = false;
+    while let Some(c) = chars.next() {
+        if quoted {
+            kept.push(c);
+            quoted = c != '\'';
+            continue;
+        }
+        match (c, chars.peek()) {
+            ('\'', _) => {
+                quoted = true;
+                kept.push(c);
+            }
+            ('-', Some('-')) => {
+                for c in chars.by_ref() {
+                    if c == '\n' {
+                        kept.push('\n');
+                        break;
+                    }
+                }
+            }
+            ('/', Some('*')) => {
+                chars.next();
+                let mut last = ' ';
+                for c in chars.by_ref() {
+                    if last == '*' && c == '/' {
+                        break;
+                    }
+                    last = c;
+                }
+                kept.push(' ');
+            }
+            _ => kept.push(c),
+        }
+    }
+    kept
 }
 
 /// Closes a Gateway session, in the background.
@@ -441,6 +490,11 @@ mod tests {
         );
         assert_eq!(mode_set("SET 'table.dml-sync' = 'true'"), None);
         assert_eq!(mode_set("select 1"), None);
+        assert_eq!(
+            mode_set("-- for the rest\nSET /* the mode */ 'execution.runtime-mode' = 'batch'"),
+            Some(RuntimeMode::Batch)
+        );
+        assert_eq!(mode_set("-- SET 'execution.runtime-mode' = 'batch'\nselect 1"), None);
     }
 
     #[test]

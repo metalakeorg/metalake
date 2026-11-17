@@ -69,8 +69,9 @@ impl Remote {
     /// the first fails.
     pub async fn check(&self) -> Checked {
         if let Self::Flink(flink) = self {
+            // Not a query: one, in streaming, is refused.
             let engine = flink
-                .sql("select 1")
+                .sql("SHOW CATALOGS")
                 .await
                 .map(|_| "answers, and lets this side in".to_string())
                 .map_err(|e| e.to_string());
@@ -280,6 +281,12 @@ impl EngineConfig {
                         "a Flink engine's url is its SQL Gateway's, http or https, not {}",
                         self.url
                     )));
+                }
+                if !url.username().is_empty() || url.password().is_some() || url.query().is_some() {
+                    return Err(Error::usage(
+                        "a Flink engine's url is where its Gateway answers, nothing else: a token is never in it, but \
+                         in the variable token_env names",
+                    ));
                 }
                 let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
                 if self.token_env.is_some() && url.scheme() != "https" && !local {
@@ -777,6 +784,11 @@ token_env = \"SPARK_TOKEN\"
             "a token over the network unencrypted"
         );
         assert!(with(&|e| e.user = Some("ana".into())).is_err());
+        assert!(
+            with(&|e| e.url = "http://ana:s@127.0.0.1:8083".into()).is_err(),
+            "a secret in the url"
+        );
+        assert!(with(&|e| e.url = "http://127.0.0.1:8083?token=s".into()).is_err());
         assert!(with(&|e| e.catalog = Some("lake".into())).is_err());
         assert!(RuntimeMode::parse("micro").is_err());
         let mut trino = trino();
