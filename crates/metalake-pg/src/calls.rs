@@ -386,6 +386,28 @@ impl Protocol {
             .collect())
     }
 
+    /// The namespaces of every ref, by the ref's name, in order. The view computes every ref's before it filters one:
+    /// a listing of all refs reads it once, rather than once per ref.
+    pub async fn namespaces_of_refs(&self, s: &impl Session) -> Result<Vec<(String, NamespaceRow)>> {
+        let statement = s
+            .statement(&format!(
+                "select ref, namespace, properties from {}.namespaces order by ref, namespace",
+                self.schema
+            ))
+            .await?;
+        let rows = s.client().query(&statement, &[]).await?;
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let row = NamespaceRow {
+                    namespace: r.get("namespace"),
+                    properties: r.get("properties"),
+                };
+                (r.get("ref"), row)
+            })
+            .collect())
+    }
+
     /// The commits of a ref, the latest first.
     pub async fn history(&self, s: &impl Session, on: &str, limit: i64) -> Result<Vec<CommitEntry>> {
         let statement = s
