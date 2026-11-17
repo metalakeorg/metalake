@@ -744,6 +744,7 @@ mod tests {
             password_env: None,
             catalog: None,
             lake_url: None,
+            mode: None,
         };
         let error = Spark::new("s", &config).unwrap_err().to_string();
         assert!(error.contains("$METALAKE_TEST_SPARK_TOKEN_UNSET"), "{error}");
@@ -766,6 +767,7 @@ mod tests {
                 password_env: None,
                 catalog: None,
                 lake_url: None,
+                mode: None,
             }
         }
 

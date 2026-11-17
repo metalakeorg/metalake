@@ -102,6 +102,11 @@ impl PyEngine {
         self.config.lake_url.as_deref()
     }
 
+    #[getter]
+    fn mode(&self) -> Option<&str> {
+        self.config.mode.map(|m| m.name())
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Engine({}, type={}, url={}, auth={})",

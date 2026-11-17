@@ -20,6 +20,11 @@ pub async fn run(verb: &EngineVerb, dir: Option<&Path>, out: &Out) -> Result<(),
                 password_env: add.password_env.clone(),
                 catalog: add.catalog.clone(),
                 lake_url: add.lake_url.clone(),
+                mode: add
+                    .mode
+                    .as_deref()
+                    .map(metalake_client::RuntimeMode::parse)
+                    .transpose()?,
             };
             file.add_engine(&add.name, &config, add.replace)?;
             Engines::from([(add.name.clone(), config)])

@@ -28,7 +28,8 @@ futures-util.workspace = true
 object_store = { workspace = true, features = ["http"] }
 serde.workspace = true
 sha2 = "0.11"
-serde_json.workspace = true
+# Flink's rows read as their text, a DECIMAL's digits all kept.
+serde_json = { workspace = true, features = ["raw_value"] }
 tokio = { workspace = true, features = ["time"] }
 # Engines elsewhere, as Trino, sent statements by their HTTP protocol.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json"] }

@@ -111,11 +111,11 @@ pub struct EngineAdd {
     /// How statements name it: lowercase letters, digits and `_`.
     #[arg(value_name = "NAME")]
     pub name: String,
-    /// What it is: trino, or spark (through Spark Connect).
+    /// What it is: trino, spark (through Spark Connect), or flink (through its SQL Gateway).
     #[arg(long = "type", value_name = "TYPE", default_value = "trino")]
     pub kind: String,
     /// Where it answers: Trino's coordinator, as `https://trino.example:8443`; Spark Connect's server, as
-    /// `sc://spark.example:15002`.
+    /// `sc://spark.example:15002`; Flink's SQL Gateway, as `https://flink.example:8083`.
     #[arg(long, value_name = "URL")]
     pub url: String,
     /// Who asks, as the engine knows them.
@@ -135,6 +135,9 @@ pub struct EngineAdd {
     /// elsewhere, as `metalake iceberg serve` there; the one this lake starts on this machine by default.
     #[arg(long, value_name = "URL")]
     pub lake_url: Option<String>,
+    /// How Flink runs statements: streaming, its own default, or batch.
+    #[arg(long, value_name = "MODE")]
+    pub mode: Option<String>,
     /// Replaces an engine of the same name.
     #[arg(long)]
     pub replace: bool,
