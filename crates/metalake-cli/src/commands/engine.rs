@@ -19,6 +19,7 @@ pub async fn run(verb: &EngineVerb, dir: Option<&Path>, out: &Out) -> Result<(),
                 token_env: add.token_env.clone(),
                 password_env: add.password_env.clone(),
                 catalog: add.catalog.clone(),
+                lake_url: add.lake_url.clone(),
             };
             file.add_engine(&add.name, &config, add.replace)?;
             Engines::from([(add.name.clone(), config)])

@@ -111,10 +111,11 @@ pub struct EngineAdd {
     /// How statements name it: lowercase letters, digits and `_`.
     #[arg(value_name = "NAME")]
     pub name: String,
-    /// What it is.
+    /// What it is: trino, or spark (through Spark Connect).
     #[arg(long = "type", value_name = "TYPE", default_value = "trino")]
     pub kind: String,
-    /// Where it answers: Trino's coordinator, as `https://trino.example:8443`.
+    /// Where it answers: Trino's coordinator, as `https://trino.example:8443`; Spark Connect's server, as
+    /// `sc://spark.example:15002`.
     #[arg(long, value_name = "URL")]
     pub url: String,
     /// Who asks, as the engine knows them.
@@ -126,9 +127,14 @@ pub struct EngineAdd {
     /// The variable of the environment that holds the user's password for it.
     #[arg(long, value_name = "VARIABLE")]
     pub password_env: Option<String>,
-    /// The lake's catalog in the engine, as `metalake iceberg connect --name` named it; `lake` by default.
+    /// The lake's catalog in the engine, as `metalake iceberg connect --name` named it; `lake` by default. Not Spark's,
+    /// which is given each of the lake's catalogs by its own name.
     #[arg(long, value_name = "NAME")]
     pub catalog: Option<String>,
+    /// Where the engine reaches the lake's Iceberg server, for Spark, which is given the lake's catalogs: a server
+    /// elsewhere, as `metalake iceberg serve` there; the one this lake starts on this machine by default.
+    #[arg(long, value_name = "URL")]
+    pub lake_url: Option<String>,
     /// Replaces an engine of the same name.
     #[arg(long)]
     pub replace: bool,

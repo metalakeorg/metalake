@@ -64,7 +64,7 @@ pub fn catalog_verb_of(text: &str) -> Result<Option<CatalogVerb>> {
 }
 
 /// The catalogs of `on`: the first levels of its namespaces, in order.
-async fn catalogs(on: &Ref) -> Result<Vec<String>> {
+pub(crate) async fn catalogs(on: &Ref) -> Result<Vec<String>> {
     let mut names: Vec<String> = on
         .namespaces()
         .await?

@@ -27,7 +27,7 @@ pub const MAIN: &str = "main";
 
 pub use details::{Column, RefDetails, SchemaDetails, SchemaSummary, Size, TableDetails, TableSize, TableSummary};
 pub use engine::{
-    CATALOG, Checked, EngineConfig, EngineKind, Engines, LOCAL, LocalFailure, LocalRunner, OWN, Remote, Trino, Using,
+    CATALOG, Checked, EngineConfig, EngineKind, Engines, LOCAL, LocalFailure, LocalRunner, OWN, Remote, Spark, Trino, Using,
     UsingOf, check_engine_name, engine_rows, how_it_ended, set_local_runner, using_of,
 };
 pub use error::{Error, Kind, Result};

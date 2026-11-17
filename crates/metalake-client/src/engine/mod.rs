@@ -1,5 +1,5 @@
-//! Engines a lake's faces send statements to: a cluster elsewhere, such as Trino, that reaches the lake through its
-//! Iceberg REST server. Each is named once in the lake's `metalake.toml`, `[engines.<name>]`, with where it answers and
+//! Engines a lake's faces send statements to: a cluster elsewhere, such as Trino or Spark, that reaches the lake through
+//! its Iceberg REST server. Each is named once in the lake's `metalake.toml`, `[engines.<name>]`, with where it answers and
 //! who asks; a secret is never written there, only the variable of the environment that holds it.
 //!
 //! Naming an engine reaches nothing: it is written whether or not the engine runs, or reaches the lake. What it takes
@@ -16,11 +16,13 @@ use url::Url;
 use crate::{Error, Result};
 
 mod local;
+mod spark;
 mod trino;
 mod using;
 
 use local::run_local;
 pub use local::{LOCAL, LocalFailure, LocalRunner, how_it_ended, set_local_runner};
+pub use spark::Spark;
 pub use trino::Trino;
 pub use using::{OWN, Using, UsingOf, using_of};
 pub(crate) use using::{Placed, place};
@@ -29,6 +31,7 @@ pub(crate) use using::{Placed, place};
 #[derive(Debug, Clone)]
 pub enum Remote {
     Trino(Trino),
+    Spark(Spark),
 }
 
 impl Remote {
@@ -36,6 +39,7 @@ impl Remote {
     pub fn new(name: &str, config: &EngineConfig) -> Result<Self> {
         match config.kind {
             EngineKind::Trino => Ok(Self::Trino(Trino::new(name, config)?)),
+            EngineKind::Spark => Ok(Self::Spark(Spark::new(name, config)?)),
         }
     }
 
@@ -43,6 +47,7 @@ impl Remote {
     pub async fn sql(&self, text: &str) -> Result<(SchemaRef, Vec<RecordBatch>)> {
         match self {
             Self::Trino(trino) => trino.sql(text).await,
+            Self::Spark(spark) => spark.sql(text).await,
         }
     }
 
@@ -50,6 +55,7 @@ impl Remote {
     pub fn catalog(&self) -> &str {
         match self {
             Self::Trino(trino) => trino.catalog(),
+            Self::Spark(_) => SPARK_CATALOGS,
         }
     }
 
@@ -124,25 +130,32 @@ impl Checked {
 /// The catalog the lake is in an engine, unless its entry names another: what `metalake iceberg connect` names it.
 pub const CATALOG: &str = "lake";
 
+/// What a Spark engine's catalog is, as rows show it: each of the lake's, by its own name.
+const SPARK_CATALOGS: &str = "the lake's, by their names";
+
 /// The kinds of engine a lake can send statements to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EngineKind {
     Trino,
+    /// Through Spark Connect.
+    Spark,
 }
 
 impl EngineKind {
     pub fn name(self) -> &'static str {
         match self {
             Self::Trino => "trino",
+            Self::Spark => "spark",
         }
     }
 
     pub fn parse(name: &str) -> Result<Self> {
         match name {
             "trino" => Ok(Self::Trino),
+            "spark" => Ok(Self::Spark),
             other => Err(Error::usage(format!(
-                "an engine of type `{other}`: the types are trino"
+                "an engine of type `{other}`: the types are trino, spark"
             ))),
         }
     }
@@ -154,7 +167,8 @@ impl EngineKind {
 pub struct EngineConfig {
     #[serde(rename = "type")]
     pub kind: EngineKind,
-    /// Where it answers: Trino's coordinator, `https://trino.example:8443`.
+    /// Where it answers: Trino's coordinator, `https://trino.example:8443`; Spark Connect's server,
+    /// `sc://spark.example:15002`.
     pub url: String,
     /// Who asks, as the engine knows them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -165,20 +179,55 @@ pub struct EngineConfig {
     /// The variable of the environment that holds the user's password for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password_env: Option<String>,
-    /// The lake's catalog in the engine; [`CATALOG`] when not given.
+    /// The lake's catalog in the engine; [`CATALOG`] when not given. Not Spark's: there each of the lake's catalogs is
+    /// set on the session by its own name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog: Option<String>,
+    /// Where the engine reaches the lake's Iceberg REST server, when MetaLake sets the lake's catalogs on it (Spark's):
+    /// a server elsewhere, `metalake iceberg serve`; when not given, the one this lake starts on this machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lake_url: Option<String>,
 }
 
 impl EngineConfig {
-    /// Refuses what could never be asked: a URL that is not http or https, a password with no user, two secrets.
+    /// Refuses what could never be asked: a URL its kind does not take, a password with no user, two secrets.
     pub fn validate(&self) -> Result<()> {
-        let url = Url::parse(&self.url).map_err(|e| Error::usage(format!("an engine's url {}: {e}", self.url)))?;
-        if !matches!(url.scheme(), "http" | "https") {
-            return Err(Error::usage(format!(
-                "an engine's url is http or https, not {}",
-                self.url
-            )));
+        match self.kind {
+            EngineKind::Trino => {
+                let url =
+                    Url::parse(&self.url).map_err(|e| Error::usage(format!("an engine's url {}: {e}", self.url)))?;
+                if !matches!(url.scheme(), "http" | "https") {
+                    return Err(Error::usage(format!(
+                        "an engine's url is http or https, not {}",
+                        self.url
+                    )));
+                }
+                if self.lake_url.is_some() {
+                    return Err(Error::usage(
+                        "Trino reaches the lake by the catalog its own server names: no lake url to give it",
+                    ));
+                }
+            }
+            EngineKind::Spark => {
+                spark::Endpoint::parse(&self.url)?;
+                if let Some(lake_url) = &self.lake_url {
+                    let parsed = Url::parse(lake_url)
+                        .map_err(|e| Error::usage(format!("the lake's server url {lake_url}: {e}")))?;
+                    if !matches!(parsed.scheme(), "http" | "https") {
+                        return Err(Error::usage(format!(
+                            "the lake's server url is http or https, not {lake_url}"
+                        )));
+                    }
+                }
+                if self.password_env.is_some() {
+                    return Err(Error::usage("Spark Connect takes a token, not a password"));
+                }
+                if self.catalog.is_some() {
+                    return Err(Error::usage(
+                        "Spark is given each of the lake's catalogs by its own name: no catalog to name",
+                    ));
+                }
+            }
         }
         if self.token_env.is_some() && self.password_env.is_some() {
             return Err(Error::usage("an engine signs in by a token or by a password, not both"));
@@ -199,7 +248,10 @@ impl EngineConfig {
 
     /// The lake's catalog in the engine.
     pub fn catalog(&self) -> &str {
-        self.catalog.as_deref().unwrap_or(CATALOG)
+        match self.kind {
+            EngineKind::Trino => self.catalog.as_deref().unwrap_or(CATALOG),
+            EngineKind::Spark => SPARK_CATALOGS,
+        }
     }
 
     /// How it signs in, as a person reads it: never the secret.
@@ -215,20 +267,20 @@ impl EngineConfig {
 /// The engines a lake names, by name.
 pub type Engines = BTreeMap<String, EngineConfig>;
 
+/// The engines a session has sent statements to, by name, kept for the session's life: a Spark keeps its sessions in
+/// it, and what a statement set there holds for the next.
+pub(crate) type Remotes = Arc<std::sync::Mutex<BTreeMap<String, Remote>>>;
+
 /// One statement `USING` an engine, on `lake`, the session reading `on`: a local engine, run in a process of its own and
 /// connected to `on` (I6), or one the lake's file names, sent the statement. A local engine's name is never another's.
-pub(crate) async fn run_using(lake: &crate::Lake, on: &str, using: &Using) -> Result<crate::Prepared> {
+pub(crate) async fn run_using(
+    lake: &crate::Lake,
+    on: &str,
+    using: &Using,
+    remotes: &Remotes,
+) -> Result<crate::Prepared> {
     if LOCAL.contains(&using.engine.as_str()) {
         return run_local(lake, on, using).await;
-    }
-    // An engine the lake's file names was connected to the lake's catalog by whoever runs it, on the ref they chose
-    // (`metalake iceberg connect --ref`): MetaLake cannot move it, and on another ref than `main` it would answer for
-    // that one without a word.
-    if on != crate::MAIN {
-        return Err(Error::usage(format!(
-            "USING {} reads the ref its own catalog is connected to, which is not this session's `{on}`:              connect it with `metalake iceberg connect <engine> --ref {on}`",
-            using.engine
-        )));
     }
     let engines = lake.engines()?;
     let Some(config) = engines.get(&using.engine) else {
@@ -243,8 +295,71 @@ pub(crate) async fn run_using(lake: &crate::Lake, on: &str, using: &Using) -> Re
             }
         )));
     };
-    let (schema, batches) = Remote::new(&using.engine, config)?.sql(&using.sql).await?;
+    let remote = {
+        let mut held = remotes.lock().unwrap_or_else(|e| e.into_inner());
+        match held.get(&using.engine) {
+            Some(remote) => remote.clone(),
+            None => {
+                let remote = Remote::new(&using.engine, config)?;
+                held.insert(using.engine.clone(), remote.clone());
+                remote
+            }
+        }
+    };
+    let (schema, batches) = match &remote {
+        // Trino was connected to the lake's catalog by whoever runs it, on the ref they chose (`metalake iceberg connect
+        // --ref`): MetaLake cannot move it, and on another ref than `main` it would answer for that one without a word.
+        Remote::Trino(trino) => {
+            if on != crate::MAIN {
+                return Err(Error::usage(format!(
+                    "USING {} reads the ref its own catalog is connected to, which is not this session's `{on}`:                      connect it with `metalake iceberg connect <engine> --ref {on}`",
+                    using.engine
+                )));
+            }
+            trino.sql(&using.sql).await?
+        }
+        // Spark is given the lake's catalogs on `on` by MetaLake itself.
+        Remote::Spark(spark) => {
+            if on.contains('@') {
+                return Err(Error::usage(format!(
+                    "USING {} reads and writes a branch as it is now, and this session reads `{on}` at a point:                      USE BRANCH first",
+                    using.engine
+                )));
+            }
+            let catalogs = spark_catalogs(lake, on, config).await?;
+            spark.sql_on(on, &catalogs, &using.sql).await?
+        }
+    };
     crate::Prepared::from_batches(schema, batches)
+}
+
+/// Each of the lake's catalogs on `on`, as Spark's session is given it: the Spark profile's catalog under the catalog's
+/// own name, asking the lake's Iceberg server for that catalog on `on`, keeping no table it loaded, since MetaLake's
+/// own statements write the same tables between Spark's. Its server is the one `config` names, or this lake's on this
+/// machine; the jars and extensions a profile starts Spark with are the server's own, not set here.
+async fn spark_catalogs(lake: &crate::Lake, on: &str, config: &EngineConfig) -> Result<Vec<spark::CatalogSettings>> {
+    let iceberg = lake.iceberg();
+    let target = match &config.lake_url {
+        Some(url) => iceberg.target_at(url)?,
+        None => iceberg.target().await?,
+    };
+    let mut names = crate::catalogs_sql::catalogs(&lake.find_ref(on).await?).await?;
+    if !names.iter().any(|c| c == metalake::path::DEFAULT_CATALOG) {
+        names.insert(0, metalake::path::DEFAULT_CATALOG.to_string());
+    }
+    names
+        .into_iter()
+        .map(|catalog| {
+            let profile = crate::iceberg::profile(
+                crate::iceberg::Engine::Spark,
+                &catalog,
+                &target.clone().on(on).in_catalog(&catalog),
+            )?;
+            let mut settings: Vec<(String, String)> = profile.properties.into_iter().collect();
+            settings.push((format!("spark.sql.catalog.{catalog}.cache-enabled"), "false".into()));
+            Ok((catalog, settings))
+        })
+        .collect()
 }
 
 /// Refuses a name `USING` could not take bare: lowercase letters, digits and `_`, not first a digit.
@@ -279,6 +394,7 @@ pub fn engine_rows(engines: &Engines) -> Result<(SchemaRef, RecordBatch)> {
         Field::new("user", DataType::Utf8, true),
         Field::new("auth", DataType::Utf8, false),
         Field::new("catalog", DataType::Utf8, false),
+        Field::new("lake_url", DataType::Utf8, true),
     ]));
     let column = |f: &dyn Fn(&str, &EngineConfig) -> Option<String>| -> ArrayRef {
         Arc::new(engines.iter().map(|(name, e)| f(name, e)).collect::<StringArray>())
@@ -290,6 +406,7 @@ pub fn engine_rows(engines: &Engines) -> Result<(SchemaRef, RecordBatch)> {
         column(&|_, e| e.user.clone()),
         column(&|_, e| Some(e.auth())),
         column(&|_, e| Some(e.catalog().to_string())),
+        column(&|_, e| e.lake_url.clone()),
     ];
     Ok((schema.clone(), RecordBatch::try_new(schema, columns)?))
 }
@@ -306,6 +423,7 @@ mod tests {
             token_env: Some("TRINO_TOKEN".into()),
             password_env: None,
             catalog: None,
+            lake_url: None,
         }
     }
 
@@ -339,6 +457,60 @@ mod tests {
         assert!(with(&|e| e.password_env = Some("P".into())).is_err(), "two secrets");
         assert!(with(&|e| e.user = None).is_err(), "Trino asks who runs");
         assert!(with(&|e| e.token_env = Some("A=B".into())).is_err());
+    }
+
+    fn spark() -> EngineConfig {
+        EngineConfig {
+            kind: EngineKind::Spark,
+            url: "sc://spark.example:15002".into(),
+            user: None,
+            token_env: Some("SPARK_TOKEN".into()),
+            password_env: None,
+            catalog: None,
+            lake_url: None,
+        }
+    }
+
+    #[test]
+    fn a_spark_engine_reads_as_written() {
+        let text = "type = \"spark\"
+url = \"sc://spark.example:15002\"
+token_env = \"SPARK_TOKEN\"
+";
+        let read: EngineConfig = toml::from_str(text).unwrap();
+        assert_eq!(read, spark());
+        assert_eq!(toml::to_string(&read).unwrap(), text);
+        assert_eq!(EngineKind::parse("spark").unwrap(), EngineKind::Spark);
+        assert!(
+            EngineKind::parse("flink")
+                .unwrap_err()
+                .to_string()
+                .contains("trino, spark")
+        );
+    }
+
+    #[test]
+    fn what_spark_could_never_be_asked_is_refused() {
+        let with = |f: &dyn Fn(&mut EngineConfig)| {
+            let mut e = spark();
+            f(&mut e);
+            e.validate()
+        };
+        assert!(with(&|_| {}).is_ok());
+        assert!(
+            with(&|e| e.token_env = None).is_ok(),
+            "no secret, as a server of one's own"
+        );
+        assert!(with(&|e| e.url = "sc://spark.example/;use_ssl=true".into()).is_ok());
+        assert!(with(&|e| e.url = "https://spark.example:15002".into()).is_err());
+        assert!(
+            with(&|e| e.url = "sc://spark.example/;token=s".into()).is_err(),
+            "a secret in the url"
+        );
+        assert!(with(&|e| e.password_env = Some("P".into())).is_err());
+        assert!(with(&|e| e.catalog = Some("lake".into())).is_err());
+        assert!(with(&|e| e.lake_url = Some("http://lake.example:8181".into())).is_ok());
+        assert!(with(&|e| e.lake_url = Some("sc://lake.example".into())).is_err());
     }
 
     #[test]

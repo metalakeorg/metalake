@@ -78,6 +78,8 @@ pub struct Session {
     context: SessionContext,
     /// For what is the client's own and not the engine's: a pipeline's verbs.
     lake: Lake,
+    /// The engines elsewhere this session sent statements to, kept for its life.
+    remotes: crate::engine::Remotes,
 }
 
 /// Whether a plan only reads, and so can wait to be read. What is not known to be a read runs at once: running one early
@@ -183,6 +185,7 @@ impl Session {
             engine,
             context,
             lake: lake.clone(),
+            remotes: Default::default(),
         })
     }
 
@@ -406,7 +409,9 @@ impl Session {
                 let _ = self.engine.refresh().await;
                 answer
             }
-            Step::Using(using) => crate::engine::run_using(&self.lake, &self.current_ref(), &using).await,
+            Step::Using(using) => {
+                crate::engine::run_using(&self.lake, &self.current_ref(), &using, &self.remotes).await
+            }
             // It ran nothing: an answer with no column, as a statement that leaves nothing to show.
             Step::Choose(_) => {
                 Prepared::from_batches(Arc::new(datafusion::arrow::datatypes::Schema::empty()), Vec::new())

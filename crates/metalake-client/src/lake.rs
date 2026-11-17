@@ -240,6 +240,7 @@ fn engine_table(config: &EngineConfig) -> toml_edit::Table {
         ("token_env", &config.token_env),
         ("password_env", &config.password_env),
         ("catalog", &config.catalog),
+        ("lake_url", &config.lake_url),
     ] {
         if let Some(value) = value {
             table[key] = toml_edit::value(value);
@@ -792,6 +793,7 @@ mod tests {
             token_env: Some("TRINO_TOKEN".into()),
             password_env: None,
             catalog: None,
+            lake_url: None,
         }
     }
 

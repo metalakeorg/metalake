@@ -95,6 +95,11 @@ impl PyEngine {
         self.config.catalog()
     }
 
+    #[getter]
+    fn lake_url(&self) -> Option<&str> {
+        self.config.lake_url.as_deref()
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Engine({}, type={}, url={}, auth={})",
