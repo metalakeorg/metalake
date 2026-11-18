@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<!-- DataNodes are reached by their names, which the host resolves to its published ports, not by the addresses
+<!-- DataNodes are reached by their names, `127.0.0.1` here, the ports the cluster publishes, not by the addresses
      they have inside Docker's network, which the host cannot reach. -->
 <configuration>
   <property>

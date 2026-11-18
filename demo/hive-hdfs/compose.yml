@@ -1,29 +1,39 @@
-# A Hadoop cluster in small, as a migration starts from: HDFS, and Hive writing its tables there as Parquet. MetaLake
-# takes those tables over in place, its catalog in a Postgres apart from both.
+# A Hadoop cluster in small, as a migration starts from: HDFS, and Hive writing its tables there as Parquet. MetaLake,
+# installed on the host with pip, takes those tables over in place, its catalog in a Postgres apart from both.
 #
-#   docker compose -f demo/hive-hdfs/compose.yml up -d
-#   docker compose -f demo/hive-hdfs/compose.yml down -v
+#   docker compose -f demo/hive-hdfs/compose.yml up -d --wait
+#   docker compose -f demo/hive-hdfs/compose.yml down
+#
+# The cluster's own name is `127.0.0.1` (not `localhost`, which Windows resolves to ::1 first, where Docker publishes
+# nothing): the NameNode, the DataNode and Hive share one network namespace, the
+# NameNode's, and publish their ports on the host's. So Hive writes `hdfs://127.0.0.1:9000/...`, and a client on the
+# host reaches that same URL with no name to resolve; a real cluster has DNS for that. A client outside the
+# namespace reaches the DataNode by its name, `127.0.0.1`, not by its address inside Docker: client/ is that
+# client's Hadoop configuration, which HADOOP_CONF_DIR names.
 name: metalake-hive-hdfs
 
 x-hadoop: &hadoop
   image: apache/hadoop:3.4.3
   environment: &hadoop-conf
-    CORE-SITE.XML_fs.defaultFS: hdfs://namenode:9000
+    CORE-SITE.XML_fs.defaultFS: hdfs://127.0.0.1:9000
     HDFS-SITE.XML_dfs.replication: "1"
     HDFS-SITE.XML_dfs.permissions.enabled: "false"
     HDFS-SITE.XML_dfs.namenode.name.dir: /tmp/hadoop/dfs/name
     HDFS-SITE.XML_dfs.datanode.data.dir: /tmp/hadoop/dfs/data
+    HDFS-SITE.XML_dfs.datanode.hostname: 127.0.0.1
+    # The NameNode listens on every interface, so that the port Docker publishes reaches it, not on 127.0.0.1 alone.
+    HDFS-SITE.XML_dfs.namenode.rpc-bind-host: 0.0.0.0
 
 services:
   namenode:
     <<: *hadoop
-    hostname: namenode
     command: hdfs namenode
     environment:
       <<: *hadoop-conf
       ENSURE_NAMENODE_DIR: /tmp/hadoop/dfs/name
-    # 9000: the NameNode's RPC, which a client on the host reaches as namenode:9000 (see client/).
-    ports: ["9870:9870", "9000:9000"]
+    # Every port of the namespace: the NameNode's web (9870) and RPC (9000), the DataNode's data transfer (9866),
+    # HiveServer2 (10000) and its web (10002).
+    ports: ["9870:9870", "9000:9000", "9866:9866", "10000:10000", "10002:10002"]
     healthcheck:
       test: ["CMD-SHELL", "hdfs dfsadmin -report 2>/dev/null | grep -q 'Live datanodes (1)' && hdfs dfsadmin -safemode get | grep -q OFF"]
       interval: 3s
@@ -31,27 +41,20 @@ services:
 
   datanode:
     <<: *hadoop
-    hostname: datanode
     command: hdfs datanode
-    # It announces itself by name, so that a client outside Docker's network, told to use DataNodes' names
-    # (`dfs.client.use.datanode.hostname`), reaches it at datanode:9866 through the published port.
-    environment:
-      <<: *hadoop-conf
-      HDFS-SITE.XML_dfs.datanode.hostname: datanode
-    ports: ["9866:9866"]
+    network_mode: service:namenode
     depends_on: [namenode]
 
   # HiveServer2 with its metastore embedded; its warehouse on HDFS. Tez runs its queries in local mode.
   hive:
     image: apache/hive:4.0.1
-    hostname: hive
+    network_mode: service:namenode
     environment:
       SERVICE_NAME: hiveserver2
-      SERVICE_OPTS: -Dhive.metastore.warehouse.dir=hdfs://namenode:9000/user/hive/warehouse
+      SERVICE_OPTS: -Dhive.metastore.warehouse.dir=hdfs://127.0.0.1:9000/user/hive/warehouse
     volumes:
       - ./hive/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml:ro
       - ./hive:/demo:ro
-    ports: ["10000:10000", "10002:10002"]
     depends_on:
       namenode:
         condition: service_healthy
@@ -59,38 +62,3 @@ services:
       test: ["CMD-SHELL", "beeline -u jdbc:hive2://localhost:10000/ -e 'select 1' >/dev/null 2>&1"]
       interval: 5s
       retries: 60
-
-  # MetaLake's command line, inside the cluster's network: it reaches the NameNode and the DataNodes as Hive does, and
-  # the catalog's Postgres, here or in a cloud. Its lake's `metalake.toml` lives in /lake. The UI answers only on its
-  # loopback; `socat` forwards the host's localhost:4173 to it, as an SSH tunnel to a VM would:
-  #   docker compose -f demo/hive-hdfs/compose.yml exec metalake metalake ui --no-browser --port 4173
-  metalake:
-    build:
-      context: ../..
-      dockerfile: demo/hive-hdfs/metalake.Dockerfile
-    image: metalake-demo/metalake:main
-    hostname: metalake
-    command: socat TCP-LISTEN:4174,fork,reuseaddr TCP:127.0.0.1:4173
-    # A catalog in Cloud SQL is signed in to with `--auth gcp-iam`: a token of the host's Google identity, from gcloud's
-    # application default credentials (`gcloud auth application-default login`), never a password. Read only.
-    # GCLOUD_ADC names another file; on Linux and macOS, ~/.config/gcloud/application_default_credentials.json.
-    environment:
-      GOOGLE_APPLICATION_CREDENTIALS: /gcloud/application_default_credentials.json
-    volumes:
-      - lake:/lake
-      - ${GCLOUD_ADC:-${APPDATA}/gcloud/application_default_credentials.json}:/gcloud/application_default_credentials.json:ro
-    ports: ["4173:4174"]
-    depends_on:
-      namenode:
-        condition: service_healthy
-
-  # MetaLake's catalog, for a lake whose catalog is not in a cloud.
-  postgres:
-    image: postgres:17
-    environment:
-      POSTGRES_PASSWORD: metalake
-      POSTGRES_DB: lake
-    ports: ["5432:5432"]
-
-volumes:
-  lake:

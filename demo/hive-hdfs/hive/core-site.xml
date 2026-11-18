@@ -3,7 +3,7 @@
 <configuration>
   <property>
     <name>fs.defaultFS</name>
-    <value>hdfs://namenode:9000</value>
+    <value>hdfs://127.0.0.1:9000</value>
   </property>
   <!-- One DataNode: Hive's files are written with one replica, not the default three. -->
   <property>
