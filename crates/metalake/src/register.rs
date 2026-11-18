@@ -72,6 +72,40 @@ pub struct Report {
     pub adopted: Option<String>,
 }
 
+impl std::fmt::Display for Report {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let verb = match (self.check, self.refused.is_empty()) {
+            (true, _) => "would register",
+            (false, true) => "registered",
+            (false, false) => "registered nothing:",
+        };
+        write!(
+            f,
+            "{} {verb} {} files, {} rows, {} bytes",
+            self.table, self.registered, self.rows, self.bytes
+        )?;
+        write!(
+            f,
+            "; {} already held, {} hidden skipped",
+            self.already, self.skipped_hidden
+        )?;
+        if self.created {
+            write!(f, "; created")?;
+        }
+        if let Some(prefix) = &self.adopted {
+            write!(f, "; owns {prefix}")?;
+        }
+        if !self.commits.is_empty() {
+            let commits: Vec<String> = self.commits.iter().map(i64::to_string).collect();
+            write!(f, "; commits {}", commits.join(", "))?;
+        }
+        for refusal in &self.refused {
+            write!(f, "\nrefused {} ({}): {}", refusal.path, refusal.rule, refusal.why)?;
+        }
+        Ok(())
+    }
+}
+
 /// A file a run refuses, the rule it breaks, and why.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Refusal {
@@ -159,9 +193,12 @@ pub async fn register(on: &Ref, storage: &Storage, r: &Register<'_>) -> Result<R
         }
     }
     listed.sort_by(|a, b| a.0.url.cmp(&b.0.url));
-    let read = stream::iter(listed.into_iter().map(|(object, relative)| async move {
-        let footer = footer(storage, &object).await?;
-        Ok::<_, Error>((object, relative, footer))
+    let read = stream::iter(listed.into_iter().map(|(object, relative)| {
+        let storage = storage.clone();
+        async move {
+            let footer = footer(&storage, &object).await?;
+            Ok::<_, Error>((object, relative, footer))
+        }
     }))
     .buffered(CONCURRENCY)
     .try_collect::<Vec<_>>()
@@ -231,7 +268,16 @@ pub async fn register(on: &Ref, storage: &Storage, r: &Register<'_>) -> Result<R
             let fields = spec_fields(&schema)?;
             let mapping = NameMapping::of_fields(&fields).to_json();
             let partitioning: Vec<(&str, &str)> = r.partition.iter().map(|(c, _)| (*c, "identity")).collect();
-            let (tx, id) = on.transaction().create_table(NewTable {
+            // The table's namespace and each above it that the ref lacks, in the same commit (NS-2).
+            let known: HashSet<Vec<String>> = on.namespaces().await?.into_iter().map(|n| n.namespace).collect();
+            let mut tx = on.transaction();
+            for depth in 1..=r.namespace.len() {
+                let level = &r.namespace[..depth];
+                if !known.contains(&level.iter().map(|s| s.to_string()).collect::<Vec<_>>()) {
+                    tx = tx.create_namespace(level);
+                }
+            }
+            let (tx, id) = tx.create_table(NewTable {
                 namespace: r.namespace,
                 name: r.name,
                 schema: &schema,
@@ -247,10 +293,13 @@ pub async fn register(on: &Ref, storage: &Storage, r: &Register<'_>) -> Result<R
     };
     let mut adopt = r.adopt && !report.created;
     for batch in candidates.chunks(r.batch.max(1)) {
-        let adds = stream::iter(batch.iter().map(|c| file_add(storage, &table, c)))
-            .buffered(CONCURRENCY)
-            .try_collect::<Vec<_>>()
-            .await?;
+        let adds = stream::iter(batch.iter().cloned().map(|c| {
+            let (storage, table) = (storage.clone(), table.clone());
+            async move { file_add(&storage, &table, &c).await }
+        }))
+        .buffered(CONCURRENCY)
+        .try_collect::<Vec<_>>()
+        .await?;
         let mut tx = on.transaction().append(adds).message("register");
         if adopt {
             (tx, adopt) = (tx.own(table.id(), &[source]), false);

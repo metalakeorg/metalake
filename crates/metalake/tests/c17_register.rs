@@ -1,7 +1,7 @@
 //! C17: registering files in place. A Hive table's directory (Parquet with no field ids, `dt=` directories, `_SUCCESS`
 //! and a `.crc`) becomes a table with one run: created with its name mapping, its files' rows and statistics, read
 //! back with the partition column. A check commits nothing; a refused file stops the run before any commit; a second
-//! run adds only what is new; adopting records the source as owned.
+//! run adds only what is new; adopting records the source as owned, and strays then lists it (RET-7b).
 
 mod common;
 
@@ -148,6 +148,14 @@ async fn c17_register_a_hive_directory() -> Result<(), Box<dyn std::error::Error
         .owned_prefixes(&pool.get().await?, table.id())
         .await?;
     assert_eq!(owned, [SOURCE]);
+
+    // Owned now, the source is listed by strays: what is there and was never registered, Hive's `_SUCCESS` and `.crc`
+    // and a file it left, becomes expired intents for orphans to delete; the registered files do not.
+    storage.put(&format!("{SOURCE}/dt=2024-01-02/old.orc"), Bytes::from_static(b"orc")).await?;
+    let table = main.table(&["db"], "ventas").await?;
+    let strays = catalog.maintenance().strays(&table, &storage, std::time::Duration::ZERO).await?;
+    assert_eq!(strays, 3);
+    assert_eq!(rows(&catalog, &storage).await?.len(), 4);
 
     // A source on another store is refused, naming both.
     let elsewhere = Register {

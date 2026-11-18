@@ -93,19 +93,35 @@ impl Maintenance {
         Ok(forgotten)
     }
 
-    /// Turns the objects under a table's location that are older than `age` and that nothing knows into expired intents,
-    /// which `orphans` then deletes, and answers how many (RET-7b). A writer that commits one late is refused (CMT-9).
-    /// Only this lists storage, so it is asked for by table, with `age` beyond any write in progress.
+    /// Turns the objects under a table's location, and under the prefixes it owns (OWN-1), that are older than `age` and
+    /// that nothing knows into expired intents, which `orphans` then deletes, and answers how many (RET-7b). A writer
+    /// that commits one late is refused (CMT-9). Only this lists storage, so it is asked for by table, with `age` beyond
+    /// any write in progress. A table that adopted a directory another system wrote finds there what was never
+    /// registered, and the files it no longer reads.
     pub async fn strays(&self, table: &Table, storage: &Storage, age: Duration) -> Result<u64> {
-        let listed = storage.list(table.location()).await?;
+        let (p, session) = (self.catalog.protocol(), self.catalog.session().await?);
+        let mut prefixes = vec![table.location().trim_end_matches('/').to_string()];
+        prefixes.extend(p.owned_prefixes(&session, table.id()).await?);
+        let mut listed = Vec::new();
+        for prefix in &prefixes {
+            listed.extend(storage.list(prefix).await?);
+        }
+        listed.sort();
+        listed.dedup();
+        let under = |path: &str| {
+            prefixes.iter().any(|prefix| {
+                path.strip_prefix(prefix.as_str())
+                    .is_some_and(|rest| rest.starts_with('/'))
+            })
+        };
         // A store that spelled a path otherwise than the catalog would make a live file look unknown, and lose it.
         let spelled: BTreeSet<&str> = listed.iter().map(|(url, _)| url.as_str()).collect();
         for task in self.files(table).await? {
-            let path = task.path.filter(|p| p.starts_with(table.location()));
+            let path = task.path.filter(|p| under(p));
             if let Some(path) = path.filter(|p| !spelled.contains(p.as_str())) {
                 return Err(Error::Location(format!(
                     "{path} is not among what {} lists",
-                    table.location()
+                    prefixes.join(", ")
                 )));
             }
         }
@@ -115,7 +131,6 @@ impl Maintenance {
             .filter(|(url, seconds)| *seconds >= age.as_secs() as i64 && !url.starts_with(&generated))
             .map(|(url, _)| url)
             .collect();
-        let (p, session) = (self.catalog.protocol(), self.catalog.session().await?);
         let mut adopted = 0;
         for paths in old.chunks(self.batch.max(1) as usize) {
             adopted += p.adopt_orphans(&session, table.ref_id(), table.id(), paths).await? as u64;

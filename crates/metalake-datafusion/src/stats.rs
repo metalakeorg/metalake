@@ -32,6 +32,8 @@ pub(crate) fn of_file(
     let mut statistics = Statistics::new_unknown(schema);
     statistics.num_rows = Precision::Exact((task.record_count - deleted) as usize);
     let Some(metadata) = metadata else {
+        // No footer in the catalog yet, as for a file registered in place: its partition values still hold.
+        partition_constants(&mut statistics, task, schema, evolve, &[])?;
         return Ok(statistics);
     };
     let file_metadata = metadata.file_metadata();
@@ -52,10 +54,23 @@ pub(crate) fn of_file(
         let estimate = deleted > 0 || is_float(schema.field(at).data_type());
         statistics.column_statistics[at] = if estimate { column.to_inexact() } else { column };
     }
+    partition_constants(&mut statistics, task, schema, evolve, &columns)?;
+    Ok(statistics)
+}
+
+/// An identity partition column the file lacks, the columns `in_file` not among them, holds its partition value in
+/// every row (PAR-2): exact bounds of that value and no nulls, which DataFusion reads as a constant.
+fn partition_constants(
+    statistics: &mut Statistics,
+    task: &ScanTask,
+    schema: &SchemaRef,
+    evolve: &Evolve,
+    in_file: &[usize],
+) -> Result<()> {
     let partition = evolve.partition_values(task.spec_id, &task.partition);
     for (at, field) in schema.fields().iter().enumerate() {
         let value = id(field).and_then(|i| partition.get(&i.parse().ok()?));
-        if columns.contains(&at) || value.is_none_or(serde_json::Value::is_null) {
+        if in_file.contains(&at) || value.is_none_or(serde_json::Value::is_null) {
             continue;
         }
         let constant = evolve.column_in(field, None, 1, &partition).map_err(external)?;
@@ -66,7 +81,7 @@ pub(crate) fn of_file(
         column.null_count = Precision::Exact(0);
         column.distinct_count = Precision::Exact(1);
     }
-    Ok(statistics)
+    Ok(())
 }
 
 fn id(field: &Field) -> Option<&String> {

@@ -12,6 +12,7 @@ pub mod merge;
 pub mod migrate;
 pub mod pipeline;
 pub mod refs;
+pub mod register;
 pub mod retain;
 pub mod signal;
 pub mod sql;
