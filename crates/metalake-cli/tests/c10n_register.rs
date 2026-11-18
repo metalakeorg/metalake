@@ -76,7 +76,12 @@ fn c10n_register_a_hive_directory() {
         &dir,
         &[&["register", source.as_str()][..], &args, &["--format", "json"]].concat(),
     );
-    assert_eq!(refused.status.code(), Some(2), "a usage error: {}", text(&refused.stderr));
+    assert_eq!(
+        refused.status.code(),
+        Some(2),
+        "a usage error: {}",
+        text(&refused.stderr)
+    );
     let answer: Value = serde_json::from_slice(&refused.stdout).unwrap();
     assert_eq!(answer["refused"][0]["rule"], "parquet", "{answer}");
     assert_eq!(

@@ -151,9 +151,14 @@ async fn c17_register_a_hive_directory() -> Result<(), Box<dyn std::error::Error
 
     // Owned now, the source is listed by strays: what is there and was never registered, Hive's `_SUCCESS` and `.crc`
     // and a file it left, becomes expired intents for orphans to delete; the registered files do not.
-    storage.put(&format!("{SOURCE}/dt=2024-01-02/old.orc"), Bytes::from_static(b"orc")).await?;
+    storage
+        .put(&format!("{SOURCE}/dt=2024-01-02/old.orc"), Bytes::from_static(b"orc"))
+        .await?;
     let table = main.table(&["db"], "ventas").await?;
-    let strays = catalog.maintenance().strays(&table, &storage, std::time::Duration::ZERO).await?;
+    let strays = catalog
+        .maintenance()
+        .strays(&table, &storage, std::time::Duration::ZERO)
+        .await?;
     assert_eq!(strays, 3);
     assert_eq!(rows(&catalog, &storage).await?.len(), 4);
 

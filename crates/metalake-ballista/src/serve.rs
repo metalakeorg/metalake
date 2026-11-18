@@ -96,7 +96,10 @@ impl ExecutorSettings {
         let catalog = catalog();
         let warehouse = var(WAREHOUSE);
         if warehouse.is_none() && catalog.is_none() {
-            return Err(missing(WAREHOUSE, "an executor without Postgres reads the warehouse it names"));
+            return Err(missing(
+                WAREHOUSE,
+                "an executor without Postgres reads the warehouse it names",
+            ));
         }
         let number = |name: &str, default: usize| match var(name) {
             Some(value) => parsed::<usize>(name, &value),
@@ -141,7 +144,9 @@ pub async fn run_scheduler(settings: SchedulerSettings) -> Result<()> {
     config.override_logical_codec = Some(parts.logical);
     config.override_physical_codec = Some(parts.physical);
     let cluster = BallistaCluster::new_from_config(&config).await.map_err(external)?;
-    start_server(cluster, settings.bind, Arc::new(config)).await.map_err(external)
+    start_server(cluster, settings.bind, Arc::new(config))
+        .await
+        .map_err(external)
 }
 
 /// Runs an executor until its process ends: a signal, or the scheduler asks it to stop.
