@@ -3,7 +3,7 @@
 -- Every file of this directory is rendered for one catalog: `@schema@` becomes the catalog's schema, so no object
 -- depends on the caller's search_path. Installing it again over a catalog, as migrating does, changes nothing else.
 
-insert into @schema@.meta values ('protocol_version', '0')
+insert into @schema@.meta values ('protocol_version', '1')
   on conflict (key) do update set value = excluded.value;
 
 -- LAY-3, LAY-5: the versions a client reads on connecting, to refuse a catalog it does not know.

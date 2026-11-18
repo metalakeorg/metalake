@@ -891,6 +891,12 @@ impl Protocol {
         Ok(rows.iter().map(|r| r.get(0)).collect())
     }
 
+    /// The prefixes a table owns besides its location, in order (OWN-1): where a collector lists too (RET-7b).
+    pub async fn owned_prefixes(&self, s: &impl Session, table_id: Uuid) -> Result<Vec<String>> {
+        let rows = self.all(s, "owned_prefixes(table_id => $1)", &[&table_id]).await?;
+        Ok(rows.iter().map(|r| r.get(0)).collect())
+    }
+
     pub async fn forget_intents(&self, s: &impl Session, paths: &[String]) -> Result<i64> {
         Ok(self.one(s, "forget_intents(paths => $1)", &[&paths]).await?.get(0))
     }
@@ -998,6 +1004,7 @@ pub const INTERFACE: &[(&str, &[&str], bool)] = &[
     ("sweep_due", &["lim"], false),
     ("sweep_done", &["paths"], true),
     ("orphans", &["at"], false),
+    ("owned_prefixes", &["table_id"], false),
     ("forget_intents", &["paths"], true),
     ("adopt_orphans", &["ref_id", "table_id", "paths"], true),
     ("fill_committed_at", &["lim"], true),

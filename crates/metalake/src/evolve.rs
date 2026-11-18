@@ -14,35 +14,103 @@ use arrow_array::{
     Float64Array, Int32Array, Int64Array, ListArray, MapArray, StringArray, StructArray, Time64MicrosecondArray,
     TimestampMicrosecondArray, TimestampNanosecondArray, new_null_array,
 };
-use arrow_schema::{ArrowError, DataType, Field as ArrowField, TimeUnit};
+use arrow_schema::{ArrowError, DataType, Field as ArrowField, Schema, TimeUnit};
 use serde_json::Value;
 
 use crate::error::{Error, Result};
+use crate::mapping::{self, NameMapping};
 use crate::schema::{self, FIELD_ID};
 use crate::table::{Field, Table};
+use parquet::schema::types::SchemaDescriptor;
 
 type Arrow<T> = std::result::Result<T, ArrowError>;
 
 const MICROS_PER_DAY: i64 = 86_400_000_000;
 const NANOS_PER_DAY: i64 = 86_400_000_000_000;
 
-/// The table's fields by id, to read files under.
+/// The table's fields by id, to read files under, with what finds them in a file written without ids (ENG-3): the
+/// table's name mapping, and its identity partition fields, whose values a file's partition holds.
 #[derive(Debug, Clone)]
 pub struct Evolve {
     fields: HashMap<i32, Field>,
+    mapping: Option<NameMapping>,
+    /// By spec id: each identity field's position in a file's partition, and its source field.
+    identity: HashMap<i32, Vec<(usize, i32)>>,
 }
 
+/// A file's partition values of identity fields, by source field id: a column the file lacks takes its value.
+pub type PartitionValues = HashMap<i32, Value>;
+
 impl Evolve {
+    /// The fields of `table`. A name mapping that does not parse maps nothing: the files it was for read as lacking
+    /// those columns, as they would with none.
     pub fn new(table: &Table) -> Self {
+        let identity = table
+            .specs()
+            .iter()
+            .map(|(spec_id, fields)| {
+                let identity = fields
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                    .filter(|(_, f)| f["transform"] == "identity")
+                    .filter_map(|(i, f)| Some((i, f["source_ids"][0].as_i64()? as i32)))
+                    .collect();
+                (*spec_id, identity)
+            })
+            .collect();
         Self {
             fields: table.fields().iter().map(|f| (f.field_id, f.clone())).collect(),
+            mapping: NameMapping::of_table(table).ok().flatten(),
+            identity,
         }
+    }
+
+    /// A file's Arrow schema with the ids its columns lack, from the table's name mapping (ENG-3, step 3).
+    pub fn file_schema(&self, schema: &Schema) -> Schema {
+        match &self.mapping {
+            Some(mapping) => mapping.apply(schema),
+            None => schema.clone(),
+        }
+    }
+
+    /// The field id of each leaf column of a Parquet file: its own, or the mapping's.
+    pub fn leaf_ids(&self, descr: &SchemaDescriptor) -> Vec<Option<i32>> {
+        mapping::leaf_ids(self.mapping.as_ref(), descr)
+    }
+
+    /// A file's identity partition values, by source field, from its spec and partition (ENG-3, step 2).
+    pub fn partition_values(&self, spec_id: i32, partition: &Value) -> PartitionValues {
+        self.identity
+            .get(&spec_id)
+            .into_iter()
+            .flatten()
+            .filter_map(|(at, source)| Some((*source, partition.get(*at)?.clone())))
+            .collect()
     }
 
     /// The column of `field`, from the file's column of its id, or of `rows` rows when the file has none.
     pub fn column(&self, field: &ArrowField, file: Option<&ArrayRef>, rows: usize) -> Result<ArrayRef> {
-        self.of(field, file, rows)
-            .map_err(|e| Error::Schema(format!("{}: {e}", field.name())))
+        self.column_in(field, file, rows, &PartitionValues::new())
+    }
+
+    /// The same, where a top-level column the file lacks is first its identity partition value (ENG-3, step 2).
+    pub fn column_in(
+        &self,
+        field: &ArrowField,
+        file: Option<&ArrayRef>,
+        rows: usize,
+        partition: &PartitionValues,
+    ) -> Result<ArrayRef> {
+        let in_partition = id(field).and_then(|i| Some((self.fields.get(&i), partition.get(&i)?)));
+        let column = match (file, in_partition) {
+            (None, Some((_, Value::Null))) => Ok(new_null_array(field.data_type(), rows)),
+            (None, Some((Some(spec), value))) => constant(&spec.ty, field.data_type(), value, rows)
+                .ok_or_else(|| ArrowError::SchemaError(format!("its partition value {value} is not a {}", spec.ty))),
+            _ => self.of(field, file, rows),
+        };
+        column.map_err(|e| Error::Schema(format!("{}: {e}", field.name())))
     }
 
     fn of(&self, field: &ArrowField, file: Option<&ArrayRef>, rows: usize) -> Arrow<ArrayRef> {
@@ -327,6 +395,8 @@ mod tests {
         ];
         let evolve = Evolve {
             fields: fields.iter().map(|f| (f.field_id, f.clone())).collect(),
+            mapping: None,
+            identity: HashMap::new(),
         };
         let arrow = |f: &Field, ty: DataType| {
             ArrowField::new(&f.name, ty, !f.required)

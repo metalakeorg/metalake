@@ -62,7 +62,7 @@ fn outdated_catalog_refused() {
     );
 
     ok(&dir, &["migrate"]);
-    assert!(ok(&dir, &["status"]).contains("protocol   0"));
+    assert!(ok(&dir, &["status"]).contains("protocol   1"));
     assert_eq!(rows(&dir), "k\n1\n");
 }
 
@@ -89,7 +89,7 @@ fn newer_catalog_refused() {
 
     // It touched nothing.
     postgres(&format!(
-        "update {schema}.meta set value = '0' where key = 'protocol_version'"
+        "update {schema}.meta set value = '1' where key = 'protocol_version'"
     ));
     assert_eq!(rows(&dir), "k\n1\n");
 }

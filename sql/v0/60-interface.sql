@@ -256,3 +256,9 @@ set search_path = @schema@, pg_catalog, pg_temp as $$
    where not n.dropped
    order by n.namespace, n.name;
 $$;
+
+-- OWN-1, RET-7b: the prefixes a table owns besides its location, for a collector that lists them.
+create function @schema@.owned_prefixes(table_id uuid) returns setof text language sql stable
+set search_path = @schema@, pg_catalog, pg_temp as $$
+  select o.prefix from owned_prefix o where o.table_id = $1 order by o.prefix;
+$$;

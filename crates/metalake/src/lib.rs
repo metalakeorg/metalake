@@ -22,8 +22,10 @@ mod error;
 mod evolve;
 mod follow;
 mod maintain;
+pub mod mapping;
 pub mod partition;
 pub mod path;
+pub mod register;
 mod scan;
 pub mod schema;
 pub mod stats;
@@ -50,7 +52,7 @@ pub use metalake_pg::records::{
 pub use metalake_pg::{ErrorKind, Retention};
 pub use path::{InvalidPath, TablePath};
 pub use scan::{Scan, ScanTask, TaskReader, TaskVector, listed_vector};
-pub use storage::Storage;
+pub use storage::{Listed, Storage};
 pub use stream::{
     CHANGE_TYPE, COMMIT_SEQ, COMMIT_TIMESTAMP, RowChange, Start, StreamCursor, StreamStep, StreamTask, TableChanges,
     TableStream, TaskRows,

@@ -52,6 +52,9 @@ pub enum Verb {
     Retain(Retain),
     /// Runs the upkeep once: all of it, in order, or one task. For whatever schedules it.
     Maintain(Maintain),
+    /// Makes the Parquet files under a prefix of the lake's store a table's, where they are, with no byte copied: a
+    /// Hive table's directory, say. Running it again adds only what is new.
+    Register(Register),
     /// Stops a lake's own Postgres, which stays up otherwise: before moving or deleting the lake. The next command starts it.
     Stop,
     /// Serves the lake's UI on this machine, on the loopback, and opens it in the browser, until Ctrl-C.
@@ -468,6 +471,38 @@ pub struct Log {
     /// Lists the snapshots of this table, `namespace.table`, instead.
     #[arg(long, value_name = "TABLE")]
     pub table: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct Register {
+    /// The prefix whose files are registered, on the lake's store and spelled as its warehouse is.
+    pub source: String,
+
+    /// The table: `table`, `schema.table` or `catalog.schema.table`; created on the first run.
+    #[arg(long = "as", value_name = "TABLE")]
+    pub table: String,
+
+    /// A directory key that is a partition column, and its type: `dt:date`. Repeatable, in the directories' order.
+    /// Types: string, int, long, date, boolean.
+    #[arg(long, value_name = "COLUMN:TYPE")]
+    pub partition: Vec<String>,
+
+    /// The table owns the source from now on, so upkeep may delete what it no longer reads there. Only once nothing
+    /// else reads the source.
+    #[arg(long)]
+    pub adopt: bool,
+
+    /// Where the table writes what is new; the warehouse's, by name, when not given.
+    #[arg(long, value_name = "URL")]
+    pub location: Option<String>,
+
+    /// Says what would be registered, and what refused, and commits nothing.
+    #[arg(long)]
+    pub check: bool,
+
+    /// The branch.
+    #[arg(long = "ref", value_name = "BRANCH")]
+    pub on: Option<String>,
 }
 
 #[derive(Debug, Args)]

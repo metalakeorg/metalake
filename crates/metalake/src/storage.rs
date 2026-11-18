@@ -14,6 +14,15 @@ use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
 
 use crate::error::{Error, Result};
 
+/// An object under a location, as a listing finds it: its URL as the catalog spells it, its size, and its age.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    pub url: String,
+    pub size: u64,
+    /// Seconds since it was last written.
+    pub age: i64,
+}
+
 /// The store of a location, and the URL prefix of every path in it.
 #[derive(Debug, Clone)]
 pub struct Storage {
@@ -104,18 +113,30 @@ impl Storage {
 
     /// The objects under `location`, each with its age in seconds, as the catalog would spell its URL.
     pub async fn list(&self, location: &str) -> Result<Vec<(String, i64)>> {
+        Ok(self
+            .listed(location)
+            .await?
+            .into_iter()
+            .map(|o| (o.url, o.age))
+            .collect())
+    }
+
+    /// The objects under `location`, with their sizes, as the catalog would spell their URLs: what registering files
+    /// that are already there needs to read their footers, a request each.
+    pub async fn listed(&self, location: &str) -> Result<Vec<Listed>> {
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);
         let prefix = self.path(location)?;
         let found: Vec<_> = self.store.list(Some(&prefix)).try_collect().await?;
-        let ages = found.into_iter().map(|o| {
-            (
-                format!("{}/{}", self.base, o.location),
-                now - o.last_modified.timestamp(),
-            )
-        });
-        Ok(ages.collect())
+        Ok(found
+            .into_iter()
+            .map(|o| Listed {
+                url: format!("{}/{}", self.base, o.location),
+                size: o.size,
+                age: now - o.last_modified.timestamp(),
+            })
+            .collect())
     }
 
     /// Deletes an object; deleting one that is not there is not an error, since sweeping may be repeated (RET-4).
@@ -193,6 +214,34 @@ fn hdfs(base: &str) -> Result<Arc<dyn ObjectStore>> {
     Err(Error::Location(format!(
         "{base}: HDFS is reached with the feature `hdfs` of metalake, which this build does not have"
     )))
+}
+
+#[cfg(test)]
+mod listing {
+    use super::*;
+
+    #[tokio::test]
+    async fn listed_with_sizes_under_the_prefix() {
+        let storage = Storage::in_memory();
+        for (url, bytes) in [
+            ("memory:///hive/t/dt=1/a.parquet", &b"0123"[..]),
+            ("memory:///hive/t/dt=2/b.parquet", &b"01"[..]),
+            ("memory:///hive/u/c.parquet", &b"0"[..]),
+        ] {
+            storage.put(url, Bytes::from(bytes.to_vec())).await.unwrap();
+        }
+        let mut found = storage.listed("memory:///hive/t").await.unwrap();
+        found.sort_by(|a, b| a.url.cmp(&b.url));
+        let sizes: Vec<(&str, u64)> = found.iter().map(|o| (o.url.as_str(), o.size)).collect();
+        assert_eq!(
+            sizes,
+            [
+                ("memory:///hive/t/dt=1/a.parquet", 4),
+                ("memory:///hive/t/dt=2/b.parquet", 2)
+            ]
+        );
+        assert!(found.iter().all(|o| o.age >= 0 && o.age < 60));
+    }
 }
 
 #[cfg(all(test, not(feature = "hdfs")))]

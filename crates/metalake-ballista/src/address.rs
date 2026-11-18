@@ -18,7 +18,11 @@ pub(crate) fn host_port(url: &str) -> Result<(String, u16)> {
                 .ok_or_else(|| invalid(url, "an IPv6 host without its closing bracket"))?;
             let port = match after {
                 "" => None,
-                after => Some(after.strip_prefix(':').ok_or_else(|| invalid(url, "text after the IPv6 host"))?),
+                after => Some(
+                    after
+                        .strip_prefix(':')
+                        .ok_or_else(|| invalid(url, "text after the IPv6 host"))?,
+                ),
             };
             (format!("[{address}]"), port)
         }
@@ -54,7 +58,13 @@ mod tests {
         assert_eq!(at("df://[::1]"), ("[::1]".into(), DEFAULT_PORT));
         assert_eq!(at("df://[::1]:7000"), ("[::1]".into(), 7000));
         assert_eq!(at("df://[fd00::5]:7000/x"), ("[fd00::5]".into(), 7000));
-        for wrong in ["df://scheduler:port", "df://[::1", "df://[::1]x", "df://:7000", "df://[]"] {
+        for wrong in [
+            "df://scheduler:port",
+            "df://[::1",
+            "df://[::1]x",
+            "df://:7000",
+            "df://[]",
+        ] {
             assert!(host_port(wrong).is_err(), "{wrong}");
         }
     }

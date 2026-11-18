@@ -8,7 +8,7 @@ async fn install_into_empty_database() -> Result<(), Error> {
     let (protocol, reference) = (fresh_schema("protocol"), fresh_schema("reference"));
     install_protocol(&client, &protocol).await?;
     install_reference(&client, &reference).await?;
-    for (schema, expected) in [(&protocol, Some("0")), (&reference, None)] {
+    for (schema, expected) in [(&protocol, Some(metalake_pg::PROTOCOL_VERSION)), (&reference, None)] {
         let format: String = client
             .query_one(
                 &format!("select value from \"{schema}\".meta where key = 'format_version'"),

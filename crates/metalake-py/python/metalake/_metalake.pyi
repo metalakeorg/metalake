@@ -103,6 +103,17 @@ class Lake:
         on: str | None = None,
         table: str | None = None,
     ) -> list[Done]: ...
+    def register(
+        self,
+        source: str,
+        table: str,
+        *,
+        partition: dict[str, str] | None = None,
+        adopt: bool = False,
+        location: str | None = None,
+        check: bool = False,
+        on: str | None = None,
+    ) -> Registered: ...
     def merge(
         self,
         branch: str,
@@ -396,6 +407,30 @@ class Snapshot:
 
 
 @final
+class Registered:
+    @property
+    def table(self) -> str: ...
+    @property
+    def created(self) -> bool: ...
+    @property
+    def check(self) -> bool: ...
+    @property
+    def registered(self) -> int: ...
+    @property
+    def already(self) -> int: ...
+    @property
+    def skipped_hidden(self) -> int: ...
+    @property
+    def refused(self) -> list[tuple[str, str, str]]: ...
+    @property
+    def rows(self) -> int: ...
+    @property
+    def bytes(self) -> int: ...
+    @property
+    def commits(self) -> list[int]: ...
+    @property
+    def adopted(self) -> str | None: ...
+
 class Merged:
     @property
     def branch(self) -> str: ...

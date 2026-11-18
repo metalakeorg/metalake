@@ -16,6 +16,7 @@ mod merge;
 mod pipeline;
 mod refs;
 mod refs_sql;
+mod register;
 pub mod server;
 mod session;
 mod status;
@@ -41,12 +42,14 @@ pub use ingest::{Mode, Writer, WriterOptions, Wrote};
 pub use lake::{Lake, LakeFile};
 pub use maintain::{Done, MaintainRequest, MaintainRun, Task};
 pub use merge::{MergeOutcome, MergeRequest};
+pub use metalake::register::{Refusal, Report};
 pub use metalake::{Auth, CommitEntry, Mark, Retention, SnapshotEntry, TableName, Watch};
 pub use pipeline::{
     ARROYO, ARROYO_IMAGE, Names, Pipeline, PipelineOptions, PipelineState, Verb, names_of, rows as pipeline_rows,
     state_name, verb_of,
 };
 pub use refs::{RefInfo, RefKind, table};
+pub use register::RegisterRequest;
 pub use server::{Runtime, SHUTDOWN_TOKEN, VERSION};
 pub use session::{Prepared, Session, SourcedStep, Step};
 pub use status::{Named, Status};

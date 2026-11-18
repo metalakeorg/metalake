@@ -11,7 +11,7 @@ use datafusion::datasource::physical_plan::parquet::{ParquetFileReaderFactory, P
 use datafusion::error::{DataFusionError, Result};
 use datafusion::parquet::arrow::async_reader::AsyncFileReader;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
-use metalake::{ScanTask, Storage};
+use metalake::{Evolve, ScanTask, Storage};
 
 use crate::catalog::external;
 use crate::stats;
@@ -42,6 +42,7 @@ impl ParquetFileReaderFactory for TaskReaders {
 pub(crate) async fn file(
     task: ScanTask,
     schema: &SchemaRef,
+    evolve: &Evolve,
     storage: &Storage,
     positions: bool,
 ) -> Result<(PartitionedFile, Statistics)> {
@@ -73,7 +74,7 @@ pub(crate) async fn file(
             .collect();
         file = file.with_extension(ParquetRowSelection::new(vector.row_selection(&groups)));
     }
-    let mut statistics = stats::of_file(&task, metadata.as_deref(), schema)?;
+    let mut statistics = stats::of_file(&task, metadata.as_deref(), schema, evolve)?;
     if positions {
         file = file.with_partition_values(vec![ScalarValue::Int64(Some(task.file_id))]);
         statistics

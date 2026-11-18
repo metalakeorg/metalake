@@ -6,7 +6,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use datafusion::arrow::array::{ArrayRef, RecordBatch};
+use datafusion::arrow::array::{ArrayRef, RecordBatch, make_array};
 use datafusion::arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef};
 use datafusion::common::ScalarValue;
 use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
@@ -28,9 +28,12 @@ pub(crate) struct ByFieldId {
 
 impl PhysicalExprAdapterFactory for ByFieldId {
     fn create(&self, logical: SchemaRef, physical: SchemaRef) -> Result<Arc<dyn PhysicalExprAdapter>> {
+        // A file written without ids is given them by the table's name mapping (ENG-3, step 3).
+        let mapped = Arc::new(self.evolve.file_schema(&physical));
         Ok(Arc::new(FileAdapter {
             logical,
             physical,
+            mapped,
             evolve: self.evolve.clone(),
         }))
     }
@@ -39,7 +42,9 @@ impl PhysicalExprAdapterFactory for ByFieldId {
 #[derive(Debug)]
 struct FileAdapter {
     logical: SchemaRef,
+    /// The file's schema as the reader gives it, and with the ids the mapping gave its columns.
     physical: SchemaRef,
+    mapped: SchemaRef,
     evolve: Arc<Evolve>,
 }
 
@@ -67,7 +72,7 @@ impl FileAdapter {
     fn adapted(&self, field: &Field) -> Result<Arc<dyn PhysicalExpr>> {
         let found = field.metadata().get(FIELD_ID).and_then(|id| {
             let in_file = |f: &FieldRef| f.metadata().get(FIELD_ID) == Some(id);
-            self.physical.fields().iter().position(in_file)
+            self.mapped.fields().iter().position(in_file)
         });
         let Some(at) = found else {
             let constant: ArrayRef = self.evolve.column(field, None, 1).map_err(external)?;
@@ -78,8 +83,11 @@ impl FileAdapter {
         if in_file.data_type() == field.data_type() {
             return Ok(column);
         }
+        // What the reader gives, typed as the mapping has it, so that a struct's children are found by id too.
+        let file_type = self.mapped.field(at).data_type().clone();
         Ok(Arc::new(Evolved {
             column,
+            file_type,
             field: Arc::new(field.clone()),
             evolve: self.evolve.clone(),
         }))
@@ -90,6 +98,8 @@ impl FileAdapter {
 #[derive(Debug)]
 struct Evolved {
     column: Arc<dyn PhysicalExpr>,
+    /// The file column's type with the ids the name mapping gave it, the same as the reader's when it had them.
+    file_type: DataType,
     field: FieldRef,
     evolve: Arc<Evolve>,
 }
@@ -126,7 +136,15 @@ impl PhysicalExpr for Evolved {
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
         let rows = batch.num_rows();
-        let file = self.column.evaluate(batch)?.into_array(rows)?;
+        let mut file = self.column.evaluate(batch)?.into_array(rows)?;
+        if file.data_type() != &self.file_type {
+            file = make_array(
+                file.to_data()
+                    .into_builder()
+                    .data_type(self.file_type.clone())
+                    .build()?,
+            );
+        }
         let evolved = self.evolve.column(&self.field, Some(&file), rows).map_err(external)?;
         Ok(ColumnarValue::Array(evolved))
     }
@@ -138,6 +156,7 @@ impl PhysicalExpr for Evolved {
     fn with_new_children(self: Arc<Self>, mut children: Vec<Arc<dyn PhysicalExpr>>) -> Result<Arc<dyn PhysicalExpr>> {
         Ok(Arc::new(Self {
             column: children.remove(0),
+            file_type: self.file_type.clone(),
             field: self.field.clone(),
             evolve: self.evolve.clone(),
         }))

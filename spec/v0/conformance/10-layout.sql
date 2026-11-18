@@ -6,7 +6,7 @@ select expect(
   (select array_agg(table_name::text order by table_name) from information_schema.tables
     where table_schema = current_schema()) =
   array['cluster_key', 'commit', 'data_file', 'deletion_queue', 'deletion_vector', 'field', 'file_footer', 'head', 'idempotency',
-        'inline_file', 'intent', 'meta', 'namespace', 'namespace_property', 'partition_spec', 'ref', 'ref_base',
+        'inline_file', 'intent', 'meta', 'namespace', 'namespace_property', 'owned_prefix', 'partition_spec', 'ref', 'ref_base',
         'retention', 'snapshot', 'sort_order', 'table_counter',
         'table_name', 'table_property', 'tbl', 'tombstone'],
   'the tables of §4');
@@ -25,7 +25,9 @@ select expect((select abs(extract(epoch from value::timestamptz - now())) < 60 f
 -- rules: LAY-3
 select expect(open_catalog() = (select value::uuid from meta where key = 'catalog_uuid'), 'version 0 opens');
 update meta set value = '1' where key = 'format_version';
-select expect_error('select open_catalog()', '0A000', 'version 1');
+select expect(open_catalog() is not null, 'version 1 opens: a catalog with a name mapping (0.5)');
+update meta set value = '2' where key = 'format_version';
+select expect_error('select open_catalog()', '0A000', 'version 2');
 delete from meta where key = 'format_version';
 select expect_error('select open_catalog()', '0A000', 'no version');
 

@@ -25,6 +25,8 @@ pub use pool::{Credential, Listener, Password, Pool, PooledSession, Target};
 pub use requirements::check_commit_time;
 pub use session::Session;
 pub use sources::{quote_ident, render};
-pub use version::{FORMAT_VERSION, PROTOCOL_VERSION, Versions, WRITER_VERSION, check_versions, versions, warehouse};
+pub use version::{
+    FORMAT_VERSION, FORMAT_VERSIONS, PROTOCOL_VERSION, Versions, WRITER_VERSION, check_versions, versions, warehouse,
+};
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

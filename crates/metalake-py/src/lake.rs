@@ -5,16 +5,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use metalake_client::{
-    EngineConfig, EngineKind, Error, Lake, MaintainRequest, MergeRequest, PipelineOptions, RefKind, Retention, Session,
-    Task, duration,
+    EngineConfig, EngineKind, Error, Lake, MaintainRequest, MergeRequest, PipelineOptions, RefKind, RegisterRequest,
+    Retention, Session, Task, duration,
 };
 use pyo3::prelude::*;
-use pyo3::types::PyTuple;
+use pyo3::types::{PyDict, PyTuple};
 
 use crate::engine::PyEngine;
 use crate::errors::to_python;
 use crate::iceberg::{Following, PyIceberg};
-use crate::info::{History, PyDone, PyMerged, PyRef, PyStatus};
+use crate::info::{History, PyDone, PyMerged, PyRef, PyRegistered, PyStatus};
 use crate::owner::Owner;
 use crate::pipeline::PyPipeline;
 use crate::result::QueryResult;
@@ -432,6 +432,52 @@ impl PyLake {
             Ok::<_, Error>(merged)
         })?;
         merged.map(PyMerged::from).map_err(|e| to_python(py, e))
+    }
+
+    /// Makes the Parquet files under `source`, a prefix of the lake's store, the files of `table`, where they are, with
+    /// no byte copied: a Hive table's directory, say. `partition` names the directories' keys that are partition
+    /// columns, in their order, with their types, `{"dt": "date"}`. `adopt` has the table own the source, so that upkeep
+    /// may delete what it no longer reads there; `location` is where it writes what is new. A run again adds only what
+    /// is new. A refused file, as a check, commits nothing: the answer says what and why.
+    #[pyo3(signature = (source, table, *, partition=None, adopt=false, location=None, check=false, on=None))]
+    #[allow(clippy::too_many_arguments, reason = "each is a keyword of Python")]
+    fn register(
+        &self,
+        py: Python<'_>,
+        source: String,
+        table: String,
+        partition: Option<Bound<'_, PyDict>>,
+        adopt: bool,
+        location: Option<String>,
+        check: bool,
+        on: Option<String>,
+    ) -> PyResult<PyRegistered> {
+        self.owner.check(py, "Lake")?;
+        let partition = partition
+            .map(|p| {
+                p.iter()
+                    .map(|(k, v)| Ok((k.extract()?, v.extract()?)))
+                    .collect::<PyResult<Vec<_>>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let request = RegisterRequest {
+            source,
+            table,
+            partition,
+            adopt,
+            location,
+            check,
+            on,
+        };
+        let (lake, session) = (self.lake.clone(), self.session.clone());
+        let report = wait(py, async move {
+            let report = lake.register(&request).await?;
+            // A table new to the lake shows in `information_schema` at once.
+            session.refresh().await?;
+            Ok::<_, Error>(report)
+        })?;
+        report.map(PyRegistered::from).map_err(|e| to_python(py, e))
     }
 
     /// The commits of a ref, the latest first, or, with `table`, `namespace.table`, the snapshots of that table. The

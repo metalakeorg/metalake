@@ -16,7 +16,7 @@ use datafusion::error::Result;
 use datafusion::execution::context::QueryPlanner;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::physical_plan::ExecutionPlan;
-use metalake_datafusion::{Engine, MetaLakeOptions, Measure, measure};
+use metalake_datafusion::{Engine, Measure, MetaLakeOptions, measure};
 
 use crate::address;
 use tokio::net::TcpStream;
@@ -91,7 +91,10 @@ impl Router {
         let measured = measure(plan).await?;
         let (mut route, threshold) = route(&measured, options);
         if route == Route::Cluster && !self.scheduler.reachable().await {
-            log::warn!("metalake: the cluster at {} does not answer; running locally", self.scheduler);
+            log::warn!(
+                "metalake: the cluster at {} does not answer; running locally",
+                self.scheduler
+            );
             route = Route::Local;
         }
         log::info!(
@@ -199,8 +202,14 @@ mod tests {
     #[test]
     fn past_the_threshold_goes_to_the_cluster() {
         let options = MetaLakeOptions::default();
-        assert_eq!(route(&measured(THRESHOLD - 1, 1, false), &options), (Route::Local, THRESHOLD));
-        assert_eq!(route(&measured(THRESHOLD, 1, false), &options), (Route::Cluster, THRESHOLD));
+        assert_eq!(
+            route(&measured(THRESHOLD - 1, 1, false), &options),
+            (Route::Local, THRESHOLD)
+        );
+        assert_eq!(
+            route(&measured(THRESHOLD, 1, false), &options),
+            (Route::Cluster, THRESHOLD)
+        );
     }
 
     #[test]
@@ -208,7 +217,10 @@ mod tests {
         let options = MetaLakeOptions::default();
         let bytes = 300 << 20;
         assert_eq!(route(&measured(bytes, 2, false), &options).0, Route::Local);
-        assert_eq!(route(&measured(bytes, 2, true), &options), (Route::Cluster, SHUFFLE_THRESHOLD));
+        assert_eq!(
+            route(&measured(bytes, 2, true), &options),
+            (Route::Cluster, SHUFFLE_THRESHOLD)
+        );
     }
 
     #[test]

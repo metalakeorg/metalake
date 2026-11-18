@@ -90,6 +90,58 @@ impl PySnapshot {
     }
 }
 
+/// What registering files in place did, or, checked or refused, what it would do: the table, how many files and rows,
+/// and each refused file as `(path, rule, why)`. A run with a refused file commits nothing.
+#[pyclass(name = "Registered", module = "metalake", frozen, get_all)]
+pub struct PyRegistered {
+    table: String,
+    created: bool,
+    check: bool,
+    registered: usize,
+    already: usize,
+    skipped_hidden: usize,
+    refused: Vec<(String, String, String)>,
+    rows: i64,
+    bytes: u64,
+    commits: Vec<i64>,
+    adopted: Option<String>,
+}
+
+impl From<metalake_client::Report> for PyRegistered {
+    fn from(report: metalake_client::Report) -> Self {
+        Self {
+            refused: report
+                .refused
+                .iter()
+                .map(|r| (r.path.clone(), r.rule.to_string(), r.why.clone()))
+                .collect(),
+            table: report.table,
+            created: report.created,
+            check: report.check,
+            registered: report.registered,
+            already: report.already,
+            skipped_hidden: report.skipped_hidden,
+            rows: report.rows,
+            bytes: report.bytes,
+            commits: report.commits,
+            adopted: report.adopted,
+        }
+    }
+}
+
+#[pymethods]
+impl PyRegistered {
+    fn __repr__(&self) -> String {
+        format!(
+            "Registered({:?}, registered={}, refused={}, commits={:?})",
+            self.table,
+            self.registered,
+            self.refused.len(),
+            self.commits
+        )
+    }
+}
+
 /// What a merge did, or, checked, what it would do. `outcome` is `merged`, `nothing` or `would merge`, and `merged` and
 /// `rebased` name tables as `namespace.table`.
 #[pyclass(name = "Merged", module = "metalake", frozen, get_all)]

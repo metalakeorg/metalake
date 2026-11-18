@@ -12,7 +12,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use arrow_array::{Int64Array, RecordBatch, RecordBatchOptions};
+use arrow_array::{ArrayRef, Int64Array, RecordBatch, RecordBatchOptions, make_array};
 use arrow_schema::{DataType, Field as ArrowField, Schema, SchemaRef};
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
@@ -358,6 +358,8 @@ async fn batches(task: ScanTask, storage: &Storage, r: Reading) -> Result<BoxStr
         only,
     } = r;
     let file_id = task.file_id;
+    // ENG-3, step 2: what a column the file lacks takes from its partition.
+    let partition = evolve.partition_values(task.spec_id, &task.partition);
     let mut source = Source::of(task.content, task.path.as_deref(), file_id, storage)?;
     // The footer and the vector, at once: each a request at most.
     let footer = async {
@@ -382,8 +384,8 @@ async fn batches(task: ScanTask, storage: &Storage, r: Reading) -> Result<BoxStr
     let reader = ArrowReaderMetadata::try_new(metadata.clone(), options).map_err(read_error)?;
 
     // The file's top-level column of each of the schema's fields, by id, if it has one, and where each comes in
-    // the projection's order.
-    let in_file = reader.schema();
+    // the projection's order. A file written without ids is given them by the table's name mapping (ENG-3, step 3).
+    let in_file = evolve.file_schema(reader.schema());
     let roots: Vec<Option<usize>> = schema
         .fields()
         .iter()
@@ -402,8 +404,10 @@ async fn batches(task: ScanTask, storage: &Storage, r: Reading) -> Result<BoxStr
         .map(|r| r.map(|r| present.binary_search(&r).expect("a root of the projection")))
         .collect();
 
+    // Each projected column's type with the ids the mapping gave, so that a struct's children are found by id too.
+    let types: Vec<DataType> = present.iter().map(|i| in_file.field(*i).data_type().clone()).collect();
     let groups = match &filter {
-        Some(f) => kept_groups(&metadata, f),
+        Some(f) => kept_groups(&metadata, f, &evolve.leaf_ids(metadata.file_metadata().schema_descr())),
         None => (0..metadata.num_row_groups()).collect(),
     };
     let mask = ProjectionMask::roots(metadata.file_metadata().schema_descr(), present);
@@ -439,7 +443,10 @@ async fn batches(task: ScanTask, storage: &Storage, r: Reading) -> Result<BoxStr
                 .fields()
                 .iter()
                 .zip(&order)
-                .map(|(field, at)| evolve.column(field, at.map(|i| batch.column(i)), batch.num_rows()))
+                .map(|(field, at)| {
+                    let file = at.map(|i| retyped(batch.column(i), &types[i])).transpose()?;
+                    evolve.column_in(field, file.as_ref(), batch.num_rows(), &partition)
+                })
                 .collect::<Result<Vec<_>>>()?;
             if positions {
                 let position = batch
@@ -499,14 +506,20 @@ pub(crate) async fn vector(file_id: i64, at: Option<&TaskVector>, storage: &Stor
     Ok(Some(vector))
 }
 
-/// The row groups whose statistics may hold a value of the filter's range: those without bounds too.
-fn kept_groups(metadata: &ParquetMetaData, filter: &Filter) -> Vec<usize> {
-    let descr = metadata.file_metadata().schema_descr();
-    let column = (0..descr.num_columns()).find(|i| {
-        let info = descr.column(*i).self_type_ptr();
-        let info = info.get_basic_info();
-        info.has_id() && info.id() == filter.field.field_id
-    });
+/// A column read from a file under the type the name mapping gave it: the same data, with field ids in its type's
+/// children (ENG-3).
+fn retyped(array: &ArrayRef, ty: &DataType) -> Result<ArrayRef> {
+    if array.data_type() == ty {
+        return Ok(array.clone());
+    }
+    let data = array.to_data().into_builder().data_type(ty.clone()).build();
+    Ok(make_array(data.map_err(|e| Error::Schema(e.to_string()))?))
+}
+
+/// The row groups whose statistics may hold a value of the filter's range: those without bounds too. `ids` are the
+/// file's leaf columns' field ids, their own or the name mapping's.
+fn kept_groups(metadata: &ParquetMetaData, filter: &Filter, ids: &[Option<i32>]) -> Vec<usize> {
+    let column = ids.iter().position(|id| *id == Some(filter.field.field_id));
     (0..metadata.num_row_groups())
         .filter(|g| {
             let Some((lower, upper)) = column.and_then(|c| stats::row_group_bounds(&filter.field, metadata, *g, c))

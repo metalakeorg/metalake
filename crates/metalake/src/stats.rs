@@ -15,6 +15,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::bounds::{self, Truncation};
+use crate::mapping::{self, NameMapping};
 use crate::table::{Field, Table};
 
 /// The statistics of one file: its records, and per field the parallel arrays of STA-2.
@@ -86,13 +87,12 @@ pub fn footer_size(tail: &[u8]) -> Option<i32> {
 pub fn of_footer(table: &Table, metadata: &ParquetMetaData, nan_counts: &HashMap<i32, i64>) -> FileStatistics {
     let fields: HashMap<i32, &Field> = table.fields().iter().map(|f| (f.field_id, f)).collect();
     let schema = metadata.file_metadata().schema_descr();
-    let mut columns: Vec<(usize, &Field)> = (0..schema.num_columns())
-        .filter_map(|i| {
-            let ty = schema.column(i).self_type_ptr();
-            let info = ty.get_basic_info();
-            let field = fields.get(&(info.has_id().then(|| info.id())?))?;
-            Some((i, *field))
-        })
+    // Each leaf by its field id, or through the table's name mapping for a file written without ids (ENG-3, ENG-4).
+    let mapping = NameMapping::of_table(table).ok().flatten();
+    let mut columns: Vec<(usize, &Field)> = mapping::leaf_ids(mapping.as_ref(), schema)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, id)| Some((i, *fields.get(&id?)?)))
         .collect();
     let key = |f: &Field| {
         table

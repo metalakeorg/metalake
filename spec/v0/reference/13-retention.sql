@@ -143,11 +143,13 @@ begin
           or c.commit_seq < retention_floor(c.ref_id));
   get diagnostics k = row_count; n := n + k;
 
-  -- RET-4: the objects of the doomed rows that no remaining row refers to.
+  -- RET-4: the objects of the doomed rows that no remaining row refers to, and that a table of the catalog owns
+  -- (OWN-1): an object no table owns stays where it is.
   insert into deletion_queue
   select t.path, t.kind, now() from touched t
    where not exists (select 1 from data_file d where d.path = t.path)
      and not exists (select 1 from deletion_vector x where x.path = t.path)
+     and exists (select 1 from tbl o where owns(o.table_id, t.path))
   on conflict (path) do nothing;
   return n;
 end $$;
@@ -176,4 +178,20 @@ create function orphans(at timestamptz default now()) returns setof text languag
      and not exists (select 1 from data_file d where d.path = i.path)
      and not exists (select 1 from deletion_vector x where x.path = i.path)
      and not exists (select 1 from deletion_queue q where q.path = i.path);
+$$;
+
+-- OWN-1: whether `p` lies under `prefix`: the prefix ends at a `/` of the path, or is the whole path.
+create function under(prefix text, p text) returns boolean language sql immutable as $$
+  select p = rtrim(prefix, '/') or starts_with(p, rtrim(prefix, '/') || '/');
+$$;
+
+-- OWN-1: whether table `t` owns path `p`: under its location or under one of its owned prefixes.
+create function owns(t uuid, p text) returns boolean language sql stable as $$
+  select exists (select 1 from tbl where table_id = t and under(location, p))
+      or exists (select 1 from owned_prefix o where o.table_id = t and under(o.prefix, p));
+$$;
+
+-- OWN-2: the scheme and authority of a URL, `gs://bucket` of `gs://bucket/t/a.parquet`; null for none.
+create function authority(url text) returns text language sql immutable as $$
+  select substring(url from '^[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*');
 $$;
