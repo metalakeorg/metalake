@@ -57,6 +57,7 @@ async fn c9i_hive_files_with_sql() -> Result<(), Box<dyn std::error::Error>> {
                       {"field-id": 3, "names": ["dt"]}]"#;
     let (tx, _) = main
         .transaction()
+        .create_namespace(&["default"])
         .create_namespace(&["default", "db"])
         .create_table(NewTable {
             namespace: &["default", "db"],
