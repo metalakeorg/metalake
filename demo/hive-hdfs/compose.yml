@@ -64,8 +64,14 @@ services:
     image: metalake-demo/metalake:main
     hostname: metalake
     command: socat TCP-LISTEN:4174,fork,reuseaddr TCP:127.0.0.1:4173
+    # A catalog in Cloud SQL is signed in to with `--auth gcp-iam`: a token of the host's Google identity, from gcloud's
+    # application default credentials (`gcloud auth application-default login`), never a password. Read only.
+    # GCLOUD_ADC names another file; on Linux and macOS, ~/.config/gcloud/application_default_credentials.json.
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /gcloud/application_default_credentials.json
     volumes:
       - lake:/lake
+      - ${GCLOUD_ADC:-${APPDATA}/gcloud/application_default_credentials.json}:/gcloud/application_default_credentials.json:ro
     ports: ["4173:4174"]
     depends_on:
       namenode:
