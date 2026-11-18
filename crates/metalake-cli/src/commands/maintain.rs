@@ -17,6 +17,7 @@ impl From<Task> for metalake_client::Task {
             Task::Expire => Self::Expire,
             Task::Sweep => Self::Sweep,
             Task::Orphans => Self::Orphans,
+            Task::Strays => Self::Strays,
         }
     }
 }

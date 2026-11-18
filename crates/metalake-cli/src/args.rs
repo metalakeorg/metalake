@@ -450,6 +450,9 @@ pub enum Task {
     Sweep,
     /// Deletes the objects of writes that never committed.
     Orphans,
+    /// Lists a table's location for objects nothing knows, older than any write in progress, for `orphans` to take. Not
+    /// run by default: asked for by table.
+    Strays,
 }
 
 #[derive(Debug, Args)]
