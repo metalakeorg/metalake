@@ -4,7 +4,9 @@
 //! no jar given to an environment that runs already, by `pipeline.jars` or `ADD JAR`, serves. PyFlink's gateway and
 //! Flink's scripts add `HADOOP_CLASSPATH` to the classpath they start with, which is how the jars get there. Then the
 //! lake as a REST catalog, with the header that asks the server for credentials on an object store. The jars are where
-//! [`super::jars`] fetches them: [`super::Iceberg::profile`] fetches them, the pure profile only names them.
+//! [`super::jars`] fetches them: [`super::Iceberg::profile`] fetches them, the pure profile only names them. On HDFS, no
+//! bundle and no header: Hadoop's client reads it, with the cluster's configuration Flink takes from `HADOOP_CONF_DIR`
+//! and its own Kerberos identity.
 
 use super::jars;
 use super::profile::{Artifact, DELEGATION, Engine, FLINK, NO_QUOTA_PROJECT, Profile, Store, Target};
@@ -113,6 +115,7 @@ mod tests {
             token: None,
             region: None,
             endpoint: None,
+            hadoop_conf: None,
             on: None,
             catalog: None,
         }
@@ -149,6 +152,17 @@ mod tests {
             "{rendered}"
         );
         assert!(rendered.ends_with("'uri' = 'http://127.0.0.1:8181');\n"), "{rendered}");
+    }
+
+    #[test]
+    fn flink_profile_hdfs_as_local() {
+        let local = profile(Engine::Flink, "lake", &target(Store::Local, "file:///tmp/lake/")).unwrap();
+        let hdfs = profile(Engine::Flink, "lake", &target(Store::Hdfs, "hdfs://nameservice1/lake")).unwrap();
+        assert_eq!(
+            hdfs.artifacts, local.artifacts,
+            "Iceberg's runtime and Hadoop's client, no bundle"
+        );
+        assert_eq!((&hdfs.startup, &hdfs.properties), (&local.startup, &local.properties));
     }
 
     #[test]

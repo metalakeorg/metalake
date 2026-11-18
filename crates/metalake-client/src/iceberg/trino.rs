@@ -21,8 +21,20 @@ pub(super) fn profile(name: &str, target: &Target) -> Profile {
         set("iceberg.rest-catalog.oauth2.token", token);
     }
     match target.store {
-        // Hadoop's file system, which reads a local path, or HDFS with the cluster's configuration: nothing vended.
-        Store::Local | Store::Hdfs => set("fs.hadoop.enabled", "true"),
+        Store::Local => set("fs.hadoop.enabled", "true"),
+        // Hadoop's file system with the cluster's configuration, which resolves a nameservice and its NameNodes, and
+        // Trino's own Kerberos identity: nothing vended.
+        Store::Hdfs => {
+            set("fs.hadoop.enabled", "true");
+            if let Some(conf) = &target.hadoop_conf {
+                let conf = std::path::Path::new(conf);
+                let files: Vec<String> = ["core-site.xml", "hdfs-site.xml"]
+                    .iter()
+                    .map(|file| conf.join(file).display().to_string())
+                    .collect();
+                set("hive.config.resources", &files.join(","));
+            }
+        }
         store => {
             set("iceberg.rest-catalog.vended-credentials-enabled", "true");
             set(native(store), "true");
@@ -61,6 +73,18 @@ pub(super) fn render(profile: &Profile) -> String {
             target.warehouse
         ));
     }
+    if target.store == Store::Hdfs {
+        file.push_str(match &target.hadoop_conf {
+            Some(_) => {
+                "# Trino reads the cluster's configuration at the paths below: it must see them there.
+"
+            }
+            None => {
+                "# Set hive.config.resources to the cluster's core-site.xml,hdfs-site.xml as Trino sees them.
+"
+            }
+        });
+    }
     for (key, value) in &profile.properties {
         file.push_str(&format!("{key}={value}\n"));
     }
@@ -80,6 +104,7 @@ mod tests {
             token: None,
             region: None,
             endpoint: None,
+            hadoop_conf: None,
             on: None,
             catalog: None,
         }
@@ -139,6 +164,32 @@ mod tests {
             let profile = profile(Engine::Trino, "lake", &target(store, warehouse)).unwrap();
             assert_eq!(profile.properties[key], "true", "{store:?}");
         }
+    }
+
+    #[test]
+    fn trino_profile_hdfs() {
+        let mut target = target(Store::Hdfs, "hdfs://nameservice1/lake");
+        let bare = profile(Engine::Trino, "lake", &target).unwrap();
+        assert_eq!(bare.properties["fs.hadoop.enabled"], "true");
+        assert!(
+            !bare
+                .properties
+                .contains_key("iceberg.rest-catalog.vended-credentials-enabled")
+        );
+        assert!(!bare.properties.contains_key("hive.config.resources"));
+        assert!(bare.render().contains("# Set hive.config.resources"));
+
+        target.hadoop_conf = Some("/etc/hadoop/conf".into());
+        let profile = profile(Engine::Trino, "lake", &target).unwrap();
+        let resources = &profile.properties["hive.config.resources"];
+        let files: Vec<&str> = resources.split(',').collect();
+        assert_eq!(files.len(), 2, "{resources}");
+        assert!(
+            files[0].ends_with("core-site.xml") && files[1].ends_with("hdfs-site.xml"),
+            "{resources}"
+        );
+        assert!(files.iter().all(|f| f.starts_with("/etc/hadoop/conf")), "{resources}");
+        assert!(profile.render().contains("it must see them there"));
     }
 
     #[test]

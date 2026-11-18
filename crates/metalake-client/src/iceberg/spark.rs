@@ -1,6 +1,7 @@
 //! Spark's profile: Iceberg's Spark runtime and SQL extensions, fixed as a session starts, and the lake as a REST
 //! catalog, which Spark loads the first time the catalog is named and so can be set on a session already running. On
-//! an object store, the cloud's bundle and the header that asks the server for credentials.
+//! an object store, the cloud's bundle and the header that asks the server for credentials. On HDFS, neither: Spark reads
+//! it through Hadoop's file system, with the cluster's configuration (`HADOOP_CONF_DIR`) and its own Kerberos identity.
 
 use super::profile::{Artifact, DELEGATION, Engine, NO_QUOTA_PROJECT, Profile, SCALA, SPARK, Store, Target};
 
@@ -77,6 +78,7 @@ mod tests {
             token: None,
             region: None,
             endpoint: None,
+            hadoop_conf: None,
             on: None,
             catalog: None,
         }
@@ -93,6 +95,19 @@ mod tests {
              spark.sql.catalog.lake org.apache.iceberg.spark.SparkCatalog\n\
              spark.sql.catalog.lake.type rest\n\
              spark.sql.catalog.lake.uri http://127.0.0.1:8181\n"
+        );
+    }
+
+    #[test]
+    fn spark_profile_hdfs_as_local() {
+        let local = profile(Engine::Spark, "lake", &target(Store::Local, "file:///tmp/lake/")).unwrap();
+        let hdfs = profile(Engine::Spark, "lake", &target(Store::Hdfs, "hdfs://nameservice1/lake")).unwrap();
+        assert_eq!((&hdfs.startup, &hdfs.properties), (&local.startup, &local.properties));
+        assert!(
+            !hdfs
+                .properties
+                .keys()
+                .any(|key| key.contains("X-Iceberg-Access-Delegation"))
         );
     }
 

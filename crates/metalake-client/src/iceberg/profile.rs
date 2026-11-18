@@ -104,6 +104,21 @@ impl Store {
     }
 }
 
+/// The directory of a Hadoop cluster's configuration, as Hadoop's own scripts find it: `HADOOP_CONF_DIR`, else
+/// `HADOOP_HOME/etc/hadoop`.
+fn hadoop_conf() -> Option<String> {
+    let var = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
+    var("HADOOP_CONF_DIR").or_else(|| {
+        var("HADOOP_HOME").map(|home| {
+            std::path::Path::new(&home)
+                .join("etc")
+                .join("hadoop")
+                .display()
+                .to_string()
+        })
+    })
+}
+
 /// For a JVM that writes a lake's files on GCS with the credentials the lake's server vends: no file to read a quota
 /// project from. Google's Java clients read `quota_project_id` from the file `GOOGLE_APPLICATION_CREDENTIALS` names,
 /// the JVM's property first and then the environment's, whatever credentials they are given, and send it as
@@ -127,6 +142,10 @@ pub struct Target {
     /// says: what an engine that reads the store itself, as Trino, is told besides its credentials.
     pub region: Option<String>,
     pub endpoint: Option<String>,
+    /// On HDFS, the directory of the cluster's `core-site.xml` and `hdfs-site.xml` as this process finds it
+    /// (`HADOOP_CONF_DIR`, else `HADOOP_HOME/etc/hadoop`): what an engine that is not started with it, as Trino, is
+    /// told. Spark and Flink read it from their own environment.
+    pub hadoop_conf: Option<String>,
     /// The ref the engine is on (I6): a ref's name, which it stays on; `session:<id>`, a session, whose ref it follows
     /// request by request; none for `main`.
     pub on: Option<String>,
@@ -383,6 +402,7 @@ impl Iceberg<'_> {
             token,
             region: s3.then(|| var(&["AWS_REGION", "AWS_DEFAULT_REGION"]).unwrap_or_else(|| "us-east-1".into())),
             endpoint: s3.then(|| var(&["AWS_ENDPOINT", "AWS_ENDPOINT_URL"])).flatten(),
+            hadoop_conf: (store == Store::Hdfs).then(hadoop_conf).flatten(),
             on: None,
             catalog: None,
         })
@@ -537,6 +557,7 @@ mod tests {
             token: None,
             region: None,
             endpoint: None,
+            hadoop_conf: None,
             on: None,
             catalog: None,
         };
@@ -573,6 +594,7 @@ mod tests {
             token: None,
             region: None,
             endpoint: None,
+            hadoop_conf: None,
             on: None,
             catalog: None,
         };
@@ -603,6 +625,7 @@ mod tests {
             token: None,
             region: None,
             endpoint: None,
+            hadoop_conf: None,
             on: None,
             catalog: None,
         }

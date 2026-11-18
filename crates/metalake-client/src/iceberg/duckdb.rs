@@ -73,6 +73,7 @@ mod tests {
             token: None,
             region: None,
             endpoint: None,
+            hadoop_conf: None,
             on: None,
             catalog: None,
         }
