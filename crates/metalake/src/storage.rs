@@ -164,12 +164,28 @@ impl Storage {
 }
 
 /// The store of a NameNode or a nameservice, `hdfs://nn:8020` or `viewfs://cluster`.
+///
+/// `hdfs-native` builds a ViewFS mount table only with a `linkFallback`, which Hadoop does not require: a table of
+/// explicit links alone is refused as the store is made, whatever path the warehouse is under. That is said with what
+/// to do, rather than as the client's own words. No fallback is made up here: it would change where the cluster's
+/// paths lead.
 #[cfg(feature = "hdfs")]
 fn hdfs(base: &str) -> Result<Arc<dyn ObjectStore>> {
-    let store = hdfs_native_object_store::HdfsObjectStoreBuilder::new()
+    let built = hdfs_native_object_store::HdfsObjectStoreBuilder::new()
         .with_url(base)
-        .build()?;
-    Ok(Arc::new(store))
+        .build();
+    match built {
+        Ok(store) => Ok(Arc::new(store)),
+        Err(e) if base.starts_with("viewfs://") && e.to_string().contains("No viewfs fallback mount found") => {
+            let cluster = base.trim_start_matches("viewfs://");
+            Err(Error::Location(format!(
+                "{base}: its mount table has no fs.viewfs.mounttable.{cluster}.linkFallback, which MetaLake's HDFS \
+                 client needs even when a link covers the warehouse: add one, or name the warehouse by the hdfs:// \
+                 of the namespace its link leads to"
+            )))
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 #[cfg(not(feature = "hdfs"))]

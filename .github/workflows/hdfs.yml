@@ -69,6 +69,8 @@ jobs:
         run: cargo test -p metalake --lib "storage::"
       - name: The store, against HDFS
         run: cargo test -p metalake --features hdfs --test c15_hdfs -- --nocapture
+      - name: A ViewFS mount table with no fallback, refused saying what to do
+        run: cargo test -p metalake --features hdfs --test c15b_viewfs
       # A lake on HDFS, through the binary, with its catalog in the Postgres `sql/test.sh` starts (End 2).
       - name: A lake's cycle on HDFS
         run: CRATE=metalake-cli bash sql/test.sh --test c10m_hdfs -- --nocapture
