@@ -92,12 +92,13 @@ impl MetaTable {
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         let storage = &self.storage;
         let schema = table.schema();
+        let evolve = Arc::new(Evolve::new(table));
         let planned: Vec<_> = scan
             .plan()
             .await
             .map_err(external)?
             .map_err(external)
-            .map_ok(|task| read::file(task, schema, storage, positions.is_some()))
+            .map_ok(|task| read::file(task, schema, &evolve, storage, positions.is_some()))
             .try_buffered(CONCURRENCY)
             .try_collect()
             .await?;
@@ -130,9 +131,7 @@ impl MetaTable {
             .with_statistics(statistics)
             .with_projection_indices(projection.cloned())?
             .with_limit(limit)
-            .with_expr_adapter(Some(Arc::new(ByFieldId {
-                evolve: Arc::new(Evolve::new(table)),
-            })))
+            .with_expr_adapter(Some(Arc::new(ByFieldId { evolve })))
             .build();
         Ok(DataSourceExec::from_data_source(config))
     }

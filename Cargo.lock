@@ -3371,6 +3371,7 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "async-trait",
+ "bytes",
  "chrono",
  "datafusion",
  "datafusion-datasource",
