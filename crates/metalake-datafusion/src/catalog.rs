@@ -105,33 +105,34 @@ impl MetaLake {
     }
 
     /// Takes a new picture of what listings show. A table is found without it.
+    ///
+    /// Three calls whatever the refs: the view of namespaces computes every ref's before it filters one, so that a call
+    /// per ref cost as many times the whole, and a picture is taken after each statement that changes the catalog.
     pub async fn refresh(&self) -> Result<()> {
-        let mut listing = Listing::new();
-        for on in self.shared.catalog.refs().await? {
-            // A ref that cannot be read now, one being made or dropped as this reads, is left out of this picture:
-            // the next shows it. The others are not held back by it.
-            if let Ok(namespaces) = Self::listed_on(&on).await {
-                listing.insert(on.name().to_string(), namespaces);
+        let catalog = &self.shared.catalog;
+        let refs = catalog.refs().await?;
+        // Each ref's namespaces, each with its tables: a catalog or a schema with no table yet too, as `CREATE CATALOG`
+        // leaves one (I7). A ref made since `refs` read is in the next picture; one dropped since has no rows.
+        let mut listing: Listing = refs.iter().map(|on| (on.name().to_string(), BTreeMap::new())).collect();
+        for (on, row) in catalog.namespaces_of_refs().await? {
+            if let Some(namespaces) = listing.get_mut(&on) {
+                namespaces.entry(row.namespace.join(".")).or_default();
+            }
+        }
+        let ids: Vec<i32> = refs.iter().map(Ref::id).collect();
+        for (id, table) in catalog.tables_of_refs(&ids).await? {
+            let Some(on) = refs.iter().find(|on| on.id() == id) else {
+                continue;
+            };
+            if let Some(namespaces) = listing.get_mut(on.name()) {
+                namespaces
+                    .entry(table.namespace.join("."))
+                    .or_default()
+                    .push(table.name);
             }
         }
         *self.shared.listing.write().expect("a listing is replaced whole") = listing;
         Ok(())
-    }
-
-    /// A ref's namespaces, each with its tables: a catalog or a schema with no table yet too, as `CREATE CATALOG`
-    /// leaves one (I7).
-    async fn listed_on(on: &Ref) -> Result<BTreeMap<String, Vec<String>>> {
-        let mut namespaces: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for row in on.namespaces().await? {
-            namespaces.entry(row.namespace.join(".")).or_default();
-        }
-        for table in on.tables().await? {
-            namespaces
-                .entry(table.namespace.join("."))
-                .or_default()
-                .push(table.name);
-        }
-        Ok(namespaces)
     }
 
     /// Takes a new picture after a statement that changed the catalog. It committed already: a picture that cannot be
