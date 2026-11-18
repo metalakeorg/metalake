@@ -429,7 +429,7 @@ pub struct Maintain {
     #[arg(long = "ref", value_name = "BRANCH")]
     pub on: Option<String>,
 
-    /// Only this table, `namespace.table`, for `flush` and `compact`.
+    /// Only this table, `namespace.table`, for `flush` and `compact`; the one `strays` lists.
     #[arg(long, value_name = "TABLE")]
     pub table: Option<String>,
 }

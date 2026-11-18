@@ -99,7 +99,7 @@ fn c10m_hdfs_lake_cycle() {
 
     // `strays` lists the table's directory: every path the catalog holds is spelled as HDFS lists it, and nothing
     // young enough to be a write in progress is taken.
-    let strays = maintain(&dir, &["strays"]);
+    let strays = maintain(&dir, &["strays", "--table", "db.t"]);
     assert_eq!(strays[0]["result"], 0, "{strays:?}");
     assert_eq!(parquet(&warehouse), after);
     assert_eq!(count(&dir, "use branch main"), "n\n250000\n");
