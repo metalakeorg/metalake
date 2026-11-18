@@ -276,7 +276,9 @@ fn is_conflict(failure: &ApplyError) -> bool {
 async fn taken(on: &Ref, targets: &[Target]) -> Option<ApplyError> {
     for target in targets.iter().filter(|t| t.change.creation.is_some()) {
         if on.table(&target.levels(), &target.name).await.is_ok() {
-            let name = format!("{}.{}", target.namespace.join("."), target.name);
+            // As the client named it: its namespace past the lake's catalog, which the client does not say (I7).
+            let shown = target.namespace.get(1..).unwrap_or(&target.namespace);
+            let name = format!("{}.{}", shown.join("."), target.name);
             let message = format!("Requirement failed: table already exists: {name}");
             return Some(Refused::Conflict(message).into());
         }
