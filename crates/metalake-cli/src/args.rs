@@ -475,15 +475,17 @@ pub struct Log {
 
 #[derive(Debug, Args)]
 pub struct Register {
-    /// The prefix whose files are registered, on the lake's store and spelled as its warehouse is.
-    pub source: String,
+    /// Where the files are: a path in the lake's store, `/user/hive/warehouse/sales`, or a URL of it. Left out, a table
+    /// registered before registers again from where it was.
+    pub source: Option<String>,
 
     /// The table: `table`, `schema.table` or `catalog.schema.table`; created on the first run.
     #[arg(long = "as", value_name = "TABLE")]
     pub table: String,
 
     /// A directory key that is a partition column, and its type: `dt:date`. Repeatable, in the directories' order.
-    /// Types: string, int, long, date, boolean.
+    /// Types: string, int, long, date, boolean. Left out, a new table's are found in its `k=v` directories, typed by
+    /// their values, and an existing table's are its own.
     #[arg(long, value_name = "COLUMN:TYPE")]
     pub partition: Vec<String>,
 

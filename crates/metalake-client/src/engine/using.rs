@@ -186,6 +186,7 @@ mod tests {
                 Step::Pipeline(_) => "pipeline".to_string(),
                 Step::Ref(_) => "ref".to_string(),
                 Step::Catalog(_) => "catalog".to_string(),
+                Step::Register(_) => "register".to_string(),
                 Step::Using(using) => using.engine.clone(),
                 Step::Choose(engine) => format!("choose {engine}"),
             })

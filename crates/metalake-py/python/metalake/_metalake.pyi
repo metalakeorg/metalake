@@ -105,8 +105,8 @@ class Lake:
     ) -> list[Done]: ...
     def register(
         self,
-        source: str,
-        table: str,
+        source: str | None = None,
+        table: str | None = None,
         *,
         partition: dict[str, str] | None = None,
         adopt: bool = False,
@@ -410,6 +410,10 @@ class Snapshot:
 class Registered:
     @property
     def table(self) -> str: ...
+    @property
+    def source(self) -> str: ...
+    @property
+    def partition(self) -> list[tuple[str, str]]: ...
     @property
     def created(self) -> bool: ...
     @property

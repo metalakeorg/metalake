@@ -8,10 +8,13 @@ use crate::{Error, Lake, Result};
 /// What to register, as a face takes it.
 #[derive(Debug, Clone, Default)]
 pub struct RegisterRequest {
-    pub source: String,
+    /// Where the files are: a path in the lake's store, `/user/hive/warehouse/sales`, or a URL of it. None, a table
+    /// registered before registers again from where it was.
+    pub source: Option<String>,
     /// `table`, `schema.table` or `catalog.schema.table`.
     pub table: String,
-    /// The directories' partition columns, in order, each with its type: `("dt", "date")`.
+    /// The directories' partition columns, in order, each with its type: `("dt", "date")`. None, a new table's are
+    /// found in its directories, and an existing table's are its own.
     pub partition: Vec<(String, String)>,
     pub adopt: bool,
     pub location: Option<String>,
@@ -27,7 +30,7 @@ impl RegisterRequest {
             .split_once(':')
             .filter(|(c, t)| !c.is_empty() && !t.is_empty())
             .ok_or_else(|| Error::usage(format!("a partition column is column:type, as dt:date, not {text}")))?;
-        Ok((column.to_string(), ty.to_string()))
+        Ok((column.to_string(), ty.to_lowercase()))
     }
 }
 
@@ -47,7 +50,7 @@ impl Lake {
             .map(|(column, ty)| (column.as_str(), ty.as_str()))
             .collect();
         let register = Register {
-            source: Some(&request.source),
+            source: request.source.as_deref(),
             namespace: &namespace,
             name: &path.name,
             partition,
