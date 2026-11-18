@@ -1,0 +1,62 @@
+# A Hadoop cluster in small, as a migration starts from: HDFS, and Hive writing its tables there as Parquet. MetaLake
+# takes those tables over in place, its catalog in a Postgres apart from both.
+#
+#   docker compose -f demo/hive-hdfs/compose.yml up -d
+#   docker compose -f demo/hive-hdfs/compose.yml down -v
+name: metalake-hive-hdfs
+
+x-hadoop: &hadoop
+  image: apache/hadoop:3.4.3
+  environment: &hadoop-conf
+    CORE-SITE.XML_fs.defaultFS: hdfs://namenode:9000
+    HDFS-SITE.XML_dfs.replication: "1"
+    HDFS-SITE.XML_dfs.permissions.enabled: "false"
+    HDFS-SITE.XML_dfs.namenode.name.dir: /tmp/hadoop/dfs/name
+    HDFS-SITE.XML_dfs.datanode.data.dir: /tmp/hadoop/dfs/data
+
+services:
+  namenode:
+    <<: *hadoop
+    hostname: namenode
+    command: hdfs namenode
+    environment:
+      <<: *hadoop-conf
+      ENSURE_NAMENODE_DIR: /tmp/hadoop/dfs/name
+    ports: ["9870:9870"]
+    healthcheck:
+      test: ["CMD-SHELL", "hdfs dfsadmin -report 2>/dev/null | grep -q 'Live datanodes (1)' && hdfs dfsadmin -safemode get | grep -q OFF"]
+      interval: 3s
+      retries: 60
+
+  datanode:
+    <<: *hadoop
+    hostname: datanode
+    command: hdfs datanode
+    depends_on: [namenode]
+
+  # HiveServer2 with its metastore embedded; its warehouse on HDFS. Tez runs its queries in local mode.
+  hive:
+    image: apache/hive:4.0.1
+    hostname: hive
+    environment:
+      SERVICE_NAME: hiveserver2
+      SERVICE_OPTS: -Dhive.metastore.warehouse.dir=hdfs://namenode:9000/user/hive/warehouse
+    volumes:
+      - ./hive/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml:ro
+      - ./hive:/demo:ro
+    ports: ["10000:10000", "10002:10002"]
+    depends_on:
+      namenode:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "beeline -u jdbc:hive2://localhost:10000/ -e 'select 1' >/dev/null 2>&1"]
+      interval: 5s
+      retries: 60
+
+  # MetaLake's catalog.
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_PASSWORD: metalake
+      POSTGRES_DB: lake
+    ports: ["5432:5432"]

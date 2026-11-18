@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<!-- Hive's Hadoop client: its default file system is the demo's HDFS. -->
+<configuration>
+  <property>
+    <name>fs.defaultFS</name>
+    <value>hdfs://namenode:9000</value>
+  </property>
+  <!-- One DataNode: Hive's files are written with one replica, not the default three. -->
+  <property>
+    <name>dfs.replication</name>
+    <value>1</value>
+  </property>
+</configuration>
