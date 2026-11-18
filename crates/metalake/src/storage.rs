@@ -1,6 +1,7 @@
 //! Object storage, behind one handle per location (`object_store`). The catalog stores locations and paths as URLs
 //! (`gs://lake/t/a.parquet`); a handle reaches every path under its location's store. Local disk and memory are
-//! always there; S3, GCS and Azure come with the crate's features of the same names.
+//! always there; S3, GCS and Azure come with the crate's features of the same names, and HDFS (`hdfs://`, `viewfs://`)
+//! with `hdfs`, configured by Hadoop's own files (`HADOOP_CONF_DIR`) and the process's Kerberos ticket.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -31,12 +32,14 @@ impl Storage {
         V: Into<String>,
     {
         let url = url::Url::parse(location).map_err(|e| Error::Location(format!("{location}: {e}")))?;
-        let (store, _) = object_store::parse_url_opts(&url, options)?;
         let base = format!("{}://{}", url.scheme(), url.authority());
-        Ok(Self {
-            store: Arc::from(store),
-            base,
-        })
+        let store = match url.scheme() {
+            // The whole file system is the store, as a bucket is: its keys are absolute paths from its root. The
+            // options of the clouds do not apply to it.
+            "hdfs" | "viewfs" => hdfs(&base)?,
+            _ => Arc::from(object_store::parse_url_opts(&url, options)?.0),
+        };
+        Ok(Self { store, base })
     }
 
     /// A store the engine already has, for the paths under `location`, a URL.
@@ -157,5 +160,34 @@ impl Storage {
             }
         }
         (gone, failed)
+    }
+}
+
+/// The store of a NameNode or a nameservice, `hdfs://nn:8020` or `viewfs://cluster`.
+#[cfg(feature = "hdfs")]
+fn hdfs(base: &str) -> Result<Arc<dyn ObjectStore>> {
+    let store = hdfs_native_object_store::HdfsObjectStoreBuilder::new()
+        .with_url(base)
+        .build()?;
+    Ok(Arc::new(store))
+}
+
+#[cfg(not(feature = "hdfs"))]
+fn hdfs(base: &str) -> Result<Arc<dyn ObjectStore>> {
+    Err(Error::Location(format!(
+        "{base}: HDFS is reached with the feature `hdfs` of metalake, which this build does not have"
+    )))
+}
+
+#[cfg(all(test, not(feature = "hdfs")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hdfs_needs_its_feature() {
+        for location in ["hdfs://nn:8020/lake", "viewfs://cluster/lake"] {
+            let error = Storage::new(location, Vec::<(String, String)>::new()).unwrap_err();
+            assert!(error.to_string().contains("feature `hdfs`"), "{error}");
+        }
     }
 }

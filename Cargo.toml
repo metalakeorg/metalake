@@ -24,6 +24,8 @@ arrow-array = ">=58.4, <60"
 arrow-select = ">=58.4, <60"
 parquet = { version = ">=58.4, <60", default-features = false, features = ["arrow", "async", "zstd"] }
 object_store = "0.13"
+# HDFS and ViewFS behind `object_store`, in Rust: no JVM, Kerberos loaded at run time. Its `object_store` is ours.
+hdfs-native-object-store = { version = "0.18.2", default-features = false, features = ["object-store-0-13"] }
 bytes = "1"
 url = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
