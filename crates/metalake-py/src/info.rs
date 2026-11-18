@@ -95,6 +95,8 @@ impl PySnapshot {
 #[pyclass(name = "Registered", module = "metalake", frozen, get_all)]
 pub struct PyRegistered {
     table: String,
+    source: String,
+    partition: Vec<(String, String)>,
     created: bool,
     check: bool,
     registered: usize,
@@ -116,6 +118,8 @@ impl From<metalake_client::Report> for PyRegistered {
                 .map(|r| (r.path.clone(), r.rule.to_string(), r.why.clone()))
                 .collect(),
             table: report.table,
+            source: report.source,
+            partition: report.partition,
             created: report.created,
             check: report.check,
             registered: report.registered,

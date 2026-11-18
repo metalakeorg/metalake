@@ -90,3 +90,50 @@ fn c10n_register_a_hive_directory() {
         "nothing committed"
     );
 }
+
+/// The same verb in SQL, as a user writes it: a path in the store, no partition said, and again with no source.
+#[test]
+fn c10n_register_in_sql() {
+    let (dir, _) = lake();
+    let status: Value = serde_json::from_str(&ok(&dir, &["status", "--format", "json"])).unwrap();
+    let warehouse = status["warehouse"].as_str().unwrap().trim_end_matches('/').to_string();
+    // The store is the machine's files, `file://`: a path in it is what follows.
+    let source = format!("{}/hive/pedidos", warehouse.trim_start_matches("file://"));
+    let local = dir.join("data").join("hive").join("pedidos");
+    hive_file(&local.join("dt=2024-01-02").join("part-0.parquet"), &[1, 2]);
+    hive_file(&local.join("dt=2024-01-03").join("part-0.parquet"), &[3]);
+
+    let created = sql(&dir, &format!("REGISTER TABLE db.pedidos FROM '{source}'"), "json");
+    let created: Value = serde_json::from_str(created.lines().next().unwrap()).unwrap();
+    assert_eq!(
+        (
+            created["created"].as_bool(),
+            created["registered"].as_u64(),
+            created["partition"].as_str()
+        ),
+        (Some(true), Some(2), Some("dt date")),
+        "{created}"
+    );
+    assert_eq!(
+        sql(&dir, "select k, dt from db.pedidos order by k", "csv"),
+        "k,dt\n1,2024-01-02\n2,2024-01-02\n3,2024-01-03\n"
+    );
+
+    // Again, from the command line with no source: what is new, from where it was registered.
+    hive_file(&local.join("dt=2024-01-04").join("part-0.parquet"), &[4]);
+    let again = report(&dir, &["--as", "db.pedidos"]);
+    assert_eq!(
+        (again["registered"].as_u64(), again["already"].as_u64()),
+        (Some(1), Some(2)),
+        "{again}"
+    );
+    // And in SQL with nothing new: nothing to commit.
+    let none = sql(&dir, "register table db.pedidos", "json");
+    let none: Value = serde_json::from_str(none.lines().next().unwrap()).unwrap();
+    assert_eq!(
+        (none["registered"].as_u64(), none["already"].as_u64()),
+        (Some(0), Some(3)),
+        "{none}"
+    );
+    assert_eq!(sql(&dir, "select count(*) as n from db.pedidos", "csv"), "n\n4\n");
+}

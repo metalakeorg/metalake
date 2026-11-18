@@ -3,6 +3,15 @@
 What each version published on PyPI as `metalake` brings to whoever installs it. The work behind each line is in its
 pull request; the decisions, in the ADRs.
 
+## 0.10.0
+
+### Migration
+
+- **Register files in place from SQL.** `REGISTER TABLE tienda.ventas FROM '/user/hive/warehouse/tienda.db/ventas'` in `lake.sql`, `metalake sql` or the Query editor does what `metalake register` does, on the session's branch, and answers its report as a row. `PARTITIONED BY (dt DATE)`, `LOCATION`, `ADOPT` and `CHECK` say what the command line's flags say ([#86](https://github.com/metalakeorg/metalake/pull/86))
+- **Give the source as a path in the lake's store.** `/user/hive/warehouse/sales` or `raw/orders` is put after the store's scheme and authority, in every face; a URL of the store still works ([#86](https://github.com/metalakeorg/metalake/pull/86))
+- **Leave the partition out.** A new table's partition columns are found in its `k=v` directories, typed by their values (`date`, `int`, `long`, else `string`, so `007` stays a string), and the run says what it found; files laid out otherwise are refused. Declaring one corrects what is found ([#86](https://github.com/metalakeorg/metalake/pull/86))
+- **Register again with no source.** A table keeps where it was registered from, so `REGISTER TABLE tienda.ventas`, `metalake register --as tienda.ventas` or `lake.register(table="tienda.ventas")` adds what is new there ([#86](https://github.com/metalakeorg/metalake/pull/86))
+
 ## 0.9.0
 
 Released on 2026-11-18.

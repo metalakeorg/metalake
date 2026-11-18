@@ -35,6 +35,8 @@ pub enum Step {
     Ref(crate::refs_sql::RefVerb),
     /// A catalog's verb (I7): `CREATE CATALOG`, `DROP CATALOG`, `SHOW CATALOGS`.
     Catalog(crate::catalogs_sql::CatalogVerb),
+    /// `REGISTER TABLE`: files in place as a table's, on the session's branch.
+    Register(crate::register_sql::RegisterVerb),
     /// `USING <engine> <statement>`: the statement is the engine's, sent to it as written.
     Using(crate::Using),
     /// `USING <engine>` alone: runs nothing, and chooses the engine for the statements after it. A step of its own, so
@@ -46,7 +48,7 @@ impl Step {
     /// The engine that runs it, when not the lake's own: what a face says beside its answer.
     pub fn engine(&self) -> Option<&str> {
         match self {
-            Step::Statement(_) | Step::Pipeline(_) | Step::Ref(_) | Step::Catalog(_) => None,
+            Step::Statement(_) | Step::Pipeline(_) | Step::Ref(_) | Step::Catalog(_) | Step::Register(_) => None,
             Step::Using(using) => Some(&using.engine),
             Step::Choose(engine) => (engine != crate::OWN).then_some(engine.as_str()),
         }
@@ -68,6 +70,9 @@ pub(crate) fn client_verb(text: &str) -> Result<Option<Step>> {
     }
     if let Some(verb) = crate::catalogs_sql::catalog_verb_of(text)? {
         return Ok(Some(Step::Catalog(verb)));
+    }
+    if let Some(verb) = crate::register_sql::register_verb_of(text)? {
+        return Ok(Some(Step::Register(verb)));
     }
     Ok(crate::refs_sql::ref_verb_of(text)?.map(Step::Ref))
 }
@@ -406,6 +411,14 @@ impl Session {
                 let on = self.lake.find_ref(&self.current_ref()).await?;
                 let answer = crate::catalogs_sql::run(&on, verb).await;
                 // A picture of the listings that cannot be taken now does not fail what committed.
+                let _ = self.engine.refresh().await;
+                answer
+            }
+            Step::Register(verb) => {
+                self.live("REGISTER TABLE")?;
+                let answer = crate::register_sql::run(&self.lake, verb, &self.current_ref_name()).await;
+                // A table new to the branch shows in `information_schema` at once; a picture of the listings that
+                // cannot be taken now does not fail what committed.
                 let _ = self.engine.refresh().await;
                 answer
             }

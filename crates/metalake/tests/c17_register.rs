@@ -40,7 +40,7 @@ const SOURCE: &str = "memory:///wh/hive/ventas";
 
 fn request<'a>(check: bool, adopt: bool) -> Register<'a> {
     Register {
-        source: SOURCE,
+        source: Some(SOURCE),
         namespace: &["db"],
         name: "ventas",
         partition: vec![("dt", "date")],
@@ -164,7 +164,7 @@ async fn c17_register_a_hive_directory() -> Result<(), Box<dyn std::error::Error
 
     // A source on another store is refused, naming both.
     let elsewhere = Register {
-        source: "s3://other/hive",
+        source: Some("s3://other/hive"),
         ..request(true, false)
     };
     let refused = register(&main, &storage, &elsewhere).await.unwrap_err().to_string();
@@ -172,5 +172,86 @@ async fn c17_register_a_hive_directory() -> Result<(), Box<dyn std::error::Error
         refused.contains("s3://other/hive") && refused.contains("memory://"),
         "{refused}"
     );
+    Ok(())
+}
+
+/// A table registered as a user says it: a path in the store, its partition found in its directories, and run again
+/// with no source, from where it was registered.
+#[tokio::test]
+async fn c17_register_discovers_and_remembers() -> Result<(), Box<dyn std::error::Error>> {
+    let catalog = Catalog::init(
+        CatalogConfig::new(url(), fresh_schema()).warehouse("memory:///wh"),
+        None,
+    )
+    .await?;
+    let storage = Storage::from_store("memory:///wh", Arc::new(InMemory::new()))?;
+    let main = catalog.branch("main").await?;
+    let source = "memory:///wh/raw/pedidos";
+    for path in ["year=2024/month=1/part-0.parquet", "year=2024/month=12/part-0.parquet"] {
+        storage.put(&format!("{source}/{path}"), hive_file(&[1])).await?;
+    }
+    let found = |source| Register {
+        source,
+        namespace: &["ventas"],
+        name: "pedidos",
+        partition: vec![],
+        adopt: false,
+        location: None,
+        check: false,
+        batch: BATCH,
+    };
+
+    // A file laid out otherwise than the first is refused, saying how.
+    storage
+        .put(&format!("{source}/region=EU/part-0.parquet"), hive_file(&[9]))
+        .await?;
+    let refused = register(&main, &storage, &found(Some("/wh/raw/pedidos"))).await?;
+    assert_eq!(refused.refused.len(), 1, "{refused:?}");
+    assert_eq!(refused.refused[0].rule, "partition");
+    storage.delete(&format!("{source}/region=EU/part-0.parquet")).await?;
+
+    // A path in the store, no partition said: both found.
+    let first = register(&main, &storage, &found(Some("/wh/raw/pedidos/"))).await?;
+    assert_eq!(first.source, source);
+    assert_eq!(
+        first.partition,
+        [
+            ("year".to_string(), "int".to_string()),
+            ("month".to_string(), "int".to_string())
+        ]
+    );
+    assert!(first.created && first.registered == 2, "{first:?}");
+    let table = main.table(&["ventas"], "pedidos").await?;
+    assert_eq!(
+        table
+            .properties()
+            .get(metalake::register::SOURCE_PROPERTY)
+            .map(String::as_str),
+        Some(source)
+    );
+
+    // Again with no source: from the one it keeps, its partition its own.
+    storage
+        .put(&format!("{source}/year=2025/month=1/part-0.parquet"), hive_file(&[2]))
+        .await?;
+    let again = register(&main, &storage, &found(None)).await?;
+    assert!(
+        !again.created && again.registered == 1 && again.already == 2,
+        "{again:?}"
+    );
+    assert_eq!(again.partition, first.partition);
+
+    // A declared partition the table does not have is refused; nothing to register from, a new table says so.
+    let other = Register {
+        partition: vec![("year", "string")],
+        ..found(None)
+    };
+    assert!(register(&main, &storage, &other).await.is_err());
+    let unknown = Register {
+        name: "nada",
+        ..found(None)
+    };
+    let said = register(&main, &storage, &unknown).await.unwrap_err().to_string();
+    assert!(said.contains("does not exist"), "{said}");
     Ok(())
 }

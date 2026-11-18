@@ -8,6 +8,7 @@ use metalake_client::{
     EngineConfig, EngineKind, Error, Lake, MaintainRequest, MergeRequest, PipelineOptions, RefKind, RegisterRequest,
     Retention, Session, Task, duration,
 };
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 
@@ -434,18 +435,20 @@ impl PyLake {
         merged.map(PyMerged::from).map_err(|e| to_python(py, e))
     }
 
-    /// Makes the Parquet files under `source`, a prefix of the lake's store, the files of `table`, where they are, with
-    /// no byte copied: a Hive table's directory, say. `partition` names the directories' keys that are partition
-    /// columns, in their order, with their types, `{"dt": "date"}`. `adopt` has the table own the source, so that upkeep
-    /// may delete what it no longer reads there; `location` is where it writes what is new. A run again adds only what
-    /// is new. A refused file, as a check, commits nothing: the answer says what and why.
-    #[pyo3(signature = (source, table, *, partition=None, adopt=false, location=None, check=false, on=None))]
+    /// Makes the Parquet files under `source` the files of `table`, where they are, with no byte copied: a Hive table's
+    /// directory, say. `source` is a path in the lake's store, `/user/hive/warehouse/sales`, or a URL of it; left out,
+    /// a table registered before registers again from where it was, `lake.register(table="sales")`. `partition` names
+    /// the directories' keys that are partition columns, in their order, with their types, `{"dt": "date"}`; left out,
+    /// a new table's are found in its `k=v` directories and an existing table's are its own. `adopt` has the table own
+    /// the source, so that upkeep may delete what it no longer reads there; `location` is where it writes what is new.
+    /// A run again adds only what is new. A refused file, as a check, commits nothing: the answer says what and why.
+    #[pyo3(signature = (source=None, table=None, *, partition=None, adopt=false, location=None, check=false, on=None))]
     #[allow(clippy::too_many_arguments, reason = "each is a keyword of Python")]
     fn register(
         &self,
         py: Python<'_>,
-        source: String,
-        table: String,
+        source: Option<String>,
+        table: Option<String>,
         partition: Option<Bound<'_, PyDict>>,
         adopt: bool,
         location: Option<String>,
@@ -453,6 +456,7 @@ impl PyLake {
         on: Option<String>,
     ) -> PyResult<PyRegistered> {
         self.owner.check(py, "Lake")?;
+        let table = table.ok_or_else(|| PyValueError::new_err("register needs the table: register(source, table)"))?;
         let partition = partition
             .map(|p| {
                 p.iter()

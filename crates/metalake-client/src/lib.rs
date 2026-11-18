@@ -17,6 +17,7 @@ mod pipeline;
 mod refs;
 mod refs_sql;
 mod register;
+mod register_sql;
 pub mod server;
 mod session;
 mod status;
