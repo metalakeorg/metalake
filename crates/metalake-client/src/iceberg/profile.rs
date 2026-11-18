@@ -347,7 +347,7 @@ pub fn profile(engine: Engine, name: &str, target: &Target) -> Result<Profile> {
     let name = catalog_name(name)?;
     match engine {
         Engine::PyIceberg => Ok(pyiceberg::profile(name, target)),
-        Engine::DuckDb => Ok(duckdb::profile(name, target)),
+        Engine::DuckDb => duckdb::profile(name, target),
         Engine::Spark => Ok(spark::profile(name, target)),
         Engine::Trino => Ok(trino::profile(name, target)),
         Engine::Flink => flink::profile(name, target),
