@@ -2,6 +2,10 @@
 -- have: one insert per drop hour over every day, so each day's partition still holds four files. Products before
 -- `brand_from` are loaded, the column `marca` added (alter.sql runs between the two halves), then the rest.
 
+-- A history writes more partitions at once than Hive's default 100 per node allows, as a production backfill does.
+set hive.exec.max.dynamic.partitions.pernode=1000;
+set hive.exec.max.dynamic.partitions=5000;
+
 insert into curated.ventas partition (dt)
 select evento_id, ts, cliente_id, producto_id, cantidad, precio, round(cantidad * precio, 2), dt
 from raw.eventos where dt <= '${hivevar:upto}' and hora = '00' and tipo = 'compra';

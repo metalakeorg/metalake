@@ -11,13 +11,19 @@ Hadoop shop runs:
 - Hive ETL refines them into curated tables and marts;
 - small files pile up, a few tables are ORC, and one is transactional.
 
-MetaLake takes it over in place, with its catalog in Postgres, and then does what the warehouse could not. Each step
-is measured.
+The demo has two parts. The migration is the **bridge**: it is measured by what crossing costs (bytes copied,
+time, downtime, tables left behind) and scores nothing by itself. The **value** is what the company can do once it is
+across, measured on the migrated estate against the same estate as Hive ran it:
+
+- its queries;
+- its development and audit;
+- its loads;
+- what it opens.
 
 ## 1. The scoreboard
 
-Each act of the demo scores in one of three columns, the way vendors' proofs of value and Forrester's TEI studies
-report:
+Each act of part two, on the migrated estate, scores in one of three columns, the way vendors' proofs of value and
+Forrester's TEI studies report:
 
 | Column | What it holds | How it is measured |
 |---|---|---|
@@ -29,7 +35,12 @@ Then the **risks**: what the demo finds MetaLake cannot yet do, each with its pl
 
 **Success criteria**, fixed before the first measure, as a proof of value fixes them:
 
+The bridge:
+
 1. The migration copies no byte of a Parquet table, and the warehouse keeps working throughout.
+
+The value:
+
 2. A day's load is published to every table at once, or not at all, and a bad one is undone without repair.
 3. A team gets a development copy of the whole warehouse in seconds and at no storage cost.
 4. An auditor's question, *what did `ventas` say at the close of January?*, is answered exactly.
@@ -83,7 +94,16 @@ The way Hive writes it is the way a production Hive writes it:
    - `ALTER TABLE` falls inside that history, on day 45.
 5. **`day.sh` adds one more day,** to test coexistence after the migration: Hive keeps writing, and MetaLake follows.
 
-## 3. The migration, by phase
+## 3. Part one, the bridge: the migration, by phase
+
+The pipeline a company follows to cross. It reports the cost of crossing:
+
+- bytes copied;
+- time;
+- downtime;
+- tables in place, copied, or left with a gap.
+
+It does not fill the scoreboard. The value comes on the other side (§5).
 
 | Phase | What | With |
 |---|---|---|
@@ -106,21 +126,38 @@ These gaps are measured and reported as risks, not hidden:
 | `marts.top_clientes`, `ops.pedidos`, `raw.eventos` | ORC, ACID and CSV are not registered | A copy (phase 5) |
 | All eight | One statement per table, its directory found by hand | `REGISTER SCHEMA … FROM hive`, from the metastore |
 
-## 5. The acts, after the migration
+## 5. Part two, the value: the acts on the migrated estate
 
-Each act scores in one column of §1:
+Once across, the same files are Hive's and MetaLake's at once (coexistence), so each act measures both on the same
+estate. The acts are grouped by the column they score in.
 
-| Act | Hive, measured | MetaLake, measured | Column |
-|---|---|---|---|
-| Migration | A copy: bytes and time | `REGISTER TABLE`: 0 bytes and its time | Better |
-| Queries | Metastore and HDFS listing before reading; latency | Planning from the catalog, pruning by its statistics; latency | Better |
-| A day's load (write, audit, publish) | A half-done overwrite is seen; repair by hand | Loaded on a branch, reconciled, and one `MERGE` publishes every table; a bad load is a dropped branch | New |
-| Development | Copy the data: GB and minutes | A branch of the whole lake: 0 bytes, seconds | New |
-| Audit | No answer | Tag `cierre_enero`; `AS OF` | New |
-| Several tables at once | `ventas` and `ventas_diarias` drift apart | One commit for both | New |
-| Engines | Tied to the metastore | Spark, Trino and DuckDB through Iceberg REST; `USING` | Enables |
-| Operation | Small files and manual cleanup | `maintain` compacts, expires and sweeps; files before and after | Better |
-| Changes | None | `changes`/`follow`: CDC at no cost | Enables |
+**Better**: performance and operation, the same work done both ways.
+
+| Act | Hive, measured | MetaLake, measured |
+|---|---|---|
+| Planning | Metastore partitions, then an HDFS listing, before a byte is read | Files and column statistics from the catalog, no listing |
+| Latency | A day, a month, a product: Hive's time | The same queries: MetaLake's time, files pruned |
+| Small files | Files on HDFS, which the NameNode holds in memory | `maintain` compacts: files before and after, the same rows |
+| Upkeep | Old files and orphans, cleaned by hand | `maintain` expires and sweeps; `strays` reports |
+
+**New**: what Hive cannot do. The measure is the workaround's cost against one statement.
+
+| Act | Hive's workaround, measured | MetaLake, measured |
+|---|---|---|
+| Development | Copy the data: GB and minutes, or share production | A branch of the whole lake: 0 bytes, seconds |
+| A day's load (write, audit, publish) | A half-done load is seen; a bad one repaired by hand | Loaded on a branch, reconciled, one `MERGE` publishes every table; a bad load is a dropped branch |
+| Several tables at once | `ventas` and `ventas_diarias` drift apart | One commit for both |
+| Audit | No answer, or a snapshot copied at month end | Tag `cierre_enero`; `AS OF` |
+| Rollback | Restore from a backup, if there is one | Read, or branch from, the commit before |
+
+**Enables**: options opened, at no copy.
+
+| Act | What opens |
+|---|---|
+| Engines | Spark, Trino and DuckDB on the same tables through Iceberg REST; `USING` from SQL |
+| Changes | `changes` and `follow`: CDC for downstream at no cost |
+| Governed by SQL | Branches, tags, retention and registration as SQL statements, in one catalog |
+| The next store | A lake whose catalog holds where the bytes are, so a later move to object storage is a store, not a rewrite |
 
 ## 6. Where it lives
 
