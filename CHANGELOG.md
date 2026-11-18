@@ -5,6 +5,19 @@ pull request; the decisions, in the ADRs.
 
 ## 0.9.0
 
+Released on 2026-11-18.
+
+Take over a Hadoop warehouse where it is: keep a lake on HDFS and register its existing Parquet tables in place, and send statements to Spark and Flink.
+
+### Upgrading from 0.8.0
+
+- **Migrate each lake once.** The catalog's format moves to 0.5, which knows the prefixes a table owns besides its location: a lake made with 0.8.0 is refused until `metalake migrate` (or `metalake.migrate()`) runs on it, once. After that, a client of 0.8.0 is refused by it, so upgrade every client of the lake together ([#82](https://github.com/metalakeorg/metalake/pull/82))
+
+### Migration
+
+- **Register existing Parquet files as a table, in place.** `metalake register hdfs://nn/warehouse/sales --as db.sales --partition dt:date`, or `lake.register(source, "db.sales", partition={"dt": "date"})`, makes the files under a prefix of the lake's store a table's with no byte copied: a Hive table's directory, say, its partition values read from its `k=v` directories and its columns matched by name in files with no field ids. Hidden files (`_SUCCESS`, `.staging`) are skipped; any other file that is not Parquet, or does not fit the table, refuses the run, which commits nothing and says which file and why. `--check` says what a run would do. A run again adds only the files that are new, so a table its old writer still appends to can follow it ([#82](https://github.com/metalakeorg/metalake/pull/82))
+- **Adopt the files a table was registered from.** By default the source stays its old writer's: upkeep never deletes there. With `--adopt` the table owns the source too, so `maintain` may delete what it no longer reads there, and `maintain strays` lists the source as well as the table's location. Adopt once the old writer has stopped ([#82](https://github.com/metalakeorg/metalake/pull/82))
+
 ### Storage
 
 - **Keep a lake's files on HDFS.** `metalake init <postgres> hdfs://nameservice1/lake`, or `viewfs://`: tables are written, read, branched, merged and maintained there as on an object store. The cluster's configuration comes from `HADOOP_CONF_DIR` and the identity from the process's Kerberos ticket; neither enters the catalog ([#81](https://github.com/metalakeorg/metalake/pull/81))
