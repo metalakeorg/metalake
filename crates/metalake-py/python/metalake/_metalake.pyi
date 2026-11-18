@@ -431,6 +431,8 @@ class Registered:
     @property
     def adopted(self) -> str | None: ...
 
+
+@final
 class Merged:
     @property
     def branch(self) -> str: ...
