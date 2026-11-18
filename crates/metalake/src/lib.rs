@@ -25,6 +25,7 @@ mod maintain;
 pub mod mapping;
 pub mod partition;
 pub mod path;
+pub mod register;
 mod scan;
 pub mod schema;
 pub mod stats;
