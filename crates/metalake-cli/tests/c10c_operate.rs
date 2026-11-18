@@ -62,7 +62,7 @@ fn outdated_catalog_refused() {
     );
 
     ok(&dir, &["migrate"]);
-    assert!(ok(&dir, &["status"]).contains("protocol   0"));
+    assert!(ok(&dir, &["status"]).contains("protocol   1"));
     assert_eq!(rows(&dir), "k\n1\n");
 }
 
