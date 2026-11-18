@@ -22,6 +22,18 @@ describe("Editor", () => {
     }
   });
 
+  it("colours REGISTER TABLE and its clauses", () => {
+    const found = keywords(
+      "register table tienda.ventas from '/user/hive/warehouse/tienda.db/ventas' " +
+        "partitioned by (dt date) location 'hdfs://nn/lake/v' adopt check; create catalog ventas",
+    );
+    for (const word of ["register", "table", "from", "partitioned", "by", "location", "adopt", "check"]) {
+      expect(found).toContain(word);
+    }
+    expect(found).toContain("catalog");
+    expect(found).not.toContain("ventas");
+  });
+
   it("keeps each verb a keyword", () => {
     const words = VERBS.split(" ");
     expect(keywords(words.join(" "))).toEqual(words);
