@@ -22,6 +22,7 @@ mod error;
 mod evolve;
 mod follow;
 mod maintain;
+pub mod mapping;
 pub mod partition;
 pub mod path;
 mod scan;
