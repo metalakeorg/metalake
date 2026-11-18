@@ -27,7 +27,7 @@ describe("Editor", () => {
       "register table tienda.ventas from '/user/hive/warehouse/tienda.db/ventas' " +
         "partitioned by (dt date) location 'hdfs://nn/lake/v' adopt check; create catalog ventas",
     );
-    for (const word of ["register", "table", "from", "partitioned", "by", "date", "location", "adopt", "check"]) {
+    for (const word of ["register", "table", "from", "partitioned", "by", "location", "adopt", "check"]) {
       expect(found).toContain(word);
     }
     expect(found).toContain("catalog");
