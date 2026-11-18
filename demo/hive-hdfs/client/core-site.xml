@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<!-- A Hadoop client on the host, outside Docker's network: HADOOP_CONF_DIR names this directory. -->
+<configuration>
+  <property>
+    <name>fs.defaultFS</name>
+    <value>hdfs://namenode:9000</value>
+  </property>
+</configuration>

@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<!-- DataNodes are reached by their names, which the host resolves to its published ports, not by the addresses
+     they have inside Docker's network, which the host cannot reach. -->
+<configuration>
+  <property>
+    <name>dfs.client.use.datanode.hostname</name>
+    <value>true</value>
+  </property>
+</configuration>

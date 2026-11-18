@@ -22,7 +22,8 @@ services:
     environment:
       <<: *hadoop-conf
       ENSURE_NAMENODE_DIR: /tmp/hadoop/dfs/name
-    ports: ["9870:9870"]
+    # 9000: the NameNode's RPC, which a client on the host reaches as namenode:9000 (see client/).
+    ports: ["9870:9870", "9000:9000"]
     healthcheck:
       test: ["CMD-SHELL", "hdfs dfsadmin -report 2>/dev/null | grep -q 'Live datanodes (1)' && hdfs dfsadmin -safemode get | grep -q OFF"]
       interval: 3s
@@ -32,6 +33,12 @@ services:
     <<: *hadoop
     hostname: datanode
     command: hdfs datanode
+    # It announces itself by name, so that a client outside Docker's network, told to use DataNodes' names
+    # (`dfs.client.use.datanode.hostname`), reaches it at datanode:9866 through the published port.
+    environment:
+      <<: *hadoop-conf
+      HDFS-SITE.XML_dfs.datanode.hostname: datanode
+    ports: ["9866:9866"]
     depends_on: [namenode]
 
   # HiveServer2 with its metastore embedded; its warehouse on HDFS. Tez runs its queries in local mode.
