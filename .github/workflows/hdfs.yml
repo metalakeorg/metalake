@@ -1,0 +1,81 @@
+# HDFS as a store of the core: a NameNode and a DataNode of Apache's image, on the runner's network so that the address
+# a DataNode announces is the one the client reaches. Simple authentication; Kerberos is tried by hand.
+name: hdfs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - crates/metalake/**
+      - crates/metalake-client/**
+      - crates/metalake-cli/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/hdfs.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - crates/metalake/**
+      - crates/metalake-client/**
+      - crates/metalake-cli/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/hdfs.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hdfs-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HADOOP_IMAGE: apache/hadoop:3.4.3
+
+jobs:
+  store:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      METALAKE_TEST_HDFS: hdfs://localhost:9000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: A NameNode and a DataNode
+        run: |
+          conf=(-e "CORE-SITE.XML_fs.defaultFS=hdfs://localhost:9000"
+                -e "HDFS-SITE.XML_dfs.replication=1"
+                -e "HDFS-SITE.XML_dfs.permissions.enabled=false"
+                -e "HDFS-SITE.XML_dfs.namenode.name.dir=/tmp/hadoop/dfs/name"
+                -e "HDFS-SITE.XML_dfs.datanode.data.dir=/tmp/hadoop/dfs/data")
+          start=$(date +%s)
+          docker pull --quiet "$HADOOP_IMAGE"
+          echo "pulled in $(( $(date +%s) - start ))s"
+          docker run -d --name namenode --network host "${conf[@]}" -e ENSURE_NAMENODE_DIR=/tmp/hadoop/dfs/name \
+            "$HADOOP_IMAGE" hdfs namenode
+          docker run -d --name datanode --network host "${conf[@]}" "$HADOOP_IMAGE" hdfs datanode
+          for _ in $(seq 120); do
+            docker exec namenode hdfs dfsadmin -report 2>/dev/null | grep -q "Live datanodes (1)" && break
+            sleep 1
+          done
+          docker exec namenode hdfs dfsadmin -safemode wait
+          docker exec namenode hdfs dfsadmin -report | head -20
+          echo "HDFS up in $(( $(date +%s) - start ))s"
+      - name: Without the feature, HDFS is refused by name
+        run: cargo test -p metalake --lib "storage::"
+      - name: The store, against HDFS
+        run: cargo test -p metalake --features hdfs --test c15_hdfs -- --nocapture
+      - name: A ViewFS mount table with no fallback, refused saying what to do
+        run: cargo test -p metalake --features hdfs --test c15b_viewfs
+      # A lake on HDFS, through the binary, with its catalog in the Postgres `sql/test.sh` starts (End 2).
+      - name: A lake's cycle on HDFS
+        run: CRATE=metalake-cli bash sql/test.sh --test c10m_hdfs -- --nocapture
+      - name: The logs of HDFS
+        if: failure()
+        run: |
+          docker logs namenode 2>&1 | tail -80
+          docker logs datanode 2>&1 | tail -80

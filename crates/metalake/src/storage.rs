@@ -1,6 +1,7 @@
 //! Object storage, behind one handle per location (`object_store`). The catalog stores locations and paths as URLs
 //! (`gs://lake/t/a.parquet`); a handle reaches every path under its location's store. Local disk and memory are
-//! always there; S3, GCS and Azure come with the crate's features of the same names.
+//! always there; S3, GCS and Azure come with the crate's features of the same names, and HDFS (`hdfs://`, `viewfs://`)
+//! with `hdfs`, configured by Hadoop's own files (`HADOOP_CONF_DIR`) and the process's Kerberos ticket.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -31,12 +32,14 @@ impl Storage {
         V: Into<String>,
     {
         let url = url::Url::parse(location).map_err(|e| Error::Location(format!("{location}: {e}")))?;
-        let (store, _) = object_store::parse_url_opts(&url, options)?;
         let base = format!("{}://{}", url.scheme(), url.authority());
-        Ok(Self {
-            store: Arc::from(store),
-            base,
-        })
+        let store = match url.scheme() {
+            // The whole file system is the store, as a bucket is: its keys are absolute paths from its root. The
+            // options of the clouds do not apply to it.
+            "hdfs" | "viewfs" => hdfs(&base)?,
+            _ => Arc::from(object_store::parse_url_opts(&url, options)?.0),
+        };
+        Ok(Self { store, base })
     }
 
     /// A store the engine already has, for the paths under `location`, a URL.
@@ -157,5 +160,50 @@ impl Storage {
             }
         }
         (gone, failed)
+    }
+}
+
+/// The store of a NameNode or a nameservice, `hdfs://nn:8020` or `viewfs://cluster`.
+///
+/// `hdfs-native` builds a ViewFS mount table only with a `linkFallback`, which Hadoop does not require: a table of
+/// explicit links alone is refused as the store is made, whatever path the warehouse is under. That is said with what
+/// to do, rather than as the client's own words. No fallback is made up here: it would change where the cluster's
+/// paths lead.
+#[cfg(feature = "hdfs")]
+fn hdfs(base: &str) -> Result<Arc<dyn ObjectStore>> {
+    let built = hdfs_native_object_store::HdfsObjectStoreBuilder::new()
+        .with_url(base)
+        .build();
+    match built {
+        Ok(store) => Ok(Arc::new(store)),
+        Err(e) if base.starts_with("viewfs://") && e.to_string().contains("No viewfs fallback mount found") => {
+            let cluster = base.trim_start_matches("viewfs://");
+            Err(Error::Location(format!(
+                "{base}: its mount table has no fs.viewfs.mounttable.{cluster}.linkFallback, which MetaLake's HDFS \
+                 client needs even when a link covers the warehouse: add one, or name the warehouse by the hdfs:// \
+                 of the namespace its link leads to"
+            )))
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+#[cfg(not(feature = "hdfs"))]
+fn hdfs(base: &str) -> Result<Arc<dyn ObjectStore>> {
+    Err(Error::Location(format!(
+        "{base}: HDFS is reached with the feature `hdfs` of metalake, which this build does not have"
+    )))
+}
+
+#[cfg(all(test, not(feature = "hdfs")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hdfs_needs_its_feature() {
+        for location in ["hdfs://nn:8020/lake", "viewfs://cluster/lake"] {
+            let error = Storage::new(location, Vec::<(String, String)>::new()).unwrap_err();
+            assert!(error.to_string().contains("feature `hdfs`"), "{error}");
+        }
     }
 }

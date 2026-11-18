@@ -5,6 +5,15 @@ pull request; the decisions, in the ADRs.
 
 ## 0.9.0
 
+### Storage
+
+- **Keep a lake's files on HDFS.** `metalake init <postgres> hdfs://nameservice1/lake`, or `viewfs://`: tables are written, read, branched, merged and maintained there as on an object store. The cluster's configuration comes from `HADOOP_CONF_DIR` and the identity from the process's Kerberos ticket; neither enters the catalog ([#81](https://github.com/metalakeorg/metalake/pull/81))
+- **Ask for `strays` from the command line.** `metalake maintain strays --table db.t` lists a table's location for objects nothing knows, as Python's `lake.maintain("strays", table=...)` does ([#81](https://github.com/metalakeorg/metalake/pull/81))
+
+### Iceberg
+
+- **Connect Spark, Trino, Flink or PyIceberg to a lake on HDFS.** `metalake iceberg connect <engine>` and `lake.iceberg` read it through Hadoop's file system with no credentials vended; Trino's file names the cluster's `core-site.xml` and `hdfs-site.xml` in `hive.config.resources`. DuckDB, which reads no HDFS, is refused saying which engines do ([#81](https://github.com/metalakeorg/metalake/pull/81))
+
 ### Engines
 
 - **Run statements on Spark with `USING`.** Name a Spark Connect server once, `metalake engine add spark_prod --type spark --url "sc://spark.example:15002/;use_ssl=true" --lake-url http://lake.example:8181` or `lake.add_engine("spark_prod", type="spark", url=..., lake_url=...)`, then `USING spark_prod SELECT … FROM demo.sales.orders`: Spark is given the lake's catalogs under their own names, on the session's branch, so it reads and writes `dev` when the session is on `dev` ([#78](https://github.com/metalakeorg/metalake/pull/78))

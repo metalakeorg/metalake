@@ -11,7 +11,8 @@ publish.workspace = true
 [dependencies]
 async-trait = "0.1"
 log = "0.4"
-metalake.workspace = true
+# Every store, as the executor and the scheduler are run alone, configured by their environment.
+metalake = { workspace = true, features = ["s3", "gcs", "azure", "hdfs"] }
 metalake-datafusion = { path = "../metalake-datafusion", features = ["proto"] }
 # Ballista 55 is on DataFusion 55 and Arrow 59, as the adapter is. Its scheduler and executor without their binaries,
 # REST API or allocator: this crate wires them; the binaries come with a real cluster.

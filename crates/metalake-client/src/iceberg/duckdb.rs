@@ -1,13 +1,21 @@
 //! DuckDB's profile: its `iceberg` extension, and the lake attached as an Iceberg REST catalog by its endpoint, with no
 //! authorization while the server has none. Nothing more on any store: DuckDB asks the server for credentials by
-//! default, and renews an expiring one through `loadCredentials`.
+//! default, and renews an expiring one through `loadCredentials`. DuckDB has no file system for HDFS: a lake there is
+//! refused, rather than attached and then unread.
 
-use super::profile::{Engine, Profile, Target};
+use super::profile::{Engine, Profile, Store, Target};
+use crate::{Error, Result};
 
 /// The option DuckDB's `ATTACH` names first, the kind of catalog.
 const TYPE: &str = "TYPE";
 
-pub(super) fn profile(name: &str, target: &Target) -> Profile {
+pub(super) fn profile(name: &str, target: &Target) -> Result<Profile> {
+    if target.store == Store::Hdfs {
+        return Err(Error::usage(format!(
+            "DuckDB reads no HDFS, where the lake's files are ({}): connect Spark, Trino, Flink or PyIceberg",
+            target.warehouse
+        )));
+    }
     let mut profile = Profile::new(Engine::DuckDb, name, target);
     profile.properties.insert(TYPE.into(), "iceberg".into());
     profile.properties.insert("ENDPOINT".into(), target.uri.clone());
@@ -16,7 +24,7 @@ pub(super) fn profile(name: &str, target: &Target) -> Profile {
         Some(token) => profile.properties.insert("TOKEN".into(), token.clone()),
         None => profile.properties.insert("AUTHORIZATION_TYPE".into(), "none".into()),
     };
-    profile
+    Ok(profile)
 }
 
 /// The extension, then the catalog attached under the profile's name: `TYPE` first and bare, as DuckDB's documents
@@ -73,6 +81,7 @@ mod tests {
             token: None,
             region: None,
             endpoint: None,
+            hadoop_conf: None,
             on: None,
             catalog: None,
         }
@@ -95,6 +104,16 @@ mod tests {
             profile.render(),
             "INSTALL iceberg;\nLOAD iceberg;\n\
              ATTACH '' AS lake (TYPE iceberg, AUTHORIZATION_TYPE 'none', ENDPOINT 'http://127.0.0.1:8181');\n"
+        );
+    }
+
+    #[test]
+    fn duckdb_refuses_hdfs() {
+        let refused = profile(Engine::DuckDb, "lake", &target(Store::Hdfs, "hdfs://nameservice1/lake")).unwrap_err();
+        let message = refused.to_string();
+        assert!(
+            message.contains("DuckDB reads no HDFS") && message.contains("hdfs://nameservice1/lake"),
+            "{message}"
         );
     }
 

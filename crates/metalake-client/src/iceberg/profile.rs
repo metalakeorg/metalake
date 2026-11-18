@@ -82,6 +82,9 @@ pub enum Store {
     S3,
     Gcs,
     Azure,
+    /// HDFS or ViewFS, which an engine reads through Hadoop's file system, with the cluster's configuration and its own
+    /// Kerberos identity: no credentials are vended for it.
+    Hdfs,
 }
 
 impl Store {
@@ -93,11 +96,27 @@ impl Store {
             "s3" | "s3a" => Ok(Store::S3),
             "gs" => Ok(Store::Gcs),
             "abfs" | "abfss" => Ok(Store::Azure),
+            "hdfs" | "viewfs" => Ok(Store::Hdfs),
             other => Err(Error::failed(format!(
                 "no engine profile reads a warehouse on {other}: {warehouse}"
             ))),
         }
     }
+}
+
+/// The directory of a Hadoop cluster's configuration, as Hadoop's own scripts find it: `HADOOP_CONF_DIR`, else
+/// `HADOOP_HOME/etc/hadoop`.
+fn hadoop_conf() -> Option<String> {
+    let var = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
+    var("HADOOP_CONF_DIR").or_else(|| {
+        var("HADOOP_HOME").map(|home| {
+            std::path::Path::new(&home)
+                .join("etc")
+                .join("hadoop")
+                .display()
+                .to_string()
+        })
+    })
 }
 
 /// For a JVM that writes a lake's files on GCS with the credentials the lake's server vends: no file to read a quota
@@ -123,6 +142,10 @@ pub struct Target {
     /// says: what an engine that reads the store itself, as Trino, is told besides its credentials.
     pub region: Option<String>,
     pub endpoint: Option<String>,
+    /// On HDFS, the directory of the cluster's `core-site.xml` and `hdfs-site.xml` as this process finds it
+    /// (`HADOOP_CONF_DIR`, else `HADOOP_HOME/etc/hadoop`): what an engine that is not started with it, as Trino, is
+    /// told. Spark and Flink read it from their own environment.
+    pub hadoop_conf: Option<String>,
     /// The ref the engine is on (I6): a ref's name, which it stays on; `session:<id>`, a session, whose ref it follows
     /// request by request; none for `main`.
     pub on: Option<String>,
@@ -225,10 +248,11 @@ pub(crate) const DELEGATION: (&str, &str) = ("header.X-Iceberg-Access-Delegation
 
 impl Store {
     /// The library of Iceberg's by which a Java engine reads this store with the credentials the server vends; none for
-    /// a local warehouse. Without it, Iceberg falls back to Hadoop's file system, which ignores them.
+    /// a local warehouse or HDFS, which Hadoop's file system reads with no credentials vended. Without it, Iceberg falls
+    /// back to Hadoop's file system, which ignores them.
     pub(crate) fn bundle(self) -> Option<Artifact> {
         match self {
-            Store::Local => None,
+            Store::Local | Store::Hdfs => None,
             Store::S3 => Some(Artifact::iceberg("iceberg-aws-bundle")),
             Store::Gcs => Some(Artifact::iceberg("iceberg-gcp-bundle")),
             Store::Azure => Some(Artifact::iceberg("iceberg-azure-bundle")),
@@ -323,7 +347,7 @@ pub fn profile(engine: Engine, name: &str, target: &Target) -> Result<Profile> {
     let name = catalog_name(name)?;
     match engine {
         Engine::PyIceberg => Ok(pyiceberg::profile(name, target)),
-        Engine::DuckDb => Ok(duckdb::profile(name, target)),
+        Engine::DuckDb => duckdb::profile(name, target),
         Engine::Spark => Ok(spark::profile(name, target)),
         Engine::Trino => Ok(trino::profile(name, target)),
         Engine::Flink => flink::profile(name, target),
@@ -378,6 +402,7 @@ impl Iceberg<'_> {
             token,
             region: s3.then(|| var(&["AWS_REGION", "AWS_DEFAULT_REGION"]).unwrap_or_else(|| "us-east-1".into())),
             endpoint: s3.then(|| var(&["AWS_ENDPOINT", "AWS_ENDPOINT_URL"])).flatten(),
+            hadoop_conf: (store == Store::Hdfs).then(hadoop_conf).flatten(),
             on: None,
             catalog: None,
         })
@@ -477,11 +502,15 @@ mod tests {
             ("s3a://bucket/lake", Store::S3),
             ("gs://bucket/lake", Store::Gcs),
             ("abfss://container@account.dfs.core.windows.net/lake", Store::Azure),
+            ("hdfs://namenode:8020/lake", Store::Hdfs),
+            ("hdfs://nameservice1/lake", Store::Hdfs),
+            ("viewfs://cluster/lake", Store::Hdfs),
         ];
         for (warehouse, store) in cases {
             assert_eq!(Store::of(warehouse).unwrap(), store, "{warehouse}");
+            assert_eq!(store.bundle().is_none(), matches!(store, Store::Local | Store::Hdfs));
         }
-        assert!(Store::of("hdfs://namenode/lake").is_err());
+        assert!(Store::of("ftp://host/lake").is_err());
     }
 
     #[test]
@@ -528,6 +557,7 @@ mod tests {
             token: None,
             region: None,
             endpoint: None,
+            hadoop_conf: None,
             on: None,
             catalog: None,
         };
@@ -564,6 +594,7 @@ mod tests {
             token: None,
             region: None,
             endpoint: None,
+            hadoop_conf: None,
             on: None,
             catalog: None,
         };
@@ -594,6 +625,7 @@ mod tests {
             token: None,
             region: None,
             endpoint: None,
+            hadoop_conf: None,
             on: None,
             catalog: None,
         }

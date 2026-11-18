@@ -429,7 +429,7 @@ pub struct Maintain {
     #[arg(long = "ref", value_name = "BRANCH")]
     pub on: Option<String>,
 
-    /// Only this table, `namespace.table`, for `flush` and `compact`.
+    /// Only this table, `namespace.table`, for `flush` and `compact`; the one `strays` lists.
     #[arg(long, value_name = "TABLE")]
     pub table: Option<String>,
 }
@@ -450,6 +450,9 @@ pub enum Task {
     Sweep,
     /// Deletes the objects of writes that never committed.
     Orphans,
+    /// Lists a table's location for objects nothing knows, older than any write in progress, for `orphans` to take. Not
+    /// run by default: asked for by table.
+    Strays,
 }
 
 #[derive(Debug, Args)]

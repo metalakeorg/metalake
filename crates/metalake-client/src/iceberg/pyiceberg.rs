@@ -1,5 +1,6 @@
 //! PyIceberg's profile: a REST catalog by its URI, nothing else on any store, since PyIceberg asks the server for
-//! credentials by default and applies what it vends. Polars and Daft take the catalog it gives as it is.
+//! credentials by default and applies what it vends. Polars and Daft take the catalog it gives as it is. On HDFS,
+//! PyArrow's file IO reads it through `libhdfs`, Hadoop's own client, which the file says it needs.
 
 use super::profile::{Engine, Profile, Store, Target};
 
@@ -31,7 +32,14 @@ fn on_a_drive(warehouse: &str) -> bool {
 
 /// As `~/.pyiceberg.yaml` has it, where every tool that loads catalogs through PyIceberg finds it by its name.
 pub(super) fn render(profile: &Profile) -> String {
-    let mut yaml = format!("catalog:\n  {}:\n", profile.name);
+    let mut yaml = String::new();
+    if profile.target.store == Store::Hdfs {
+        yaml.push_str(
+            "# The lake's files are on HDFS: PyArrow reads them through libhdfs, with JAVA_HOME, HADOOP_HOME and\n\
+             # CLASSPATH set (`hadoop classpath --glob`), and the cluster's configuration in HADOOP_CONF_DIR.\n",
+        );
+    }
+    yaml.push_str(&format!("catalog:\n  {}:\n", profile.name));
     for (key, value) in &profile.properties {
         // A JSON string is a YAML one: quoted, so that no value is read as anything else.
         yaml.push_str(&format!("    {key}: {}\n", serde_json::Value::from(value.as_str())));
@@ -52,6 +60,7 @@ mod tests {
             token: None,
             region: None,
             endpoint: None,
+            hadoop_conf: None,
             on: None,
             catalog: None,
         }
@@ -72,6 +81,29 @@ mod tests {
             profile.render(),
             "catalog:\n  lake:\n    type: \"rest\"\n    uri: \"http://127.0.0.1:8181\"\n"
         );
+    }
+
+    #[test]
+    fn pyiceberg_profile_hdfs() {
+        let local = profile(Engine::PyIceberg, "lake", &target(Store::Local, "file:///tmp/lake/")).unwrap();
+        let hdfs = profile(
+            Engine::PyIceberg,
+            "lake",
+            &target(Store::Hdfs, "hdfs://nameservice1/lake"),
+        )
+        .unwrap();
+        assert_eq!(hdfs.properties, local.properties, "PyArrow's file IO, as it is");
+        let rendered = hdfs.render();
+        assert!(rendered.starts_with("# The lake's files are on HDFS"), "{rendered}");
+        assert!(
+            rendered.contains(
+                "catalog:
+  lake:
+"
+            ),
+            "{rendered}"
+        );
+        assert!(!local.render().contains("libhdfs"));
     }
 
     #[test]

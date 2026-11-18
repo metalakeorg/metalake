@@ -12,7 +12,7 @@ publish = false
 [workspace]
 
 [dependencies]
-metalake = { path = "../metalake", features = ["s3", "gcs", "azure"] }
+metalake = { path = "../metalake", features = ["s3", "gcs", "azure", "hdfs"] }
 metalake-pg = { path = "../metalake-pg" }
 arroyo-operator = { git = "https://github.com/describeloai/arroyo", rev = "b02c16daa739361275e7c8cf76a4032e4a3ee79e" }
 arroyo-rpc = { git = "https://github.com/describeloai/arroyo", rev = "b02c16daa739361275e7c8cf76a4032e4a3ee79e" }
