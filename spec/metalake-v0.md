@@ -28,8 +28,8 @@ a commit's requirements) follows it: its rules are marked *0.4*.
 - **LAY-1.** A catalog is one Postgres schema that holds exactly the tables of §4, under those names. No
   table has a tenant column. A database MAY hold any number of catalogs.
 - **LAY-2.** The table `meta(key text primary key, value text not null)` holds at least:
-  - `format_version`, which is `0` for this specification, *0.5*, or `1` once a commit has added a file whose
-    columns are found by name (ENG-3);
+  - `format_version`, which is `0` for this specification, *0.5*, or `1` once a commit has set a table's name
+    mapping (ENG-4), for files whose columns are found by name (ENG-3);
   - `catalog_uuid`, a UUID assigned when the catalog is created;
   - `created_at`, the creation time in ISO 8601 with a time zone;
   - *0.1:* `writer_version`, `1` for revision 0.1, *0.2*, `2` for revision 0.2 and, *0.3*, `3` for revision 0.3 and, *0.5*, `4` for revision 0.5 (LAY-5);
@@ -638,8 +638,8 @@ referred to. Retention says how much history each ref keeps.
   - a Puffin file's `path` enters `deletion_queue`, kind `puffin`, when no remaining `deletion_vector` row has
     that `path`.
 
-  *0.5.* A path is queued only when the table of the row that goes owns it (OWN-1). A path it only references is
-  forgotten with its rows, and its object stays where it is.
+  *0.5.* A path is queued only when a table of the catalog owns it (OWN-1), whichever table held the last row. A path
+  that no table owns is forgotten with its rows, and its object stays where it is.
 
   Rows go before objects: an object nothing refers to is always queued or already deleted.
 - **RET-5.** *0.2.* Expiring excludes, for as long as one batch lasts, creating a ref at an earlier sequence,
@@ -969,9 +969,9 @@ shows conformance by running them with its own operations in place of the refere
     Iceberg client may have committed (ICE-6), becomes referenced: it is no longer deleted, which is what OWN-1 asks
     for a file MetaLake did not write.
   - A file whose columns are found by name (ENG-3) is misread as nulls by a reader of 0.4, which finds columns by
-    field id alone. So the commit that adds a catalog's first such file sets `format_version` to `1`, and readers
-    of 0.4 refuse that catalog (LAY-3) rather than misread it. A catalog that never registers such a file stays at
-    `format_version` 0.
+    field id alone. Such files come with a name mapping (ENG-4), so the commit that first sets a table's name mapping
+    sets `format_version` to `1`, and readers of 0.4 refuse that catalog (LAY-3) rather than misread it. A catalog
+    that never sets one stays at `format_version` 0.
 
 ## 19. Not in v0
 

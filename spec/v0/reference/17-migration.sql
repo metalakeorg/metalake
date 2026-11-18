@@ -5,7 +5,7 @@
 -- One transaction, each revision in turn. From version 0 to 0.1: a commit `migrate` on main; on main, every
 -- namespace, and every parent of one, in which a table exists on main; on each other live branch, those in which a
 -- table exists only there. From 0.1 to 0.2: the objects of 04.6-collection.sql and collect_grace, no row changed.
--- From 0.2 to 0.3: writer_version alone.
+-- From 0.2 to 0.3: writer_version alone. From 0.3 to 0.5: owned_prefix, empty, and writer_version 4; no row changes.
 -- Returns the sequence of the commit of 0.1, or NULL if the catalog was already at 0.1 or later.
 
 create function migrate() returns bigint language plpgsql as $$
@@ -17,10 +17,10 @@ declare
 begin
   perform 1 from ref where ref_id = 1 for update;
   v := coalesce((select value from meta where key = 'writer_version'), '0');
-  if v not in ('0', '1', '2', '3') then
+  if v not in ('0', '1', '2', '3', '4') then
     raise exception 'metalake unsupported: writer_version %', v using errcode = '0A000';
   end if;
-  if v = '3' then
+  if v = '4' then
     return null;
   end if;
   if v = '0' then
@@ -58,7 +58,13 @@ begin
   create index if not exists data_file_path on data_file (path);
   create index if not exists deletion_vector_path on deletion_vector (path) where path is not null;
   insert into meta values ('collect_grace', '1 day') on conflict (key) do nothing;
-  -- 0.3: no row changes (§18).
-  insert into meta values ('writer_version', '3') on conflict (key) do update set value = '3';
+  -- 0.3: no row changes (§18). 0.5: as 04.7-ownership.sql; every path a writer of MetaLake wrote is under its table's
+  -- location, and stays owned (OWN-1).
+  create table if not exists owned_prefix (
+    table_id uuid not null references tbl,
+    prefix text not null,
+    adopted_seq bigint not null,
+    primary key (table_id, prefix));
+  insert into meta values ('writer_version', '4') on conflict (key) do update set value = '4';
   return m;
 end $$;

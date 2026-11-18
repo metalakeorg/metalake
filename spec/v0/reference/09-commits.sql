@@ -71,11 +71,13 @@ $$;
 --                            "doc": null}],
 --                "drop_fields": [<field_id>],
 --                "properties": {"key": "value or null to remove"},
---                "partition_spec": [<partition field>], "sort_order": [<sort field>], "cluster_key": [<field_id>]}],
+--                "partition_spec": [<partition field>], "sort_order": [<sort field>], "cluster_key": [<field_id>],
+--                "own": ["<prefix>"]}],
 --    "namespaces": [{"namespace": ["db"], "create": true, "drop": true,
 --                    "properties": {"key": "value or null to remove"}}]}
 --
--- Every key but "ref", "author", "actor", "operation" and "tables" is optional; "namespaces" is revision 0.1.
+-- Every key but "ref", "author", "actor", "operation" and "tables" is optional; "namespaces" is revision 0.1, and
+-- "own", the prefixes a table adopts (OWN-2), revision 0.5.
 -- A commit MAY carry namespaces only, and then writes no snapshot. New field ids are drawn with
 -- next_id() beforehand, except in a created table. Returns the commit_seq, or the stored one if an idempotent
 -- commit was already applied.
@@ -356,6 +358,22 @@ begin
        where table_id = t and key = x ->> 'k' and ref_id = r and end_seq = 9223372036854775807;
       insert into table_property values (t, x ->> 'k', x ->> 'v', jsonb_typeof(x -> 'v') = 'null', r, seq);
     end loop;
+    -- §18, 0.5: a name mapping (ENG-4) makes the catalog one whose files may be read by name, which readers of 0.4
+    -- must refuse rather than misread.
+    if jsonb_typeof(e -> 'properties' -> 'schema.name-mapping.default') = 'string' then
+      update meta set value = '1' where key = 'format_version';
+    end if;
+
+    -- OWN-2: prefixes the table adopts; nothing removes one.
+    for x in select * from jsonb_array_elements(coalesce(e -> 'own', '[]')) loop
+      if jsonb_typeof(x) <> 'string' or x #>> '{}' ~ '[?#]' or not exists (
+           select 1 from tbl where table_id = t and authority(location) = authority(x #>> '{}')
+           union all
+           select 1 from data_file d where d.table_id = t and authority(d.path) = authority(x #>> '{}')) then
+        perform invalid(format('OWN-2: %s is no prefix of a store the table holds files on', x));
+      end if;
+      insert into owned_prefix values (t, rtrim(x #>> '{}', '/'), seq) on conflict do nothing;
+    end loop;
 
     if e ? 'partition_spec' and not e ? 'create' then
       update partition_spec set end_seq = seq where table_id = t and ref_id = r and end_seq = 9223372036854775807;
@@ -389,6 +407,9 @@ begin
       union all select partition_errors(r, t, latest, seq)
       union all select format('RET-8: %s is queued for deletion', d.path)
         from data_file d join deletion_queue q on q.path = d.path
+       where d.table_id = t and d.ref_id = r and d.begin_seq = seq
+      union all select format('CMT-9: %s is already file %s of the table', d.path, v.file_id)
+        from data_file d join visible_files(r, t, latest) v on v.path = d.path and v.file_id <> d.file_id
        where d.table_id = t and d.ref_id = r and d.begin_seq = seq
       union all select format('RET-8: %s is queued for deletion', x.path)
         from deletion_vector x join deletion_queue q on q.path = x.path
@@ -445,3 +466,8 @@ begin
   perform pg_notify('metalake', current_schema() || ':' || seq);
   return seq;
 end $$;
+
+-- OWN-2: the scheme and authority of a URL, `gs://bucket` of `gs://bucket/t/a.parquet`; null for none.
+create function authority(url text) returns text language sql immutable as $$
+  select substring(url from '^[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*');
+$$;
