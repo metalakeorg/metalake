@@ -30,11 +30,13 @@ const look = EditorView.theme({
 
 /**
  * The words of MetaLake's own statements, read before DataFusion: a ref's (`refs_sql.rs`), a pipeline's
- * (`pipeline/sql.rs`) and `USING` (`engine/using.rs`), so that they are keywords as SQL's are.
+ * (`pipeline/sql.rs`), a catalog's (`catalogs_sql.rs`), registering files in place (`register_sql.rs`) and `USING`
+ * (`engine/using.rs`), so that they are keywords as SQL's are.
  */
 export const VERBS =
   "branch branches tag tags merge show use log retain grace lake dry run force message author split snapshot " +
-  "snapshots day days pipeline pipelines describe suspend resume using";
+  "snapshots day days pipeline pipelines describe suspend resume using catalog catalogs register partitioned " +
+  "location adopt check";
 
 /** The SQL DataFusion reads, PostgreSQL's, with MetaLake's verbs among its keywords. */
 export const dialect = SQLDialect.define({ ...PostgreSQL.spec, keywords: `${PostgreSQL.spec.keywords} ${VERBS}` });
