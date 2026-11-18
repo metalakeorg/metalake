@@ -278,6 +278,17 @@ impl Transaction {
         self
     }
 
+    /// Has a table own `prefixes` from this commit (OWN-2): the format may then delete what lies under them once no row
+    /// holds it, as it does under the table's location. For files registered where another system wrote them, at the
+    /// cut-over. A table created in this transaction adopts in the commit that creates it.
+    pub fn own<S: AsRef<str>>(mut self, table_id: Uuid, prefixes: &[S]) -> Self {
+        let entry = self.changes.entry(table_id.to_string()).or_insert_with(|| json!({}));
+        let own = entry["own"].as_array().cloned().unwrap_or_default();
+        let added = prefixes.iter().map(|p| json!(p.as_ref()));
+        entry["own"] = Value::Array(own.into_iter().chain(added).collect());
+        self
+    }
+
     /// Creates or changes a table by a definition already in the protocol's shape, and under the id it gives.
     pub fn define(mut self, table_id: Uuid, definition: Value) -> Self {
         self.changes.insert(table_id.to_string(), definition);

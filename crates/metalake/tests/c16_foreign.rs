@@ -139,3 +139,37 @@ async fn c16_hive_file_reads_in_place() -> Result<(), Box<dyn std::error::Error>
     assert_eq!(planned.len(), 1, "one file holds k in [10, 11]");
     Ok(())
 }
+
+/// OWN-2 through the core: a table adopts a prefix in the commit that creates it, and another later.
+#[tokio::test]
+async fn c16_own_prefixes() -> Result<(), Box<dyn std::error::Error>> {
+    let schema = fresh_schema();
+    let catalog = Catalog::init(
+        CatalogConfig::new(url(), schema.clone()).warehouse("memory:///wh"),
+        None,
+    )
+    .await?;
+    let main = catalog.branch("main").await?;
+    let shape = Schema::new(vec![Field::new("k", DataType::Int64, true)]);
+    let (tx, id) = main.transaction().create_namespace(&["db"]).create_table(NewTable {
+        namespace: &["db"],
+        name: "t",
+        schema: &shape,
+        location: None,
+        cluster_key: vec![],
+        partitioning: vec![],
+        properties: vec![],
+    })?;
+    tx.own(id, &["memory:///wh/hive/t/"]).commit().await?;
+    main.transaction().own(id, &["memory:///wh/old"]).commit().await?;
+
+    let pool = metalake_pg::Pool::new(&url(), 1)?;
+    let session = pool.get().await?;
+    let owned = metalake_pg::Protocol::new(&schema).owned_prefixes(&session, id).await?;
+    assert_eq!(
+        owned,
+        ["memory:///wh/hive/t", "memory:///wh/old"],
+        "a trailing / is the same prefix"
+    );
+    Ok(())
+}
