@@ -10,11 +10,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Field as ArrowField, FieldRef, Fields, Schema};
+use parquet::schema::types::SchemaDescriptor;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::schema::FIELD_ID;
-use crate::table::Field;
+use crate::table::{Field, Table};
 
 /// The table property that holds a table's name mapping (ENG-4).
 pub const PROPERTY: &str = "schema.name-mapping.default";
@@ -67,9 +68,29 @@ impl NameMapping {
         Self(under(None, &children))
     }
 
+    /// A table's mapping, if it has one (ENG-4).
+    pub fn of_table(table: &Table) -> Result<Option<Self>> {
+        table
+            .properties()
+            .get(PROPERTY)
+            .map(|json| Self::parse(json))
+            .transpose()
+    }
+
     /// The top-level entries.
     pub fn fields(&self) -> &[MappedField] {
         &self.0
+    }
+
+    /// The field id of a column found by its path of names, a top-level column or a struct's child: none when a name
+    /// on the way is not mapped, or is a list's or a map's own level.
+    pub fn id_of_path<S: AsRef<str>>(&self, path: &[S]) -> Option<i32> {
+        let (mut entries, mut found) = (self.0.as_slice(), None);
+        for name in path {
+            let entry = find(entries, name.as_ref())?;
+            (entries, found) = (entry.fields.as_slice(), entry.field_id);
+        }
+        found
     }
 
     /// `schema` with the field ids it lacks, from the mapping, by name: top-level columns, a struct's children, a
@@ -84,6 +105,23 @@ impl NameMapping {
             .collect();
         Schema::new_with_metadata(fields, schema.metadata().clone())
     }
+}
+
+/// The field id of each leaf column of a Parquet file (ENG-3): its own when it has one, else the one `mapping` gives
+/// its path of names; none for a column neither gives. What finds a file's statistics by field id reads them through
+/// this.
+pub fn leaf_ids(mapping: Option<&NameMapping>, descr: &SchemaDescriptor) -> Vec<Option<i32>> {
+    (0..descr.num_columns())
+        .map(|i| {
+            let column = descr.column(i);
+            let info = column.self_type_ptr();
+            let info = info.get_basic_info();
+            if info.has_id() {
+                return Some(info.id());
+            }
+            mapping.and_then(|m| m.id_of_path(column.path().parts()))
+        })
+        .collect()
 }
 
 /// The entry of `entries` that answers to `name`.
