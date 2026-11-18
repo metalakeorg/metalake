@@ -47,7 +47,7 @@ impl Lake {
             .map(|(column, ty)| (column.as_str(), ty.as_str()))
             .collect();
         let register = Register {
-            source: &request.source,
+            source: Some(&request.source),
             namespace: &namespace,
             name: &path.name,
             partition,

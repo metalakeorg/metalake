@@ -37,15 +37,21 @@ const TAIL: u64 = 64 * 1024;
 const PARTITION_TYPES: [&str; 5] = ["string", "int", "long", "date", "boolean"];
 /// Hive's name of a null partition value.
 const NULL_PARTITION: &str = "__HIVE_DEFAULT_PARTITION__";
+/// The table's property that keeps where it was registered from, as a URL of the lake's store: a run again with no
+/// source registers from there.
+pub const SOURCE_PROPERTY: &str = "metalake.register.source";
 
 /// What to register.
 #[derive(Debug, Clone)]
 pub struct Register<'a> {
-    /// The prefix whose files are registered, on the lake's store.
-    pub source: &'a str,
+    /// The prefix whose files are registered, on the lake's store: a URL of it, or a path in it, `/user/hive/…`, which
+    /// the store's scheme and authority are put before. None registers again from where the table was registered from.
+    pub source: Option<&'a str>,
     pub namespace: &'a [&'a str],
     pub name: &'a str,
-    /// The directories' keys that are partition columns, in order, each with its type.
+    /// The directories' keys that are partition columns, in order, each with its type. Empty, they are found: a new
+    /// table's from the directories (discovery), an existing one's from its partition spec. Given, a new table's are
+    /// these, and an existing one's must be these.
     pub partition: Vec<(&'a str, &'a str)>,
     /// The table owns the source from this run's first commit (OWN-2).
     pub adopt: bool,
@@ -60,6 +66,10 @@ pub struct Register<'a> {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Report {
     pub table: String,
+    /// The source, as a URL of the lake's store.
+    pub source: String,
+    /// The table's partition columns and their types: found or given for a new table, its own for an existing one.
+    pub partition: Vec<(String, String)>,
     pub created: bool,
     pub check: bool,
     pub registered: usize,
@@ -91,6 +101,10 @@ impl std::fmt::Display for Report {
         )?;
         if self.created {
             write!(f, "; created")?;
+            if !self.partition.is_empty() {
+                let columns: Vec<String> = self.partition.iter().map(|(c, t)| format!("{c} {t}")).collect();
+                write!(f, ", partitioned by {}", columns.join(", "))?;
+            }
         }
         if let Some(prefix) = &self.adopted {
             write!(f, "; owns {prefix}")?;
@@ -125,13 +139,6 @@ struct Candidate {
 
 /// Registers the files under `r.source` as table `r.namespace.r.name` on `on`, creating it on the first run.
 pub async fn register(on: &Ref, storage: &Storage, r: &Register<'_>) -> Result<Report> {
-    let source = r.source.trim_end_matches('/');
-    if storage.path(source).is_err() {
-        return Err(Error::Location(format!(
-            "{source} is not on the lake's store, {}: the source is spelled as the warehouse is, scheme and authority",
-            storage.base()
-        )));
-    }
     for (column, ty) in &r.partition {
         if !PARTITION_TYPES.contains(ty) {
             return Err(Error::Invalid(format!(
@@ -145,15 +152,43 @@ pub async fn register(on: &Ref, storage: &Storage, r: &Register<'_>) -> Result<R
         Err(Error::NotFound(_)) => None,
         Err(e) => return Err(e),
     };
+    let name = format!("{}.{}", r.namespace.join("."), r.name);
+    let source = match (r.source, &existing) {
+        (Some(source), _) => resolved(storage, source)?,
+        (None, Some(table)) => table.properties().get(SOURCE_PROPERTY).cloned().ok_or_else(|| {
+            Error::Invalid(format!(
+                "{name} keeps no source ({SOURCE_PROPERTY}): say where its files are"
+            ))
+        })?,
+        (None, None) => {
+            return Err(Error::Invalid(format!(
+                "{name} does not exist: say where its files are"
+            )));
+        }
+    };
+    let source = source.as_str();
     let mut report = Report {
-        table: format!("{}.{}", r.namespace.join("."), r.name),
+        table: name,
+        source: source.to_string(),
         created: existing.is_none(),
         check: r.check,
         ..Report::default()
     };
-    if let Some(table) = &existing {
-        check_partitioning(table, &r.partition)?;
-    }
+    // The partition: an existing table's own, which a declared one must be; else the declared one, or, none declared,
+    // the one the directories show, found once the source is listed.
+    let mut partition: Vec<(String, String)> = match &existing {
+        Some(table) => {
+            if !r.partition.is_empty() {
+                check_partitioning(table, &r.partition)?;
+            }
+            partitioning_of(table)?
+        }
+        None => r
+            .partition
+            .iter()
+            .map(|(c, t)| (c.to_string(), t.to_string()))
+            .collect(),
+    };
     let mapping = match &existing {
         Some(table) => Some(NameMapping::of_table(table)?.ok_or_else(|| {
             Error::Invalid(format!(
@@ -193,6 +228,11 @@ pub async fn register(on: &Ref, storage: &Storage, r: &Register<'_>) -> Result<R
         }
     }
     listed.sort_by(|a, b| a.0.url.cmp(&b.0.url));
+    if existing.is_none() && r.partition.is_empty() {
+        partition = discovered(listed.iter().map(|(_, relative)| relative.as_str()));
+    }
+    report.partition = partition.clone();
+    let partition: Vec<(&str, &str)> = partition.iter().map(|(c, t)| (c.as_str(), t.as_str())).collect();
     let read = stream::iter(listed.into_iter().map(|(object, relative)| {
         let storage = storage.clone();
         async move {
@@ -219,7 +259,7 @@ pub async fn register(on: &Ref, storage: &Storage, r: &Register<'_>) -> Result<R
                 continue;
             }
         };
-        let partition = match partition_of(&relative, &r.partition) {
+        let partition = match partition_of(&relative, &partition) {
             Ok(partition) => partition,
             Err(why) => {
                 report.refused.push(refuse("partition", why));
@@ -264,10 +304,10 @@ pub async fn register(on: &Ref, storage: &Storage, r: &Register<'_>) -> Result<R
     let table = match existing {
         Some(table) => table,
         None => {
-            let schema = merged.schema(&r.partition)?;
+            let schema = merged.schema(&partition)?;
             let fields = spec_fields(&schema)?;
             let mapping = NameMapping::of_fields(&fields).to_json();
-            let partitioning: Vec<(&str, &str)> = r.partition.iter().map(|(c, _)| (*c, "identity")).collect();
+            let partitioning: Vec<(&str, &str)> = partition.iter().map(|(c, _)| (*c, "identity")).collect();
             // The table's namespace and each above it that the ref lacks, in the same commit (NS-2).
             let known: HashSet<Vec<String>> = on.namespaces().await?.into_iter().map(|n| n.namespace).collect();
             let mut tx = on.transaction();
@@ -284,7 +324,7 @@ pub async fn register(on: &Ref, storage: &Storage, r: &Register<'_>) -> Result<R
                 location: r.location.clone(),
                 cluster_key: vec![],
                 partitioning,
-                properties: vec![(mapping::PROPERTY, &mapping)],
+                properties: vec![(mapping::PROPERTY, &mapping), (SOURCE_PROPERTY, source)],
             })?;
             let tx = if r.adopt { tx.own(id, &[source]) } else { tx };
             report.commits.push(tx.message("register").commit().await?.seq());
@@ -458,6 +498,116 @@ fn unescaped(text: &str) -> String {
 }
 
 /// The table's partitioning is the one a later run declares: identity fields over those columns, in order.
+/// The source as a URL of the lake's store: a path in it, `/user/hive/…` or `raw/orders`, after the store's scheme and
+/// authority; a URL, as it is, refused unless it is on the store, so that the catalog holds one spelling of it.
+fn resolved(storage: &Storage, source: &str) -> Result<String> {
+    let source = source.trim_end_matches('/');
+    let url = if source.contains("://") {
+        source.to_string()
+    } else {
+        format!("{}/{}", storage.base(), source.trim_start_matches('/'))
+    };
+    if storage.path(&url).is_err() {
+        return Err(Error::Location(format!(
+            "{url} is not on the lake's store, {}: give a path in it, or a URL spelled as the warehouse is",
+            storage.base()
+        )));
+    }
+    Ok(url)
+}
+
+/// An existing table's partition, as `register` takes one: each identity field's source column and its type.
+fn partitioning_of(table: &Table) -> Result<Vec<(String, String)>> {
+    let columns: HashMap<i32, (&str, &str)> = table
+        .fields()
+        .iter()
+        .filter(|f| f.parent_field_id.is_none())
+        .map(|f| (f.field_id, (f.name.as_str(), f.ty.as_str())))
+        .collect();
+    let spec = table
+        .spec_id()
+        .and_then(|id| table.specs().get(&id))
+        .cloned()
+        .unwrap_or(json!([]));
+    spec.as_array()
+        .into_iter()
+        .flatten()
+        .map(|f| {
+            let column = f["source_ids"][0].as_i64().and_then(|i| columns.get(&(i as i32)));
+            match (column, f["transform"].as_str()) {
+                (Some((name, ty)), Some("identity")) if PARTITION_TYPES.contains(ty) => {
+                    Ok((name.to_string(), ty.to_string()))
+                }
+                _ => Err(Error::Invalid(format!(
+                    "{} is partitioned by {f}, which no directory says: only identity partitions of {} are registered",
+                    table.name(),
+                    PARTITION_TYPES.join(", ")
+                ))),
+            }
+        })
+        .collect()
+}
+
+/// The partition the directories show, partition discovery: the `k=v` keys most files lie under, in order (the first
+/// seen of those as many), each typed by every value it takes in those files. `date` when each is `YYYY-MM-DD`; `int`, or
+/// `long` past 32 bits, when each is an integer written with no leading zero; `string` otherwise, as `007` is. Hive's
+/// null takes no part. A file laid out otherwise is refused by [`partition_of`], saying how.
+fn discovered<'a>(relatives: impl Iterator<Item = &'a str> + Clone) -> Vec<(String, String)> {
+    let directories = |relative: &'a str| {
+        let mut parts: Vec<&str> = relative.split('/').collect();
+        parts.pop();
+        parts
+            .into_iter()
+            .map(|d| d.split_once('=').map(|(k, v)| (unescaped(k), unescaped(v))))
+            .collect::<Option<Vec<(String, String)>>>()
+    };
+    let mut layouts: Vec<(Vec<String>, usize)> = Vec::new();
+    for laid in relatives.clone().filter_map(directories) {
+        let keys: Vec<String> = laid.into_iter().map(|(k, _)| k).collect();
+        match layouts.iter_mut().find(|(seen, _)| *seen == keys) {
+            Some((_, count)) => *count += 1,
+            None => layouts.push((keys, 1)),
+        }
+    }
+    let most = layouts.iter().map(|(_, count)| *count).max().unwrap_or(0);
+    let Some((keys, _)) = layouts.into_iter().find(|(_, count)| *count == most) else {
+        return vec![];
+    };
+    let mut values: Vec<Vec<String>> = vec![vec![]; keys.len()];
+    for laid in relatives.filter_map(directories) {
+        if laid.iter().map(|(k, _)| k).eq(keys.iter()) {
+            for (at, (_, value)) in laid.into_iter().enumerate() {
+                if value != NULL_PARTITION {
+                    values[at].push(value);
+                }
+            }
+        }
+    }
+    keys.into_iter()
+        .zip(values)
+        .map(|(key, values)| (key, discovered_type(&values).to_string()))
+        .collect()
+}
+
+/// The narrowest type every value reads as.
+fn discovered_type(values: &[String]) -> &'static str {
+    let integer = |v: &str| {
+        let digits = v.strip_prefix('-').unwrap_or(v);
+        !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) && (digits == "0" || !digits.starts_with('0'))
+    };
+    if values.is_empty() {
+        "string"
+    } else if values.iter().all(|v| v.len() == 10 && typed(v, "date").is_some()) {
+        "date"
+    } else if values.iter().all(|v| integer(v) && v.parse::<i32>().is_ok()) {
+        "int"
+    } else if values.iter().all(|v| integer(v) && v.parse::<i64>().is_ok()) {
+        "long"
+    } else {
+        "string"
+    }
+}
+
 fn check_partitioning(table: &Table, declared: &[(&str, &str)]) -> Result<()> {
     let names: HashMap<i32, &str> = table
         .fields()
@@ -589,6 +739,57 @@ impl Merged {
 mod tests {
     use super::*;
     use arrow_schema::DataType;
+
+    #[test]
+    fn partition_discovered() {
+        let found = |paths: &[&str]| -> Vec<(String, String)> { discovered(paths.iter().copied()) };
+        let pairs = |p: &[(&str, &str)]| -> Vec<(String, String)> {
+            p.iter().map(|(c, t)| (c.to_string(), t.to_string())).collect()
+        };
+        assert_eq!(
+            found(&["dt=2024-01-02/a.parquet", "dt=2024-01-03/b.parquet"]),
+            pairs(&[("dt", "date")])
+        );
+        assert_eq!(
+            found(&[
+                "year=2024/month=1/a",
+                "year=2024/month=12/b",
+                "year=2025/month=__HIVE_DEFAULT_PARTITION__/c"
+            ]),
+            pairs(&[("year", "int"), ("month", "int")])
+        );
+        assert_eq!(found(&["id=3000000000/a", "id=-1/b"]), pairs(&[("id", "long")]));
+        // A leading zero, a sign, a date not well formed, words: strings.
+        for value in ["007", "+5", "2024-1-02", "ES"] {
+            assert_eq!(found(&[&format!("c={value}/a")]), pairs(&[("c", "string")]), "{value}");
+        }
+        // Hive's escaping is undone before the type is found.
+        assert_eq!(found(&["d=2024%2D01%2D02/a"]), pairs(&[("d", "date")]));
+        // The layout most files share, whichever sorts first; the others are refused later. As many: the first seen.
+        assert_eq!(
+            found(&["region=EU/a", "year=2024/b", "year=2025/c"]),
+            pairs(&[("year", "int")])
+        );
+        assert_eq!(found(&["k=1/a", "region=EU/b"]), pairs(&[("k", "int")]));
+        // No directories, or one that is not k=v: no partition.
+        assert!(found(&["a.parquet"]).is_empty());
+        assert!(found(&["data/a.parquet", "data/b.parquet"]).is_empty());
+        assert!(found(&["a.parquet", "b.parquet", "k=1/c"]).is_empty());
+        assert!(found(&[]).is_empty());
+    }
+
+    #[test]
+    fn source_resolved_on_the_store() {
+        let memory = Storage::from_store(
+            "memory:///wh",
+            std::sync::Arc::new(object_store::memory::InMemory::new()),
+        )
+        .unwrap();
+        assert_eq!(resolved(&memory, "/wh/hive/t/").unwrap(), "memory:///wh/hive/t");
+        assert_eq!(resolved(&memory, "wh/hive/t").unwrap(), "memory:///wh/hive/t");
+        assert_eq!(resolved(&memory, "memory:///wh/hive/t").unwrap(), "memory:///wh/hive/t");
+        assert!(resolved(&memory, "s3://other/t").is_err());
+    }
 
     #[test]
     fn partition_from_directories() {
