@@ -62,8 +62,8 @@ select mk('t') as t \gset
 select adds(:'t', jsonb_build_array(fp(1, 'gs://hive/ventas/dt=1/a.parquet'), fp(2, 'gs://lake/t/b.parquet'),
   fp(3, 'gs://hive/ventas/dt=2/c.parquet')));
 -- A compaction: the two old files go, into one under the table's location.
-select cm(tj(:'t', jsonb_build_object('add', jsonb_build_array(fp(4, 'gs://lake/t/d.parquet')), 'remove', '[1, 2]'::jsonb)),
-  1, 'replace');
+select cm(tj(:'t', jsonb_build_object('add', jsonb_build_array(fp(4, 'gs://lake/t/d.parquet') || '{"record_count": 20}'),
+  'remove', '[1, 2]'::jsonb)), 1, 'replace');
 select set_retention(1, min_snapshots => 0);
 select expire();
 select expect(queued() = '{gs://lake/t/b.parquet}', 'the owned file only: the referenced one is forgotten, not queued');
