@@ -1,0 +1,9 @@
+**/target
+**/node_modules
+crates/metalake-ui/web/dist
+bench
+dist
+docs
+research
+.git
+.claude
