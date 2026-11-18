@@ -23,6 +23,7 @@ pull request; the decisions, in the ADRs.
 ### Fixes
 
 - **Fix Spark's and Flink's writes to GCS where `GOOGLE_APPLICATION_CREDENTIALS` names a file with a quota project.** Google refused them (`serviceusage.services.use`): `lake.iceberg.spark()`, `lake.iceberg.flink()` and their profiles start the JVM billing no project for the token MetaLake vends ([#77](https://github.com/metalakeorg/metalake/pull/77))
+- **Fix slow sessions and schema changes on a lake with several branches.** Opening a session, and every `CREATE` or `ALTER`, re-read the namespaces of the whole lake once per branch. In the Query editor, a run started while one was still on its `CREATE TABLE` cancelled that one, so the `INSERT` after it was lost ([#80](https://github.com/metalakeorg/metalake/pull/80))
 
 ## 0.8.0
 

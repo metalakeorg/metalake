@@ -240,6 +240,31 @@ impl Catalog {
         Ok(rows.into_iter().map(|row| self.handle(row)).collect())
     }
 
+    /// The namespaces of every ref that is not deleted, at its latest, by the ref's name: one call for all.
+    pub async fn namespaces_of_refs(&self) -> Result<Vec<(String, NamespaceRow)>> {
+        Ok(self.inner.protocol.namespaces_of_refs(&self.session().await?).await?)
+    }
+
+    /// The tables each ref of `ref_ids` sees at its latest, by the ref's id: one call for all.
+    pub async fn tables_of_refs(&self, ref_ids: &[i32]) -> Result<Vec<(i32, TableName)>> {
+        let rows = self
+            .inner
+            .protocol
+            .tables_latest(&self.session().await?, ref_ids)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|t| {
+                let name = TableName {
+                    table_id: t.table_id,
+                    namespace: t.namespace,
+                    name: t.name,
+                };
+                (t.ref_id, name)
+            })
+            .collect())
+    }
+
     /// The tables each commit of `seqs` made a snapshot of, in one call: its sequence, its ref's id and the table's.
     pub async fn commit_tables(&self, seqs: &[i64]) -> Result<Vec<(i64, i32, uuid::Uuid)>> {
         let session = self.session().await?;
