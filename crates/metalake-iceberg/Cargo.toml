@@ -17,7 +17,7 @@ name = "metalake-iceberg"
 path = "src/main.rs"
 
 [dependencies]
-metalake = { workspace = true, features = ["s3", "gcs", "azure"] }
+metalake = { workspace = true, features = ["s3", "gcs", "azure", "hdfs"] }
 arrow-array.workspace = true
 arrow-schema.workspace = true
 bytes.workspace = true

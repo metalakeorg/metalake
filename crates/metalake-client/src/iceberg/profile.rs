@@ -82,6 +82,9 @@ pub enum Store {
     S3,
     Gcs,
     Azure,
+    /// HDFS or ViewFS, which an engine reads through Hadoop's file system, with the cluster's configuration and its own
+    /// Kerberos identity: no credentials are vended for it.
+    Hdfs,
 }
 
 impl Store {
@@ -93,6 +96,7 @@ impl Store {
             "s3" | "s3a" => Ok(Store::S3),
             "gs" => Ok(Store::Gcs),
             "abfs" | "abfss" => Ok(Store::Azure),
+            "hdfs" | "viewfs" => Ok(Store::Hdfs),
             other => Err(Error::failed(format!(
                 "no engine profile reads a warehouse on {other}: {warehouse}"
             ))),
@@ -225,10 +229,11 @@ pub(crate) const DELEGATION: (&str, &str) = ("header.X-Iceberg-Access-Delegation
 
 impl Store {
     /// The library of Iceberg's by which a Java engine reads this store with the credentials the server vends; none for
-    /// a local warehouse. Without it, Iceberg falls back to Hadoop's file system, which ignores them.
+    /// a local warehouse or HDFS, which Hadoop's file system reads with no credentials vended. Without it, Iceberg falls
+    /// back to Hadoop's file system, which ignores them.
     pub(crate) fn bundle(self) -> Option<Artifact> {
         match self {
-            Store::Local => None,
+            Store::Local | Store::Hdfs => None,
             Store::S3 => Some(Artifact::iceberg("iceberg-aws-bundle")),
             Store::Gcs => Some(Artifact::iceberg("iceberg-gcp-bundle")),
             Store::Azure => Some(Artifact::iceberg("iceberg-azure-bundle")),
@@ -477,11 +482,15 @@ mod tests {
             ("s3a://bucket/lake", Store::S3),
             ("gs://bucket/lake", Store::Gcs),
             ("abfss://container@account.dfs.core.windows.net/lake", Store::Azure),
+            ("hdfs://namenode:8020/lake", Store::Hdfs),
+            ("hdfs://nameservice1/lake", Store::Hdfs),
+            ("viewfs://cluster/lake", Store::Hdfs),
         ];
         for (warehouse, store) in cases {
             assert_eq!(Store::of(warehouse).unwrap(), store, "{warehouse}");
+            assert_eq!(store.bundle().is_none(), matches!(store, Store::Local | Store::Hdfs));
         }
-        assert!(Store::of("hdfs://namenode/lake").is_err());
+        assert!(Store::of("ftp://host/lake").is_err());
     }
 
     #[test]

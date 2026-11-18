@@ -21,7 +21,8 @@ pub(super) fn profile(name: &str, target: &Target) -> Profile {
         set("iceberg.rest-catalog.oauth2.token", token);
     }
     match target.store {
-        Store::Local => set("fs.hadoop.enabled", "true"),
+        // Hadoop's file system, which reads a local path, or HDFS with the cluster's configuration: nothing vended.
+        Store::Local | Store::Hdfs => set("fs.hadoop.enabled", "true"),
         store => {
             set("iceberg.rest-catalog.vended-credentials-enabled", "true");
             set(native(store), "true");
@@ -46,7 +47,7 @@ fn native(store: Store) -> &'static str {
         Store::S3 => "fs.native-s3.enabled",
         Store::Gcs => "fs.native-gcs.enabled",
         Store::Azure => "fs.native-azure.enabled",
-        Store::Local => unreachable!("a local warehouse is read through Hadoop's"),
+        Store::Local | Store::Hdfs => unreachable!("a local warehouse and HDFS are read through Hadoop's"),
     }
 }
 
