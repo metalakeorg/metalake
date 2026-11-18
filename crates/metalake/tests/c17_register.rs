@@ -18,6 +18,7 @@ use metalake::register::{BATCH, Register, register};
 use metalake::{Catalog, CatalogConfig, Scan, Storage};
 use object_store::memory::InMemory;
 use parquet::arrow::ArrowWriter;
+use serde_json::json;
 
 fn hive_file(keys: &[i64]) -> Bytes {
     let schema = Arc::new(Schema::new(vec![
@@ -253,5 +254,33 @@ async fn c17_register_discovers_and_remembers() -> Result<(), Box<dyn std::error
     };
     let said = register(&main, &storage, &unknown).await.unwrap_err().to_string();
     assert!(said.contains("does not exist"), "{said}");
+
+    // A table that keeps no source, as one registered by 0.9.0: run with one and nothing new, it keeps it by a commit
+    // of its own, and from then on needs none.
+    let table = main.table(&["ventas"], "pedidos").await?;
+    let forgotten = json!({"properties": {metalake::register::SOURCE_PROPERTY: null}});
+    main.transaction().define(table.id(), forgotten).commit().await?;
+    let table = main.table(&["ventas"], "pedidos").await?;
+    assert!(!table.properties().contains_key(metalake::register::SOURCE_PROPERTY));
+    assert!(
+        register(&main, &storage, &found(None)).await.is_err(),
+        "no source kept, none given"
+    );
+    let kept = register(&main, &storage, &found(Some("/wh/raw/pedidos"))).await?;
+    assert!(kept.registered == 0 && kept.commits.len() == 1, "{kept:?}");
+    let table = main.table(&["ventas"], "pedidos").await?;
+    assert_eq!(
+        table
+            .properties()
+            .get(metalake::register::SOURCE_PROPERTY)
+            .map(String::as_str),
+        Some(source)
+    );
+    assert!(
+        table.properties().contains_key(metalake::mapping::PROPERTY),
+        "the other properties stay"
+    );
+    let again = register(&main, &storage, &found(None)).await?;
+    assert!(again.registered == 0 && again.commits.is_empty(), "{again:?}");
     Ok(())
 }

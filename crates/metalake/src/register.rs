@@ -25,7 +25,7 @@ use crate::schema::{self, spec_fields, spec_type};
 use crate::stats::{self, FileFacts};
 use crate::storage::{Listed, Storage};
 use crate::table::Table;
-use crate::write::NewTable;
+use crate::write::{NewTable, Transaction};
 
 /// Footers read at once.
 const CONCURRENCY: usize = 32;
@@ -332,6 +332,8 @@ pub async fn register(on: &Ref, storage: &Storage, r: &Register<'_>) -> Result<R
         }
     };
     let mut adopt = r.adopt && !report.created;
+    // A table that keeps no source, as one registered before it was kept, keeps this one from this run on.
+    let mut keep = !table.properties().contains_key(SOURCE_PROPERTY);
     for batch in candidates.chunks(r.batch.max(1)) {
         let adds = stream::iter(batch.iter().cloned().map(|c| {
             let (storage, table) = (storage.clone(), table.clone());
@@ -340,17 +342,27 @@ pub async fn register(on: &Ref, storage: &Storage, r: &Register<'_>) -> Result<R
         .buffered(CONCURRENCY)
         .try_collect::<Vec<_>>()
         .await?;
-        let mut tx = on.transaction().append(adds).message("register");
-        if adopt {
-            (tx, adopt) = (tx.own(table.id(), &[source]), false);
-        }
+        let tx = said(on.transaction().append(adds), &table, source, &mut keep, &mut adopt);
         report.commits.push(tx.commit().await?.seq());
     }
-    if adopt {
-        let tx = on.transaction().own(table.id(), &[source]).message("register");
+    // Nothing new: the source kept, or owned, by a commit of its own.
+    if keep || adopt {
+        let tx = said(on.transaction(), &table, source, &mut keep, &mut adopt);
         report.commits.push(tx.commit().await?.seq());
     }
     Ok(report)
+}
+
+/// A commit of a run, with what its first also says of the table: its source kept, then the source owned, each once.
+/// A definition replaces the table's changes and `own` adds to them, so in that order.
+fn said(mut tx: Transaction, table: &Table, source: &str, keep: &mut bool, adopt: &mut bool) -> Transaction {
+    if std::mem::take(keep) {
+        tx = tx.define(table.id(), json!({"properties": {SOURCE_PROPERTY: source}}));
+    }
+    if std::mem::take(adopt) {
+        tx = tx.own(table.id(), &[source]);
+    }
+    tx.message("register")
 }
 
 /// A file's footer, its length, read with its size: the tail, then the rest of the footer if the tail was short. A file
