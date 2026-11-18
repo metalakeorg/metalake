@@ -51,10 +51,18 @@ services:
     network_mode: service:namenode
     environment:
       SERVICE_NAME: hiveserver2
-      SERVICE_OPTS: -Dhive.metastore.warehouse.dir=hdfs://127.0.0.1:9000/user/hive/warehouse
+      # Hive's ACID on, for ops.pedidos: a transaction manager, locks, and a compactor in the server itself.
+      SERVICE_OPTS: >-
+        -Dhive.metastore.warehouse.dir=hdfs://127.0.0.1:9000/user/hive/warehouse
+        -Dhive.support.concurrency=true
+        -Dhive.txn.manager=org.apache.hadoop.hive.ql.lockmgr.DbTxnManager
+        -Dhive.compactor.initiator.on=true
+        -Dhive.compactor.worker.threads=1
     volumes:
       - ./hive/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml:ro
       - ./hive:/demo:ro
+      # Tienda: its scripts, and the data generate.py writes in company/out.
+      - ./company:/company:ro
     depends_on:
       namenode:
         condition: service_healthy

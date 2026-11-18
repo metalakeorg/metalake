@@ -38,11 +38,12 @@ Then the **risks**: what the demo finds MetaLake cannot yet do, each with its pl
 
 ## 2. The company's warehouse
 
-The warehouse has three Hive databases and eight tables. Each table is chosen for what it puts to the test.
+The warehouse has four Hive databases: three landing tables feed the eight below. Each table is chosen for what it puts to the test.
 
 | Table | Format, layout | Written by | It puts to the test |
 |---|---|---|---|
 | `raw.eventos` | CSV text, `dt`/`hora`, external | The web (the generator), 4 drops a day | The landing zone; not Parquet, so a copy |
+| `raw.clientes`, `raw.productos`, `raw.stock` | CSV text, `dt`, external | The shop's systems, once a day | Where the dimensions and the stock come from |
 | `curated.ventas` | Parquet, `dt` | One insert per drop: 4 files a day | The happy path, at scale, with small files |
 | `curated.clientes` | Parquet, unpartitioned | A first load, then the day's new customers appended | A dimension that grows |
 | `curated.productos` | Parquet, unpartitioned | A first load; `ALTER TABLE ADD COLUMNS (marca)` on day 45; then new products with `marca` | Schema evolution: old files lack the column |
@@ -130,12 +131,14 @@ demo/hive-hdfs/
   company/
     generate.py          the seeded data: customers, products, events per drop
     hive/
-      schema.sql         the three databases and eight tables
+      schema.sql         the four databases and their tables
       drop.sql           one drop: raw → curated.ventas
-      close.sql          one day's close: inventario, clientes, marts, pedidos
-      backfill.sql       the first 60 days, one statement per drop hour
+      close.sql          one day's close: inventario, clientes, productos, marts, pedidos
+      backfill.sql       the first 60 days, one statement per drop hour, products before the brands
       alter.sql          day 45: productos gains marca
-    land.sh              a day's CSV onto HDFS, its partitions added
+      backfill_after_brand.sql  the rest of the 60 days: products with brands, marts, orders
+    lib.sh               Hive's and HDFS's command lines, the calendar, one day's run
+    land.sh              the CSV onto HDFS, its partitions found or added
     history.sh           the 90 days: bulk, then day by day
     day.sh               one more day
   migration/             inventory, reconciliation (phase 0, 4)
