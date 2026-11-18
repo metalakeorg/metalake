@@ -113,6 +113,16 @@ begin
     update table_property set end_seq = seq where table_id = t and key = x ->> 'k' and ref_id = r and end_seq = open;
     insert into table_property values (t, x ->> 'k', x ->> 'v', jsonb_typeof(x -> 'v') = 'null', r, seq);
   end loop;
+  -- §18, 0.5: a name mapping (ENG-4) makes the catalog one whose files may be read by name, which readers of 0.4
+  -- refuse rather than misread.
+  if jsonb_typeof(e -> 'properties' -> 'schema.name-mapping.default') = 'string' then
+    update meta set value = '1' where key = 'format_version';
+  end if;
+
+  -- OWN-2: prefixes the table adopts, checked with the commit's files (commit_problem); nothing removes one.
+  insert into owned_prefix
+  select t, rtrim(y #>> '{}', '/'), seq from jsonb_array_elements(coalesce(e -> 'own', '[]')) y
+  on conflict do nothing;
 
   if e ? 'partition_spec' and not e ? 'create' then
     update partition_spec set end_seq = seq where table_id = t and ref_id = r and end_seq = open;
@@ -241,6 +251,19 @@ begin
     select format('RET-8: %s is queued for deletion', q.path) from a join deletion_queue q on q.path = (a.f).path
     union all
     select format('RET-8: %s is queued for deletion', q.path) from unnest(vecs) v join deletion_queue q on q.path = v.path
+    -- CMT-9: a path the table already sees on the ref, or twice in the commit.
+    union all
+    select format('CMT-9: %s is already file %s of the table', (a.f).path, v.file_id) from a
+      join visible_files(r, (a.f).table_id, latest) v on v.path = (a.f).path and v.file_id <> a.fid
+    -- OWN-2: a prefix of a store the table holds files on, with no query or fragment.
+    union all
+    select format('OWN-2: %s is no prefix of a store the table holds files on', o.prefix) from owned_prefix o
+     where o.adopted_seq = seq
+       and (o.prefix ~ '[?#]' or authority(o.prefix) is null
+            or not (exists (select 1 from tbl b where b.table_id = o.table_id
+                             and authority(b.location) = authority(o.prefix))
+                    or exists (select 1 from data_file d where d.table_id = o.table_id
+                                and authority(d.path) = authority(o.prefix))))
   ) z limit 1;
   if problem is not null then return problem; end if;
 
@@ -309,8 +332,8 @@ declare
   t uuid;
   problem text;
 begin
-  -- LAY-5: a writer of revision 0.3 commits to writer_version 3 only.
-  if coalesce((select m.value from meta m where m.key = 'writer_version'), '0') <> '3' then
+  -- LAY-5: a writer of revision 0.5 commits to writer_version 4 only.
+  if coalesce((select m.value from meta m where m.key = 'writer_version'), '0') <> '4' then
     raise exception 'metalake unsupported: writer_version %',
       coalesce((select m.value from meta m where m.key = 'writer_version'), '0') using errcode = '0A000';
   end if;

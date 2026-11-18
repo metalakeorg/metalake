@@ -5,12 +5,16 @@ use tokio_postgres::GenericClient;
 
 use crate::{Error, ErrorKind, Result, Session, quote_ident};
 
-/// The format this SDK reads and writes.
+/// The format a catalog this SDK creates starts at.
 pub const FORMAT_VERSION: &str = "0";
-/// The newest writer version this SDK writes (revision 0.3). A catalog with a newer one is read, never written.
-pub const WRITER_VERSION: u32 = 3;
-/// The protocol these sources install.
-pub const PROTOCOL_VERSION: &str = "0";
+/// The formats this SDK reads and writes: `1` is a catalog with a name mapping, whose files may be read by name
+/// (revision 0.5, ENG-3).
+pub const FORMAT_VERSIONS: &[&str] = &["0", "1"];
+/// The newest writer version this SDK writes (revision 0.5). A catalog with a newer one is read, never written.
+pub const WRITER_VERSION: u32 = 4;
+/// The protocol these sources install. `1` collects only what a table owns (OWN-1): a catalog that installed `0`
+/// would delete files it only references, so it is refused until migrated.
+pub const PROTOCOL_VERSION: &str = "1";
 
 /// The three versions of a catalog, as `versions()` answers them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,10 +61,14 @@ pub async fn warehouse(session: &impl Session, schema: &str) -> Result<Option<St
 /// the protocol it installs. A catalog installed by an older SDK is refused until it is migrated.
 pub async fn check_versions(session: &impl Session, schema: &str) -> Result<Versions> {
     let found = versions(session, schema).await?;
-    if found.format_version != FORMAT_VERSION {
+    if !FORMAT_VERSIONS.contains(&found.format_version.as_str()) {
         return Err(Error::new(
             ErrorKind::Unsupported,
-            format!("format_version {} is not {FORMAT_VERSION}", found.format_version),
+            format!(
+                "format_version {} is none of {}",
+                found.format_version,
+                FORMAT_VERSIONS.join(", ")
+            ),
         ));
     }
     if found.protocol_version.as_deref() != Some(PROTOCOL_VERSION) {

@@ -176,6 +176,9 @@ begin
    where t.path is not null
      and not exists (select 1 from data_file d where d.path = t.path)
      and not exists (select 1 from deletion_vector v where v.path = t.path)
+     -- OWN-1: only what a table owns; an object no table owns stays where it is.
+     and (exists (select 1 from tbl o where under(o.location, t.path))
+          or exists (select 1 from owned_prefix o where under(o.prefix, t.path)))
    order by t.path
   on conflict (path) do nothing;
 

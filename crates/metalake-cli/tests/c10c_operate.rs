@@ -89,7 +89,7 @@ fn newer_catalog_refused() {
 
     // It touched nothing.
     postgres(&format!(
-        "update {schema}.meta set value = '0' where key = 'protocol_version'"
+        "update {schema}.meta set value = '1' where key = 'protocol_version'"
     ));
     assert_eq!(rows(&dir), "k\n1\n");
 }

@@ -467,7 +467,3 @@ begin
   return seq;
 end $$;
 
--- OWN-2: the scheme and authority of a URL, `gs://bucket` of `gs://bucket/t/a.parquet`; null for none.
-create function authority(url text) returns text language sql immutable as $$
-  select substring(url from '^[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*');
-$$;

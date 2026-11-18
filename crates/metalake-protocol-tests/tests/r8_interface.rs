@@ -76,11 +76,11 @@ async fn migrate_idempotent_and_unknown_version_refused() -> Result<(), Error> {
         .query_one(&format!("select * from {p}.versions()"), &[])
         .await
         .map(|r| (r.get(0), r.get(1), r.get(2)))?;
-    if versions != ("0".into(), "3".into(), "0".into()) {
+    if versions != ("0".into(), "4".into(), "1".into()) {
         return Err(format!("versions {versions:?}").into());
     }
 
-    // A catalog of revision 0.2 migrates to 0.3 by its writer_version alone (§18).
+    // A catalog of revision 0.2 migrates to 0.5 with no row changed: writer_version, and owned_prefix empty (§18).
     on.batch_execute(&format!("update {p}.meta set value = '2' where key = 'writer_version'"))
         .await?;
     migrate_protocol(&on, &schema).await?;
@@ -93,7 +93,8 @@ async fn migrate_idempotent_and_unknown_version_refused() -> Result<(), Error> {
         on.batch_execute(&format!("update {p}.meta set value = '{value}' where key = '{key}'"))
             .await?;
         let refused = migrate_protocol(&on, &schema).await;
-        on.batch_execute(&format!("update {p}.meta set value = '0' where key = '{key}'"))
+        let back = if key == "protocol_version" { "1" } else { "0" };
+        on.batch_execute(&format!("update {p}.meta set value = '{back}' where key = '{key}'"))
             .await?;
         if !refused.as_ref().is_err_and(|e| {
             e.downcast_ref::<metalake_pg::Error>()

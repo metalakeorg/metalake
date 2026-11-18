@@ -190,3 +190,8 @@ create function owns(t uuid, p text) returns boolean language sql stable as $$
   select exists (select 1 from tbl where table_id = t and under(location, p))
       or exists (select 1 from owned_prefix o where o.table_id = t and under(o.prefix, p));
 $$;
+
+-- OWN-2: the scheme and authority of a URL, `gs://bucket` of `gs://bucket/t/a.parquet`; null for none.
+create function authority(url text) returns text language sql immutable as $$
+  select substring(url from '^[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*');
+$$;

@@ -21,14 +21,29 @@ async fn sdk_unsupported_version_refused() -> Result<(), Error> {
             found.writer_version.as_str(),
             found.protocol_version.as_deref()
         ),
-        ("0", "3", Some("0"))
+        ("0", "4", Some("1"))
     );
     assert!(found.writable());
 
-    for (key, value) in [
-        ("format_version", "1"),
-        ("protocol_version", "1"),
-        ("protocol_version", "x"),
+    // Format 1, a catalog with a name mapping (revision 0.5), is read and written.
+    on.execute(
+        &format!("update {p}.meta set value = '1' where key = 'format_version'"),
+        &[],
+    )
+    .await?;
+    assert!(check_versions(&on, &schema).await?.writable());
+    on.execute(
+        &format!("update {p}.meta set value = '0' where key = 'format_version'"),
+        &[],
+    )
+    .await?;
+
+    // An older protocol is refused until migrated: its `expire` would delete files a table only references.
+    for (key, value, back) in [
+        ("format_version", "2", "0"),
+        ("protocol_version", "0", "1"),
+        ("protocol_version", "2", "1"),
+        ("protocol_version", "x", "1"),
     ] {
         on.execute(
             &format!("update {p}.meta set value = $1 where key = $2"),
@@ -40,11 +55,14 @@ async fn sdk_unsupported_version_refused() -> Result<(), Error> {
             refused.as_ref().is_err_and(|e| e.kind() == ErrorKind::Unsupported),
             "{key} {value}: {refused:?}"
         );
-        on.execute(&format!("update {p}.meta set value = '0' where key = $1"), &[&key])
-            .await?;
+        on.execute(
+            &format!("update {p}.meta set value = $1 where key = $2"),
+            &[&back, &key],
+        )
+        .await?;
     }
 
-    on.batch_execute(&format!("update {p}.meta set value = '4' where key = 'writer_version'"))
+    on.batch_execute(&format!("update {p}.meta set value = '5' where key = 'writer_version'"))
         .await?;
     let newer = check_versions(&on, &schema).await?;
     assert!(!newer.writable());
