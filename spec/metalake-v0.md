@@ -28,10 +28,11 @@ a commit's requirements) follows it: its rules are marked *0.4*.
 - **LAY-1.** A catalog is one Postgres schema that holds exactly the tables of §4, under those names. No
   table has a tenant column. A database MAY hold any number of catalogs.
 - **LAY-2.** The table `meta(key text primary key, value text not null)` holds at least:
-  - `format_version`, which is `0` for this specification;
+  - `format_version`, which is `0` for this specification, *0.5*, or `1` once a commit has added a file whose
+    columns are found by name (ENG-3);
   - `catalog_uuid`, a UUID assigned when the catalog is created;
   - `created_at`, the creation time in ISO 8601 with a time zone;
-  - *0.1:* `writer_version`, `1` for revision 0.1, *0.2*, `2` for revision 0.2 and, *0.3*, `3` for revision 0.3 (LAY-5);
+  - *0.1:* `writer_version`, `1` for revision 0.1, *0.2*, `2` for revision 0.2 and, *0.3*, `3` for revision 0.3 and, *0.5*, `4` for revision 0.5 (LAY-5);
   - *0.2:* `collect_grace`, an interval, `1 day` unless set (RET-9).
 
   It MAY hold, *0.2*, `warehouse`, a URL: where a writer puts the files of a table that names no location of its own.
@@ -79,6 +80,7 @@ reference DDL are recommendations.
 | Table | Columns | Notes |
 |---|---|---|
 | `tbl` | `table_id uuid` pk, `location text`, `created_seq bigint` | Immutable. `location` is the prefix new files are written under. |
+| `owned_prefix` | `table_id uuid`, `prefix text`, `adopted_seq bigint`; pk `(table_id, prefix)` | *0.5.* Prefixes a table owns besides its location (OWN-1). Not versioned: whether an object may be deleted is a fact of storage, the same on every ref. |
 | `table_counter` | `table_id uuid` pk, `last_field_id int`, `last_spec_id int`, `last_partition_field_id int`, `last_sort_order_id int` | The per-table id counters (ID-5). |
 | `table_name` (V) | `table_id uuid`, `namespace text[]`, `name text`, `dropped bool` | The name of a table, and whether it is dropped (§6). |
 | `table_property` (V) | `table_id uuid`, `key text`, `value text` null, `dropped bool` | Table properties, as in Iceberg. |
@@ -237,6 +239,20 @@ with Apache Iceberg 1.10.0
 - **ENG-2.** A `bucket[N]` field in a file's partition spec declares that the file holds only rows of its
   bucket. An engine MUST NOT treat two tables as co-partitioned unless both use Iceberg's `bucket` hash with the
   same `N` over the same source type; an engine that cannot verify it treats them as not co-partitioned.
+- **ENG-3.** *0.5.* A reader finds a field of the table in a data file, in this order:
+  1. the column whose Parquet field id is the field's id;
+  2. when the file has no such column, the file's partition value (`data_file.partition`) for an `identity` field
+     of its spec over that field;
+  3. the column that the table's name mapping (ENG-4) maps to the field's id, found by its name in the file;
+  4. the field's `initial_default`;
+  5. null.
+
+  Steps 2 to 5 follow Iceberg's column projection, so that files written without field ids, as Hive's are, read
+  in place.
+- **ENG-4.** *0.5.* The name mapping is the table property `schema.name-mapping.default`, in Iceberg's format: a JSON
+  array of `{"field-id": int, "names": [text], "fields": [...]}`, where several names may map to one id. A writer
+  that adds files with no field ids sets it, in the same commit, for every field those files hold, and computes
+  their statistics (§8) through ENG-3.
 
 ## 7. Types and schemas
 
@@ -420,7 +436,9 @@ order and the cluster key.
   a field of the cluster key (STA-3), if a new field id was not drawn from the table's counter, if it adds a
   file whose `intent` has expired (RET-7), or, *0.1*, if it names a namespace that never existed on the ref, or one
   that is not a namespace (NS-1, NS-2), or, *0.2*, if it adds a file or a Puffin whose `path` is in
-  `deletion_queue` (RET-8). A commit MAY change namespaces only; it then writes no snapshot. A created table takes its field, spec and partition field ids from
+  `deletion_queue` (RET-8), or, *0.5*, if it adds a file whose `path` is the path of a file of the same table
+  visible on the ref (VIS-6). The same path in another table is allowed: RET-4 waits for its last row. A commit
+  MAY change namespaces only; it then writes no snapshot. A created table takes its field, spec and partition field ids from
   the commit, and its counters start after them; its default spec is spec 0, unpartitioned unless the commit
   gives one. Only what the commit changes is checked: the definitions of the tables it touches and the files it
   adds. Files committed earlier are not checked again, so
@@ -620,6 +638,9 @@ referred to. Retention says how much history each ref keeps.
   - a Puffin file's `path` enters `deletion_queue`, kind `puffin`, when no remaining `deletion_vector` row has
     that `path`.
 
+  *0.5.* A path is queued only when the table of the row that goes owns it (OWN-1). A path it only references is
+  forgotten with its rows, and its object stays where it is.
+
   Rows go before objects: an object nothing refers to is always queued or already deleted.
 - **RET-5.** *0.2.* Expiring excludes, for as long as one batch lasts, creating a ref at an earlier sequence,
   changing a retention and deleting a ref; commits are not excluded. Sweeping excludes nothing. Expiring and a
@@ -642,14 +663,26 @@ referred to. Retention says how much history each ref keeps.
   refers to it and it is not in `deletion_queue`, whose objects wait for their grace (RET-9). Orphans are found from `intent` alone, without listing storage: a collector deletes the
   object, then the `intent` row. A commit or a merge that adds a file or a Puffin file whose `intent` has expired is
   refused (CMT-9), so a writer that missed its deadline never commits a path that a collector may have deleted.
-- **RET-7b.** *0.2.* A writer that does not register intents, as an Iceberg client does not, may leave objects
-  nothing records. A collector MAY list a table's location and, for an object older than any write in progress
-  that no row refers to, insert an `intent` that has expired, unless one exists. RET-7 then applies to it, and
-  CMT-9 refuses a writer that commits it late. Objects the projection generates (`metalake-*`) are not listed: no
-  row refers to them, and the projection prunes them itself (REST-6). Its lists, manifests, delete files and inline
-  files that no snapshot it serves reaches, through those lists and manifests, are deleted once older than the grace of
-  RET-9, as Iceberg's expiration reaches them from the snapshots it retains. A metadata file kept may name a snapshot
-  that expired, as in Iceberg.
+- **RET-7b.** *0.2.* A writer that does not register intents, as an Iceberg client does not, may leave objects nothing
+  records. A collector MAY list a table's location, *0.5*, and its owned prefixes (OWN-1), and, for an object older than
+  any write in progress that no row refers to, insert an `intent` that has expired, unless one exists. RET-7 then
+  applies to it, and CMT-9 refuses a writer that commits it late. Objects the projection generates (`metalake-*`) are
+  not listed: no row refers to them, and the projection prunes them itself (REST-6). Its lists, manifests, delete files
+  and inline files that no snapshot it serves reaches, through those lists and manifests, are deleted once older than
+  the grace of RET-9, as Iceberg's expiration reaches them from the snapshots it retains. A metadata file kept may name
+  a snapshot that expired, as in Iceberg.
+
+### 13.4 Ownership
+
+*0.5.* A table may hold files that another system wrote and still reads, as when a Hive table is registered in place:
+MetaLake reads, branches and merges them, and deletes only what the table owns.
+
+- **OWN-1.** A table **owns** a path when the path lies under its `location` or under one of its `owned_prefix`
+  rows. "Under" is a match of the prefix that ends at a `/` of the path, or is the whole path. Any other path of the
+  table is **referenced**: the format never deletes its object (RET-4, RET-7b).
+- **OWN-2.** A commit MAY add owned prefixes to a table it writes, with its `commit_seq` as `adopted_seq`; nothing
+  removes one. A prefix has the scheme and authority of a path the table holds, and no query or fragment. Adopting
+  deletes nothing by itself: a referenced path that no row holds any more is found under the prefix by RET-7b.
 
 ## 14. Time and changes
 
@@ -928,6 +961,17 @@ shows conformance by running them with its own operations in place of the refere
   of 0.3 migrates a catalog of an earlier revision through each one before it.
 - *0.4.* Revision 0.4 is `format_version` 0, `writer_version` 3: it changes what the Iceberg REST service answers
   (§16.3), and neither the catalog nor what its readers and writers do, so it migrates nothing.
+- *0.5.* Revision 0.5 is `writer_version` 4. It adds `owned_prefix` and OWN-1, OWN-2, ENG-3 and ENG-4, and binds
+  collection to owned paths (RET-4, RET-7b) and a commit to a path a table holds once (CMT-9). A collector of 0.4
+  would delete referenced files, so its writers stop at `writer_version` 4 (LAY-5).
+  - **Migrating from 0.4** creates `owned_prefix`, empty, and sets `writer_version` to `4`. It changes no row. The
+    paths that MetaLake's writers wrote lie under their table's location and stay owned. A path outside it, which an
+    Iceberg client may have committed (ICE-6), becomes referenced: it is no longer deleted, which is what OWN-1 asks
+    for a file MetaLake did not write.
+  - A file whose columns are found by name (ENG-3) is misread as nulls by a reader of 0.4, which finds columns by
+    field id alone. So the commit that adds a catalog's first such file sets `format_version` to `1`, and readers
+    of 0.4 refuse that catalog (LAY-3) rather than misread it. A catalog that never registers such a file stays at
+    `format_version` 0.
 
 ## 19. Not in v0
 
