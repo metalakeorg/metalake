@@ -66,7 +66,7 @@ jobs:
           docker exec namenode hdfs dfsadmin -report | head -20
           echo "HDFS up in $(( $(date +%s) - start ))s"
       - name: Without the feature, HDFS is refused by name
-        run: cargo test -p metalake --lib storage::
+        run: cargo test -p metalake --lib "storage::"
       - name: The store, against HDFS
         run: cargo test -p metalake --features hdfs --test c15_hdfs -- --nocapture
       # A lake on HDFS, through the binary, with its catalog in the Postgres `sql/test.sh` starts (End 2).
