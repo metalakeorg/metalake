@@ -7,6 +7,8 @@ on:
     branches: [main]
     paths:
       - crates/metalake/**
+      - crates/metalake-client/**
+      - crates/metalake-cli/**
       - Cargo.toml
       - Cargo.lock
       - .github/workflows/hdfs.yml
@@ -14,6 +16,8 @@ on:
     branches: [main]
     paths:
       - crates/metalake/**
+      - crates/metalake-client/**
+      - crates/metalake-cli/**
       - Cargo.toml
       - Cargo.lock
       - .github/workflows/hdfs.yml
@@ -65,6 +69,9 @@ jobs:
         run: cargo test -p metalake --lib storage::
       - name: The store, against HDFS
         run: cargo test -p metalake --features hdfs --test c15_hdfs -- --nocapture
+      # A lake on HDFS, through the binary, with its catalog in the Postgres `sql/test.sh` starts (End 2).
+      - name: A lake's cycle on HDFS
+        run: CRATE=metalake-cli bash sql/test.sh --test c10m_hdfs -- --nocapture
       - name: The logs of HDFS
         if: failure()
         run: |

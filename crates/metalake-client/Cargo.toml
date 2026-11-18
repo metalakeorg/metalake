@@ -9,7 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-metalake = { workspace = true, features = ["s3", "gcs", "azure"] }
+metalake = { workspace = true, features = ["s3", "gcs", "azure", "hdfs"] }
 metalake-pg.workspace = true
 metalake-datafusion = { path = "../metalake-datafusion" }
 metalake-local = { path = "../metalake-local" }
