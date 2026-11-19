@@ -93,6 +93,7 @@ impl PySnapshot {
 /// What registering files in place did, or, checked or refused, what it would do: the table, how many files and rows,
 /// and each refused file as `(path, rule, why)`. A run with a refused file commits nothing.
 #[pyclass(name = "Registered", module = "metalake", frozen, get_all)]
+#[derive(Clone)]
 pub struct PyRegistered {
     table: String,
     source: String,
@@ -142,6 +143,48 @@ impl PyRegistered {
             self.registered,
             self.refused.len(),
             self.commits
+        )
+    }
+}
+
+/// What registering a schema did to each of its tables: each registered one's report in `tables`, and each one not
+/// registered at all as `(name, why)` in `errors`.
+#[pyclass(name = "RegisteredSchema", module = "metalake", frozen, get_all)]
+pub struct PyRegisteredSchema {
+    schema: String,
+    source: String,
+    tables: Vec<PyRegistered>,
+    errors: Vec<(String, String)>,
+}
+
+impl From<metalake_client::SchemaReport> for PyRegisteredSchema {
+    fn from(report: metalake_client::SchemaReport) -> Self {
+        let mut tables = Vec::new();
+        let mut errors = Vec::new();
+        for table in report.tables {
+            match (table.report, table.error) {
+                (Some(registered), _) => tables.push(PyRegistered::from(registered)),
+                (None, Some(why)) => errors.push((table.name, why)),
+                (None, None) => {}
+            }
+        }
+        Self {
+            schema: report.schema,
+            source: report.source,
+            tables,
+            errors,
+        }
+    }
+}
+
+#[pymethods]
+impl PyRegisteredSchema {
+    fn __repr__(&self) -> String {
+        format!(
+            "RegisteredSchema({:?}, tables={}, errors={})",
+            self.schema,
+            self.tables.len(),
+            self.errors.len()
         )
     }
 }

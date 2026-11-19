@@ -137,3 +137,51 @@ fn c10n_register_in_sql() {
     );
     assert_eq!(sql(&dir, "select count(*) as n from db.pedidos", "csv"), "n\n4\n");
 }
+
+/// A Hive database's directory as a schema, in SQL and through `register-schema`: a row per table, its partition
+/// found; checked, nothing committed.
+#[test]
+fn c10n_register_a_schema() {
+    let (dir, _) = lake();
+    let status: Value = serde_json::from_str(&ok(&dir, &["status", "--format", "json"])).unwrap();
+    let warehouse = status["warehouse"].as_str().unwrap().trim_end_matches('/').to_string();
+    let source = format!("{}/hive/curated.db", warehouse.trim_start_matches("file://"));
+    let local = dir.join("data").join("hive").join("curated.db");
+    hive_file(&local.join("ventas").join("dt=2024-01-02").join("000000_0"), &[1, 2]);
+    hive_file(&local.join("clientes").join("000000_0"), &[7]);
+
+    let checked = ok(
+        &dir,
+        &[
+            "register-schema",
+            &source,
+            "--as",
+            "copia",
+            "--check",
+            "--format",
+            "json",
+        ],
+    );
+    let checked: Value = serde_json::from_str(&checked).unwrap();
+    assert_eq!(checked["tables"].as_array().unwrap().len(), 2, "{checked}");
+    assert_eq!(
+        sql(
+            &dir,
+            "select count(*) as n from information_schema.tables where table_schema = 'copia'",
+            "csv"
+        ),
+        "n\n0\n",
+        "a check commits nothing"
+    );
+
+    let rows = sql(&dir, &format!("REGISTER SCHEMA curated FROM '{source}'"), "json");
+    let rows: Vec<Value> = rows.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let tables: Vec<&str> = rows.iter().map(|r| r["table"].as_str().unwrap()).collect();
+    assert_eq!(
+        tables,
+        ["default.curated.clientes", "default.curated.ventas"],
+        "{rows:?}"
+    );
+    assert_eq!(rows[1]["partition"], "dt date");
+    assert_eq!(sql(&dir, "select count(*) as n from curated.ventas", "csv"), "n\n2\n");
+}

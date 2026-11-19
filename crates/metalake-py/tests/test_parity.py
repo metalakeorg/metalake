@@ -28,6 +28,7 @@ FACES = {
     ("tag", "delete"): (Lake.delete_tag, {}),
     ("merge",): (Lake.merge, {"table": "tables"}),
     ("register",): (Lake.register, {"as": "table", "ref": "on"}),
+    ("register-schema",): (Lake.register_schema, {"as": "schema", "ref": "on"}),
     ("log",): (Lake.log, {}),
     ("migrate",): (metalake.migrate, {}),
     ("retain",): (Lake.retain, {}),

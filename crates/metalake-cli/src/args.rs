@@ -55,6 +55,9 @@ pub enum Verb {
     /// Makes the Parquet files under a prefix of the lake's store a table's, where they are, with no byte copied: a
     /// Hive table's directory, say. Running it again adds only what is new.
     Register(Register),
+    /// Makes each prefix right under a prefix of the lake's store a table of one schema, named as its prefix is: a
+    /// Hive database's directory, say. Running it again registers the tables new there and adds what is new to each.
+    RegisterSchema(RegisterSchema),
     /// Stops a lake's own Postgres, which stays up otherwise: before moving or deleting the lake. The next command starts it.
     Stop,
     /// Serves the lake's UI on this machine, on the loopback, and opens it in the browser, until Ctrl-C.
@@ -497,6 +500,28 @@ pub struct Register {
     /// Where the table writes what is new; the warehouse's, by name, when not given.
     #[arg(long, value_name = "URL")]
     pub location: Option<String>,
+
+    /// Says what would be registered, and what refused, and commits nothing.
+    #[arg(long)]
+    pub check: bool,
+
+    /// The branch.
+    #[arg(long = "ref", value_name = "BRANCH")]
+    pub on: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct RegisterSchema {
+    /// The prefix: a path in the lake's store, `/user/hive/warehouse/sales.db`, or a URL of it.
+    pub source: String,
+
+    /// The schema: `schema` or `catalog.schema`; made with its tables if it is not there.
+    #[arg(long = "as", value_name = "SCHEMA")]
+    pub schema: String,
+
+    /// Each table owns its prefix from now on, so upkeep may delete what it no longer reads there.
+    #[arg(long)]
+    pub adopt: bool,
 
     /// Says what would be registered, and what refused, and commits nothing.
     #[arg(long)]

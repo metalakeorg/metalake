@@ -103,6 +103,15 @@ class Lake:
         on: str | None = None,
         table: str | None = None,
     ) -> list[Done]: ...
+    def register_schema(
+        self,
+        source: str,
+        schema: str,
+        *,
+        adopt: bool = False,
+        check: bool = False,
+        on: str | None = None,
+    ) -> RegisteredSchema: ...
     def register(
         self,
         source: str | None = None,
@@ -404,6 +413,18 @@ class Snapshot:
     def operation(self) -> str | None: ...
     @property
     def committed_at(self) -> str | None: ...
+
+
+@final
+class RegisteredSchema:
+    @property
+    def schema(self) -> str: ...
+    @property
+    def source(self) -> str: ...
+    @property
+    def tables(self) -> list[Registered]: ...
+    @property
+    def errors(self) -> list[tuple[str, str]]: ...
 
 
 @final

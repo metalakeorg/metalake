@@ -1,7 +1,7 @@
 //! `register`: the Parquet files under a prefix of the lake's store as a table's, in place, as every face asks for it.
 //! The table is named as SQL names one (I7), on a branch, `main` unless told.
 
-use metalake::register::{self, BATCH, Register, Report};
+use metalake::register::{self, BATCH, Register, RegisterSchema, Report, SchemaReport};
 
 use crate::{Error, Lake, Result};
 
@@ -34,7 +34,40 @@ impl RegisterRequest {
     }
 }
 
+/// What to register as a schema, as a face takes it: each prefix right under `source` a table of `schema`.
+#[derive(Debug, Clone, Default)]
+pub struct RegisterSchemaRequest {
+    /// A prefix of the lake's store, a path in it or a URL of it: a Hive database's directory, say.
+    pub source: String,
+    /// `schema` or `catalog.schema`.
+    pub schema: String,
+    pub adopt: bool,
+    pub check: bool,
+    /// The branch; `main` when none.
+    pub on: Option<String>,
+}
+
 impl Lake {
+    /// Registers each prefix right under `request.source` as a table of `request.schema`. A table refused or failing
+    /// leaves the others registered; the report says each one's outcome.
+    pub async fn register_schema(&self, request: &RegisterSchemaRequest) -> Result<SchemaReport> {
+        let on = self
+            .catalog
+            .branch(request.on.as_deref().unwrap_or(crate::MAIN))
+            .await?;
+        // A schema is named as a table's namespace is: the name of a table in it, less the table.
+        let path = crate::TablePath::parse_on(&format!("{}.t", request.schema), on.name())?;
+        let namespace: Vec<&str> = path.namespace.iter().map(String::as_str).collect();
+        let register = RegisterSchema {
+            source: &request.source,
+            namespace: &namespace,
+            adopt: request.adopt,
+            check: request.check,
+            batch: BATCH,
+        };
+        Ok(register::register_schema(&on, &self.storage()?, &register).await?)
+    }
+
     /// Registers the files under `request.source` as a table's. A run with refused files commits nothing and answers
     /// them in its report, as a check does.
     pub async fn register(&self, request: &RegisterRequest) -> Result<Report> {

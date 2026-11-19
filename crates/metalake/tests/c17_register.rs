@@ -284,3 +284,81 @@ async fn c17_register_discovers_and_remembers() -> Result<(), Box<dyn std::error
     assert!(again.registered == 0 && again.commits.is_empty(), "{again:?}");
     Ok(())
 }
+
+/// A Hive database's directory registered as a schema: each prefix under it a table, by its name, its partition
+/// found; one that refuses leaves the others registered; run again, a table new under it is registered and the
+/// others take what is new. A prefix that is a table, partitioned or with files of its own, is refused.
+#[tokio::test]
+async fn c17_register_a_schema() -> Result<(), Box<dyn std::error::Error>> {
+    use metalake::register::{RegisterSchema, register_schema};
+    let catalog = Catalog::init(
+        CatalogConfig::new(url(), fresh_schema()).warehouse("memory:///wh"),
+        None,
+    )
+    .await?;
+    let storage = Storage::from_store("memory:///wh", Arc::new(InMemory::new()))?;
+    let main = catalog.branch("main").await?;
+    let db = "memory:///wh/hive/curated.db";
+    for (path, bytes) in [
+        ("ventas/dt=2024-01-01/000000_0", hive_file(&[1, 2])),
+        ("ventas/dt=2024-01-02/000000_0", hive_file(&[3])),
+        ("clientes/000000_0", hive_file(&[7])),
+        ("raros/000000_0", Bytes::from_static(b"ORC, not Parquet")),
+        ("otra.db/t/000000_0", hive_file(&[9])),
+        ("_tmp/x", Bytes::from_static(b"hidden")),
+    ] {
+        storage.put(&format!("{db}/{path}"), bytes).await?;
+    }
+    let schema = |source| RegisterSchema {
+        source,
+        namespace: &["curated"],
+        adopt: false,
+        check: false,
+        batch: BATCH,
+    };
+
+    let first = register_schema(&main, &storage, &schema("/wh/hive/curated.db")).await?;
+    let names: Vec<&str> = first.tables.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["clientes", "otra.db", "raros", "ventas"]);
+    let table = |name: &str| first.tables.iter().find(|t| t.name == name).unwrap();
+    let ventas = table("ventas").report.as_ref().unwrap();
+    assert!(ventas.created && ventas.registered == 2, "{ventas:?}");
+    assert_eq!(ventas.partition, [("dt".to_string(), "date".to_string())]);
+    assert_eq!(table("clientes").report.as_ref().unwrap().registered, 1);
+    assert_eq!(table("raros").report.as_ref().unwrap().refused[0].rule, "parquet");
+    assert!(table("otra.db").error.as_deref().unwrap().contains("schema of its own"));
+    assert!(main.table(&["curated"], "ventas").await.is_ok());
+    assert!(
+        main.table(&["curated"], "raros").await.is_err(),
+        "a refused table commits nothing"
+    );
+
+    // Again: a table new under the prefix is registered, the others take what is new.
+    storage
+        .put(&format!("{db}/productos/000000_0"), hive_file(&[5]))
+        .await?;
+    storage
+        .put(&format!("{db}/ventas/dt=2024-01-03/000000_0"), hive_file(&[4]))
+        .await?;
+    let again = register_schema(&main, &storage, &schema(db)).await?;
+    let table = |name: &str| {
+        again
+            .tables
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap()
+            .report
+            .clone()
+            .unwrap()
+    };
+    assert!(table("productos").created && table("productos").registered == 1);
+    assert!(!table("ventas").created && table("ventas").registered == 1 && table("ventas").already == 2);
+    assert_eq!(table("clientes").registered, 0);
+
+    // A table is not a schema.
+    let parted = register_schema(&main, &storage, &schema("/wh/hive/curated.db/ventas")).await;
+    assert!(parted.unwrap_err().to_string().contains("partitioned"));
+    let own = register_schema(&main, &storage, &schema("/wh/hive/curated.db/clientes")).await;
+    assert!(own.unwrap_err().to_string().contains("files of its own"));
+    Ok(())
+}

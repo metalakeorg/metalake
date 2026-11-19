@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use metalake_client::{
     EngineConfig, EngineKind, Error, Lake, MaintainRequest, MergeRequest, PipelineOptions, RefKind, RegisterRequest,
-    Retention, Session, Task, duration,
+    RegisterSchemaRequest, Retention, Session, Task, duration,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -15,7 +15,7 @@ use pyo3::types::{PyDict, PyTuple};
 use crate::engine::PyEngine;
 use crate::errors::to_python;
 use crate::iceberg::{Following, PyIceberg};
-use crate::info::{History, PyDone, PyMerged, PyRef, PyRegistered, PyStatus};
+use crate::info::{History, PyDone, PyMerged, PyRef, PyRegistered, PyRegisteredSchema, PyStatus};
 use crate::owner::Owner;
 use crate::pipeline::PyPipeline;
 use crate::result::QueryResult;
@@ -433,6 +433,38 @@ impl PyLake {
             Ok::<_, Error>(merged)
         })?;
         merged.map(PyMerged::from).map_err(|e| to_python(py, e))
+    }
+
+    /// Makes each prefix right under `source` a table of `schema`, named as its prefix is: a Hive database's directory,
+    /// `/user/hive/warehouse/sales.db`, becomes a schema with its tables, no byte copied. Each table is registered as
+    /// `register` does, in commits of its own: one refused or failing leaves the others registered, and the answer says
+    /// why. Run again, it registers the tables new under the prefix and adds what is new to each.
+    #[pyo3(signature = (source, schema, *, adopt=false, check=false, on=None))]
+    fn register_schema(
+        &self,
+        py: Python<'_>,
+        source: String,
+        schema: String,
+        adopt: bool,
+        check: bool,
+        on: Option<String>,
+    ) -> PyResult<PyRegisteredSchema> {
+        self.owner.check(py, "Lake")?;
+        let request = RegisterSchemaRequest {
+            source,
+            schema,
+            adopt,
+            check,
+            on,
+        };
+        let (lake, session) = (self.lake.clone(), self.session.clone());
+        let report = wait(py, async move {
+            let report = lake.register_schema(&request).await?;
+            // Tables new to the lake show in `information_schema` at once.
+            session.refresh().await?;
+            Ok::<_, Error>(report)
+        })?;
+        report.map(PyRegisteredSchema::from).map_err(|e| to_python(py, e))
     }
 
     /// Makes the Parquet files under `source` the files of `table`, where they are, with no byte copied: a Hive table's
