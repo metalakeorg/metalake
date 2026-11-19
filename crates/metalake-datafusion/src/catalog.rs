@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use datafusion::catalog::{CatalogProvider, CatalogProviderList, SchemaProvider, TableProvider};
 use datafusion::dataframe::DataFrame;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
+use datafusion::execution::SessionState;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::logical_expr::{DdlStatement, LogicalPlan, LogicalPlanBuilder};
 use datafusion::prelude::{SessionConfig, SessionContext};
@@ -26,7 +27,7 @@ use crate::options::MetaLakeOptions;
 use crate::point::{self, OnePoint};
 use crate::table::MetaTable;
 use crate::written::Written;
-use crate::{changes, ddl};
+use crate::{changes, ddl, orc};
 
 /// The catalog of what a statement brings with it, which cannot be a ref's name, since those have no leading dot.
 const SOURCES: &str = ".source";
@@ -203,6 +204,7 @@ impl MetaLake {
         }
         let state = context.state();
         let _ranges = self.table_changes(&mut statement, &on).await?;
+        let _orc = self.read_orc(&mut statement, &state).await?;
         let plan = state.statement_to_plan(statement).await?;
         let defaults = &state.config().options().catalog;
         match plan {
@@ -245,6 +247,22 @@ impl MetaLake {
         context.execute_logical_plan(done).await
     }
 
+    /// Each `read_orc(…)` the statement reads, its directory listed and put in its place as a source.
+    async fn read_orc(&self, statement: &mut Statement, state: &SessionState) -> DataFusionResult<Vec<Source>> {
+        let Statement::Statement(inner) = statement else {
+            return Ok(Vec::new());
+        };
+        let mut sources = Vec::new();
+        for path in orc::calls(inner)? {
+            sources.push(self.source(orc::provider(state, &self.shared.storage, &path).await?));
+        }
+        if !sources.is_empty() {
+            let names: Vec<String> = sources.iter().map(Source::name).collect();
+            changes::replace(inner, orc::FUNCTION, &names)?;
+        }
+        Ok(sources)
+    }
+
     /// Each `table_changes(…)` the statement reads, found in the catalog and put in its place as a source. A table
     /// function of DataFusion would have to know its columns without asking Postgres, which only answers when awaited.
     async fn table_changes(&self, statement: &mut Statement, on: &str) -> DataFusionResult<Vec<Source>> {
@@ -262,7 +280,7 @@ impl MetaLake {
         }
         if !sources.is_empty() {
             let names: Vec<String> = sources.iter().map(Source::name).collect();
-            changes::replace(inner, &names)?;
+            changes::replace(inner, changes::FUNCTION, &names)?;
         }
         Ok(sources)
     }

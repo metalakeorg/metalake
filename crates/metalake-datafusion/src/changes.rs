@@ -179,8 +179,13 @@ pub(crate) fn calls(statement: &Statement, on: &str) -> Result<Vec<Call>, DataFu
     }
 }
 
-/// Each call of `table_changes`, in the order a visit meets them, replaced by the table `names` give for it.
-pub(crate) fn replace(statement: &mut Statement, names: &[String]) -> Result<(), DataFusionError> {
+/// Each call of `function`, `table_changes` or another resolved before planning, in the order a visit meets them,
+/// replaced by the table `names` give for it.
+pub(crate) fn replace(
+    statement: &mut Statement,
+    function: &'static str,
+    names: &[String],
+) -> Result<(), DataFusionError> {
     let names = names
         .iter()
         .map(|name| {
@@ -193,21 +198,21 @@ pub(crate) fn replace(statement: &mut Statement, names: &[String]) -> Result<(),
     // A call with no alias is qualified by the function's name, `table_changes.k`, when it is the only one in its
     // query's FROM; two in one FROM would share it, and clash, so they keep their sources' names. A UNION's branches
     // and subqueries are scopes of their own.
-    struct Scopes;
+    struct Scopes(&'static str);
     impl VisitorMut for Scopes {
         type Break = ();
         fn pre_visit_query(&mut self, query: &mut Query) -> ControlFlow<Self::Break> {
-            alias_lone_calls(&mut query.body);
+            alias_lone_calls(&mut query.body, self.0);
             ControlFlow::Continue(())
         }
     }
-    let _ = statement.visit(&mut Scopes);
-    struct Replace(std::vec::IntoIter<ObjectName>);
+    let _ = statement.visit(&mut Scopes(function));
+    struct Replace(std::vec::IntoIter<ObjectName>, &'static str);
     impl VisitorMut for Replace {
         type Break = ();
         fn pre_visit_table_factor(&mut self, factor: &mut TableFactor) -> ControlFlow<Self::Break> {
             if let TableFactor::Table { name, args, .. } = factor
-                && is_call(name)
+                && is_call(name, self.1)
                 && args.is_some()
                 && let Some(replaced) = self.0.next()
             {
@@ -217,18 +222,18 @@ pub(crate) fn replace(statement: &mut Statement, names: &[String]) -> Result<(),
             ControlFlow::Continue(())
         }
     }
-    let _ = statement.visit(&mut Replace(names.into_iter()));
+    let _ = statement.visit(&mut Replace(names.into_iter(), function));
     Ok(())
 }
 
 /// In each SELECT of a query's body (each branch of a UNION), the function's name as the alias of its call with none,
 /// when it is the only one in that FROM.
-fn alias_lone_calls(body: &mut SetExpr) {
+fn alias_lone_calls(body: &mut SetExpr, function: &str) {
     match body {
         SetExpr::Select(select) => {
             let mut calls = Vec::new();
             for from in select.from.iter_mut() {
-                unaliased_calls(from, &mut calls);
+                unaliased_calls(from, &mut calls, function);
             }
             if let [call] = calls.as_mut_slice()
                 && let TableFactor::Table { name, alias, .. } = &mut **call
@@ -243,32 +248,33 @@ fn alias_lone_calls(body: &mut SetExpr) {
             }
         }
         SetExpr::SetOperation { left, right, .. } => {
-            alias_lone_calls(left);
-            alias_lone_calls(right);
+            alias_lone_calls(left, function);
+            alias_lone_calls(right, function);
         }
         _ => {}
     }
 }
 
 /// The calls with no alias of one FROM item, its joins and nested joins included; a subquery is a scope of its own.
-fn unaliased_calls<'a>(from: &'a mut TableWithJoins, calls: &mut Vec<&'a mut TableFactor>) {
+fn unaliased_calls<'a>(from: &'a mut TableWithJoins, calls: &mut Vec<&'a mut TableFactor>, function: &str) {
     let TableWithJoins { relation, joins } = from;
     for factor in std::iter::once(relation).chain(joins.iter_mut().map(|join| &mut join.relation)) {
-        let lone = matches!(&*factor, TableFactor::Table { name, args: Some(_), alias: None, .. } if is_call(name));
+        let lone =
+            matches!(&*factor, TableFactor::Table { name, args: Some(_), alias: None, .. } if is_call(name, function));
         if lone {
             calls.push(factor);
         } else if let TableFactor::NestedJoin { table_with_joins, .. } = factor {
-            unaliased_calls(table_with_joins, calls);
+            unaliased_calls(table_with_joins, calls, function);
         }
     }
 }
 
-/// Whether a name is the function's, by SQL's rule: unquoted in any case, quoted exactly.
-fn is_call(name: &ObjectName) -> bool {
+/// Whether a name is `function`'s, by SQL's rule: unquoted in any case, quoted exactly.
+pub(crate) fn is_call(name: &ObjectName, function: &str) -> bool {
     match name.0.as_slice() {
         [part] => part.as_ident().is_some_and(|ident| match ident.quote_style {
-            None => ident.value.eq_ignore_ascii_case(FUNCTION),
-            Some(_) => ident.value == FUNCTION,
+            None => ident.value.eq_ignore_ascii_case(function),
+            Some(_) => ident.value == function,
         }),
         _ => false,
     }
@@ -282,7 +288,7 @@ fn call_of(factor: &TableFactor, on: &str) -> Result<Option<Call>, DataFusionErr
     else {
         return Ok(None);
     };
-    if !is_call(name) {
+    if !is_call(name, FUNCTION) {
         return Ok(None);
     }
     let usage = |why: &str| DataFusionError::Plan(format!("{FUNCTION}(table, after [, until]): {why}"));
@@ -361,13 +367,13 @@ mod tests {
     #[test]
     fn replaced_call_keeps_qualifier() {
         let mut unaliased = statement("select table_changes.k from table_changes('db.t', 1)");
-        replace(&mut unaliased, &[r#"".source"."default"."7""#.to_string()]).unwrap();
+        replace(&mut unaliased, FUNCTION, &[r#"".source"."default"."7""#.to_string()]).unwrap();
         assert_eq!(
             unaliased.to_string(),
             r#"SELECT table_changes.k FROM ".source"."default"."7" AS table_changes"#
         );
         let mut aliased = statement("select c.k from table_changes('db.t', 1) c");
-        replace(&mut aliased, &[r#"".source"."default"."7""#.to_string()]).unwrap();
+        replace(&mut aliased, FUNCTION, &[r#"".source"."default"."7""#.to_string()]).unwrap();
         assert_eq!(
             aliased.to_string(),
             r#"SELECT c.k FROM ".source"."default"."7" c"#,
