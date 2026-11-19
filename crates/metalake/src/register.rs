@@ -353,6 +353,143 @@ pub async fn register(on: &Ref, storage: &Storage, r: &Register<'_>) -> Result<R
     Ok(report)
 }
 
+/// What to register as a schema: each prefix right under `source` a table of `namespace`, by its name.
+#[derive(Debug, Clone)]
+pub struct RegisterSchema<'a> {
+    /// A prefix of the lake's store, as a path in it or a URL of it: a Hive database's directory, say.
+    pub source: &'a str,
+    pub namespace: &'a [&'a str],
+    pub adopt: bool,
+    pub check: bool,
+    pub batch: usize,
+}
+
+/// What registering a schema did to each of its tables, or would do with `check`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct SchemaReport {
+    pub schema: String,
+    /// The source, as a URL of the lake's store.
+    pub source: String,
+    /// Each table, in the order of their names.
+    pub tables: Vec<TableOutcome>,
+}
+
+impl SchemaReport {
+    /// Whether every table registered, or would: none refused a file, none failed.
+    pub fn clean(&self) -> bool {
+        self.tables
+            .iter()
+            .all(|t| t.error.is_none() && t.report.as_ref().is_some_and(|r| r.refused.is_empty()))
+    }
+}
+
+impl std::fmt::Display for SchemaReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "schema {} from {}: {} tables",
+            self.schema,
+            self.source,
+            self.tables.len()
+        )?;
+        for table in &self.tables {
+            match (&table.report, &table.error) {
+                (Some(report), _) => write!(
+                    f,
+                    "
+{report}"
+                )?,
+                (None, Some(error)) => write!(
+                    f,
+                    "
+{}: not registered: {error}",
+                    table.name
+                )?,
+                (None, None) => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One table of a schema: its report, or why it was not registered at all.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TableOutcome {
+    pub name: String,
+    pub report: Option<Report>,
+    pub error: Option<String>,
+}
+
+/// Registers each prefix right under `r.source` as a table of `r.namespace`, named as its prefix is: a Hive
+/// database's directory becomes a schema with its tables. Each table is registered as `register` does, in commits of
+/// its own: one refused or failing leaves the others registered, and says why. Run again, it adds what is new to each
+/// table and registers the tables new under the prefix.
+///
+/// A prefix is not a schema when files lie right under it, or its prefixes are `k=v`: it is then a table, which
+/// `register` takes. A prefix under it named as a Hive database is (`ventas.db`) is refused, a schema under a schema.
+pub async fn register_schema(on: &Ref, storage: &Storage, r: &RegisterSchema<'_>) -> Result<SchemaReport> {
+    let source = resolved(storage, r.source)?;
+    let mut names: Vec<String> = Vec::new();
+    for object in storage.listed(&source).await? {
+        let relative = object.url[source.len()..].trim_start_matches('/');
+        let Some((first, _)) = relative.split_once('/') else {
+            if !(relative.starts_with('_') || relative.starts_with('.')) {
+                return Err(Error::Invalid(format!(
+                    "{source} holds files of its own, as {relative}: it is a table, which REGISTER TABLE takes"
+                )));
+            }
+            continue;
+        };
+        if first.starts_with('_') || first.starts_with('.') || names.iter().any(|n| n == first) {
+            continue;
+        }
+        if first.contains('=') {
+            return Err(Error::Invalid(format!(
+                "{source} is partitioned, as {first} is: it is a table, which REGISTER TABLE takes"
+            )));
+        }
+        names.push(first.to_string());
+    }
+    names.sort();
+    let mut report = SchemaReport {
+        schema: r.namespace.join("."),
+        source: source.clone(),
+        tables: Vec::with_capacity(names.len()),
+    };
+    for name in names {
+        let outcome = if name.ends_with(".db") {
+            Err(format!(
+                "{name} is a Hive database's directory: register it as a schema of its own, from {source}/{name}"
+            ))
+        } else {
+            let table = Register {
+                source: Some(&format!("{source}/{name}")),
+                namespace: r.namespace,
+                name: &name,
+                partition: vec![],
+                adopt: r.adopt,
+                location: None,
+                check: r.check,
+                batch: r.batch,
+            };
+            register(on, storage, &table).await.map_err(|e| e.to_string())
+        };
+        report.tables.push(match outcome {
+            Ok(table) => TableOutcome {
+                name,
+                report: Some(table),
+                error: None,
+            },
+            Err(error) => TableOutcome {
+                name,
+                report: None,
+                error: Some(error),
+            },
+        });
+    }
+    Ok(report)
+}
+
 /// A commit of a run, with what its first also says of the table: its source kept, then the source owned, each once.
 /// A definition replaces the table's changes and `own` adds to them, so in that order.
 fn said(mut tx: Transaction, table: &Table, source: &str, keep: &mut bool, adopt: &mut bool) -> Transaction {

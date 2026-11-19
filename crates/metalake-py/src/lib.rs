@@ -43,6 +43,7 @@ fn _metalake(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<info::PyDone>()?;
     module.add_class::<info::PyMerged>()?;
     module.add_class::<info::PyRegistered>()?;
+    module.add_class::<info::PyRegisteredSchema>()?;
     module.add_class::<info::PySnapshot>()?;
     module.add_class::<info::PyStatus>()?;
     module.add_class::<table::PyTable>()?;

@@ -51,3 +51,19 @@ def test_register_needs_a_table(directory):
     lake = metalake.connect(directory / "lake")
     with pytest.raises(ValueError, match="needs the table"):
         lake.register("/x")
+
+
+def test_register_a_schema(directory):
+    lake = metalake.connect(directory / "lake")
+    db = directory / "hive" / "curated.db"
+    hive_file(db / "ventas" / "dt=2024-01-02" / "part-0.parquet", [1, 2])
+    hive_file(db / "clientes" / "part-0.parquet", [7])
+    (db / "raros").mkdir(parents=True)
+    (db / "raros" / "000000_0").write_bytes(b"ORC, not Parquet")
+
+    done = lake.register_schema(db.as_uri()[len("file://") :], "curated")
+    assert done.schema.endswith("curated") and not done.errors, done
+    by_name = {t.table.split(".")[-1]: t for t in done.tables}
+    assert by_name["ventas"].registered == 1 and by_name["ventas"].partition == [("dt", "date")]
+    assert by_name["raros"].refused and by_name["raros"].refused[0][1] == "parquet"
+    assert rows(lake.sql("select count(*) as n from curated.clientes"))[0]["n"] == 1

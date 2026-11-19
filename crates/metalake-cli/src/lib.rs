@@ -63,6 +63,7 @@ async fn run(cli: Cli) -> Result<(), Error> {
         Verb::Retain(retain) => commands::retain::run(retain, &Lake::open(dir).await?, &out).await,
         Verb::Maintain(maintain) => commands::maintain::run(maintain, &Lake::open(dir).await?, &out).await,
         Verb::Register(register) => commands::register::run(register, &Lake::open(dir).await?, &out).await,
+        Verb::RegisterSchema(register) => commands::register::schema(register, &Lake::open(dir).await?, &out).await,
         Verb::Stop => commands::stop::run(dir, &out).await,
         Verb::Ui(ui) => commands::ui::run(ui, Lake::open(dir).await?).await,
         Verb::Log(log) => commands::log::run(log, &Lake::open(dir).await?, &out).await,
