@@ -11,6 +11,7 @@ pull request; the decisions, in the ADRs.
 - **Give the source as a path in the lake's store.** `/user/hive/warehouse/sales` or `raw/orders` is put after the store's scheme and authority, in every face; a URL of the store still works ([#86](https://github.com/metalakeorg/metalake/pull/86))
 - **Leave the partition out.** A new table's partition columns are found in its `k=v` directories, typed by their values (`date`, `int`, `long`, else `string`, so `007` stays a string), and the run says what it found; files laid out otherwise are refused. Declaring one corrects what is found ([#86](https://github.com/metalakeorg/metalake/pull/86))
 - **Register again with no source.** A table keeps where it was registered from, so `REGISTER TABLE tienda.ventas`, `metalake register --as tienda.ventas` or `lake.register(table="tienda.ventas")` adds what is new there. A table registered by 0.9.0 keeps its source the first time a run gives one ([#86](https://github.com/metalakeorg/metalake/pull/86), [#88](https://github.com/metalakeorg/metalake/pull/88))
+- **Bring ORC files into a table from SQL.** `CREATE TABLE marts.top_clientes AS SELECT * FROM read_orc('/user/hive/warehouse/marts.db/top_clientes')` reads a directory of ORC files in the lake's store, as Hive writes them, and writes a Parquet table: ORC is read, never a table's format. A Hive transactional (ACID) table, and a partitioned directory, are refused, saying why ([#89](https://github.com/metalakeorg/metalake/pull/89))
 
 ### UI
 

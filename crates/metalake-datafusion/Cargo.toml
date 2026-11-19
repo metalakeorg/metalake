@@ -18,6 +18,8 @@ async-trait = "0.1"
 datafusion = { version = "55.2", default-features = false, features = ["parquet", "sql"] }
 # Parquet's morsels, which MetaLake's source hands on and `datafusion` does not re-export.
 datafusion-datasource = { version = "55.2", default-features = false }
+# ORC read in a query, `read_orc(…)`: files to bring into a table, never a table's own format.
+datafusion-orc = "0.10"
 datafusion-proto = { version = "55.2", default-features = false, features = ["parquet"], optional = true }
 futures-util.workspace = true
 object_store.workspace = true

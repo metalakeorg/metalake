@@ -25,6 +25,7 @@ mod filters;
 mod measure;
 mod merge;
 mod options;
+mod orc;
 mod point;
 mod read;
 mod sink;
