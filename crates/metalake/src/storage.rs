@@ -68,6 +68,25 @@ impl Storage {
         }
     }
 
+    /// The URL of a place in this store as a user gives it: a path in it, `/user/hive/…` or `raw/orders`, after the
+    /// store's scheme and authority; a URL, as it is, refused unless it is on the store, so that one spelling holds.
+    /// No `/` at its end.
+    pub fn url_of(&self, given: &str) -> Result<String> {
+        let given = given.trim_end_matches('/');
+        let url = if given.contains("://") {
+            given.to_string()
+        } else {
+            format!("{}/{}", self.base, given.trim_start_matches('/'))
+        };
+        if self.path(&url).is_err() {
+            return Err(Error::Location(format!(
+                "{url} is not on the lake's store, {}: give a path in it, or a URL spelled as the warehouse is",
+                self.base
+            )));
+        }
+        Ok(url)
+    }
+
     /// The scheme and authority every path of this store starts with.
     pub fn base(&self) -> &str {
         &self.base

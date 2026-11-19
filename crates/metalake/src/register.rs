@@ -513,19 +513,7 @@ fn unescaped(text: &str) -> String {
 /// The source as a URL of the lake's store: a path in it, `/user/hive/…` or `raw/orders`, after the store's scheme and
 /// authority; a URL, as it is, refused unless it is on the store, so that the catalog holds one spelling of it.
 fn resolved(storage: &Storage, source: &str) -> Result<String> {
-    let source = source.trim_end_matches('/');
-    let url = if source.contains("://") {
-        source.to_string()
-    } else {
-        format!("{}/{}", storage.base(), source.trim_start_matches('/'))
-    };
-    if storage.path(&url).is_err() {
-        return Err(Error::Location(format!(
-            "{url} is not on the lake's store, {}: give a path in it, or a URL spelled as the warehouse is",
-            storage.base()
-        )));
-    }
-    Ok(url)
+    storage.url_of(source)
 }
 
 /// An existing table's partition, as `register` takes one: each identity field's source column and its type.
